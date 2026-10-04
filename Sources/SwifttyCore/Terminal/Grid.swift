@@ -147,6 +147,11 @@ public struct Grid: ~Copyable {
         history.count
     }
 
+    /// History lines dropped off the top since the last clear.
+    public var historyEvicted: Int {
+        history.evicted
+    }
+
     public var historyCapacity: Int {
         history.capacity
     }

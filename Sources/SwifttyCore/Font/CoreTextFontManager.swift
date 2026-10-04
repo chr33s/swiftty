@@ -8,6 +8,11 @@ public struct FontDescriptor: Hashable, Sendable {
     public var size: CGFloat
     /// Backing scale factor (2 on Retina).
     public var scale: CGFloat
+    /// Cell size adjustments as fractions (0.1 = 10% larger).
+    public var cellWidthAdjust: CGFloat = 0
+    public var cellHeightAdjust: CGFloat = 0
+    /// Families tried, in order, before the system cascade (e.g. a symbols font).
+    public var fallbackFamilies: [String] = []
 
     public init(family: String = "Menlo", size: CGFloat = 13, scale: CGFloat = 2) {
         self.family = family
@@ -42,6 +47,7 @@ public final class ResolvedFont: @unchecked Sendable {
     /// Indexed by `FontStyle.rawValue`: regular, bold, italic, bold italic.
     public let faces: [CTFont]
     public let emoji: CTFont
+    public let fallbacks: [CTFont]
 
     // Metrics in pixels.
     public let cellWidth: CGFloat
@@ -59,21 +65,37 @@ public final class ResolvedFont: @unchecked Sendable {
             regular = CTFontCreateUIFontForLanguage(.userFixedPitch, pixelSize, nil) ?? regular
         }
         func styled(_ traits: CTFontSymbolicTraits) -> CTFont {
-            CTFontCreateCopyWithSymbolicTraits(regular, pixelSize, nil, traits, traits) ?? regular
+            if let font = CTFontCreateCopyWithSymbolicTraits(regular, pixelSize, nil, traits, traits) {
+                return font
+            }
+            // No such face: slant the upright one for italic.
+            let base = traits.contains(.traitBold)
+                ? CTFontCreateCopyWithSymbolicTraits(regular, pixelSize, nil, .traitBold, .traitBold) ?? regular
+                : regular
+            guard traits.contains(.traitItalic) else { return base }
+            var skew = CGAffineTransform(a: 1, b: 0, c: 0.2, d: 1, tx: 0, ty: 0)
+            return CTFontCreateWithFontDescriptor(CTFontCopyFontDescriptor(base), pixelSize, &skew)
         }
         faces = [regular, styled(.traitBold), styled(.traitItalic), styled([.traitBold, .traitItalic])]
         emoji = CTFontCreateWithName("Apple Color Emoji" as CFString, pixelSize, nil)
+        fallbacks = descriptor.fallbackFamilies.compactMap { family in
+            let font = CTFontCreateWithName(family as CFString, pixelSize, nil)
+            return (CTFontCopyFamilyName(font) as String).localizedCaseInsensitiveContains(family) ? font : nil
+        }
 
         var glyph = CGGlyph(0)
         var m: UniChar = 0x4D // "M"
         CTFontGetGlyphsForCharacters(regular, &m, &glyph, 1)
         var advance = CGSize.zero
         CTFontGetAdvancesForGlyphs(regular, .horizontal, &glyph, &advance, 1)
-        ascent = ceil(CTFontGetAscent(regular))
+        let baseAscent = ceil(CTFontGetAscent(regular))
         descent = ceil(CTFontGetDescent(regular))
         let leading = ceil(CTFontGetLeading(regular))
-        cellWidth = ceil(advance.width)
-        cellHeight = ascent + descent + leading
+        cellWidth = max(1, ceil(advance.width * (1 + descriptor.cellWidthAdjust)))
+        let baseHeight = baseAscent + descent + leading
+        cellHeight = max(1, ceil(baseHeight * (1 + descriptor.cellHeightAdjust)))
+        // Extra height is split above and below the glyphs.
+        ascent = baseAscent + floor((cellHeight - baseHeight) / 2)
         underlinePosition = ascent - CTFontGetUnderlinePosition(regular)
         underlineThickness = max(1, round(CTFontGetUnderlineThickness(regular)))
     }
@@ -136,6 +158,11 @@ public final class CoreTextFontManager {
         }
         if scalar.properties.isEmoji, let glyph = Self.glyph(scalar, in: font.emoji) {
             return GlyphLookup(font: font.emoji, glyph: glyph, isColor: true)
+        }
+        for fallback in font.fallbacks {
+            if let glyph = Self.glyph(scalar, in: fallback) {
+                return GlyphLookup(font: fallback, glyph: glyph, isColor: false)
+            }
         }
         let string = String(scalar) as CFString
         let fallback = CTFontCreateForString(face, string, CFRange(location: 0, length: CFStringGetLength(string)))

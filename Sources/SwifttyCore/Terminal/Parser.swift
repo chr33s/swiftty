@@ -43,6 +43,7 @@ public struct Parser: ~Copyable {
         case ground, escape, escapeIntermediate
         case csiEntry, csiParam, csiIntermediate, csiIgnore
         case oscString, stringIgnore
+        case dcsEntry, dcsParam, dcsIntermediate, dcsIgnore, dcsPassthrough
     }
 
     private var state = State.ground
@@ -107,6 +108,20 @@ public struct Parser: ~Copyable {
         let n = buffer.count
         var i = 0
         while i < n {
+            if state == .dcsPassthrough {
+                // Hand over everything up to the next ESC/CAN/SUB in one piece.
+                var end = i
+                while end < n, base[end] != 0x1B, base[end] != 0x18, base[end] != 0x1A {
+                    end += 1
+                }
+                if end > i {
+                    terminal.dcsPut(UnsafeBufferPointer(start: base + i, count: end - i))
+                    i = end
+                    if i == n {
+                        break
+                    }
+                }
+            }
             if state == .ground, utf8Remaining == 0 {
                 let end = Self.scanPrintableASCII(base, from: i, to: n)
                 if end > i {
@@ -184,12 +199,18 @@ public struct Parser: ~Copyable {
             if state == .oscString {
                 oscCount = 0
             }
+            if state == .dcsPassthrough {
+                t.dcsUnhook()
+            }
             resetUTF8()
             state = .ground
             return
         case 0x1B:
             if state == .oscString {
                 dispatchOSC(&t, bell: false)
+            }
+            if state == .dcsPassthrough {
+                t.dcsUnhook()
             }
             if utf8Remaining > 0 {
                 resetUTF8(); t.print(0xFFFD)
@@ -209,7 +230,8 @@ public struct Parser: ~Copyable {
             case 0x20 ... 0x2F: escIntermediate = byte; state = .escapeIntermediate
             case 0x5B: enterCSI() // [
             case 0x5D: oscCount = 0; state = .oscString // ]
-            case 0x50, 0x58, 0x5E, 0x5F: state = .stringIgnore // P X ^ _
+            case 0x50: enterCSI(); state = .dcsEntry // P
+            case 0x58, 0x5E, 0x5F: state = .stringIgnore // X ^ _
             case 0x7F: break
             default: t.escDispatch(intermediate: 0, final: byte); state = .ground
             }
@@ -265,8 +287,11 @@ public struct Parser: ~Copyable {
             default: appendOSC(byte)
             }
 
-        case .stringIgnore:
+        case .stringIgnore, .dcsIgnore:
             break // terminated by ESC (\) or CAN/SUB above
+
+        case .dcsEntry, .dcsParam, .dcsIntermediate, .dcsPassthrough:
+            dcsStep(byte, &t)
         }
     }
 
@@ -347,6 +372,49 @@ public struct Parser: ~Copyable {
         csi.final = final
         t.csiDispatch(csi)
         state = .ground
+    }
+
+    /// DCS parameter, intermediate and data states.
+    private mutating func dcsStep(_ byte: UInt8, _ t: inout TerminalState) {
+        switch state {
+        case .dcsEntry, .dcsParam:
+            switch byte {
+            case 0x30 ... 0x39:
+                currentParam = min(currentParam &* 10 &+ UInt32(byte - 0x30), 65535)
+                hasParam = true
+                state = .dcsParam
+            case 0x3B: pushParam(colon: false); state = .dcsParam
+            case 0x3A: state = .dcsIgnore
+            case 0x3C ... 0x3F:
+                if state == .dcsEntry, csi.marker == 0 {
+                    csi.marker = byte; state = .dcsParam
+                } else {
+                    state = .dcsIgnore
+                }
+            case 0x20 ... 0x2F: finishParams(); csi.intermediate = byte; state = .dcsIntermediate
+            case 0x40 ... 0x7E: finishParams(); hookDCS(byte, &t)
+            default: break // C0 and DEL are ignored inside DCS
+            }
+
+        case .dcsIntermediate:
+            switch byte {
+            case 0x20 ... 0x2F: break
+            case 0x30 ... 0x3F: state = .dcsIgnore
+            case 0x40 ... 0x7E: hookDCS(byte, &t)
+            default: break
+            }
+
+        case .dcsPassthrough:
+            withUnsafePointer(to: byte) { t.dcsPut(UnsafeBufferPointer(start: $0, count: 1)) }
+
+        default: break
+        }
+    }
+
+    private mutating func hookDCS(_ final: UInt8, _ t: inout TerminalState) {
+        csi.final = final
+        t.dcsHook(csi)
+        state = .dcsPassthrough
     }
 
     private mutating func appendOSC(_ byte: UInt8) {

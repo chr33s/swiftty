@@ -11,6 +11,8 @@ public struct SessionConfiguration: Sendable {
     public var workingDirectory: String?
     public var term = "xterm-256color"
     public var scrollbackLimitBytes = 10_000_000
+    /// Cap on history lines (Ghostty's `scrollback-limit-lines`).
+    public var scrollbackLimitRows = 100_000
     public var palette = Palette.standard
 
     public init(command: [String]? = nil, environment: [String: String] = [:], workingDirectory: String? = nil) {

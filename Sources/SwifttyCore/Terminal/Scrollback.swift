@@ -10,6 +10,9 @@ struct Scrollback: ~Copyable {
     private let ids: UnsafeMutablePointer<Int32>
     private var head = 0
     private(set) var count = 0
+    /// Lines evicted (oldest first) since creation or the last `removeAll`;
+    /// `evicted + index` names a line stably while it stays in history.
+    private(set) var evicted = 0
 
     init(capacity: Int) {
         self.capacity = max(0, capacity)
@@ -36,10 +39,11 @@ struct Scrollback: ~Copyable {
             count += 1
             return nil
         }
-        let evicted = ids[head]
+        let oldest = ids[head]
         ids[head] = id
         head = (head + 1) % capacity
-        return evicted
+        evicted += 1
+        return oldest
     }
 
     /// Empties the ring, passing every id to `release`.
@@ -49,5 +53,6 @@ struct Scrollback: ~Copyable {
         }
         head = 0
         count = 0
+        evicted = 0
     }
 }

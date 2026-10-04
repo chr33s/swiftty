@@ -56,3 +56,26 @@ struct InputEncoderTests {
         #expect(encode(.focus(false), [.focusEvents]) == "\u{1B}[O")
     }
 }
+
+struct KittyKeyboardTests {
+    @Test func `push query and disambiguate`() {
+        var vt = VT()
+        vt.feed("\(CSI)?u")
+        #expect(vt.takeOutput() == "\(CSI)?0u")
+        vt.feed("\(CSI)>1u\(CSI)?u")
+        #expect(vt.takeOutput() == "\(CSI)?1u")
+        let flags = vt.state.keyboardFlags
+        func enc(_ e: KeyEvent) -> String {
+            var out: [UInt8] = []
+            InputEncoder.encode(.key(e), modes: .initial, keyboardFlags: flags, into: &out)
+            return String(decoding: out, as: UTF8.self)
+        }
+        #expect(enc(KeyEvent(.enter, modifiers: .shift)) == "\(CSI)13;2u")
+        #expect(enc(KeyEvent(.enter)) == "\r")
+        #expect(enc(KeyEvent(.escape)) == "\(CSI)27u")
+        #expect(enc(KeyEvent(.character("c"), modifiers: .control)) == "\(CSI)99;5u")
+        #expect(enc(KeyEvent(.up)) == "\(CSI)A")
+        vt.feed("\(CSI)<u\(CSI)?u")
+        #expect(vt.takeOutput() == "\(CSI)?0u")
+    }
+}

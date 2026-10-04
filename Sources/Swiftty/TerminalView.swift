@@ -68,6 +68,7 @@ final class TerminalView: MTKView, MTKViewDelegate {
             NSPasteboard.general.setString(text, forType: .string)
         case .workingDirectory: break
         case .exited: onExit?()
+        default: break
         }
     }
 

@@ -13,6 +13,30 @@ public struct CursorState: Sendable, Equatable {
     public var isBlinking: Bool
 }
 
+/// A highlighted span in snapshot rows (inclusive; rows may lie outside
+/// the snapshot when the span is partly scrolled out).
+public struct HighlightSpan: Sendable, Equatable {
+    public var startRow: Int
+    public var startColumn: Int
+    public var endRow: Int
+    public var endColumn: Int
+    public var rectangle: Bool
+
+    public func contains(row: Int, column: Int) -> Bool {
+        guard row >= startRow, row <= endRow else { return false }
+        if rectangle {
+            return column >= min(startColumn, endColumn) && column <= max(startColumn, endColumn)
+        }
+        if row == startRow, column < startColumn {
+            return false
+        }
+        if row == endRow, column > endColumn {
+            return false
+        }
+        return true
+    }
+}
+
 /// Immutable view of the screen for the renderer.
 ///
 /// Backed by pooled storage that is refilled only for damaged rows, so
@@ -28,8 +52,16 @@ public struct RenderSnapshot: @unchecked Sendable {
     private let graphemeScalarBase: UnsafeMutablePointer<UInt32>
     private let graphemeEntryBase: UnsafeMutablePointer<UInt64>
     public let columns: Int
+    /// Visible rows plus `overscanRows` rows below them.
     public let rowCount: Int
+    /// Rows after the screen's last row, drawn when the viewport is offset by
+    /// a fraction of a row (smooth scrolling) or into a bottom inset.
+    public let overscanRows: Int
     public let cursor: CursorState
+    public let selection: HighlightSpan?
+    public let searchMatches: [HighlightSpan]
+    /// Index into `searchMatches` of the selected match, if visible.
+    public let selectedSearchMatch: Int?
     /// Rows that changed since the previous snapshot returned by the session.
     public internal(set) var damage: DamageRegion
     public let palette: Palette
@@ -40,8 +72,10 @@ public struct RenderSnapshot: @unchecked Sendable {
     public let sequence: UInt64
 
     init(
-        storage: SnapshotStorage, columns: Int, rowCount: Int, cursor: CursorState, damage: DamageRegion,
-        palette: Palette, modes: Modes, viewportOffset: Int, scrollbackCount: Int, sequence: UInt64,
+        storage: SnapshotStorage, columns: Int, rowCount: Int, overscanRows: Int, cursor: CursorState,
+        selection: HighlightSpan?, searchMatches: [HighlightSpan], selectedSearchMatch: Int?,
+        damage: DamageRegion, palette: Palette, modes: Modes, viewportOffset: Int, scrollbackCount: Int,
+        sequence: UInt64,
     ) {
         self.storage = storage
         rowBase = storage.rowRecords
@@ -50,7 +84,11 @@ public struct RenderSnapshot: @unchecked Sendable {
         graphemeEntryBase = storage.graphemeEntries
         self.columns = columns
         self.rowCount = rowCount
+        self.overscanRows = overscanRows
         self.cursor = cursor
+        self.selection = selection
+        self.searchMatches = searchMatches
+        self.selectedSearchMatch = selectedSearchMatch
         self.damage = damage
         self.palette = palette
         self.modes = modes
@@ -165,7 +203,7 @@ final class SnapshotStorage: @unchecked Sendable {
     func fill(from state: borrowing TerminalState, damage: DamageRegion) {
         var full = pending.isFull || hasGraphemes
         if !full {
-            for y in 0 ..< rows where pending.contains(row: y) && state.viewportRow(y).cells.contains(where: \.isGrapheme) {
+            for y in 0 ..< rows where pending.contains(row: y) && Self.row(y, of: state).cells.contains(where: \.isGrapheme) {
                 full = true
                 break
             }
@@ -179,7 +217,7 @@ final class SnapshotStorage: @unchecked Sendable {
             let changed = full || pending.contains(row: y)
             rowRecords[y] = RowSnapshot(isDirty: damage.contains(row: y), isWrapped: false)
             guard changed else { continue }
-            let (src, wrapped) = state.viewportRow(y)
+            let (src, wrapped) = Self.row(y, of: state)
             rowRecords[y].isWrapped = wrapped
             let dst = cells + y * columns
             let n = min(src.count, columns)
@@ -195,6 +233,14 @@ final class SnapshotStorage: @unchecked Sendable {
             }
         }
         pending = .none
+    }
+
+    /// Visible row `y`, or for `y >= state.rows` the overscan row below.
+    static func row(_ y: Int, of state: borrowing TerminalState) -> (cells: UnsafeBufferPointer<Cell>, wrapped: Bool) {
+        if y < state.rows {
+            return state.viewportRow(y)
+        }
+        return state.line(absoluteRow: state.absoluteRow(viewportRow: y)) ?? (UnsafeBufferPointer(start: nil, count: 0), false)
     }
 
     private func appendGrapheme(_ scalars: UnsafeBufferPointer<UInt32>) -> UInt32 {
@@ -230,12 +276,16 @@ struct SnapshotBuilder {
         pool.reserveCapacity(3)
     }
 
-    mutating func build(from state: inout TerminalState) -> RenderSnapshot {
+    mutating func build(from state: inout TerminalState, overscan: Int = 0) -> RenderSnapshot {
         var damage = state.takeDamage()
         if state.viewportOffset > 0, !damage.isEmpty {
             damage.setFull()
         }
-        if last == nil || last!.columns != state.columns || last!.rowCount != state.rows {
+        // Overscan rows exist only while scrolled back: the rows below the
+        // viewport are then still on screen or in history.
+        let extra = min(max(overscan, 0), state.viewportOffset)
+        let rowCount = state.rows + extra
+        if last == nil || last!.columns != state.columns || last!.rowCount != rowCount {
             damage.setFull()
         }
         for storage in pool {
@@ -243,15 +293,34 @@ struct SnapshotBuilder {
         }
 
         let storage = takeFreeStorage()
-        storage.ensureSize(columns: state.columns, rows: state.rows)
+        storage.ensureSize(columns: state.columns, rows: rowCount)
         storage.fill(from: state, damage: damage)
 
         sequence &+= 1
         let modes = state.modes
+        func span(_ start: TerminalPoint, _ end: TerminalPoint, rectangle: Bool) -> HighlightSpan {
+            HighlightSpan(
+                startRow: state.viewportRow(absoluteRow: start.row), startColumn: start.column,
+                endRow: state.viewportRow(absoluteRow: end.row), endColumn: end.column, rectangle: rectangle,
+            )
+        }
+        let selection = state.selection.map { span($0.start, $0.end, rectangle: $0.rectangle) }
+        var matches: [HighlightSpan] = []
+        var selectedMatch: Int?
+        if !state.searchMatches.isEmpty {
+            let top = state.absoluteRow(viewportRow: 0), bottom = top + rowCount - 1
+            for (i, m) in state.searchMatches.enumerated() where m.end.row >= top && m.start.row <= bottom {
+                if i == state.searchSelected {
+                    selectedMatch = matches.count
+                }
+                matches.append(span(m.start, m.end, rectangle: false))
+            }
+        }
         let snapshot = RenderSnapshot(
             storage: storage,
             columns: state.columns,
-            rowCount: state.rows,
+            rowCount: rowCount,
+            overscanRows: extra,
             cursor: CursorState(
                 x: state.cursor.x,
                 y: state.cursor.y,
@@ -259,6 +328,9 @@ struct SnapshotBuilder {
                 style: state.cursorStyle,
                 isBlinking: modes.contains(.cursorBlink),
             ),
+            selection: selection,
+            searchMatches: matches,
+            selectedSearchMatch: selectedMatch,
             damage: damage,
             palette: state.palette,
             modes: modes,

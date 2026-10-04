@@ -1,7 +1,12 @@
 import Darwin
 import Dispatch
 
-/// One terminal: a child process on a PTY plus the terminal model it drives.
+/// One terminal: the terminal model plus the transport feeding it.
+///
+/// The transport is either a child process on a PTY (`start`, macOS only) or
+/// external: the host delivers program output with `receive` and takes the
+/// terminal's replies and encoded input from `onWrite` (SSH channels, an
+/// in-process interpreter, tmux panes).
 ///
 /// All terminal state is owned by a single serial queue. PTY reads are
 /// delivered on that queue and parsed in place from a preallocated buffer;
@@ -15,17 +20,29 @@ public final class TerminalSession: @unchecked Sendable {
     public var onUpdate: (@Sendable () -> Void)?
     /// Called on `queue` for titles, bells, clipboard writes and exit.
     public var onEvent: (@Sendable (TerminalEvent) -> Void)?
+    /// Called on `queue` with bytes for the application when no PTY is
+    /// attached: replies to queries and encoded keyboard/mouse input.
+    public var onWrite: (@Sendable ([UInt8]) -> Void)?
+    /// Called on `queue` after each batch of changes (parsed output, resize,
+    /// `mutate`), before `onUpdate`, with read access to the state. Use it to
+    /// mirror values the host reads often (modes, scroll position).
+    public var onStateChange: (@Sendable (borrowing TerminalState) -> Void)?
+    /// Called on `queue` with tmux control-mode lines (between
+    /// `.controlModeStarted` and `.controlModeEnded`), in arrival order.
+    public var onControlModeData: (@Sendable ([UInt8]) -> Void)?
 
     // Owned by `queue`.
     private var state: TerminalState
     private var parser = Parser()
     private var builder = SnapshotBuilder()
-    private var process: PTYProcess?
-    private var readSource: DispatchSourceRead?
-    private var writeSource: DispatchSourceWrite?
-    private var exitSource: DispatchSourceProcess?
-    private var pendingWrite: [UInt8] = []
-    private var writeSourceActive = false
+    #if os(macOS)
+        private var process: PTYProcess?
+        private var readSource: DispatchSourceRead?
+        private var writeSource: DispatchSourceWrite?
+        private var exitSource: DispatchSourceProcess?
+        private var pendingWrite: [UInt8] = []
+        private var writeSourceActive = false
+    #endif
     private var encodeBuffer: [UInt8] = []
     private let readBuffer: UnsafeMutableRawBufferPointer
     private var updateScheduled = false
@@ -40,6 +57,7 @@ public final class TerminalSession: @unchecked Sendable {
         state = TerminalState(
             columns: columns, rows: rows,
             scrollbackLimitBytes: configuration.scrollbackLimitBytes,
+            scrollbackLimitRows: configuration.scrollbackLimitRows,
             palette: configuration.palette,
         )
         readBuffer = .allocate(byteCount: Self.readBufferSize, alignment: 16)
@@ -47,47 +65,60 @@ public final class TerminalSession: @unchecked Sendable {
     }
 
     deinit {
-        process?.hangUp()
-        teardown()
+        #if os(macOS)
+            process?.hangUp()
+            teardown()
+        #endif
         readBuffer.deallocate()
     }
 
     // MARK: Lifecycle
 
-    public func start(_ configuration: SessionConfiguration) throws {
-        try queue.sync {
-            precondition(process == nil, "session already started")
-            let process = try PTYProcess.spawn(
-                configuration, columns: state.columns, rows: state.rows, cellPixelSize: cellPixelSize,
-            )
-            self.process = process
-            let fd = process.master.rawValue
+    #if os(macOS)
+        public func start(_ configuration: SessionConfiguration) throws {
+            try queue.sync {
+                precondition(process == nil, "session already started")
+                let process = try PTYProcess.spawn(
+                    configuration, columns: state.columns, rows: state.rows, cellPixelSize: cellPixelSize,
+                )
+                self.process = process
+                let fd = process.master.rawValue
 
-            let read = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
-            read.setEventHandler { [unowned self] in readAvailable() }
-            read.resume()
-            readSource = read
+                let read = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+                read.setEventHandler { [unowned self] in readAvailable() }
+                read.resume()
+                readSource = read
 
-            let write = DispatchSource.makeWriteSource(fileDescriptor: fd, queue: queue)
-            write.setEventHandler { [unowned self] in flushPendingWrite() }
-            writeSource = write // resumed only while output is pending
+                let write = DispatchSource.makeWriteSource(fileDescriptor: fd, queue: queue)
+                write.setEventHandler { [unowned self] in flushPendingWrite() }
+                writeSource = write // resumed only while output is pending
 
-            let exit = DispatchSource.makeProcessSource(identifier: process.pid, eventMask: .exit, queue: queue)
-            exit.setEventHandler { [unowned self] in childExited() }
-            exit.resume()
-            exitSource = exit
+                let exit = DispatchSource.makeProcessSource(identifier: process.pid, eventMask: .exit, queue: queue)
+                exit.setEventHandler { [unowned self] in childExited() }
+                exit.resume()
+                exitSource = exit
+            }
         }
-    }
 
-    public func stop() {
-        queue.sync {
-            process?.hangUp()
-            teardown()
+        public func stop() {
+            queue.sync {
+                process?.hangUp()
+                teardown()
+            }
         }
-    }
 
-    public var isRunning: Bool {
-        queue.sync { process != nil }
+        public var isRunning: Bool {
+            queue.sync { process != nil }
+        }
+    #endif
+
+    /// Parses program output from an external transport. Ordered with
+    /// `send`, `resize` and other calls; returns immediately.
+    public func receive(_ bytes: [UInt8]) {
+        queue.async { [self] in
+            bytes.withUnsafeBufferPointer { parse($0) }
+            publish()
+        }
     }
 
     // MARK: Input / resize / output
@@ -95,7 +126,9 @@ public final class TerminalSession: @unchecked Sendable {
     public func resize(columns: Int, rows: Int) {
         queue.async { [self] in
             state.resize(columns: columns, rows: rows)
-            process?.resize(columns: columns, rows: rows, cellPixelSize: cellPixelSize)
+            #if os(macOS)
+                process?.resize(columns: columns, rows: rows, cellPixelSize: cellPixelSize)
+            #endif
             publish()
         }
     }
@@ -105,14 +138,16 @@ public final class TerminalSession: @unchecked Sendable {
         queue.async { [self] in
             cellPixelSize = (width, height)
             state.cellPixelSize = (width, height)
-            process?.resize(columns: state.columns, rows: state.rows, cellPixelSize: cellPixelSize)
+            #if os(macOS)
+                process?.resize(columns: state.columns, rows: state.rows, cellPixelSize: cellPixelSize)
+            #endif
         }
     }
 
     public func send(_ input: TerminalInput) {
         queue.async { [self] in
             encodeBuffer.removeAll(keepingCapacity: true)
-            guard InputEncoder.encode(input, modes: state.modes, into: &encodeBuffer) else { return }
+            guard InputEncoder.encode(input, modes: state.modes, keyboardFlags: state.keyboardFlags, into: &encodeBuffer) else { return }
             switch input {
             case .text, .key, .paste:
                 if state.viewportOffset != 0 {
@@ -137,7 +172,9 @@ public final class TerminalSession: @unchecked Sendable {
         queue.sync { state.modes }
     }
 
-    public func snapshot() -> RenderSnapshot {
+    /// - Parameter overscan: rows to include below the viewport while
+    ///   scrolled back (see `RenderSnapshot.overscanRows`).
+    public func snapshot(overscan: Int = 0) -> RenderSnapshot {
         queue.sync {
             updateScheduled = false
             if state.modes.contains(.synchronizedOutput),
@@ -145,7 +182,7 @@ public final class TerminalSession: @unchecked Sendable {
                let held = builder.repeatLast() {
                 return held
             }
-            return builder.build(from: &state)
+            return builder.build(from: &state, overscan: overscan)
         }
     }
 
@@ -161,6 +198,23 @@ public final class TerminalSession: @unchecked Sendable {
 
     public func feed(_ bytes: [UInt8]) {
         feed(bytes.span)
+    }
+
+    /// Runs `body` on the queue with mutable state, then publishes changes.
+    public func mutate<R>(_ body: (inout TerminalState) throws -> R) rethrows -> R {
+        try queue.sync {
+            let result = try body(&state)
+            publish()
+            return result
+        }
+    }
+
+    /// Asynchronous `mutate`, ordered with `receive`, `send` and `resize`.
+    public func mutateAsync(_ body: @escaping @Sendable (inout TerminalState) -> Void) {
+        queue.async { [self] in
+            body(&state)
+            publish()
+        }
     }
 
     /// Read-only access to the terminal state on its queue.
@@ -179,41 +233,55 @@ public final class TerminalSession: @unchecked Sendable {
         }
     }
 
-    private func readAvailable() {
-        guard let process else { return }
-        var budget = Self.readBudget
-        while budget > 0 {
-            let n = process.master.read(into: readBuffer)
-            if n > 0 {
-                parse(UnsafeBufferPointer(start: readBuffer.baseAddress!.assumingMemoryBound(to: UInt8.self), count: n))
-                budget -= n
-                continue
-            }
-            if n < 0, errno == EINTR {
-                continue
-            }
-            if n < 0, errno == EAGAIN {
+    #if os(macOS)
+        private func readAvailable() {
+            guard let process else { return }
+            var budget = Self.readBudget
+            while budget > 0 {
+                let n = process.master.read(into: readBuffer)
+                if n > 0 {
+                    parse(UnsafeBufferPointer(start: readBuffer.baseAddress!.assumingMemoryBound(to: UInt8.self), count: n))
+                    budget -= n
+                    continue
+                }
+                if n < 0, errno == EINTR {
+                    continue
+                }
+                if n < 0, errno == EAGAIN {
+                    break
+                }
+                // EOF or EIO: the slave side is gone.
+                readSource?.cancel()
+                readSource = nil
                 break
             }
-            // EOF or EIO: the slave side is gone.
-            readSource?.cancel()
-            readSource = nil
-            break
+            publish()
         }
-        publish()
-    }
+    #endif
 
     /// Flushes replies and events, then notifies the frontend once.
     private func publish() {
+        onStateChange?(state)
         if !state.output.isEmpty {
             writeToChild(state.output)
             state.output.removeAll(keepingCapacity: true)
         }
         let events = state.takeEvents()
+        // Start event, then data, then end event: a stream that opens and
+        // closes within one batch still arrives in order.
+        let ended = events.last == .controlModeEnded
         if let onEvent {
-            for event in events {
+            for event in events where !(ended && event == .controlModeEnded) {
                 onEvent(event)
             }
+        }
+        if !state.controlModeData.isEmpty {
+            let data = state.controlModeData
+            state.controlModeData.removeAll(keepingCapacity: true)
+            onControlModeData?(data)
+        }
+        if ended {
+            onEvent?(.controlModeEnded)
         }
         guard !state.damage.isEmpty, !updateScheduled else { return }
         if state.modes.contains(.synchronizedOutput),
@@ -225,57 +293,64 @@ public final class TerminalSession: @unchecked Sendable {
     }
 
     private func writeToChild(_ bytes: [UInt8]) {
-        guard let process, !bytes.isEmpty else { return }
-        if !pendingWrite.isEmpty {
-            pendingWrite.append(contentsOf: bytes)
-            return
-        }
-        let written = bytes.withUnsafeBytes { process.master.writeAvailable($0) } ?? bytes.count
-        if written < bytes.count {
-            pendingWrite.append(contentsOf: bytes[written...])
-            setWriteSourceActive(true)
-        }
+        guard !bytes.isEmpty else { return }
+        #if os(macOS)
+            guard let process else { onWrite?(bytes); return }
+            if !pendingWrite.isEmpty {
+                pendingWrite.append(contentsOf: bytes)
+                return
+            }
+            let written = bytes.withUnsafeBytes { process.master.writeAvailable($0) } ?? bytes.count
+            if written < bytes.count {
+                pendingWrite.append(contentsOf: bytes[written...])
+                setWriteSourceActive(true)
+            }
+        #else
+            onWrite?(bytes)
+        #endif
     }
 
-    private func flushPendingWrite() {
-        guard let process, !pendingWrite.isEmpty else { return }
-        let written = pendingWrite.withUnsafeBytes { process.master.writeAvailable($0) } ?? pendingWrite.count
-        pendingWrite.removeFirst(written)
-        if pendingWrite.isEmpty {
-            setWriteSourceActive(false)
+    #if os(macOS)
+        private func flushPendingWrite() {
+            guard let process, !pendingWrite.isEmpty else { return }
+            let written = pendingWrite.withUnsafeBytes { process.master.writeAvailable($0) } ?? pendingWrite.count
+            pendingWrite.removeFirst(written)
+            if pendingWrite.isEmpty {
+                setWriteSourceActive(false)
+            }
         }
-    }
 
-    private func setWriteSourceActive(_ active: Bool) {
-        guard let writeSource, active != writeSourceActive else { return }
-        writeSourceActive = active
-        if active {
-            writeSource.resume()
-        } else {
-            writeSource.suspend()
+        private func setWriteSourceActive(_ active: Bool) {
+            guard let writeSource, active != writeSourceActive else { return }
+            writeSourceActive = active
+            if active {
+                writeSource.resume()
+            } else {
+                writeSource.suspend()
+            }
         }
-    }
 
-    private func childExited() {
-        guard let process else { return }
-        readAvailable() // drain anything written just before exit
-        var status: Int32 = 0
-        waitpid(process.pid, &status, WNOHANG)
-        let code = (status & 0x7F) == 0 ? (status >> 8) & 0xFF : 128 + (status & 0x7F)
-        teardown()
-        onEvent?(.exited(code))
-    }
+        private func childExited() {
+            guard let process else { return }
+            readAvailable() // drain anything written just before exit
+            var status: Int32 = 0
+            waitpid(process.pid, &status, WNOHANG)
+            let code = (status & 0x7F) == 0 ? (status >> 8) & 0xFF : 128 + (status & 0x7F)
+            teardown()
+            onEvent?(.exited(code))
+        }
 
-    private func teardown() {
-        readSource?.cancel()
-        readSource = nil
-        setWriteSourceActive(true) // a suspended source must not be released
-        writeSource?.cancel()
-        writeSource = nil
-        writeSourceActive = false
-        pendingWrite.removeAll()
-        exitSource?.cancel()
-        exitSource = nil
-        process = nil
-    }
+        private func teardown() {
+            readSource?.cancel()
+            readSource = nil
+            setWriteSourceActive(true) // a suspended source must not be released
+            writeSource?.cancel()
+            writeSource = nil
+            writeSourceActive = false
+            pendingWrite.removeAll()
+            exitSource?.cancel()
+            exitSource = nil
+            process = nil
+        }
+    #endif
 }

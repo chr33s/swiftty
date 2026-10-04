@@ -4,6 +4,39 @@ import Dispatch
 import Foundation
 import Metal
 import MetalKit
+import QuartzCore
+
+/// Per-frame presentation settings that are not terminal state.
+public struct RenderOptions: Equatable, Sendable {
+    /// Grid inset from the drawable's top-left, in pixels.
+    public var paddingX: CGFloat = 8
+    public var paddingY: CGFloat = 8
+    /// Content is drawn this many pixels higher (smooth scrolling); rows
+    /// revealed below come from the snapshot's overscan rows.
+    public var scrollOffset: CGFloat = 0
+    /// Alpha of the default background (window transparency).
+    public var backgroundOpacity: Double = 1
+    public var isFocused = true
+    /// Draw the cursor this frame (blink phase).
+    public var cursorVisible = true
+    /// Overrides the terminal's DECSCUSR style; `hollowBlock` is also used
+    /// for any block cursor while unfocused.
+    public var cursorStyle: CursorStyle?
+    public var hollowCursor = false
+    public var cursorColor: UInt32?
+    public var cursorTextColor: UInt32?
+    public var cursorOpacity: Double = 1
+    /// Selection colours; with both nil the selection inverts.
+    public var selectionForeground: UInt32?
+    public var selectionBackground: UInt32?
+    public var searchForeground: UInt32 = 0x000000
+    public var searchBackground: UInt32 = 0xFFE082
+    public var selectedSearchBackground: UInt32 = 0xF2A65A
+    /// IME composition text, drawn underlined from the cursor.
+    public var preedit: [Unicode.Scalar] = []
+
+    public init() {}
+}
 
 /// Draws `RenderSnapshot`s with Metal.
 ///
@@ -33,6 +66,10 @@ public final class MetalRenderer {
         var pad: UInt32 = 0
     }
 
+    /// Decoration quads per cell: underline, strike/overline, cursor, and
+    /// three more edges for a hollow cursor.
+    static let decorationSlots = 6
+
     enum Flag {
         static let colorGlyph: UInt32 = 1 << 0
         static let underline: UInt32 = 1 << 1
@@ -42,6 +79,7 @@ public final class MetalRenderer {
         static let cursorBar: UInt32 = 1 << 5
         static let cursorUnderline: UInt32 = 1 << 6
         static let faint: UInt32 = 1 << 7
+        static let cursorHollow: UInt32 = 1 << 8
     }
 
     public let device: MTLDevice
@@ -56,12 +94,18 @@ public final class MetalRenderer {
     private var instances: MTLBuffer?
     private var gridSize = (columns: 0, rows: 0)
     private var lastCursor: CursorState?
+    private var lastOptions = RenderOptions()
     private var lastSequence: UInt64 = 0
     private var needsFullRebuild = true
     private let inFlight = DispatchSemaphore(value: 1)
 
-    /// Padding around the grid, in pixels.
-    public var padding: CGFloat = 8
+    /// Padding around the grid, in pixels (`RenderOptions` overrides it).
+    public var padding: CGFloat = 8 {
+        didSet { options.paddingX = padding; options.paddingY = padding }
+    }
+
+    /// Settings used by the `draw`/`render` calls without explicit options.
+    public var options = RenderOptions()
 
     /// Pixel size of one cell.
     public var cellSize: CGSize {
@@ -107,8 +151,8 @@ public final class MetalRenderer {
     /// Grid dimensions that fit a drawable of `size` pixels.
     public func gridSize(for size: CGSize) -> (columns: Int, rows: Int) {
         (
-            max(1, Int((size.width - 2 * padding) / font.cellWidth)),
-            max(1, Int((size.height - 2 * padding) / font.cellHeight)),
+            max(1, Int((size.width - 2 * options.paddingX) / font.cellWidth)),
+            max(1, Int((size.height - 2 * options.paddingY) / font.cellHeight)),
         )
     }
 
@@ -116,9 +160,31 @@ public final class MetalRenderer {
     @MainActor
     public func draw(_ snapshot: RenderSnapshot, in view: MTKView) {
         guard let drawable = view.currentDrawable, let pass = view.currentRenderPassDescriptor else { return }
-        let commandBuffer = encode(snapshot, pass: pass, size: view.drawableSize)
+        let commandBuffer = encode(snapshot, options: options, pass: pass, size: view.drawableSize)
         commandBuffer.present(drawable)
         commandBuffer.commit()
+    }
+
+    /// Renders into the layer's next drawable and presents it. Returns false
+    /// when no drawable was available.
+    @discardableResult
+    public func draw(_ snapshot: RenderSnapshot, options: RenderOptions, layer: CAMetalLayer) -> Bool {
+        guard let drawable = layer.nextDrawable() else { return false }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = drawable.texture
+        pass.colorAttachments[0].storeAction = .store
+        let size = CGSize(width: drawable.texture.width, height: drawable.texture.height)
+        let commandBuffer = encode(snapshot, options: options, pass: pass, size: size)
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+        return true
+    }
+
+    /// Blocks until every submitted frame has finished, or `timeout`.
+    public func waitUntilIdle(timeout: DispatchTime) -> Bool {
+        guard inFlight.wait(timeout: timeout) == .success else { return false }
+        inFlight.signal()
+        return true
     }
 
     /// Renders into an arbitrary texture (offscreen, tests, benchmarks).
@@ -128,22 +194,31 @@ public final class MetalRenderer {
         pass.colorAttachments[0].texture = texture
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].storeAction = .store
-        let commandBuffer = encode(snapshot, pass: pass, size: CGSize(width: texture.width, height: texture.height))
+        let commandBuffer = encode(snapshot, options: options, pass: pass, size: CGSize(width: texture.width, height: texture.height))
         commandBuffer.commit()
         return commandBuffer
     }
 
-    private func encode(_ snapshot: RenderSnapshot, pass: MTLRenderPassDescriptor, size: CGSize) -> MTLCommandBuffer {
+    private func encode(
+        _ snapshot: RenderSnapshot,
+        options: RenderOptions,
+        pass: MTLRenderPassDescriptor,
+        size: CGSize,
+    ) -> MTLCommandBuffer {
         inFlight.wait() // the instance buffer is about to be mutated
         let palette = effectivePalette(snapshot)
         let bg = palette.background
+        let alpha = options.backgroundOpacity
+        // Premultiplied, matching the blend state.
         pass.colorAttachments[0].clearColor = MTLClearColor(
-            red: Double(bg >> 16 & 0xFF) / 255, green: Double(bg >> 8 & 0xFF) / 255,
-            blue: Double(bg & 0xFF) / 255, alpha: 1,
+            red: Double(bg >> 16 & 0xFF) / 255 * alpha, green: Double(bg >> 8 & 0xFF) / 255 * alpha,
+            blue: Double(bg & 0xFF) / 255 * alpha, alpha: alpha,
         )
         pass.colorAttachments[0].loadAction = .clear
 
-        updateInstances(snapshot, palette: palette)
+        updateInstances(snapshot, palette: palette, options: options)
+        let cursorColor = options.cursorColor ?? palette.cursor
+        let cursorAlpha = UInt32(max(0, min(1, options.cursorOpacity)) * 255)
 
         let commandBuffer = queue.makeCommandBuffer()!
         commandBuffer.addCompletedHandler { [inFlight] _ in inFlight.signal() }
@@ -152,10 +227,10 @@ public final class MetalRenderer {
             cellSize: SIMD2(Float(font.cellWidth), Float(font.cellHeight)),
             viewportSize: SIMD2(Float(size.width), Float(size.height)),
             atlasSize: SIMD2(Float(atlas.size), Float(atlas.size)),
-            origin: SIMD2(Float(padding), Float(padding)),
+            origin: SIMD2(Float(options.paddingX), Float(options.paddingY - options.scrollOffset)),
             underlinePosition: Float(font.underlinePosition),
             underlineThickness: Float(font.underlineThickness),
-            cursorColor: palette.cursor << 8 | 0xFF,
+            cursorColor: cursorColor << 8 | cursorAlpha,
         )
         let count = snapshot.columns * snapshot.rowCount
         if let instances, count > 0 {
@@ -167,7 +242,7 @@ public final class MetalRenderer {
             encoder.setFragmentTexture(atlas.texture, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: count)
             encoder.setRenderPipelineState(decorationPipeline)
-            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: count * 3)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: count * Self.decorationSlots)
         }
         encoder.endEncoding()
         return commandBuffer
@@ -183,9 +258,9 @@ public final class MetalRenderer {
 
     // MARK: Instances
 
-    private func updateInstances(_ snapshot: RenderSnapshot, palette: Palette) {
+    private func updateInstances(_ snapshot: RenderSnapshot, palette: Palette, options: RenderOptions) {
         let columns = snapshot.columns, rows = snapshot.rowCount
-        var full = needsFullRebuild || snapshot.damage.isFull
+        var full = needsFullRebuild || snapshot.damage.isFull || options != lastOptions
         if gridSize != (columns, rows) || instances == nil {
             let length = max(1, columns * rows) * MemoryLayout<CellInstance>.stride
             if (instances?.length ?? 0) < length {
@@ -200,36 +275,65 @@ public final class MetalRenderer {
         }
 
         let base = instances!.contents().bindMemory(to: CellInstance.self, capacity: columns * rows)
-        let cursor = snapshot.cursor
+        var cursor = snapshot.cursor
+        cursor.isVisible = cursor.isVisible && options.cursorVisible
         let previous = lastCursor
         let rowRecords = snapshot.rows
         for y in 0 ..< rows {
             let cursorRow = (cursor.isVisible && cursor.y == y) || (previous?.isVisible == true && previous?.y == y)
             guard full || rowRecords[y].isDirty || cursorRow || atlas.wasReset else { continue }
-            buildRow(y, snapshot: snapshot, palette: palette, into: base + y * columns)
+            buildRow(y, snapshot: snapshot, cursor: cursor, palette: palette, options: options, into: base + y * columns)
         }
         if atlas.wasReset {
             // The atlas filled up mid-frame: rebuild everything against the new atlas.
             atlas.wasReset = false
             for y in 0 ..< rows {
-                buildRow(y, snapshot: snapshot, palette: palette, into: base + y * columns)
+                buildRow(y, snapshot: snapshot, cursor: cursor, palette: palette, options: options, into: base + y * columns)
             }
         }
         lastCursor = cursor
+        lastOptions = options
         lastSequence = snapshot.sequence
         needsFullRebuild = false
     }
 
-    private func buildRow(_ y: Int, snapshot: RenderSnapshot, palette: Palette, into out: UnsafeMutablePointer<CellInstance>) {
+    private func buildRow(
+        _ y: Int, snapshot: RenderSnapshot, cursor: CursorState, palette: Palette, options: RenderOptions,
+        into out: UnsafeMutablePointer<CellInstance>,
+    ) {
         let cells = snapshot.cells(row: y)
-        let cursor = snapshot.cursor
+        let backgroundAlpha = UInt32(max(0, min(1, options.backgroundOpacity)) * 255)
+        let selection = snapshot.selection
+        let matches = snapshot.searchMatches
+        let preedit = y == cursor.y && !options.preedit.isEmpty ? Self
+            .layoutPreedit(options.preedit, at: cursor.x, columns: cells.count) : [:]
         for x in 0 ..< cells.count {
-            let cell = cells[x]
+            var cell = cells[x]
+            if let p = preedit[x] {
+                cell = p
+            }
             let attrs = cell.attributes
             var fg = palette.resolve(attrs.foreground, isForeground: true)
             var bg = palette.resolve(attrs.background, isForeground: false)
+            // Default backgrounds take the window opacity; explicit ones stay solid.
+            var bgAlpha = attrs.background == .default ? backgroundAlpha : 0xFF
             if attrs.flags.contains(.inverse) {
                 swap(&fg, &bg)
+                bgAlpha = 0xFF
+            }
+            if !matches.isEmpty, let i = matches.firstIndex(where: { $0.contains(row: y, column: x) }) {
+                fg = options.searchForeground
+                bg = i == snapshot.selectedSearchMatch ? options.selectedSearchBackground : options.searchBackground
+                bgAlpha = 0xFF
+            }
+            if let selection, selection.contains(row: y, column: x) {
+                if options.selectionForeground == nil, options.selectionBackground == nil {
+                    swap(&fg, &bg)
+                } else {
+                    fg = options.selectionForeground ?? fg
+                    bg = options.selectionBackground ?? bg
+                }
+                bgAlpha = 0xFF
             }
             var flags: UInt32 = 0
             if attrs.flags.contains(.underline) {
@@ -248,11 +352,17 @@ public final class MetalRenderer {
                 flags |= Flag.faint
             }
 
-            if cursor.isVisible, cursor.y == y, cursor.x == x {
-                switch cursor.style {
+            if !preedit.isEmpty, preedit[x] != nil {
+                flags |= Flag.underline
+            }
+            if cursor.isVisible, preedit.isEmpty, cursor.y == y, cursor.x == x {
+                switch options.cursorStyle ?? cursor.style {
+                case .block where options.hollowCursor || !options.isFocused:
+                    flags |= Flag.cursorHollow
                 case .block:
-                    fg = bg
-                    bg = palette.cursor
+                    fg = options.cursorTextColor ?? bg
+                    bg = options.cursorColor ?? palette.cursor
+                    bgAlpha = 0xFF
                 case .bar: flags |= Flag.cursorBar
                 case .underline: flags |= Flag.cursorUnderline
                 }
@@ -282,10 +392,28 @@ public final class MetalRenderer {
                 atlasSize: entry.size,
                 offset: entry.offset,
                 fg: fg << 8 | 0xFF,
-                bg: bg << 8 | 0xFF,
+                bg: bg << 8 | bgAlpha,
                 flags: flags,
             )
         }
+    }
+}
+
+extension MetalRenderer {
+    /// Preedit scalars as cells keyed by column, starting at `start`.
+    static func layoutPreedit(_ scalars: [Unicode.Scalar], at start: Int, columns: Int) -> [Int: Cell] {
+        var cells: [Int: Cell] = [:]
+        var x = start
+        for s in scalars {
+            let w = max(1, UnicodeWidth.width(s.value))
+            guard x + w <= columns else { break }
+            cells[x] = Cell(glyph: s.value, attributes: .default, width: UInt8(w))
+            if w == 2 {
+                cells[x + 1] = Cell(glyph: 0, attributes: CellAttributes(flags: .spacerTail), width: 0)
+            }
+            x += w
+        }
+        return cells
     }
 }
 
@@ -340,7 +468,9 @@ final class GlyphAtlas {
             return entry
         }
         var entry = Entry.empty
-        if let lookup = manager.lookup(scalar, style: style, in: font) {
+        if BoxDrawing.covers(scalar.value) {
+            entry = rasterizeCell(font: font) { ctx, w, h in BoxDrawing.draw(scalar.value, in: ctx, width: w, height: h) }
+        } else if let lookup = manager.lookup(scalar, style: style, in: font) {
             var glyph = lookup.glyph
             var rect = CGRect.zero
             CTFontGetBoundingRectsForGlyphs(lookup.font, .horizontal, &glyph, &rect, 1)
@@ -381,6 +511,37 @@ final class GlyphAtlas {
             CTLineDraw(line, context)
         }
         clusters[key] = entry
+        return entry
+    }
+
+    /// Draws a bitmap exactly one cell in size, placed at the cell's origin.
+    private func rasterizeCell(font: ResolvedFont, draw: (CGContext, CGFloat, CGFloat) -> Void) -> Entry {
+        let width = Int(font.cellWidth), height = Int(font.cellHeight)
+        guard width > 0, height > 0, width < size, height < size else { return .empty }
+        if cursorX + width > size {
+            cursorX = 0
+            cursorY += shelfHeight
+            shelfHeight = 0
+        }
+        if cursorY + height > size {
+            reset()
+        }
+        guard let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue,
+        ) else { return .empty }
+        context.setShouldAntialias(true)
+        draw(context, CGFloat(width), CGFloat(height))
+        guard let data = context.data else { return .empty }
+        texture.replace(region: MTLRegionMake2D(cursorX, cursorY, width, height), mipmapLevel: 0, withBytes: data, bytesPerRow: width * 4)
+        let entry = Entry(
+            position: SIMD2(UInt16(cursorX), UInt16(cursorY)),
+            size: SIMD2(UInt16(width), UInt16(height)),
+            offset: .zero,
+            isColor: false,
+        )
+        cursorX += width
+        shelfHeight = max(shelfHeight, height)
         return entry
     }
 

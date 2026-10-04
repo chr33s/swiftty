@@ -32,6 +32,8 @@ constant uint FlagOverline = 1u << 4;
 constant uint FlagCursorBar = 1u << 5;
 constant uint FlagCursorUnderline = 1u << 6;
 constant uint FlagFaint = 1u << 7;
+constant uint FlagCursorHollow = 1u << 8;
+constant uint DecorationSlots = 6;
 
 struct VertexOut {
     float4 position [[position]];
@@ -83,12 +85,13 @@ vertex VertexOut glyph_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
     return out;
 }
 
-// Three decoration slots per cell: underline, strike/overline, cursor.
+// Decoration slots per cell: underline, strike/overline, cursor (bar,
+// underline, or a hollow block's top edge), then the hollow block's other edges.
 vertex VertexOut decoration_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
                                    constant CellInstance *cells [[buffer(0)]],
                                    constant Uniforms &u [[buffer(1)]]) {
-    CellInstance c = cells[iid / 3];
-    uint slot = iid % 3;
+    CellInstance c = cells[iid / DecorationSlots];
+    uint slot = iid % DecorationSlots;
     float2 cell = u.origin + float2(c.grid) * u.cellSize;
     float t = u.underlineThickness;
     float4 rect = float4(0); // x, y, w, h
@@ -101,8 +104,16 @@ vertex VertexOut decoration_vertex(uint vid [[vertex_id]], uint iid [[instance_i
         else if (c.flags & FlagOverline) rect = float4(0, 0, u.cellSize.x, t);
     } else {
         color = unpack(u.cursorColor);
-        if (c.flags & FlagCursorBar) rect = float4(0, 0, max(2.0, t * 2), u.cellSize.y);
-        else if (c.flags & FlagCursorUnderline) rect = float4(0, u.cellSize.y - max(2.0, t * 2), u.cellSize.x, max(2.0, t * 2));
+        float w = max(2.0, t * 2);
+        if (slot == 2) {
+            if (c.flags & FlagCursorBar) rect = float4(0, 0, w, u.cellSize.y);
+            else if (c.flags & FlagCursorUnderline) rect = float4(0, u.cellSize.y - w, u.cellSize.x, w);
+            else if (c.flags & FlagCursorHollow) rect = float4(0, 0, u.cellSize.x, w);
+        } else if (c.flags & FlagCursorHollow) {
+            if (slot == 3) rect = float4(0, u.cellSize.y - w, u.cellSize.x, w);
+            else if (slot == 4) rect = float4(0, 0, w, u.cellSize.y);
+            else rect = float4(u.cellSize.x - w, 0, w, u.cellSize.y);
+        }
     }
     VertexOut out;
     out.position = rect.z == 0 ? float4(0) : toClip(cell + rect.xy + corner(vid) * rect.zw, u);

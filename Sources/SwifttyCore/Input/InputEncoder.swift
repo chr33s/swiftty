@@ -69,14 +69,19 @@ public enum TerminalInput: Sendable {
 public enum InputEncoder {
     /// Appends the encoding of `input` to `out`. Returns false when the
     /// input has no encoding in the current modes (e.g. mouse with tracking off).
+    /// - Parameter keyboardFlags: kitty keyboard protocol flags; bit 0
+    ///   (disambiguate) switches ambiguous keys to `CSI … u`.
     @discardableResult
-    public static func encode(_ input: TerminalInput, modes: Modes, into out: inout [UInt8]) -> Bool {
+    public static func encode(_ input: TerminalInput, modes: Modes, keyboardFlags: UInt8 = 0, into out: inout [UInt8]) -> Bool {
         switch input {
         case let .text(s):
             out.append(contentsOf: s.utf8)
         case let .bytes(b):
             out.append(contentsOf: b)
         case let .key(event):
+            if keyboardFlags & 1 != 0, encodeKittyKey(event, into: &out) {
+                return true
+            }
             return encodeKey(event, modes: modes, into: &out)
         case let .paste(s):
             if modes.contains(.bracketedPaste) {
@@ -175,6 +180,32 @@ public enum InputEncoder {
                 return false
             }
         }
+        return true
+    }
+
+    /// Kitty "disambiguate escape codes": Escape and modified text,
+    /// Enter, Tab and Backspace become `CSI code[;mods] u`. Returns false
+    /// for keys whose legacy encoding is already unambiguous.
+    static func encodeKittyKey(_ event: KeyEvent, into out: inout [UInt8]) -> Bool {
+        let mods = event.modifiers.subtracting(.command)
+        let code: UInt32
+        switch event.key {
+        case .escape: code = 27
+        case .enter: code = 13
+        case .tab: code = 9
+        case .backspace: code = 127
+        case let .character(scalar):
+            // Shift alone still produces text.
+            guard !mods.isDisjoint(with: [.control, .alt]) else { return false }
+            code = String(scalar).lowercased().unicodeScalars.first?.value ?? scalar.value
+        default:
+            return false
+        }
+        if event.key != .escape, mods.isEmpty {
+            return false
+        }
+        let m = mods.xtermParameter
+        appendCSI(out: &out, m == 1 ? "\(code)" : "\(code);\(m)", 0x75)
         return true
     }
 

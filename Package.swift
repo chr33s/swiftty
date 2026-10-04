@@ -7,7 +7,7 @@ let core: [SwiftSetting] = [
 
 let package = Package(
     name: "swiftty",
-    platforms: [.macOS(.v26)],
+    platforms: [.macOS("27.0"), .iOS("27.0"), .macCatalyst("27.0"), .visionOS("27.0")],
     products: [
         .library(name: "SwifttyCore", targets: ["SwifttyCore"]),
         .executable(name: "swiftty", targets: ["Swiftty"]),

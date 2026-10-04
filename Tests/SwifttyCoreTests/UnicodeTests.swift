@@ -35,3 +35,13 @@ struct UnicodeTests {
         #expect(UnicodeTables.wide.count % 2 == 0 && UnicodeTables.zeroWidth.count % 2 == 0)
     }
 }
+
+struct EmojiClusterTests {
+    @Test func `skin tone and flags join`() {
+        var vt = VT(10, 2)
+        vt.feed("👍🏽🇯🇵x")
+        let c = vt.cursor
+        #expect(c == (5, 0))
+        #expect(vt.lines[0] == "👍🏽🇯🇵x")
+    }
+}

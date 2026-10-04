@@ -7,6 +7,15 @@ public enum TerminalEvent: Sendable, Equatable {
     case clipboard(String)
     case workingDirectory(String)
     case exited(Int32)
+    /// `DCS 1000 p`: tmux control mode began; its stream follows through
+    /// `TerminalState.controlModeData` until `.controlModeEnded`.
+    case controlModeStarted
+    case controlModeEnded
+    /// OSC 9 / OSC 777;notify desktop notification.
+    case notification(title: String, body: String)
+    /// OSC 9;4 progress: state 0 remove, 1 set, 2 error, 3 indeterminate,
+    /// 4 pause; `percent` is nil when not given.
+    case progress(state: Int, percent: Int?)
 }
 
 public struct Cursor: Sendable, Equatable {
@@ -35,8 +44,8 @@ public struct TerminalState: ~Copyable {
     public private(set) var rows: Int
 
     /// Active screen; `inactiveGrid` holds the other one.
-    public private(set) var grid: Grid
-    private var inactiveGrid: Grid
+    public internal(set) var grid: Grid
+    var inactiveGrid: Grid
     var graphemes = GraphemeTable()
     private let scrollbackLimitBytes: Int
 
@@ -53,13 +62,13 @@ public struct TerminalState: ~Copyable {
     public internal(set) var modes: Modes = .initial
     public internal(set) var cursorStyle = CursorStyle.block
     public internal(set) var palette: Palette
-    private let defaultPalette: Palette
+    var defaultPalette: Palette
     // Title / working directory as raw bytes; turned into events once per
     // batch by `takeEvents()` so OSC-heavy output does not allocate per sequence.
-    private var titleBytes: [UInt8] = []
-    private var titleChanged = false
-    private var directoryBytes: [UInt8] = []
-    private var directoryChanged = false
+    var titleBytes: [UInt8] = []
+    var titleChanged = false
+    var directoryBytes: [UInt8] = []
+    var directoryChanged = false
     private var spareGraphemes = GraphemeTable()
 
     public var title: String {
@@ -67,28 +76,60 @@ public struct TerminalState: ~Copyable {
     }
 
     /// Rows touched since the last `takeDamage()`.
-    public private(set) var damage = DamageRegion.full
+    public internal(set) var damage = DamageRegion.full
     /// Lines scrolled back from the bottom (0 = following output).
-    public private(set) var viewportOffset = 0
+    public internal(set) var viewportOffset = 0
 
     /// Bytes to send back to the application (DSR, DA, OSC queries).
     public var output: [UInt8] = []
+    /// Drop replies to queries: set when another terminal (e.g. tmux) has
+    /// already answered the application.
+    public var discardsReplies = false
     public var events: [TerminalEvent] = []
+
+    /// Kitty keyboard protocol flags stack (`CSI > flags u`); the top applies.
+    public private(set) var keyboardFlagStack: [UInt8] = []
+    public var keyboardFlags: UInt8 {
+        keyboardFlagStack.last ?? 0
+    }
+
+    /// Current selection, in absolute rows (see `Selection.swift`).
+    public internal(set) var selection: Selection?
+    /// Search matches, oldest first, and the selected one.
+    public internal(set) var searchMatches: [TerminalRange] = []
+    public internal(set) var searchSelected: Int?
+
+    /// tmux control-mode bytes received since the host last drained them.
+    public var controlModeData: [UInt8] = []
+    public internal(set) var isControlMode = false
+    var dcsKind = DCSKind.ignored
+    var dcsBuffer: [UInt8] = []
+
+    enum DCSKind { case ignored, tmux, termcap, statusString }
 
     /// Pixel size of one cell, for XTWINOPS reports.
     public var cellPixelSize = (width: 0, height: 0)
 
     private let widths = UnicodeWidth.table
     private var lastPrinted: UInt32 = 0
-    private var joinNext = false
+    var joinNext = false
 
-    public init(columns: Int, rows: Int, scrollbackLimitBytes: Int = 10_000_000, palette: Palette = .standard) {
+    /// - Parameters:
+    ///   - scrollbackLimitBytes: cell memory for history (Ghostty's `scrollback-limit`).
+    ///   - scrollbackLimitRows: additional cap on history lines.
+    public init(
+        columns: Int, rows: Int, scrollbackLimitBytes: Int = 10_000_000,
+        scrollbackLimitRows: Int = 100_000, palette: Palette = .standard,
+    ) {
         let columns = max(1, columns), rows = max(1, rows)
         self.columns = columns
         self.rows = rows
         grid = Grid(columns: columns, rows: rows)
         self.scrollbackLimitBytes = scrollbackLimitBytes
-        grid = Grid(columns: columns, rows: rows, historyLimitBytes: scrollbackLimitBytes)
+        grid = Grid(
+            columns: columns, rows: rows, historyLimitBytes: scrollbackLimitBytes,
+            maxHistoryRows: max(1, scrollbackLimitRows),
+        )
         inactiveGrid = Grid(columns: columns, rows: rows)
         scrollBottom = rows - 1
         tabStops = Self.defaultTabs(columns)
@@ -117,7 +158,7 @@ public struct TerminalState: ~Copyable {
         return out
     }
 
-    private static func replace(_ target: inout [UInt8], with bytes: UnsafeBufferPointer<UInt8>) -> Bool {
+    static func replace(_ target: inout [UInt8], with bytes: UnsafeBufferPointer<UInt8>) -> Bool {
         if target.elementsEqual(bytes) {
             return false
         }
@@ -232,7 +273,7 @@ public struct TerminalState: ~Copyable {
         while i < n {
             // Zero-width and joined scalars take the general path.
             let cp = scalars[i]
-            if joinNext || (cp >= 0x300 && widths.lookup(cp) == 0) {
+            if joinNext || (cp >= 0x300 && widths.lookup(cp) == 0) || (0x1F1E6 ... 0x1F3FF).contains(cp) {
                 print(cp)
                 i += 1
                 continue
@@ -252,7 +293,7 @@ public struct TerminalState: ~Copyable {
             while i < n, x < columns {
                 let c = scalars[i]
                 let w = c < 0x300 ? 1 : Int(widths.lookup(c))
-                if w == 0 || (w == 2 && x + 1 >= columns) {
+                if w == 0 || (w == 2 && x + 1 >= columns) || (0x1F1E6 ... 0x1F3FF).contains(c) {
                     break
                 }
                 if x < clean {
@@ -297,8 +338,9 @@ public struct TerminalState: ~Copyable {
         if cursor.activeCharset == .decSpecialGraphics, (0x5F ... 0x7E).contains(cp) {
             cp = Self.decSpecial[Int(cp - 0x5F)]
         }
-        let width = cp < 0x300 ? 1 : Int(widths.lookup(cp))
-        if width == 0 || joinNext {
+        // Regional indicators pair into a two-column flag.
+        let width = cp < 0x300 ? 1 : (0x1F1E6 ... 0x1F1FF).contains(cp) ? 2 : Int(widths.lookup(cp))
+        if width == 0 || joinNext || continuesCluster(cp) {
             attach(cp)
             return
         }
@@ -355,6 +397,19 @@ public struct TerminalState: ~Copyable {
         row[x] = Cell(glyph: glyph, attributes: pen, width: 1)
         grid.extend(cursor.y, to: x + 1)
         damage.insert(row: cursor.y)
+    }
+
+    /// Wide scalars that still belong to the previous cluster: emoji skin
+    /// tone modifiers and the second regional indicator of a flag.
+    private mutating func continuesCluster(_ cp: UInt32) -> Bool {
+        if (0x1F3FB ... 0x1F3FF).contains(cp) {
+            return Unicode.Scalar(lastPrinted)?.properties.isEmojiModifierBase ?? false
+        }
+        if (0x1F1E6 ... 0x1F1FF).contains(cp), (0x1F1E6 ... 0x1F1FF).contains(lastPrinted) {
+            lastPrinted = 0 // a third indicator starts a new flag
+            return true
+        }
+        return false
     }
 
     /// Appends a zero-width scalar to the previous cell's grapheme cluster.
@@ -574,6 +629,7 @@ public struct TerminalState: ~Copyable {
                 erase(row: y, from: 0, to: columns)
             }
         case 3:
+            invalidateSelection()
             if isAlternateScreen {
                 inactiveGrid.clearHistory()
             } else {
@@ -679,6 +735,27 @@ public struct TerminalState: ~Copyable {
                 modes.remove(.cursorBlink)
             }
         case (0, 0x21, 0x70): softReset() // DECSTR
+        case (0x3F, 0, 0x75): reply("\u{1B}[?\(keyboardFlags)u") // kitty keyboard query
+        case (0x3E, 0, 0x75): // push
+            if keyboardFlagStack.count >= 16 {
+                keyboardFlagStack.removeFirst()
+            }
+            keyboardFlagStack.append(UInt8(clamping: csi.value(0)) & 0x1F)
+        case (0x3C, 0, 0x75): // pop
+            keyboardFlagStack.removeLast(min(max(csi.value(0), 1), keyboardFlagStack.count))
+        case (0x3D, 0, 0x75): // set
+            let flags = UInt8(clamping: csi.value(0)) & 0x1F
+            let current = keyboardFlags
+            let updated: UInt8 = switch csi.param(1, default: 1) {
+            case 2: current | flags
+            case 3: current & ~flags
+            default: flags
+            }
+            if keyboardFlagStack.isEmpty {
+                keyboardFlagStack.append(updated)
+            } else {
+                keyboardFlagStack[keyboardFlagStack.count - 1] = updated
+            }
         default: break // unsupported: ignored
         }
     }
@@ -940,6 +1017,7 @@ public struct TerminalState: ~Copyable {
 
     private mutating func enterAlternateScreen(clear: Bool) {
         guard !isAlternateScreen else { return }
+        invalidateSelection()
         swap(&grid, &inactiveGrid)
         modes.insert(.alternateScreen)
         if clear {
@@ -951,6 +1029,7 @@ public struct TerminalState: ~Copyable {
 
     private mutating func leaveAlternateScreen() {
         guard isAlternateScreen else { return }
+        invalidateSelection()
         swap(&grid, &inactiveGrid)
         modes.remove(.alternateScreen)
         damage.setFull()
@@ -995,7 +1074,9 @@ public struct TerminalState: ~Copyable {
         savedAlternate = Cursor()
     }
 
-    private mutating func fullReset() {
+    mutating func fullReset() {
+        invalidateSelection()
+        keyboardFlagStack = []
         if isAlternateScreen {
             leaveAlternateScreen()
         }
@@ -1046,108 +1127,8 @@ public struct TerminalState: ~Copyable {
         }
     }
 
-    // MARK: OSC
-
-    mutating func oscDispatch(_ data: UnsafeBufferPointer<UInt8>, terminatedByBell: Bool) {
-        joinNext = false
-        var command = 0
-        var i = 0
-        while i < data.count, data[i] != 0x3B {
-            guard (0x30 ... 0x39).contains(data[i]) else { return }
-            command = command * 10 + Int(data[i] - 0x30)
-            i += 1
-        }
-        let rest = i < data.count ? UnsafeBufferPointer(rebasing: data[(i + 1)...]) : UnsafeBufferPointer(rebasing: data[data.count...])
-        let st = terminatedByBell ? "\u{07}" : "\u{1B}\\"
-        switch command {
-        case 0, 2:
-            if Self.replace(&titleBytes, with: rest) {
-                titleChanged = true
-            }
-        case 4:
-            let parts = String(decoding: rest, as: UTF8.self).split(separator: ";", omittingEmptySubsequences: false)
-            var k = 0
-            while k + 1 < parts.count {
-                if let index = Int(parts[k]), (0 ..< 256).contains(index) {
-                    if parts[k + 1] == "?" {
-                        reply("\u{1B}]4;\(index);\(Self.formatColor(palette.colors[index]))\(st)")
-                    } else if let rgb = Self.parseColor(parts[k + 1]) {
-                        palette.colors[index] = rgb
-                        damage.setFull()
-                    }
-                }
-                k += 2
-            }
-        case 7:
-            if Self.replace(&directoryBytes, with: rest) {
-                directoryChanged = true
-            }
-        case 10, 11, 12:
-            let spec = String(decoding: rest, as: UTF8.self)
-            if spec == "?" {
-                let rgb = command == 10 ? palette.foreground : command == 11 ? palette.background : palette.cursor
-                reply("\u{1B}]\(command);\(Self.formatColor(rgb))\(st)")
-            } else if let rgb = Self.parseColor(Substring(spec)) {
-                switch command {
-                case 10: palette.foreground = rgb
-                case 11: palette.background = rgb
-                default: palette.cursor = rgb
-                }
-                damage.setFull()
-            }
-        case 52:
-            let s = String(decoding: rest, as: UTF8.self)
-            guard let semi = s.firstIndex(of: ";") else { return }
-            let payload = s[s.index(after: semi)...]
-            // Clipboard reads ("?") are refused: they would leak data to the app.
-            if payload != "?", let decoded = Data(base64Encoded: String(payload)) {
-                events.append(.clipboard(String(decoding: decoded, as: UTF8.self)))
-            }
-        case 104:
-            if rest.isEmpty {
-                palette.colors = defaultPalette.colors
-            } else {
-                for part in String(decoding: rest, as: UTF8.self).split(separator: ";") {
-                    if let index = Int(part), (0 ..< 256).contains(index) {
-                        palette.colors[index] = defaultPalette.colors[index]
-                    }
-                }
-            }
-            damage.setFull()
-        case 110: palette.foreground = defaultPalette.foreground; damage.setFull()
-        case 111: palette.background = defaultPalette.background; damage.setFull()
-        case 112: palette.cursor = defaultPalette.cursor
-        default: break // 1, 8, 133, ... are ignored
-        }
-    }
-
-    static func formatColor(_ rgb: UInt32) -> String {
-        func c(_ v: UInt32) -> String {
-            let s = String(v & 0xFF, radix: 16)
-            let byte = s.count == 1 ? "0" + s : s
-            return byte + byte
-        }
-        return "rgb:\(c(rgb >> 16))/\(c(rgb >> 8))/\(c(rgb))"
-    }
-
-    /// Parses `rgb:R/G/B` (1–4 hex digits each) or `#RRGGBB`.
-    static func parseColor(_ spec: Substring) -> UInt32? {
-        if spec.hasPrefix("#"), spec.count == 7, let v = UInt32(spec.dropFirst(), radix: 16) {
-            return v
-        }
-        guard spec.hasPrefix("rgb:") else { return nil }
-        let parts = spec.dropFirst(4).split(separator: "/")
-        guard parts.count == 3 else { return nil }
-        var rgb: UInt32 = 0
-        for part in parts {
-            guard (1 ... 4).contains(part.count), let v = UInt32(part, radix: 16) else { return nil }
-            let maxValue = (UInt32(1) << (4 * UInt32(part.count))) - 1
-            rgb = rgb << 8 | (v * 255 + maxValue / 2) / maxValue
-        }
-        return rgb
-    }
-
-    private mutating func reply(_ s: String) {
+    mutating func reply(_ s: String) {
+        guard !discardsReplies else { return }
         output.append(contentsOf: s.utf8)
     }
 
@@ -1242,6 +1223,7 @@ public struct TerminalState: ~Copyable {
     public mutating func resize(columns newColumns: Int, rows newRows: Int) {
         let newColumns = max(1, newColumns), newRows = max(1, newRows)
         guard newColumns != columns || newRows != rows else { return }
+        invalidateSelection()
         let alternate = isAlternateScreen
         if alternate {
             swap(&grid, &inactiveGrid)
