@@ -1,0 +1,43 @@
+[tools]
+swift = "6.4.0"
+swiftformat = "0.63.1"
+swiftlint = "0.65.1"
+tmux = "3.7b" # integration tests
+zig = "0.16.0" # builds upstream ghostty-bench for comparison
+hyperfine = "1.20.0"
+
+[env]
+# swift.org toolchains need the macOS SDK from Xcode / CLT to link.
+SDKROOT = "{{exec(command='xcrun --sdk macosx --show-sdk-path')}}"
+
+[tasks.build]
+description = "Build SwifttyCore and the app (debug)"
+run = "swift build"
+
+[tasks.release]
+description = "Build everything (release)"
+run = "swift build -c release"
+
+[tasks.test]
+description = "Run unit + integration tests"
+run = "swift test"
+
+[tasks.bench]
+description = "Run microbenchmarks on a release build"
+run = "swift run -c release swiftty-bench"
+
+[tasks.app]
+description = "Launch the swiftty macOS app"
+run = "swift run -c release swiftty"
+
+[tasks.unicode]
+description = "Regenerate Unicode width tables"
+run = "swift Scripts/gen-unicode-tables.swift > Sources/SwifttyCore/Unicode/Tables.swift"
+
+[tasks.format]
+description = "Format sources"
+run = "swiftformat Sources Tests"
+
+[tasks.lint]
+description = "Lint sources"
+run = "swiftlint lint --quiet Sources Tests"

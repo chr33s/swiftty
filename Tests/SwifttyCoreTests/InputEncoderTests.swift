@@ -1,0 +1,58 @@
+@testable import SwifttyCore
+import Testing
+
+struct InputEncoderTests {
+    func encode(_ input: TerminalInput, _ modes: Modes = .initial) -> String? {
+        var out: [UInt8] = []
+        guard InputEncoder.encode(input, modes: modes, into: &out) else { return nil }
+        return String(decoding: out, as: UTF8.self)
+    }
+
+    @Test func `text and control keys`() {
+        #expect(encode(.text("héllo")) == "héllo")
+        #expect(encode(.key(KeyEvent(.character("c"), modifiers: .control))) == "\u{03}")
+        #expect(encode(.key(KeyEvent(.character("["), modifiers: .control))) == "\u{1B}")
+        #expect(encode(.key(KeyEvent(.character(" "), modifiers: .control))) == "\u{00}")
+        #expect(encode(.key(KeyEvent(.character("x"), modifiers: .alt))) == "\u{1B}x")
+        #expect(encode(.key(KeyEvent(.enter))) == "\r")
+        #expect(encode(.key(KeyEvent(.backspace))) == "\u{7F}")
+        #expect(encode(.key(KeyEvent(.tab, modifiers: .shift))) == "\u{1B}[Z")
+    }
+
+    @Test func `cursor keys respect DECCKM`() {
+        #expect(encode(.key(KeyEvent(.up))) == "\u{1B}[A")
+        #expect(encode(.key(KeyEvent(.up)), [.cursorKeys]) == "\u{1B}OA")
+        #expect(encode(.key(KeyEvent(.left, modifiers: [.control, .shift]))) == "\u{1B}[1;6D")
+        #expect(encode(.key(KeyEvent(.home)), [.cursorKeys]) == "\u{1B}OH")
+    }
+
+    @Test func `function and editing keys`() {
+        #expect(encode(.key(KeyEvent(.function(1)))) == "\u{1B}OP")
+        #expect(encode(.key(KeyEvent(.function(5)))) == "\u{1B}[15~")
+        #expect(encode(.key(KeyEvent(.function(12), modifiers: .shift))) == "\u{1B}[24;2~")
+        #expect(encode(.key(KeyEvent(.delete))) == "\u{1B}[3~")
+        #expect(encode(.key(KeyEvent(.pageUp, modifiers: .alt))) == "\u{1B}[5;3~")
+    }
+
+    @Test func paste() {
+        #expect(encode(.paste("a\nb")) == "a\rb")
+        #expect(encode(.paste("a\u{1B}b"), [.bracketedPaste]) == "\u{1B}[200~ab\u{1B}[201~")
+    }
+
+    @Test func mouse() {
+        #expect(encode(.mouse(MouseEvent(.press, .left, column: 0, row: 0))) == nil)
+        #expect(encode(.mouse(MouseEvent(.press, .left, column: 4, row: 2)), [.mouseNormal, .mouseSGR]) == "\u{1B}[<0;5;3M")
+        #expect(encode(.mouse(MouseEvent(.release, .left, column: 4, row: 2)), [.mouseNormal, .mouseSGR]) == "\u{1B}[<0;5;3m")
+        #expect(encode(.mouse(MouseEvent(.press, .wheelUp, column: 0, row: 0, modifiers: .control)), [.mouseNormal, .mouseSGR]) ==
+            "\u{1B}[<80;1;1M")
+        #expect(encode(.mouse(MouseEvent(.motion, .none, column: 0, row: 0)), [.mouseNormal]) == nil)
+        #expect(encode(.mouse(MouseEvent(.motion, .left, column: 1, row: 1)), [.mouseButton, .mouseSGR]) == "\u{1B}[<32;2;2M")
+        let legacy = encode(.mouse(MouseEvent(.press, .right, column: 1, row: 2)), [.mouseNormal])
+        #expect(legacy == "\u{1B}[M\u{22}\u{22}\u{23}")
+    }
+
+    @Test func focus() {
+        #expect(encode(.focus(true)) == nil)
+        #expect(encode(.focus(false), [.focusEvents]) == "\u{1B}[O")
+    }
+}

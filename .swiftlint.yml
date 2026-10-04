@@ -1,0 +1,28 @@
+excluded:
+  - .build
+  - Sources/SwifttyCore/Unicode/Tables.swift
+line_length:
+  warning: 160
+  ignores_comments: true
+identifier_name:
+  min_length: 1
+  excluded: [x, y, i, j, k, n, p, s, b, c, d, e, w, h, r, g, cp, fg, bg, lo, hi, x0, x1, id, vt]
+type_body_length: 1300
+file_length: 1500
+function_body_length: 120
+cyclomatic_complexity: 60
+large_tuple: 4
+function_parameter_count: 8
+nesting:
+  type_level: 2
+type_name:
+  min_length: 2
+disabled_rules:
+  - trailing_comma
+  - inclusive_language # master/slave are the POSIX PTY terms
+  - optional_data_string_conversion # lossy UTF-8 decoding is intended
+  - todo
+  - force_unwrapping
+  - force_cast
+  - opening_brace
+  - statement_position
