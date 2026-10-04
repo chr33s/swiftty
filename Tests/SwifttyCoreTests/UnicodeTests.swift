@@ -11,6 +11,25 @@ struct UnicodeTests {
         #expect(UnicodeWidth.width(scalar) == expected)
     }
 
+    /// The two-stage table must agree with the generated ranges everywhere.
+    @Test func `staged table matches ranges`() {
+        var expected = [UInt8](repeating: 1, count: 0x110000)
+        for (ranges, value) in [(UnicodeTables.wide, UInt8(2)), (UnicodeTables.zeroWidth, 0)] {
+            for i in stride(from: 0, to: ranges.count, by: 2) {
+                for cp in ranges[i] ... ranges[i + 1] {
+                    expected[Int(cp)] = value
+                }
+            }
+        }
+        let table = WidthTable()
+        var mismatches = 0
+        for cp in 0 ..< 0x110000 where table.lookup(UInt32(cp)) != expected[cp] {
+            mismatches += 1
+        }
+        #expect(mismatches == 0)
+        #expect(UnicodeTables.stage2.utf8CodeUnitCount % 256 == 0)
+    }
+
     @Test func `table is generated`() {
         #expect(!UnicodeTables.version.isEmpty)
         #expect(UnicodeTables.wide.count % 2 == 0 && UnicodeTables.zeroWidth.count % 2 == 0)

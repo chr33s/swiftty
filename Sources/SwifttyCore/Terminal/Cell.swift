@@ -75,6 +75,7 @@ public struct CellAttributes: Hashable, Sendable, BitwiseCopyable {
 }
 
 /// One grid cell. 16 bytes, trivially copyable, never heap allocated.
+/// `glyph` must stay at offset 0: `TerminalState.storeASCII` relies on it.
 public struct Cell: Hashable, Sendable, BitwiseCopyable {
     /// Unicode scalar value, `0` for an empty cell, or a grapheme id when
     /// `attributes.flags` contains `.grapheme`.

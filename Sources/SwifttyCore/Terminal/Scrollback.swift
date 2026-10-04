@@ -1,159 +1,53 @@
-/// Lines that scrolled off the top of the primary screen.
+/// History of the primary screen: a ring of physical row ids in the owning
+/// `Grid`'s row pool, oldest first.
 ///
-/// Cells live in fixed-size blocks; a line never straddles blocks. When the
-/// byte limit is reached the oldest block is recycled together with every
-/// line in it, so steady-state pushes never allocate. Trailing blank cells
-/// of unwrapped lines are trimmed, which keeps typical shell output compact.
-public struct Scrollback: ~Copyable {
-    struct Line: BitwiseCopyable {
-        var block: Int // absolute block sequence number
-        var offset: Int32
-        var count: Int32
-        var wrapped: Bool
-    }
-
-    public static let blockCells = 16384 // 256 KiB per block
-
-    public let maxLines: Int
-    private let maxBlocks: Int
-
-    // Ring of block pointers, oldest at `blockHead`. Slots past `blockCount`
-    // may hold blocks kept from `removeAll()` for reuse.
-    private let blocks: UnsafeMutablePointer<UnsafeMutablePointer<Cell>?>
-    private var blockHead = 0
-    private var blockCount = 0
-    private var firstBlock = 0 // sequence number of the oldest block
-    private var blockFill = Scrollback.blockCells // cells used in the newest block
-
-    private var lines: UnsafeMutablePointer<Line>
-    private var lineCapacity: Int
+/// Rows are never copied into history. When the screen scrolls, the top
+/// row's id moves here and, once the ring is full, the oldest id is handed
+/// back to the grid as its new bottom row. Steady-state scrolling therefore
+/// neither allocates nor copies cells.
+struct Scrollback: ~Copyable {
+    let capacity: Int
+    private let ids: UnsafeMutablePointer<Int32>
     private var head = 0
-    public private(set) var count = 0
+    private(set) var count = 0
 
-    /// - Parameters:
-    ///   - limitBytes: cell memory budget (Ghostty's `scrollback-limit`).
-    ///   - maxLines: upper bound on line count regardless of size.
-    public init(limitBytes: Int = 10_000_000, maxLines: Int = 100_000) {
-        let blockBytes = Self.blockCells * MemoryLayout<Cell>.stride
-        maxBlocks = max(1, (limitBytes + blockBytes - 1) / blockBytes)
-        self.maxLines = max(1, maxLines)
-        lineCapacity = min(1024, self.maxLines)
-        lines = .allocate(capacity: lineCapacity)
-        blocks = .allocate(capacity: maxBlocks)
-        blocks.initialize(repeating: nil, count: maxBlocks)
+    init(capacity: Int) {
+        self.capacity = max(0, capacity)
+        ids = .allocate(capacity: max(1, self.capacity))
     }
 
-    deinit {
-        for i in 0 ..< maxBlocks {
-            blocks[i]?.deallocate()
-        }
-        blocks.deallocate()
-        lines.deallocate()
+    deinit { ids.deallocate() }
+
+    var isFull: Bool {
+        count == capacity
     }
 
+    /// Physical id of history line `index` (0 = oldest).
     @inline(__always)
-    private func block(_ sequence: Int) -> UnsafeMutablePointer<Cell> {
-        blocks[(blockHead + sequence - firstBlock) % maxBlocks]!
+    func id(_ index: Int) -> Int32 {
+        ids[(head + index) % capacity]
     }
 
-    public var isEmpty: Bool {
-        count == 0
-    }
-
-    /// Line `index`, oldest first.
-    public func line(_ index: Int) -> (cells: UnsafeBufferPointer<Cell>, wrapped: Bool) {
-        let line = lines[(head + index) % lineCapacity]
-        let base = block(line.block) + Int(line.offset)
-        return (UnsafeBufferPointer(start: base, count: Int(line.count)), line.wrapped)
-    }
-
-    /// Mutable access for grapheme-table compaction.
-    func mutableCells(_ index: Int) -> UnsafeMutableBufferPointer<Cell> {
-        let line = lines[(head + index) % lineCapacity]
-        return UnsafeMutableBufferPointer(start: block(line.block) + Int(line.offset), count: Int(line.count))
-    }
-
-    public mutating func push(_ row: UnsafeBufferPointer<Cell>, wrapped: Bool) {
-        var length = min(row.count, Self.blockCells)
-        if !wrapped {
-            while length > 0, row[length - 1].isBlank {
-                length -= 1
-            }
+    /// Appends `id`; returns the evicted oldest id when full.
+    @inline(__always)
+    mutating func push(_ id: Int32) -> Int32? {
+        if count < capacity {
+            ids[(head + count) % capacity] = id
+            count += 1
+            return nil
         }
-        if blockCount == 0 || blockFill + length > Self.blockCells {
-            startBlock()
-        }
-        let newest = firstBlock + blockCount - 1
-        let base = block(newest) + blockFill
-        if length > 0 {
-            base.initialize(from: row.baseAddress!, count: length)
-        }
-
-        if count == maxLines {
-            dropOldestLine()
-        }
-        if count == lineCapacity {
-            growLines()
-        }
-        lines[(head + count) % lineCapacity] = Line(
-            block: newest,
-            offset: Int32(blockFill),
-            count: Int32(length),
-            wrapped: wrapped,
-        )
-        count += 1
-        blockFill += length
+        let evicted = ids[head]
+        ids[head] = id
+        head = (head + 1) % capacity
+        return evicted
     }
 
-    /// Removes and returns the newest line's cells via `body`.
-    public mutating func popNewest<R>(_ body: (UnsafeBufferPointer<Cell>, Bool) -> R) -> R? {
-        guard count > 0 else { return nil }
-        let (cells, wrapped) = line(count - 1)
-        let result = body(cells, wrapped)
-        count -= 1
-        return result
-    }
-
-    public mutating func removeAll() {
-        blockCount = 0
-        firstBlock = 0
-        blockFill = Self.blockCells
+    /// Empties the ring, passing every id to `release`.
+    mutating func removeAll(_ release: (Int32) -> Void) {
+        for i in 0 ..< count {
+            release(id(i))
+        }
         head = 0
         count = 0
-    }
-
-    private mutating func startBlock() {
-        if blockCount == maxBlocks {
-            // Recycle the oldest block: its slot becomes the newest.
-            while count > 0, lines[head].block == firstBlock {
-                dropOldestLine()
-            }
-            blockHead = (blockHead + 1) % maxBlocks
-            blockCount -= 1
-            firstBlock += 1
-        }
-        let slot = (blockHead + blockCount) % maxBlocks
-        if blocks[slot] == nil {
-            blocks[slot] = .allocate(capacity: Self.blockCells)
-        }
-        blockCount += 1
-        blockFill = 0
-    }
-
-    private mutating func dropOldestLine() {
-        head = (head + 1) % lineCapacity
-        count -= 1
-    }
-
-    private mutating func growLines() {
-        let newCapacity = min(maxLines, lineCapacity * 2)
-        let fresh = UnsafeMutablePointer<Line>.allocate(capacity: newCapacity)
-        for i in 0 ..< count {
-            fresh[i] = lines[(head + i) % lineCapacity]
-        }
-        lines.deallocate()
-        lines = fresh
-        lineCapacity = newCapacity
-        head = 0
     }
 }

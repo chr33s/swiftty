@@ -263,7 +263,7 @@ struct SnapshotBuilder {
             palette: state.palette,
             modes: modes,
             viewportOffset: state.viewportOffset,
-            scrollbackCount: state.scrollback.count,
+            scrollbackCount: state.scrollbackCount,
             sequence: sequence,
         )
         last = snapshot

@@ -37,7 +37,6 @@ public struct TerminalState: ~Copyable {
     /// Active screen; `inactiveGrid` holds the other one.
     public private(set) var grid: Grid
     private var inactiveGrid: Grid
-    public private(set) var scrollback: Scrollback
     var graphemes = GraphemeTable()
     private let scrollbackLimitBytes: Int
 
@@ -88,9 +87,9 @@ public struct TerminalState: ~Copyable {
         self.columns = columns
         self.rows = rows
         grid = Grid(columns: columns, rows: rows)
-        inactiveGrid = Grid(columns: columns, rows: rows)
         self.scrollbackLimitBytes = scrollbackLimitBytes
-        scrollback = Scrollback(limitBytes: scrollbackLimitBytes)
+        grid = Grid(columns: columns, rows: rows, historyLimitBytes: scrollbackLimitBytes)
+        inactiveGrid = Grid(columns: columns, rows: rows)
         scrollBottom = rows - 1
         tabStops = Self.defaultTabs(columns)
         self.palette = palette
@@ -162,16 +161,25 @@ public struct TerminalState: ~Copyable {
             let row = grid.row(cursor.y)
             var x = cursor.x
             let chunk = min(columns - x, n - i)
-            for k in 0 ..< chunk {
+            let end = x + chunk
+            // Cells before the extent may hold wide characters to split.
+            let checked = min(end, grid.extent(cursor.y))
+            while x < checked {
                 if row[x].width != 1 {
                     splitWide(row, x)
                 }
-                row[x] = Cell(glyph: UInt32(bytes[i + k]), attributes: pen, width: 1)
+                row[x] = Cell(glyph: UInt32(bytes[i]), attributes: pen, width: 1)
                 x += 1
+                i += 1
+            }
+            // Past the extent every cell is blank: store whole 16-byte cells.
+            if x < end {
+                Self.storeASCII(bytes.baseAddress! + i, count: end - x, pen: pen, into: row + x)
+                i += end - x
+                x = end
             }
             grid.extend(cursor.y, to: x)
             damage.insert(row: cursor.y)
-            i += chunk
             if x >= columns {
                 cursor.x = columns - 1
                 cursor.pendingWrap = true
@@ -180,6 +188,27 @@ public struct TerminalState: ~Copyable {
             }
         }
         lastPrinted = UInt32(bytes[n - 1])
+    }
+
+    /// Writes ASCII cells as SIMD stores of a cell template whose first
+    /// lane (the glyph) is replaced per byte.
+    /// A cell as one 16-byte vector (its size is 15 bytes, stride 16).
+    @inline(__always)
+    static func cellVector(_ cell: Cell) -> SIMD4<UInt32> {
+        var v = SIMD4<UInt32>()
+        withUnsafeMutableBytes(of: &v) { $0.storeBytes(of: cell, as: Cell.self) }
+        return v
+    }
+
+    @inline(__always)
+    static func storeASCII(_ src: UnsafePointer<UInt8>, count: Int, pen: CellAttributes, into dst: UnsafeMutablePointer<Cell>) {
+        let base = cellVector(Cell(glyph: 0, attributes: pen, width: 1))
+        let raw = UnsafeMutableRawPointer(dst)
+        for k in 0 ..< count {
+            var cell = base
+            cell[0] = UInt32(src[k])
+            raw.storeBytes(of: cell, toByteOffset: k &* 16, as: SIMD4<UInt32>.self)
+        }
     }
 
     /// Batched path for a run of printable scalars (mixed ASCII/UTF-8).
@@ -192,6 +221,11 @@ public struct TerminalState: ~Copyable {
             return
         }
         let pen = cursor.pen
+        var tailPen = pen
+        tailPen.flags.insert(.spacerTail)
+        let narrow = Self.cellVector(Cell(glyph: 0, attributes: pen, width: 1))
+        let wide = Self.cellVector(Cell(glyph: 0, attributes: pen, width: 2))
+        let tail = Self.cellVector(Cell(glyph: 0, attributes: tailPen, width: 0))
         let autowrap = modes.contains(.autowrap)
         let n = scalars.count
         var i = 0
@@ -209,29 +243,37 @@ public struct TerminalState: ~Copyable {
             }
             // Write a run of narrow and wide scalars on the current row; a
             // wide scalar that does not fit goes through `print` to wrap.
+            // Cells at or past the row's extent are blank, so only cells
+            // before it need wide-character splitting.
             let row = grid.row(cursor.y)
+            let raw = UnsafeMutableRawPointer(row)
+            let clean = grid.extent(cursor.y)
             var x = cursor.x
-            var tail = pen
-            tail.flags.insert(.spacerTail)
             while i < n, x < columns {
                 let c = scalars[i]
                 let w = c < 0x300 ? 1 : Int(widths.lookup(c))
                 if w == 0 || (w == 2 && x + 1 >= columns) {
                     break
                 }
-                if row[x].width != 1 {
-                    splitWide(row, x)
-                }
-                row[x] = Cell(glyph: c, attributes: pen, width: UInt8(w))
-                if w == 2 {
-                    if row[x + 1].width == 2 {
+                if x < clean {
+                    if row[x].width != 1 {
+                        splitWide(row, x)
+                    }
+                    if w == 2, row[x + 1].width == 2 {
                         splitWide(row, x + 1)
                     }
-                    row[x + 1] = Cell(glyph: 0, attributes: tail, width: 0)
                 }
-                lastPrinted = c
+                var cell = w == 1 ? narrow : wide
+                cell[0] = c
+                raw.storeBytes(of: cell, toByteOffset: x &* 16, as: SIMD4<UInt32>.self)
+                if w == 2 {
+                    raw.storeBytes(of: tail, toByteOffset: (x &+ 1) &* 16, as: SIMD4<UInt32>.self)
+                }
                 x += w
                 i += 1
+            }
+            if i > 0 {
+                lastPrinted = scalars[i - 1]
             }
             if x == cursor.x, i < n, !cursor.pendingWrap {
                 print(scalars[i]) // wide scalar at the last column
@@ -415,17 +457,17 @@ public struct TerminalState: ~Copyable {
         let n = min(count, scrollBottom - scrollTop + 1)
         guard n > 0 else { return }
         if toScrollback, !isAlternateScreen, scrollTop == 0, scrollBottom == rows - 1 {
-            for y in 0 ..< n {
-                scrollback.push(grid.usedCells(row: y), wrapped: grid.isWrapped(y))
-            }
+            // Rows move into history by id; no cells are copied.
+            grid.scrollUpIntoHistory(count: n, fill: eraseCell)
             if viewportOffset > 0 {
-                viewportOffset = min(viewportOffset + n, scrollback.count)
+                viewportOffset = min(viewportOffset + n, grid.historyCount)
             }
             if graphemes.needsCompaction {
                 compactGraphemes()
             }
+        } else {
+            grid.scrollUp(top: scrollTop, bottom: scrollBottom, count: n, fill: eraseCell)
         }
-        grid.scrollUp(top: scrollTop, bottom: scrollBottom, count: n, fill: eraseCell)
         markScrolled()
     }
 
@@ -532,7 +574,11 @@ public struct TerminalState: ~Copyable {
                 erase(row: y, from: 0, to: columns)
             }
         case 3:
-            scrollback.removeAll()
+            if isAlternateScreen {
+                inactiveGrid.clearHistory()
+            } else {
+                grid.clearHistory()
+            }
             viewportOffset = 0
             damage.setFull()
         default: break
@@ -955,7 +1001,7 @@ public struct TerminalState: ~Copyable {
         }
         grid.clear(rows: 0 ..< rows, with: .blank)
         inactiveGrid.clear(rows: 0 ..< rows, with: .blank)
-        scrollback.removeAll()
+        grid.clearHistory()
         graphemes.removeAll()
         cursor = Cursor()
         savedPrimary = Cursor()
@@ -1110,7 +1156,7 @@ public struct TerminalState: ~Copyable {
     /// Scrolls the viewport by `delta` lines (positive = towards history).
     public mutating func scrollViewport(by delta: Int) {
         guard !isAlternateScreen else { return }
-        let target = min(max(viewportOffset + delta, 0), scrollback.count)
+        let target = min(max(viewportOffset + delta, 0), grid.historyCount)
         if target != viewportOffset {
             viewportOffset = target
             damage.setFull()
@@ -1121,18 +1167,28 @@ public struct TerminalState: ~Copyable {
         scrollViewport(by: -viewportOffset)
     }
 
+    /// Lines of primary-screen history.
+    public var scrollbackCount: Int {
+        isAlternateScreen ? inactiveGrid.historyCount : grid.historyCount
+    }
+
+    /// History line `index` (0 = oldest) of the primary screen.
+    public func scrollbackLine(_ index: Int) -> (cells: UnsafeBufferPointer<Cell>, wrapped: Bool) {
+        isAlternateScreen ? inactiveGrid.historyLine(index) : grid.historyLine(index)
+    }
+
     /// Cells shown at visible row `y`, which may come from scrollback.
-    /// Scrollback rows can be shorter than `columns`.
     public func viewportRow(_ y: Int) -> (cells: UnsafeBufferPointer<Cell>, wrapped: Bool) {
         if viewportOffset == 0 {
             return (grid.cells(row: y), grid.isWrapped(y))
         }
-        let v = scrollback.count - viewportOffset + y
-        if v < scrollback.count {
-            return scrollback.line(v)
+        // A non-zero offset implies the primary screen is active.
+        let history = grid.historyCount
+        let v = history - viewportOffset + y
+        if v < history {
+            return grid.historyLine(v)
         }
-        let gy = v - scrollback.count
-        return (grid.cells(row: gy), grid.isWrapped(gy))
+        return (grid.cells(row: v - history), grid.isWrapped(v - history))
     }
 
     /// Scalars making up `cell`'s content (empty for a blank cell).
@@ -1161,7 +1217,7 @@ public struct TerminalState: ~Copyable {
     }
 
     public func scrollbackText(_ index: Int) -> String {
-        Self.text(of: scrollback.line(index).cells, self)
+        Self.text(of: scrollbackLine(index).cells, self)
     }
 
     private static func text(of cells: UnsafeBufferPointer<Cell>, _ state: borrowing TerminalState) -> String {
@@ -1210,7 +1266,7 @@ public struct TerminalState: ~Copyable {
         scrollTop = 0
         scrollBottom = newRows - 1
         tabStops = Self.defaultTabs(newColumns)
-        viewportOffset = min(viewportOffset, scrollback.count)
+        viewportOffset = min(viewportOffset, grid.historyCount)
         damage.setFull()
     }
 
@@ -1229,9 +1285,9 @@ public struct TerminalState: ~Copyable {
         var lineStarts: [Int] = []
         var lineOpen = false
         var cursorLine = 0, cursorOffset = 0
-        let history = scrollback.count
+        let history = grid.historyCount
         for p in 0 ..< history + lastRow + 1 {
-            let (row, wrapped) = p < history ? scrollback.line(p) : (grid.cells(row: p - history), grid.isWrapped(p - history))
+            let (row, wrapped) = p < history ? grid.historyLine(p) : (grid.cells(row: p - history), grid.isWrapped(p - history))
             if !lineOpen {
                 lineStarts.append(cells.count); lineOpen = true
             }
@@ -1322,12 +1378,11 @@ public struct TerminalState: ~Copyable {
         if cursorRow < top {
             top = cursorRow
         }
-        scrollback = Scrollback(limitBytes: scrollbackLimitBytes)
+        grid.reset(columns: newColumns, rows: newRows)
         out.withUnsafeBufferPointer { buf in
             for r in 0 ..< top {
-                scrollback.push(UnsafeBufferPointer(rebasing: buf[r * newColumns ..< (r + 1) * newColumns]), wrapped: outWrapped[r])
+                grid.appendHistory(UnsafeBufferPointer(rebasing: buf[r * newColumns ..< (r + 1) * newColumns]), wrapped: outWrapped[r])
             }
-            grid.reset(columns: newColumns, rows: newRows)
             for r in top ..< min(total, top + newRows) {
                 grid.setRow(r - top, UnsafeBufferPointer(rebasing: buf[r * newColumns ..< (r + 1) * newColumns]), wrapped: outWrapped[r])
             }
@@ -1369,8 +1424,14 @@ public struct TerminalState: ~Copyable {
                 fresh.adopt(&row[x], from: graphemes)
             }
         }
-        for i in 0 ..< scrollback.count {
-            let line = scrollback.mutableCells(i)
+        for i in 0 ..< grid.historyCount {
+            let line = grid.historyMutableCells(i)
+            for x in line.indices where line[x].isGrapheme {
+                fresh.adopt(&line[x], from: graphemes)
+            }
+        }
+        for i in 0 ..< inactiveGrid.historyCount {
+            let line = inactiveGrid.historyMutableCells(i)
             for x in line.indices where line[x].isGrapheme {
                 fresh.adopt(&line[x], from: graphemes)
             }

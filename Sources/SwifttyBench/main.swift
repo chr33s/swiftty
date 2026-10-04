@@ -27,7 +27,11 @@ struct Options: Sendable {
             case "--repeat": options.repeats = max(1, Int(arguments.popFirst() ?? "") ?? 1)
             case "--only": options.only = Set((arguments.popFirst() ?? "").split(separator: ",").map(String.init))
             case "--help", "-h":
-                print("usage: swiftty-bench [--mb N] [--repeat N] [--only name,name]\n       swiftty-bench stream --data <file> [--terminal-cols N] [--terminal-rows N] [--scrollback-bytes N]")
+                print("""
+                usage: swiftty-bench [--mb N] [--repeat N] [--only name,name]
+                       swiftty-bench stream --data <file> [--terminal-cols N] [--terminal-rows N] [--scrollback-bytes N]
+                       swiftty-bench gen <name> [--mb N]
+                """)
                 exit(0)
             default: break
             }
@@ -38,6 +42,14 @@ struct Options: Sendable {
 
 let options = Options.parse()
 let streamBytes = options.megabytes << 20
+
+// Subcommands run before any benchmark globals (e.g. the Metal device)
+// are initialized, so their startup cost stays comparable.
+switch CommandLine.arguments.dropFirst().first {
+case "stream": runStreamFile(Array(CommandLine.arguments.dropFirst(2)))
+case "gen": runGenerate(Array(CommandLine.arguments.dropFirst(2)))
+default: break
+}
 
 // MARK: Measurement
 
@@ -358,7 +370,7 @@ func runResize() {
     let end = Usage.now()
     row("resize", [
         ("resizes", "100"),
-        ("scrollback_lines", "\(state.scrollback.count)"),
+        ("scrollback_lines", "\(state.scrollbackCount)"),
         ("p50_ms", fmt(percentile(times, 0.5), 2)),
         ("p95_ms", fmt(percentile(times, 0.95), 2)),
         ("cpu_s", fmt(end.cpu - start.cpu, 3)),
@@ -464,7 +476,8 @@ func runGenerate(_ arguments: [String]) -> Never {
         "utf8-latin": { scriptChunk(Array("éèêëàâäôöûüçñßøåæœ")) },
     ]
     guard let name = arguments.first, let generate = generators[name] else {
-        FileHandle.standardError.write(Data("usage: swiftty-bench gen <\(generators.keys.sorted().joined(separator: "|"))> [--mb N]\n".utf8))
+        FileHandle.standardError
+            .write(Data("usage: swiftty-bench gen <\(generators.keys.sorted().joined(separator: "|"))> [--mb N]\n".utf8))
         exit(2)
     }
     let bytes = stream(options.megabytes << 20, chunk: generate)
@@ -477,12 +490,6 @@ func runGenerate(_ arguments: [String]) -> Never {
         }
     }
     exit(0)
-}
-
-switch CommandLine.arguments.dropFirst().first {
-case "stream": runStreamFile(Array(CommandLine.arguments.dropFirst(2)))
-case "gen": runGenerate(Array(CommandLine.arguments.dropFirst(2)))
-default: break
 }
 
 // MARK: Run

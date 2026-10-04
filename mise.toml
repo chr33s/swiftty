@@ -4,7 +4,7 @@ swiftformat = "0.63.1"
 swiftlint = "0.65.1"
 tmux = "3.7b" # integration tests
 zig = "0.16.0" # builds upstream ghostty-bench for comparison
-hyperfine = "1.20.0"
+"cargo:hyperfine" = "1.20.0" # native arm64 build; release binary is x86_64-only
 
 [env]
 # swift.org toolchains need the macOS SDK from Xcode / CLT to link.
@@ -41,3 +41,8 @@ run = "swiftformat Sources Tests"
 [tasks.lint]
 description = "Lint sources"
 run = "swiftlint lint --quiet Sources Tests"
+
+[tasks.compare]
+description = "Compare against upstream ghostty-bench: mise run compare <ghostty-src> <corpus-dir>"
+depends = ["release"]
+run = "Scripts/compare-ghostty.sh"

@@ -20,7 +20,8 @@ MetalRenderer + CoreTextFontManager (shaders in Renderer/Shaders.metal)
 
 ## Usage
 
-Tooling is pinned in `mise.toml` (Swift 6.4.0, swiftformat, swiftlint, tmux).
+Tooling is pinned in `mise.toml`: Swift 6.4.0, swiftformat, swiftlint, tmux,
+and, for the Ghostty comparison, Zig 0.16.0 and hyperfine.
 
 ```sh
 mise install
@@ -29,6 +30,7 @@ mise run app       # launch the terminal
 mise run bench     # release-build microbenchmarks (100 MB streams)
 mise run lint      # swiftlint; `mise run format` applies swiftformat
 mise run unicode   # regenerate Unicode/Tables.swift from EastAsianWidth.txt
+mise run compare <ghostty-src> <corpus-dir>  # hyperfine vs upstream ghostty-bench
 ```
 
 `SDKROOT` is set by `mise.toml` because swift.org toolchains need Xcode's macOS
@@ -52,23 +54,27 @@ by the calling thread.
 
 ## Design notes
 
-- **Cells**: 16-byte `BitwiseCopyable` structs in one contiguous row-major
-  buffer. Logical rows map through a row index, so scrolling rotates indices
-  and moves no cells. Each row tracks an *extent*: cells past it are known to
-  be blank, so clears and scrollback trims only touch written cells.
+- **Cells**: 16-byte `BitwiseCopyable` structs in fixed-width row-major rows,
+  allocated in contiguous 64-row chunks. Logical rows map through a row
+  index, so scrolling rotates indices and moves no cells. Each row tracks an
+  *extent*: cells past it are known to be blank, so clears only touch written
+  cells.
 - **Graphemes**: combining marks and ZWJ sequences go into a side table. The
   cell stores an id, and the table is compacted (double-buffered) once
   garbage builds up.
-- **Scrollback**: fixed 256 KiB cell blocks in a ring, with a 10 MB default
-  limit (Ghostty's `scrollback-limit`). Unwrapped lines are trimmed. When
-  full, the oldest block is recycled, so steady-state pushes never allocate.
-  Resizing reflows wrapped lines, wide characters and the cursor across the
-  screen and scrollback.
+- **Scrollback**: the screen and its history share one row pool. Scrolling
+  the full primary screen moves the top row's index into a history ring
+  instead of copying it, as Ghostty's page list does. Once the ring is full
+  (10 MB default, Ghostty's `scrollback-limit`), the oldest row is recycled
+  as the new bottom row. Steady-state scrolling therefore neither allocates
+  nor copies. Resizing reflows wrapped lines, wide characters and the cursor
+  across the screen and scrollback.
 - **Parser**: `consume(_: borrowing Span<UInt8>, into: inout TerminalState)`.
   - Printable ASCII runs are found 16 bytes at a time with `SIMD16<UInt8>`
     and written in bulk.
   - Mixed UTF-8 runs are decoded inline into a scratch buffer and written in
-    one call.
+    one call. Cells past a row's extent are stored as whole 16-byte vectors
+    without wide-character checks.
   - Everything else goes through the VT500 state machine.
   - CSI parameters live in an `InlineArray<24, UInt16>`.
 - **Concurrency**: one serial `DispatchQueue` per session owns the parser and
@@ -112,28 +118,66 @@ by the calling thread.
 
 ## Results
 
+### Against Ghostty
+
+Upstream Ghostty `main` (`5dc28bb`, Zig 0.16.0, ReleaseFast) was run with
+`ghostty-bench +terminal-stream`. Swiftty was run with
+`swiftty-bench stream`, which does the same work: input is read in 64 KiB
+chunks into a 120×80 terminal with Ghostty's default benchmark scrollback
+(10,000 bytes). Both read identical 100 MB files and were timed with
+`hyperfine` (20 runs, median, Apple Silicon). Reproduce with:
+`Scripts/compare-ghostty.sh <ghostty-src> <corpus-dir>`.
+
+The `ghostty-*` inputs come from Ghostty's own `ghostty-gen`. The others
+come from `swiftty-bench gen`.
+
+| Input | Ghostty | swiftty | swiftty speed vs Ghostty |
+|---|---:|---:|---:|
+| ghostty-ascii | 65 ms | 61 ms | **107%** |
+| ghostty-styled | 102 ms | 107 ms | 95% |
+| ghostty-utf8 | 675 ms | 418 ms | **161%** |
+| ghostty-osc | 3980 ms | 749 ms | **531%** |
+| ascii | 94 ms | 101 ms | 93% |
+| cat-source | 132 ms | 139 ms | 95% |
+| compiler-log | 135 ms | 123 ms | **110%** |
+| csi-heavy | 464 ms | 286 ms | **162%** |
+| osc-heavy | 1094 ms | 263 ms | **416%** |
+| scroll | 401 ms | 318 ms | **126%** |
+| utf8 (mixed scripts) | 327 ms | 307 ms | **107%** |
+| utf8-latin | 124 ms | 128 ms | 97% |
+| utf8-cjk | 97 ms | 121 ms | 80% |
+| startup (empty input) | 4.9 ms | 2.5 ms | |
+
+- **Spec targets**: 12 of 13 inputs meet the ≥90% target, and 10 of 13
+  meet ≥95%.
+- **CJK, the one miss**: wide characters cost two 16-byte cells each, while
+  Ghostty packs a cell into 8 bytes. Closing that gap needs a smaller cell
+  (glyph and width packed, attributes in a shared style table). That
+  redesign is deferred.
+
+### Internal benchmarks
+
 Release build on Apple Silicon (18 cores), `mise run bench`. The 200×60
-streams are fed in 64 KiB chunks, as PTY reads would be, with the scrollback
-at its 10 MB limit:
+streams are fed in 64 KiB chunks with the scrollback at its 10 MB limit:
 
 | Workload | MB/s | Allocations in measured loop |
 |---|---:|---:|
-| ASCII 100 MB | 665 | 1 (one-time Swift metadata instantiation) |
-| UTF-8 mixed 100 MB (CJK, emoji, combining marks) | 315 | 6 (grapheme table growth) |
-| UTF-8 CJK / Latin | 764 / 728 | 0 |
-| Compiler log (SGR-heavy) | 605 | 0 |
-| `cat` of source files | 554 | 0 |
-| CSI-heavy | 337 | 0 |
-| OSC-heavy (title/cwd every line) | 372 | ~1 per changed title per read batch |
-| Scroll (short lines) | 292 | 0 |
+| ASCII 100 MB | 1051 | 1 (one-time Swift metadata instantiation) |
+| UTF-8 mixed 100 MB (CJK, emoji, combining marks) | 343 | 6 (grapheme table growth) |
+| UTF-8 CJK / Latin | 912 / 866 | 0 |
+| Compiler log (SGR-heavy) | 847 | 0 |
+| `cat` of source files | 795 | 0 |
+| CSI-heavy | 336 | 0 |
+| OSC-heavy (title/cwd every line) | 370 | ~1 per changed title per read batch |
+| Scroll (short lines) | 333 | 0 |
 
 | Interactive metric | Result |
 |---|---|
-| Keystroke → PTY echo → parse → snapshot | p50 0.045 ms, p95 0.063 ms |
-| 200×60 full redraw (parse + snapshot) | p95 0.045 ms |
-| 200×60 full redraw (Metal, offscreen, GPU complete) | p95 1.03 ms |
+| Keystroke → PTY echo → parse → snapshot | p50 0.045 ms, p95 0.062 ms |
+| 200×60 full redraw (parse + snapshot) | p95 0.050 ms |
+| 200×60 full redraw (Metal, offscreen, GPU complete) | p95 1.01 ms |
 | Scroll 20 lines/frame at 120×40, incl. render | p95 0.27 ms |
-| Resize with full 10 MB scrollback (reflow) | p95 5.1 ms |
+| Resize with full 10 MB scrollback (reflow) | p95 2.2 ms |
 
 Peak RSS figures in the benchmark output include the 100 MB input buffers.
 
@@ -154,9 +198,10 @@ cell updates.
 - The repository has no Ghostty Zig source or Ghostty macOS app. Phases 1
   and 6 (bridging to, then removing, the Zig core) therefore have nothing to
   act on, and `swiftty` stands in as the frontend.
-- The "≥ 90%/95% of Zig parser throughput" gate and the regression budgets
-  (CPU, RSS, scroll) need a side-by-side Ghostty build on the same machine.
-  The benchmark reports every metric needed for that comparison.
+- The parser-throughput comparison against upstream Ghostty is above. The
+  remaining regression budgets (CPU, RSS and frame pacing inside the real
+  Ghostty app) need the Ghostty macOS frontend, which is not part of this
+  repository.
 - Ghostty's own behavioral test vectors were not vendored. The golden tests
   here are written from xterm/VT behavior.
 

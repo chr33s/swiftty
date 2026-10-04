@@ -25,7 +25,7 @@ struct TerminalStateTests {
         var vt = VT(5, 3)
         vt.feed("1\r\n2\r\n3\r\n4\r\n5")
         #expect(vt.lines == ["3", "4", "5"])
-        do { let ok = vt.state.scrollback.count == 2; #expect(ok, "vt.state.scrollback.count == 2") }
+        do { let ok = vt.state.scrollbackCount == 2; #expect(ok, "vt.state.scrollbackCount == 2") }
         do { let ok = vt.state.scrollbackText(0) == "1"; #expect(ok, "vt.state.scrollbackText(0) == \"1\"") }
         do { let ok = vt.state.scrollbackText(1) == "2"; #expect(ok, "vt.state.scrollbackText(1) == \"2\"") }
     }
@@ -37,7 +37,7 @@ struct TerminalStateTests {
         #expect(vt.cursor == (0, 0))
         vt.feed("\(CSI)4;1H\nX")
         #expect(vt.lines == ["a", "c", "d", "X", "e"])
-        #expect(vt.state.scrollback.count == 0) // region scrolls do not save lines
+        #expect(vt.state.scrollbackCount == 0) // region scrolls do not save lines
         vt.feed("\(CSI)2;1H\(ESC)M")
         #expect(vt.lines == ["a", "", "c", "d", "e"])
         vt.feed("\(CSI)2;1H\(CSI)2L")
@@ -112,7 +112,7 @@ struct TerminalStateTests {
         do { let ok = vt.state.isAlternateScreen; #expect(ok, "vt.state.isAlternateScreen") }
         #expect(vt.lines == ["", "", ""])
         vt.feed("alt\r\n\r\n\r\nscroll")
-        do { let ok = vt.state.scrollback.count == 0; #expect(ok, "vt.state.scrollback.count == 0") }
+        do { let ok = vt.state.scrollbackCount == 0; #expect(ok, "vt.state.scrollbackCount == 0") }
         vt.feed("\(CSI)?1049l")
         #expect(vt.lines[0] == "main")
         #expect(vt.cursor == (1, 1))
@@ -160,10 +160,10 @@ struct TerminalStateTests {
         vt.feed("a\r\nb\r\nc\r\nd")
         vt.state.resize(columns: 5, rows: 2)
         #expect(vt.lines == ["c", "d"])
-        do { let ok = vt.state.scrollback.count == 2; #expect(ok, "vt.state.scrollback.count == 2") }
+        do { let ok = vt.state.scrollbackCount == 2; #expect(ok, "vt.state.scrollbackCount == 2") }
         vt.state.resize(columns: 5, rows: 4)
         #expect(vt.lines == ["a", "b", "c", "d"])
-        do { let ok = vt.state.scrollback.count == 0; #expect(ok, "vt.state.scrollback.count == 0") }
+        do { let ok = vt.state.scrollbackCount == 0; #expect(ok, "vt.state.scrollbackCount == 0") }
         #expect(vt.cursor == (1, 3))
     }
 
@@ -213,7 +213,7 @@ struct TerminalStateTests {
         vt.feed("\(CSI)31mab\(CSI)?1h\r\n\r\n\(ESC)c")
         #expect(vt.lines == ["", ""])
         do { let ok = vt.state.modes == .initial; #expect(ok, "vt.state.modes == .initial") }
-        do { let ok = vt.state.scrollback.count == 0; #expect(ok, "vt.state.scrollback.count == 0") }
+        do { let ok = vt.state.scrollbackCount == 0; #expect(ok, "vt.state.scrollbackCount == 0") }
     }
 
     @Test func `repeat character`() {
@@ -224,6 +224,26 @@ struct TerminalStateTests {
 }
 
 struct GridInvariantTests {
+    @Test func `cell layout matches fast path assumptions`() {
+        #expect(MemoryLayout<Cell>.stride == 16)
+        #expect(MemoryLayout<Cell>.offset(of: \Cell.glyph) == 0)
+    }
+
+    @Test func `fast ASCII path matches general path`() {
+        var fast = VT(7, 4), slow = VT(7, 4)
+        let text = "\u{1B}[1;32mThe quick brown fox jumps over the lazy dog\u{1B}[0m 中x"
+        fast.feed(text)
+        for scalar in text.unicodeScalars {
+            slow.feed(String(scalar)) // one scalar per call: no bulk path
+        }
+        #expect(fast.lines == slow.lines)
+        for y in 0 ..< 4 {
+            for x in 0 ..< 7 {
+                #expect(fast.cell(x, y) == slow.cell(x, y))
+            }
+        }
+    }
+
     /// Every cell at or past a row's extent must be blank, whatever the
     /// sequence of operations (fuzzed with a fixed seed).
     @Test func `extent invariant holds under random operations`() {

@@ -97,7 +97,7 @@ struct IntegrationTests {
     @Test func `scrollback collects output`() throws {
         let h = try Harness(["/bin/sh", "-c", "seq 1 200; sleep 5"], columns: 40, rows: 10)
         #expect(h.wait(for: "200"))
-        let count = h.session.withState { $0.scrollback.count }
+        let count = h.session.withState { $0.scrollbackCount }
         #expect(count >= 190)
         h.session.scrollViewport(by: 1000)
         #expect(h.wait("top of history") { $0.hasPrefix("1\n2\n") })

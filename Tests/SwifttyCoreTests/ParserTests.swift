@@ -26,6 +26,29 @@ struct ParserTests {
         #expect(vt.lines[0] == "A\u{FFFD}A\u{FFFD}\u{FFFD}B\u{FFFD}")
     }
 
+    @Test func `three byte sequences valid surrogate and truncated`() {
+        var vt = VT(20, 1)
+        // E4 B8 AD = 中; ED A0 80 = surrogate (one U+FFFD); E1 41 = truncated
+        // (one U+FFFD, then "A" is reprocessed); EF BF BD = U+FFFD itself.
+        vt.feed(bytes: [0xE4, 0xB8, 0xAD, 0xED, 0xA0, 0x80, 0xE1, 0x41, 0xEF, 0xBF, 0xBD, 0x7A])
+        #expect(vt.lines[0] == "中\u{FFFD}\u{FFFD}A\u{FFFD}z")
+    }
+
+    @Test func `bulk three byte decode matches byte at a time`() {
+        let text = "日本語中文字符한국어漢字東京大阪" + "\u{E000}\u{FFFD}\u{0800}\u{D7FF}\u{E000}"
+        var batched = VT(80, 2), single = VT(80, 2)
+        batched.feed(text)
+        for b in Array(text.utf8) {
+            single.feed(bytes: [b])
+        }
+        #expect(batched.lines == single.lines)
+        #expect(batched.lines[0].unicodeScalars.elementsEqual(text.unicodeScalars))
+        // A surrogate inside an otherwise valid 12-byte window falls back.
+        var mixed = VT(20, 1)
+        mixed.feed(bytes: [0xE4, 0xB8, 0xAD, 0xED, 0xA0, 0x80, 0xE4, 0xB8, 0xAD, 0xE4, 0xB8, 0xAD])
+        #expect(mixed.lines[0] == "中\u{FFFD}中中")
+    }
+
     @Test func `c 0 controls`() {
         var vt = VT()
         vt.feed("ab\rc\n d\u{08}e\tf")
