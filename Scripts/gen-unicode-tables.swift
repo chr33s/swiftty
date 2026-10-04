@@ -1,7 +1,8 @@
 // Generates Sources/SwifttyCore/Unicode/Tables.swift.
 //
 // Widths follow wcwidth conventions: zero for nonspacing/enclosing marks,
-// format characters and Hangul medial/final jamo; two for East Asian
+// format characters (except prepended concatenation marks) and Hangul
+// medial/final jamo; two for East Asian
 // Wide/Fullwidth and emoji-presentation scalars; one otherwise.
 //
 // Usage: swift Scripts/gen-unicode-tables.swift [EastAsianWidth.txt]
@@ -25,13 +26,17 @@ for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
     for cp in bounds[0]...bounds.last! { wide[Int(cp)] = true }
 }
 
+// Prepended_Concatenation_Mark (PropList.txt): format characters that
+// display, so wcwidth (and Ghostty) gives them one column.
+let prependedConcatenationMarks: Set<UInt32> = Set(Array(0x0600...0x0605) + [0x06DD, 0x070F, 0x0890, 0x0891, 0x08E2, 0x110BD, 0x110CD])
+
 var zero = [Bool](repeating: false, count: 0x110000)
 for cp in 0..<0x110000 {
     guard let scalar = Unicode.Scalar(UInt32(cp)) else { continue }
     let props = scalar.properties
     switch props.generalCategory {
     case .nonspacingMark, .enclosingMark: zero[cp] = true
-    case .format: zero[cp] = cp != 0x00AD
+    case .format: zero[cp] = cp != 0x00AD && !prependedConcatenationMarks.contains(UInt32(cp))
     default: break
     }
     if (0x1160...0x11FF).contains(cp) || (0xD7B0...0xD7FF).contains(cp) { zero[cp] = true }

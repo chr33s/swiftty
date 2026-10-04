@@ -6,7 +6,6 @@ extension TerminalState {
     // MARK: OSC
 
     mutating func oscDispatch(_ data: UnsafeBufferPointer<UInt8>, terminatedByBell: Bool) {
-        joinNext = false
         var command = 0
         var i = 0
         while i < data.count, data[i] != 0x3B {
@@ -57,6 +56,7 @@ extension TerminalState {
                     body: parts.count > 2 ? String(parts[2]) : "",
                 ))
             }
+        case 8: hyperlink(rest)
         case 10, 11, 12:
             let spec = String(decoding: rest, as: UTF8.self)
             if spec == "?" {
@@ -120,5 +120,145 @@ extension TerminalState {
             rgb = rgb << 8 | (v * 255 + maxValue / 2) / maxValue
         }
         return rgb
+    }
+
+    /// OSC 8 `params;URI`: an empty URI ends the link. URIs are interned
+    /// by hash into a 255-slot ring whose storage is reused, so steady-state
+    /// link output does not allocate.
+    private mutating func hyperlink(_ rest: UnsafeBufferPointer<UInt8>) {
+        guard let semi = rest.firstIndex(of: 0x3B) else { return }
+        let uri = UnsafeBufferPointer(rebasing: rest[(semi + 1)...])
+        guard !uri.isEmpty, uri.count <= 2048 else {
+            setLink(0)
+            return
+        }
+        var hash: UInt64 = 0xCBF2_9CE4_8422_2325 // FNV-1a
+        for b in uri {
+            hash = (hash ^ UInt64(b)) &* 0x100_0000_01B3
+        }
+        if let id = hyperlinkIndex[hash], hyperlinks[Int(id) - 1].elementsEqual(uri) {
+            setLink(id)
+            return
+        }
+        let slot: Int
+        if hyperlinks.count < 255 {
+            hyperlinks.append(Array(uri))
+            hyperlinkHashes.append(hash)
+            hyperlinkLastRow.append(.max)
+            slot = hyperlinks.count - 1
+        } else {
+            // Reuse only an id no cell still carries; otherwise the link
+            // goes unlabelled rather than retargeting older cells.
+            guard let free = reclaimHyperlinkSlot() else {
+                setLink(0)
+                return
+            }
+            slot = free
+            if hyperlinkIndex[hyperlinkHashes[slot]] == UInt8(slot + 1) {
+                hyperlinkIndex[hyperlinkHashes[slot]] = nil
+            }
+            hyperlinks[slot].removeAll(keepingCapacity: true)
+            hyperlinks[slot].append(contentsOf: uri)
+            hyperlinkHashes[slot] = hash
+        }
+        hyperlinkIndex[hash] = UInt8(slot + 1)
+        hyperlinkLastRow[slot] = .max
+        setLink(UInt8(slot + 1))
+    }
+
+    /// Absolute rows were renumbered (history cleared, reflow): recorded
+    /// rows no longer apply, so only a scan can free a slot.
+    mutating func forgetHyperlinkRows() {
+        for i in hyperlinkLastRow.indices {
+            hyperlinkLastRow[i] = .max
+        }
+    }
+
+    /// Switches the pen's link.
+    private mutating func setLink(_ id: UInt8) {
+        penLinkWillChange(to: id)
+        cursor.pen.link = id
+    }
+
+    /// Bookkeeping for any change of the pen's link (OSC 8, DECRC): the
+    /// ending link can only have been written down to the current screen
+    /// bottom; the starting one is live again.
+    mutating func penLinkWillChange(to id: UInt8) {
+        let old = Int(cursor.pen.link)
+        guard old != Int(id) else { return }
+        // A saved cursor still holding the link may write with it again.
+        let held = savedPrimary.pen.link == UInt8(clamping: old) || savedAlternate.pen.link == UInt8(clamping: old)
+        if old != 0, old <= hyperlinkLastRow.count {
+            hyperlinkLastRow[old - 1] = isAlternateScreen || held
+                ? .max : absoluteRow(viewportRow: 0) + viewportOffset + rows - 1
+        }
+        holdHyperlink(id)
+    }
+
+    /// Marks `id` live: no row bound applies and no free list holds it.
+    mutating func holdHyperlink(_ id: UInt8) {
+        guard id != 0, Int(id) <= hyperlinkLastRow.count else { return }
+        hyperlinkLastRow[Int(id) - 1] = .max
+        freeHyperlinkSlots.removeAll { $0 == Int(id) - 1 }
+    }
+
+    /// A slot whose id appears in no cell. Cheap path: its last possible row
+    /// has left history. Otherwise a scan of every cell (screens and
+    /// history), rate-limited while it keeps finding nothing.
+    private mutating func reclaimHyperlinkSlot() -> Int? {
+        let first = firstAbsoluteRow
+        let saved = (Int(savedPrimary.pen.link) - 1, Int(savedAlternate.pen.link) - 1)
+        if !isAlternateScreen, let slot = hyperlinkLastRow.indices.first(where: {
+            hyperlinkLastRow[$0] < first && $0 + 1 != Int(cursor.pen.link) && $0 != saved.0 && $0 != saved.1
+        }) {
+            return slot
+        }
+        if let slot = freeHyperlinkSlots.popLast() {
+            return slot
+        }
+        // With every slot's last row known and still in history, all ids are
+        // genuinely live: a scan cannot help.
+        let current = Int(cursor.pen.link) - 1
+        guard hyperlinkLastRow.indices.contains(where: { $0 != current && hyperlinkLastRow[$0] == .max }) else {
+            return nil
+        }
+        if hyperlinkScanCooldown > 0 {
+            hyperlinkScanCooldown -= 1
+            return nil
+        }
+        var used = InlineArray<256, Bool>(repeating: false)
+        used[Int(cursor.pen.link)] = true
+        used[Int(savedPrimary.pen.link)] = true
+        used[Int(savedAlternate.pen.link)] = true
+        let linkOffset = MemoryLayout<Cell>.offset(of: \Cell.attributes.link)!
+        func mark(_ cells: UnsafeBufferPointer<Cell>, _ count: Int, _ used: inout InlineArray<256, Bool>) {
+            guard let base = UnsafeRawPointer(cells.baseAddress) else { return }
+            for x in 0 ..< min(count, cells.count) {
+                used[Int(base.load(fromByteOffset: x &* 16 &+ linkOffset, as: UInt8.self))] = true
+            }
+        }
+        for y in 0 ..< rows {
+            mark(grid.cells(row: y), grid.extent(y), &used)
+            mark(inactiveGrid.cells(row: y), inactiveGrid.extent(y), &used)
+        }
+        for i in 0 ..< grid.historyCount {
+            let line = grid.historyLine(i).cells
+            mark(line, line.count, &used)
+        }
+        for i in 0 ..< inactiveGrid.historyCount {
+            let line = inactiveGrid.historyLine(i).cells
+            mark(line, line.count, &used)
+        }
+        freeHyperlinkSlots = (0 ..< hyperlinks.count).filter { !used[$0 + 1] }.reversed()
+        if freeHyperlinkSlots.isEmpty {
+            hyperlinkScanCooldown = 255
+            return nil
+        }
+        return freeHyperlinkSlots.popLast()
+    }
+
+    /// Target of hyperlink `id` (from `CellAttributes.link`).
+    public func hyperlink(_ id: UInt8) -> String? {
+        id > 0 && Int(id) <= hyperlinks.count ? String(decoding: hyperlinks[Int(id) - 1], as: UTF8.self) : nil
     }
 }

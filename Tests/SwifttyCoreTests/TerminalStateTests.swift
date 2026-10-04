@@ -292,3 +292,58 @@ struct GridInvariantTests {
         }
     }
 }
+
+@Suite struct ResizePullTests {
+    @Test func `growing keeps the top row when the cursor is not at the bottom`() {
+        var vt = VT(10, 4)
+        vt.feed("a\r\nb\r\nc\r\nd\r\ne\r\nf") // a, b in history; screen c..f
+        vt.feed("\(CSI)2J\(CSI)H") // cleared, cursor at the top
+        vt.feed("top")
+        vt.state.resize(columns: 10, rows: 6)
+        #expect(vt.lines[0] == "top")
+        #expect(vt.cursor == (3, 0))
+    }
+
+    @Test func `growing pulls history when the cursor is at the bottom`() {
+        var vt = VT(10, 4)
+        vt.feed("a\r\nb\r\nc\r\nd\r\ne\r\nf")
+        vt.state.resize(columns: 10, rows: 6)
+        #expect(vt.lines == ["a", "b", "c", "d", "e", "f"])
+        #expect(vt.cursor == (1, 5))
+    }
+}
+
+@Suite struct ResizeShrinkTests {
+    @Test func `shrinking drops blank rows before pulling history`() {
+        var vt = VT(10, 6)
+        vt.feed("a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng") // a in history
+        vt.feed("\(CSI)2J\(CSI)H")
+        vt.feed("top")
+        vt.state.resize(columns: 10, rows: 3)
+        #expect(vt.lines == ["top", "", ""])
+        vt.state.resize(columns: 10, rows: 6)
+        #expect(vt.lines[0] == "top")
+    }
+}
+
+@Suite struct ResizeSelectionTests {
+    @Test func `a height change keeps the selection on the same text`() {
+        var vt = VT(10, 6)
+        vt.feed("a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\nhello") // history: a, b
+        let row = vt.state.absoluteRow(viewportRow: 5)
+        vt.state.setSelection(Selection(anchor: TerminalPoint(row: row, column: 0), head: TerminalPoint(row: row, column: 4)))
+        #expect(vt.state.selectionText == "hello")
+        vt.state.resize(columns: 10, rows: 3)
+        #expect(vt.state.selectionText == "hello")
+        vt.state.resize(columns: 10, rows: 8)
+        #expect(vt.state.selectionText == "hello")
+    }
+
+    @Test func `a width change drops the selection`() {
+        var vt = VT(10, 3)
+        vt.feed("hello")
+        vt.state.setSelection(Selection(anchor: TerminalPoint(row: 0, column: 0), head: TerminalPoint(row: 0, column: 4)))
+        vt.state.resize(columns: 8, rows: 3)
+        #expect(vt.state.selection == nil)
+    }
+}

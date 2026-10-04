@@ -4,7 +4,6 @@ extension TerminalState {
     // MARK: DCS
 
     mutating func dcsHook(_ csi: borrowing CSISequence) {
-        joinNext = false
         dcsBuffer.removeAll(keepingCapacity: true)
         switch (csi.marker, csi.intermediate, csi.final) {
         case (0, 0, 0x70) where csi.value(0) == 1000: // tmux -CC
@@ -71,8 +70,9 @@ extension TerminalState {
     private mutating func replyStatusString() {
         let request = String(decoding: dcsBuffer, as: UTF8.self)
         let value: String? = switch request {
-        case "m": "0m"
+        case "m": sgrReport() + "m"
         case "r": "\(scrollTop + 1);\(scrollBottom + 1)r"
+        case "s": modes.contains(.leftRightMargin) ? "\(scrollLeft + 1);\(scrollRight + 1)s" : nil
         case " q":
             "\((cursorStyle == .block ? 1 : cursorStyle == .underline ? 3 : 5) + (modes.contains(.cursorBlink) ? 0 : 1)) q"
         default: nil
@@ -82,6 +82,43 @@ extension TerminalState {
         } else {
             reply("\u{1B}P0$r\u{1B}\\")
         }
+    }
+
+    /// The pen as SGR parameters (Ghostty `printAttributes`).
+    func sgrReport() -> String {
+        let pen = cursor.pen
+        var out = "0"
+        let f = pen.flags
+        if f.contains(.bold) { out += ";1" }
+        if f.contains(.faint) { out += ";2" }
+        if f.contains(.italic) { out += ";3" }
+        if f.contains(.doubleUnderline) {
+            out += ";4:2"
+        } else if f.contains(.underline) {
+            switch (f.contains(.underlineStyleA), f.contains(.underlineStyleB)) {
+            case (true, false): out += ";4:3"
+            case (false, true): out += ";4:4"
+            case (true, true): out += ";4:5"
+            case (false, false): out += ";4"
+            }
+        }
+        if f.contains(.overline) { out += ";53" }
+        if f.contains(.blink) { out += ";5" }
+        if f.contains(.inverse) { out += ";7" }
+        if f.contains(.invisible) { out += ";8" }
+        if f.contains(.strikethrough) { out += ";9" }
+        func color(_ c: TerminalColor, _ base: Int, _ bright: Int, _ extended: Int) -> String {
+            switch c.kind {
+            case .default: return ""
+            case let .palette(i) where i >= 16: return ";\(extended):5:\(i)"
+            case let .palette(i) where i >= 8: return ";\(bright + Int(i) - 8)"
+            case let .palette(i): return ";\(base + Int(i))"
+            case let .rgb(v): return ";\(extended):2::\(v >> 16 & 0xFF):\(v >> 8 & 0xFF):\(v & 0xFF)"
+            }
+        }
+        out += color(pen.foreground, 30, 90, 38)
+        out += color(pen.background, 40, 100, 48)
+        return out
     }
 
     static func hex(_ s: String) -> String {
@@ -115,6 +152,7 @@ extension TerminalState {
     /// shell prompt) as the new top line.
     public mutating func clearScreenKeepingCursorLine() {
         invalidateSelection()
+        forgetHyperlinkRows()
         if !isAlternateScreen, cursor.y > 0 {
             let keep = cursor.y
             grid.scrollUp(top: 0, bottom: rows - 1, count: keep, fill: .blank)

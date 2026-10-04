@@ -28,20 +28,34 @@ public struct Modes: OptionSet, Sendable, Hashable {
     public static let synchronizedOutput = Modes(rawValue: 1 << 17) // 2026
     public static let keypadApplication = Modes(rawValue: 1 << 18) // DECKPAM
     public static let alternateScreen = Modes(rawValue: 1 << 19) // 47/1047/1049 (state)
+    public static let reverseWrap = Modes(rawValue: 1 << 20) // 45
+    public static let reverseWrapExtended = Modes(rawValue: 1 << 21) // 1045
+    public static let leftRightMargin = Modes(rawValue: 1 << 22) // DECLRMM 69
+    public static let graphemeCluster = Modes(rawValue: 1 << 23) // 2027
+    public static let enableColumnMode = Modes(rawValue: 1 << 24) // 40 (allows DECCOLM)
+    public static let column132 = Modes(rawValue: 1 << 25) // DECCOLM 3
 
-    public static let initial: Modes = [.autowrap, .cursorVisible, .alternateScroll]
+    /// Grapheme clustering (2027) is on by default, like Ghostty's
+    /// `grapheme-width-method = unicode`; Ghostty's bare `Terminal` has it off.
+    public static let initial: Modes = [.autowrap, .cursorVisible, .alternateScroll, .graphemeCluster]
     public static let mouseTracking: Modes = [.mouseX10, .mouseNormal, .mouseButton, .mouseAny]
 
     /// DEC private mode number → flag, for DECSET/DECRST/DECRQM.
     static func dec(_ number: Int) -> Modes? {
         switch number {
         case 1: .cursorKeys
+        case 3: .column132
         case 5: .reverseVideo
         case 6: .origin
         case 7: .autowrap
         case 9: .mouseX10
         case 12: .cursorBlink
         case 25: .cursorVisible
+        case 40: .enableColumnMode
+        case 45: .reverseWrap
+        case 69: .leftRightMargin
+        case 1045: .reverseWrapExtended
+        case 2027: .graphemeCluster
         case 1000: .mouseNormal
         case 1002: .mouseButton
         case 1003: .mouseAny

@@ -149,6 +149,8 @@ public final class TerminalSession: @unchecked Sendable {
             encodeBuffer.removeAll(keepingCapacity: true)
             guard InputEncoder.encode(input, modes: state.modes, keyboardFlags: state.keyboardFlags, into: &encodeBuffer) else { return }
             switch input {
+            case let .key(event) where event.action == .release:
+                break
             case .text, .key, .paste:
                 if state.viewportOffset != 0 {
                     state.scrollViewportToBottom()

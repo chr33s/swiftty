@@ -13,6 +13,9 @@ public struct FontDescriptor: Hashable, Sendable {
     public var cellHeightAdjust: CGFloat = 0
     /// Families tried, in order, before the system cascade (e.g. a symbols font).
     public var fallbackFamilies: [String] = []
+    /// OpenType feature tags, `-tag` to disable (Ghostty's `font-feature`).
+    /// Any enabled feature turns on shaping (ligatures, alternates).
+    public var features: [String] = []
 
     public init(family: String = "Menlo", size: CGFloat = 13, scale: CGFloat = 2) {
         self.family = family
@@ -48,6 +51,8 @@ public final class ResolvedFont: @unchecked Sendable {
     public let faces: [CTFont]
     public let emoji: CTFont
     public let fallbacks: [CTFont]
+    /// Rows are shaped with CoreText (an enabled OpenType feature).
+    public let shapes: Bool
 
     // Metrics in pixels.
     public let cellWidth: CGFloat
@@ -76,12 +81,36 @@ public final class ResolvedFont: @unchecked Sendable {
             var skew = CGAffineTransform(a: 1, b: 0, c: 0.2, d: 1, tx: 0, ty: 0)
             return CTFontCreateWithFontDescriptor(CTFontCopyFontDescriptor(base), pixelSize, &skew)
         }
-        faces = [regular, styled(.traitBold), styled(.traitItalic), styled([.traitBold, .traitItalic])]
-        emoji = CTFontCreateWithName("Apple Color Emoji" as CFString, pixelSize, nil)
         fallbacks = descriptor.fallbackFamilies.compactMap { family in
             let font = CTFontCreateWithName(family as CFString, pixelSize, nil)
             return (CTFontCopyFamilyName(font) as String).localizedCaseInsensitiveContains(family) ? font : nil
         }
+        let settings = descriptor.features.compactMap { raw -> [CFString: Any]? in
+            let off = raw.hasPrefix("-")
+            let tag = off ? String(raw.dropFirst()) : raw
+            guard tag.utf8.count == 4 else { return nil }
+            return [kCTFontOpenTypeFeatureTag: tag, kCTFontOpenTypeFeatureValue: off ? 0 : 1]
+        }
+        let shapes = descriptor.features.contains { !$0.hasPrefix("-") }
+        // Shaped runs resolve missing glyphs through CoreText's cascade, so
+        // the fallback families go there too.
+        let cascade = shapes ? fallbacks.map { CTFontCopyFontDescriptor($0) } : []
+        func featured(_ font: CTFont) -> CTFont {
+            guard !settings.isEmpty || !cascade.isEmpty else { return font }
+            var attributes: [CFString: Any] = [:]
+            if !settings.isEmpty {
+                attributes[kCTFontFeatureSettingsAttribute] = settings
+            }
+            if !cascade.isEmpty {
+                attributes[kCTFontCascadeListAttribute] = cascade
+            }
+            let d = CTFontDescriptorCreateCopyWithAttributes(CTFontCopyFontDescriptor(font), attributes as CFDictionary)
+            var matrix = CTFontGetMatrix(font) // keeps a synthetic italic's slant
+            return CTFontCreateWithFontDescriptor(d, CTFontGetSize(font), &matrix)
+        }
+        faces = [regular, styled(.traitBold), styled(.traitItalic), styled([.traitBold, .traitItalic])].map(featured)
+        self.shapes = shapes
+        emoji = CTFontCreateWithName("Apple Color Emoji" as CFString, pixelSize, nil)
 
         var glyph = CGGlyph(0)
         var m: UniChar = 0x4D // "M"

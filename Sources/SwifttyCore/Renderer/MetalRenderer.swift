@@ -32,6 +32,8 @@ public struct RenderOptions: Equatable, Sendable {
     public var searchForeground: UInt32 = 0x000000
     public var searchBackground: UInt32 = 0xFFE082
     public var selectedSearchBackground: UInt32 = 0xF2A65A
+    /// OSC 8 link id to underline (the one under the pointer), 0 for none.
+    public var hoveredLink: UInt8 = 0
     /// IME composition text, drawn underlined from the cursor.
     public var preedit: [Unicode.Scalar] = []
 
@@ -90,6 +92,7 @@ public final class MetalRenderer {
     private let glyphPipeline: MTLRenderPipelineState
     private let decorationPipeline: MTLRenderPipelineState
     private var atlas: GlyphAtlas
+    private var shaper = Shaper()
 
     private var instances: MTLBuffer?
     private var gridSize = (columns: 0, rows: 0)
@@ -145,6 +148,7 @@ public final class MetalRenderer {
     public func setFont(_ descriptor: FontDescriptor) {
         font = fontManager.resolve(descriptor)
         atlas.reset()
+        shaper = Shaper()
         needsFullRebuild = true
     }
 
@@ -260,7 +264,10 @@ public final class MetalRenderer {
 
     private func updateInstances(_ snapshot: RenderSnapshot, palette: Palette, options: RenderOptions) {
         let columns = snapshot.columns, rows = snapshot.rowCount
-        var full = needsFullRebuild || snapshot.damage.isFull || options != lastOptions
+        // Cursor opacity animates every frame; it only touches the cursor row.
+        var comparable = options
+        comparable.cursorOpacity = lastOptions.cursorOpacity
+        var full = needsFullRebuild || snapshot.damage.isFull || comparable != lastOptions
         if gridSize != (columns, rows) || instances == nil {
             let length = max(1, columns * rows) * MemoryLayout<CellInstance>.stride
             if (instances?.length ?? 0) < length {
@@ -269,14 +276,15 @@ public final class MetalRenderer {
             gridSize = (columns, rows)
             full = true
         }
+        var cursor = snapshot.cursor
+        cursor.isVisible = cursor.isVisible && options.cursorVisible
         // A palette change (OSC 4/10/11) arrives as full damage from the core.
-        if snapshot.sequence == lastSequence, !full, lastCursor == snapshot.cursor {
+        if snapshot.sequence == lastSequence, !full, lastCursor == cursor,
+           options.cursorOpacity == lastOptions.cursorOpacity {
             return
         }
 
         let base = instances!.contents().bindMemory(to: CellInstance.self, capacity: columns * rows)
-        var cursor = snapshot.cursor
-        cursor.isVisible = cursor.isVisible && options.cursorVisible
         let previous = lastCursor
         let rowRecords = snapshot.rows
         for y in 0 ..< rows {
@@ -307,6 +315,8 @@ public final class MetalRenderer {
         let matches = snapshot.searchMatches
         let preedit = y == cursor.y && !options.preedit.isEmpty ? Self
             .layoutPreedit(options.preedit, at: cursor.x, columns: cells.count) : [:]
+        // Break at the cursor whatever its blink phase, so ligatures don't flicker.
+        let shaped = font.shapes ? shapeRow(cells, cursorX: snapshot.cursor.isVisible && cursor.y == y ? cursor.x : -1, skip: preedit) : []
         for x in 0 ..< cells.count {
             var cell = cells[x]
             if let p = preedit[x] {
@@ -355,21 +365,31 @@ public final class MetalRenderer {
             if !preedit.isEmpty, preedit[x] != nil {
                 flags |= Flag.underline
             }
+            if options.hoveredLink != 0, attrs.link == options.hoveredLink {
+                flags |= Flag.underline
+            }
             if cursor.isVisible, preedit.isEmpty, cursor.y == y, cursor.x == x {
                 switch options.cursorStyle ?? cursor.style {
                 case .block where options.hollowCursor || !options.isFocused:
                     flags |= Flag.cursorHollow
                 case .block:
-                    fg = options.cursorTextColor ?? bg
-                    bg = options.cursorColor ?? palette.cursor
-                    bgAlpha = 0xFF
+                    // Blend so cursor opacity (and its animations) shows the cell beneath.
+                    let t = max(0, min(1, options.cursorOpacity))
+                    let cellBg = bg
+                    fg = Self.mix(fg, options.cursorTextColor ?? cellBg, t)
+                    bg = Self.mix(cellBg, options.cursorColor ?? palette.cursor, t)
+                    bgAlpha = UInt32(Double(bgAlpha) + (255 - Double(bgAlpha)) * t)
                 case .bar: flags |= Flag.cursorBar
                 case .underline: flags |= Flag.cursorUnderline
                 }
             }
 
             var entry = GlyphAtlas.Entry.empty
-            if !cell.isSpacer, !attrs.flags.contains(.invisible), cell.glyph != 0 || cell.isGrapheme {
+            if !shaped.isEmpty, let shapedEntry = shaped[x] {
+                if !attrs.flags.contains(.invisible) {
+                    entry = shapedEntry
+                }
+            } else if !cell.isSpacer, !attrs.flags.contains(.invisible), cell.glyph != 0 || cell.isGrapheme {
                 let style = FontStyle(attrs.flags)
                 if cell.isGrapheme {
                     let span = snapshot.graphemeScalars(cell)
@@ -400,6 +420,54 @@ public final class MetalRenderer {
 }
 
 extension MetalRenderer {
+    /// Atlas entries for runs of plain single-width cells, shaped together;
+    /// nil where the cell takes the per-cell path. Runs break on attribute
+    /// changes and at the cursor so a ligature never hides it.
+    private func shapeRow(_ cells: Span<Cell>, cursorX: Int, skip: [Int: Cell]) -> [GlyphAtlas.Entry?] {
+        var out = [GlyphAtlas.Entry?](repeating: nil, count: cells.count)
+        func eligible(_ x: Int) -> Bool {
+            let c = cells[x]
+            return c.width == 1 && !c.isGrapheme && !c.isSpacer && c.glyph > 0x20 && x != cursorX
+                && skip[x] == nil && !BoxDrawing.covers(c.glyph)
+        }
+        var x = 0
+        while x < cells.count {
+            guard eligible(x) else { x += 1; continue }
+            let attrs = cells[x].attributes
+            var end = x + 1
+            while end < cells.count, eligible(end), cells[end].attributes == attrs {
+                end += 1
+            }
+            if end - x >= 2 {
+                var scalars: [UInt32] = []
+                scalars.reserveCapacity(end - x)
+                for i in x ..< end {
+                    scalars.append(cells[i].glyph)
+                }
+                for i in x ..< end {
+                    out[i] = .empty
+                }
+                for g in shaper.shape(scalars, style: FontStyle(attrs.flags), font: font) {
+                    out[x + g.cell] = atlas.entry(glyph: g.glyph, in: g.font, isColor: g.isColor, font: font)
+                }
+            }
+            x = end
+        }
+        return out
+    }
+
+    /// Linear blend of two 0xRRGGBB colours.
+    static func mix(_ a: UInt32, _ b: UInt32, _ t: Double) -> UInt32 {
+        guard t < 1 else { return b }
+        guard t > 0 else { return a }
+        var out: UInt32 = 0
+        for shift in [16, 8, 0] as [UInt32] {
+            let x = Double(a >> shift & 0xFF), y = Double(b >> shift & 0xFF)
+            out |= UInt32((x + (y - x) * t).rounded()) << shift
+        }
+        return out
+    }
+
     /// Preedit scalars as cells keyed by column, starting at `start`.
     static func layoutPreedit(_ scalars: [Unicode.Scalar], at start: Int, columns: Int) -> [Int: Cell] {
         var cells: [Int: Cell] = [:]
@@ -440,6 +508,24 @@ final class GlyphAtlas {
     let texture: MTLTexture
     private var entries: [UInt64: Entry] = [:]
     private var clusters: [ClusterKey: Entry] = [:]
+    private var glyphs: [GlyphKey: Entry] = [:]
+
+    /// A glyph in a specific CTFont; fonts compare with CFEqual, which
+    /// covers the matrix, so a synthetic oblique never collides with upright.
+    struct GlyphKey: Hashable {
+        var font: CTFont
+        var glyph: CGGlyph
+
+        static func == (a: GlyphKey, b: GlyphKey) -> Bool {
+            a.glyph == b.glyph && CFEqual(a.font, b.font)
+        }
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(glyph)
+            hasher.combine(CFHash(font))
+        }
+    }
+
     private var cursorX = 0, cursorY = 0, shelfHeight = 0
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     /// Set when the atlas was cleared; cached instances are stale.
@@ -456,6 +542,7 @@ final class GlyphAtlas {
     func reset() {
         entries.removeAll(keepingCapacity: true)
         clusters.removeAll(keepingCapacity: true)
+        glyphs.removeAll(keepingCapacity: true)
         cursorX = 0
         cursorY = 0
         shelfHeight = 0
@@ -480,6 +567,23 @@ final class GlyphAtlas {
             }
         }
         entries[key] = entry
+        return entry
+    }
+
+    /// A shaped glyph, keyed by its font and glyph id.
+    func entry(glyph: CGGlyph, in glyphFont: CTFont, isColor: Bool, font: ResolvedFont) -> Entry {
+        let key = GlyphKey(font: glyphFont, glyph: glyph)
+        if let entry = glyphs[key] {
+            return entry
+        }
+        var g = glyph
+        var rect = CGRect.zero
+        CTFontGetBoundingRectsForGlyphs(glyphFont, .horizontal, &g, &rect, 1)
+        let entry = rasterize(bounds: rect, isColor: isColor, font: font) { context, origin in
+            var position = origin
+            CTFontDrawGlyphs(glyphFont, &g, &position, 1, context)
+        }
+        glyphs[key] = entry
         return entry
     }
 

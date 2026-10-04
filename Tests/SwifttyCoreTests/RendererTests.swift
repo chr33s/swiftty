@@ -84,4 +84,21 @@ import Testing
         let final = try #require(last)
         #expect(final.pixels == reference.pixels)
     }
+
+    @Test(.enabled(if: device != nil)) func `shaped text matches unshaped text`() throws {
+        let device = try #require(Self.device)
+        let session = TerminalSession(columns: 24, rows: 2)
+        session.feed(Array("fn main() -> x != y\r\n\u{1B}[1mbold\u{1B}[0m ok".utf8))
+        var shapedFont = FontDescriptor()
+        shapedFont.features = ["calt", "-liga"]
+        let plain = try MetalRenderer(device: device, fontManager: CoreTextFontManager(), font: FontDescriptor())
+        let shaped = try MetalRenderer(device: device, fontManager: CoreTextFontManager(), font: shapedFont)
+        #expect(!plain.font.shapes && shaped.font.shapes)
+        let w = Int(plain.cellSize.width) * 24 + 16, h = Int(plain.cellSize.height) * 2 + 16
+        let a = render(plain, session.snapshot(), width: w, height: h)
+        let b = render(shaped, session.snapshot(), width: w, height: h)
+        // Menlo has no ligatures, so shaping must reproduce the per-cell glyphs.
+        let differing = zip(a.pixels, b.pixels).filter { abs(Int($0) - Int($1)) > 8 }.count
+        #expect(differing < a.pixels.count / 1000)
+    }
 }

@@ -42,7 +42,8 @@ struct ParserTests {
             single.feed(bytes: [b])
         }
         #expect(batched.lines == single.lines)
-        #expect(batched.lines[0].unicodeScalars.elementsEqual(text.unicodeScalars))
+        // U+D7FF is zero-width with nothing to join, so it is dropped (as in Ghostty).
+        #expect(batched.lines[0].unicodeScalars.elementsEqual(text.unicodeScalars.filter { $0.value != 0xD7FF }))
         // A surrogate inside an otherwise valid 12-byte window falls back.
         var mixed = VT(20, 1)
         mixed.feed(bytes: [0xE4, 0xB8, 0xAD, 0xED, 0xA0, 0x80, 0xE4, 0xB8, 0xAD, 0xE4, 0xB8, 0xAD])

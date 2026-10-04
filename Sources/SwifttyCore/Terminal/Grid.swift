@@ -30,6 +30,8 @@ public struct Grid: ~Copyable {
     private var history: Scrollback
     private let historyLimitBytes: Int
     private let maxHistoryRows: Int
+    /// Lines scrolled off the top with no history to keep them.
+    private var dropped = 0
 
     /// - Parameters:
     ///   - historyLimitBytes: cell memory for scrollback (Ghostty's
@@ -149,7 +151,7 @@ public struct Grid: ~Copyable {
 
     /// History lines dropped off the top since the last clear.
     public var historyEvicted: Int {
-        history.evicted
+        history.evicted + dropped
     }
 
     public var historyCapacity: Int {
@@ -166,21 +168,24 @@ public struct Grid: ~Copyable {
         UnsafeMutableBufferPointer(start: physical(history.id(index)), count: Int(extents[Int(history.id(index))]))
     }
 
-    /// Scrolls the whole screen up by `count`, moving the top rows into
-    /// history without copying them. Without history this is `scrollUp`.
-    public mutating func scrollUpIntoHistory(count: Int, fill cell: Cell) {
+    /// Scrolls rows `0...bottom` (default: the whole screen) up by `count`,
+    /// moving the top rows into history without copying them. Without
+    /// history this is `scrollUp`.
+    public mutating func scrollUpIntoHistory(count: Int, bottom: Int? = nil, fill cell: Cell) {
+        let bottom = bottom ?? rows - 1
         guard history.capacity > 0 else {
-            scrollUp(top: 0, bottom: rows - 1, count: count, fill: cell)
+            scrollUp(top: 0, bottom: bottom, count: count, fill: cell)
+            dropped += min(count, bottom + 1)
             return
         }
-        for _ in 0 ..< min(count, rows) {
+        for _ in 0 ..< min(count, bottom + 1) {
             let top = rowMap[0]
             let fresh = history.push(top) ?? takeRow()
-            if rows > 1 {
-                rowMap.update(from: rowMap + 1, count: rows - 1)
+            if bottom > 0 {
+                rowMap.update(from: rowMap + 1, count: bottom)
             }
-            rowMap[rows - 1] = fresh
-            clear(rows: rows - 1 ..< rows, with: cell)
+            rowMap[bottom] = fresh
+            clear(rows: bottom ..< bottom + 1, with: cell)
         }
     }
 
@@ -200,6 +205,7 @@ public struct Grid: ~Copyable {
     }
 
     public mutating func clearHistory() {
+        dropped = 0
         var released: [Int32] = []
         history.removeAll { released.append($0) }
         for id in released {
@@ -331,6 +337,12 @@ public struct Grid: ~Copyable {
                 UnsafeBufferPointer(start: row(y), count: min(extent(y), newColumns)),
                 wrapped: newColumns == columns && isWrapped(y),
             )
+        }
+        if newColumns < columns {
+            // A wide character whose tail was cut off becomes blank.
+            for y in 0 ..< min(rows, newRows) where fresh.row(y)[newColumns - 1].width == 2 {
+                fresh.row(y)[newColumns - 1] = .blank
+            }
         }
         self = fresh
     }

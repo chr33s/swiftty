@@ -60,3 +60,75 @@ struct NotificationOSCTests {
         #expect(events == [.notification(title: "", body: "done"), .progress(state: 1, percent: 42), .notification(title: "T", body: "B")])
     }
 }
+
+struct HyperlinkTests {
+    @Test func `osc 8 marks cells`() {
+        var vt = VT(20, 2)
+        vt.feed("\(ESC)]8;;https://example.com\u{07}link\(CSI)0m\(ESC)]8;;\u{07} x")
+        let id = vt.cell(1, 0).attributes.link
+        #expect(id != 0)
+        let target = vt.state.hyperlink(id)
+        #expect(target == "https://example.com")
+        #expect(vt.cell(5, 0).attributes.link == 0)
+        let stride = MemoryLayout<Cell>.stride
+        #expect(stride == 16)
+    }
+}
+
+struct HyperlinkReuseTests {
+    @Test func `full table never retargets live cells`() {
+        var vt = VT(40, 300, scrollback: 10_000_000)
+        for i in 0 ..< 300 {
+            vt.feed("\(ESC)]8;;file:///f\(i)\u{07}f\(i)\(ESC)]8;;\u{07}\r\n")
+        }
+        // Every linked cell still resolves to the URI it was written with.
+        let lines = vt.lines
+        var linked = 0
+        for y in 0 ..< lines.count where lines[y].hasPrefix("f") {
+            let link = vt.cell(0, y).attributes.link
+            guard link != 0 else { continue }
+            linked += 1
+            let target = vt.state.hyperlink(link)
+            #expect(target == "file:///" + lines[y])
+        }
+        #expect(linked >= 250)
+    }
+
+    @Test func `freed ids are reused`() {
+        var vt = VT(40, 2, scrollback: 0)
+        for i in 0 ..< 600 {
+            vt.feed("\(ESC)]8;;file:///g\(i)\u{07}g\(ESC)]8;;\u{07}\r\n")
+        }
+        let link = vt.cell(0, 0).attributes.link
+        let target = vt.state.hyperlink(link)
+        #expect(link != 0 && target == "file:///g599")
+    }
+}
+
+struct HyperlinkLifetimeTests {
+    /// Fills the table with links that end on the first row, then forces
+    /// reuse; `cell` must keep resolving to its original URI.
+    @Test func reusedAndSavedLinksStayPinned() {
+        var vt = VT(40, 3, scrollback: 0)
+        // Link A, ended; then printed again later (interned hit) on a fresh row.
+        vt.feed("\(ESC)]8;;file:///A\u{07}a\(ESC)]8;;\u{07}\r\n")
+        // Link B held by a saved cursor across a restore.
+        vt.feed("\(ESC)]8;;file:///B\u{07}\(ESC)7\(ESC)]8;;\u{07}\r\n")
+        // Push A's first row out of the screen (no history), then reuse A.
+        vt.feed("x\r\nx\r\nx\r\n")
+        vt.feed("\(ESC)]8;;file:///A\u{07}A\(ESC)]8;;\u{07}")
+        vt.feed("\(ESC)8b") // restore: pen carries B again
+        for i in 0 ..< 400 {
+            vt.feed("\(ESC)]8;;file:///n\(i)\u{07}\(ESC)]8;;\u{07}")
+        }
+        let rowA = vt.lines.firstIndex { $0.contains("A") } ?? 0
+        let colA = vt.lines[rowA].firstIndex(of: "A").map { vt.lines[rowA].distance(from: vt.lines[rowA].startIndex, to: $0) } ?? 0
+        let a = vt.state.hyperlink(vt.cell(colA, rowA).attributes.link)
+        #expect(a == "file:///A")
+        // "b" was written with B's id after the restore.
+        let rowB = vt.lines.firstIndex { $0.contains("b") } ?? 0
+        let colB = vt.lines[rowB].firstIndex(of: "b").map { vt.lines[rowB].distance(from: vt.lines[rowB].startIndex, to: $0) } ?? 0
+        let b = vt.state.hyperlink(vt.cell(colB, rowB).attributes.link)
+        #expect(b == "file:///B")
+    }
+}

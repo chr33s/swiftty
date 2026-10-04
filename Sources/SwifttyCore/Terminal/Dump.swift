@@ -39,6 +39,7 @@ extension TerminalState {
                 }
                 var attrs = cell.attributes
                 attrs.flags.subtract(.structural)
+                attrs.link = 0
                 if attrs != pen {
                     Self.appendSGR(attrs, to: &out)
                     pen = attrs

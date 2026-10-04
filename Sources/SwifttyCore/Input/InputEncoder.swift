@@ -25,12 +25,20 @@ public enum Key: Sendable, Hashable {
 }
 
 public struct KeyEvent: Sendable, Hashable {
+    public enum Action: Sendable, Hashable { case press, `repeat`, release }
+
     public var key: Key
     public var modifiers: KeyModifiers
+    /// Releases are only encoded under the kitty protocol's event types flag.
+    public var action: Action
+    /// Text the key produced, for the kitty protocol's associated text flag.
+    public var text: String?
 
-    public init(_ key: Key, modifiers: KeyModifiers = []) {
+    public init(_ key: Key, modifiers: KeyModifiers = [], action: Action = .press, text: String? = nil) {
         self.key = key
         self.modifiers = modifiers
+        self.action = action
+        self.text = text
     }
 }
 
@@ -79,7 +87,17 @@ public enum InputEncoder {
         case let .bytes(b):
             out.append(contentsOf: b)
         case let .key(event):
-            if keyboardFlags & 1 != 0, encodeKittyKey(event, into: &out) {
+            // Kitty encoding needs "disambiguate" or "all keys"; other flags alone
+            // only refine those.
+            if keyboardFlags & 0b1001 != 0 {
+                return encodeKittyKey(event, flags: keyboardFlags, modes: modes, into: &out)
+            }
+            guard event.action != .release else { return false }
+            // A printable key's own text (shifted or composed) when no
+            // Ctrl/Alt asks for a control encoding.
+            if case .character = event.key, let text = event.text, !text.isEmpty,
+               event.modifiers.isDisjoint(with: [.control, .alt]) {
+                out.append(contentsOf: text.utf8)
                 return true
             }
             return encodeKey(event, modes: modes, into: &out)
@@ -121,6 +139,12 @@ public enum InputEncoder {
         switch event.key {
         case let .character(scalar):
             var value = scalar.value
+            // Meta without Ctrl sends ESC + the typed (shifted) text.
+            if alt, !mods.contains(.control), let text = event.text, !text.isEmpty {
+                out.append(0x1B)
+                out.append(contentsOf: text.utf8)
+                return true
+            }
             if mods.contains(.control), let control = controlCode(value) {
                 value = UInt32(control)
             }
@@ -183,29 +207,92 @@ public enum InputEncoder {
         return true
     }
 
-    /// Kitty "disambiguate escape codes": Escape and modified text,
-    /// Enter, Tab and Backspace become `CSI code[;mods] u`. Returns false
-    /// for keys whose legacy encoding is already unambiguous.
-    static func encodeKittyKey(_ event: KeyEvent, into out: inout [UInt8]) -> Bool {
-        let mods = event.modifiers.subtracting(.command)
+    /// Kitty keyboard protocol (progressive enhancement flags: 1
+    /// disambiguate, 2 event types, 8 all keys as escape codes, 16
+    /// associated text). Returns false when the event produces nothing.
+    static func encodeKittyKey(_ event: KeyEvent, flags: UInt8, modes: Modes, into out: inout [UInt8]) -> Bool {
+        let allKeys = flags & 8 != 0, eventTypes = flags & 2 != 0
+        if event.action == .release, !eventTypes {
+            return false
+        }
+        var mods = event.modifiers
+        var bits = Int(mods.rawValue & 0b111) // shift, alt, ctrl
+        if mods.contains(.command) {
+            bits |= 8 // super
+        }
+        mods.remove(.command)
+        // Event types are reported only when the application asked (flag 2).
+        let event2 = !eventTypes ? 1 : event.action == .repeat ? 2 : event.action == .release ? 3 : 1
+
+        // Functional keys keep their legacy final byte, gaining modifier and
+        // event fields only when needed.
+        let legacy: (number: Int, final: UInt8)? = switch event.key {
+        case .up: (1, 0x41)
+        case .down: (1, 0x42)
+        case .right: (1, 0x43)
+        case .left: (1, 0x44)
+        case .home: (1, 0x48)
+        case .end: (1, 0x46)
+        case .insert: (2, 0x7E)
+        case .delete: (3, 0x7E)
+        case .pageUp: (5, 0x7E)
+        case .pageDown: (6, 0x7E)
+        case let .function(n):
+            switch n {
+            case 1: (1, 0x50)
+            case 2: (1, 0x51)
+            case 3: (13, 0x7E)
+            case 4: (1, 0x53)
+            case 5 ... 12: ([15, 17, 18, 19, 20, 21, 23, 24][n - 5], 0x7E)
+            default: nil
+            }
+        default: nil
+        }
+        if let legacy {
+            if bits == 0, event2 == 1 {
+                return encodeKey(KeyEvent(event.key), modes: modes, into: &out)
+            }
+            let params = "\(legacy.number);\(1 + bits)" + (event2 != 1 ? ":\(event2)" : "")
+            appendCSI(out: &out, params, legacy.final)
+            return true
+        }
+
         let code: UInt32
+        var producesText = false
         switch event.key {
         case .escape: code = 27
         case .enter: code = 13
         case .tab: code = 9
         case .backspace: code = 127
         case let .character(scalar):
-            // Shift alone still produces text.
-            guard !mods.isDisjoint(with: [.control, .alt]) else { return false }
             code = String(scalar).lowercased().unicodeScalars.first?.value ?? scalar.value
+            producesText = bits & 0b110 == 0 // nothing but (possibly) shift
         default:
             return false
         }
-        if event.key != .escape, mods.isEmpty {
-            return false
+        let plainControl = event.key == .enter || event.key == .tab || event.key == .backspace
+        // Without "all keys", text and unmodified Enter/Tab/Backspace stay legacy
+        // (and their releases are not reported).
+        if !allKeys, producesText || (plainControl && bits == 0) {
+            guard event.action != .release else { return false }
+            if producesText, let text = event.text, !text.isEmpty {
+                out.append(contentsOf: text.utf8)
+                return true
+            }
+            return encodeKey(KeyEvent(event.key, modifiers: mods), modes: modes, into: &out)
         }
-        let m = mods.xtermParameter
-        appendCSI(out: &out, m == 1 ? "\(code)" : "\(code);\(m)", 0x75)
+        var params = "\(code)"
+        if bits != 0 || event2 != 1 {
+            params += ";\(1 + bits)" + (event2 != 1 ? ":\(event2)" : "")
+        }
+        if flags & 16 != 0, allKeys, event.action != .release, let text = event.text, !text.isEmpty,
+           text.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7F }) {
+            if bits == 0, event2 == 1 {
+                params += ";1"
+            }
+            params += ";" + text.unicodeScalars.map { String($0.value) }.joined(separator: ":")
+        }
+        appendCSI(out: &out, params, 0x75)
         return true
     }
 

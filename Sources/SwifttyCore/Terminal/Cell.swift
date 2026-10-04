@@ -44,6 +44,13 @@ public struct CellFlags: OptionSet, Hashable, Sendable, BitwiseCopyable {
     public static let invisible = CellFlags(rawValue: 1 << 7)
     public static let strikethrough = CellFlags(rawValue: 1 << 8)
     public static let overline = CellFlags(rawValue: 1 << 9)
+    /// Underline style bits refining `.underline` (SGR 4:3/4:4/4:5):
+    /// curly = A, dotted = B, dashed = A+B. Drawn as a plain underline.
+    public static let underlineStyleA = CellFlags(rawValue: 1 << 11)
+    public static let underlineStyleB = CellFlags(rawValue: 1 << 15)
+    public static let anyUnderline: CellFlags = [.underline, .doubleUnderline, .underlineStyleA, .underlineStyleB]
+    /// DECSCA / SPA protection: selective erase leaves the cell alone.
+    public static let protected = CellFlags(rawValue: 1 << 10)
 
     /// Right half of a wide character; renders nothing.
     public static let spacerTail = CellFlags(rawValue: 1 << 12)
@@ -60,15 +67,20 @@ public struct CellAttributes: Hashable, Sendable, BitwiseCopyable {
     public var foreground: TerminalColor
     public var background: TerminalColor
     public var flags: CellFlags
+    /// OSC 8 hyperlink id (`TerminalState.hyperlink(_:)`), 0 for none. Uses
+    /// the cell's spare byte, so a cell stays 16 bytes.
+    public var link: UInt8
 
     @inlinable public init(
         foreground: TerminalColor = .default,
         background: TerminalColor = .default,
         flags: CellFlags = [],
+        link: UInt8 = 0,
     ) {
         self.foreground = foreground
         self.background = background
         self.flags = flags
+        self.link = link
     }
 
     public static let `default` = CellAttributes()
@@ -99,7 +111,7 @@ public struct Cell: Hashable, Sendable, BitwiseCopyable {
 
     @inlinable public var isBlank: Bool {
         glyph == 0 && width == 1 && attributes.foreground.rawValue == 0
-            && attributes.background.rawValue == 0 && attributes.flags.rawValue == 0
+            && attributes.background.rawValue == 0 && attributes.flags.rawValue == 0 && attributes.link == 0
     }
 
     @inlinable public var flags: CellFlags {

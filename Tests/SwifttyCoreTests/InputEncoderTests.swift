@@ -79,3 +79,49 @@ struct KittyKeyboardTests {
         #expect(vt.takeOutput() == "\(CSI)?0u")
     }
 }
+
+struct KittyKeyboardLevelsTests {
+    func enc(_ e: KeyEvent, _ flags: UInt8) -> String {
+        var out: [UInt8] = []
+        InputEncoder.encode(.key(e), modes: .initial, keyboardFlags: flags, into: &out)
+        return String(decoding: out, as: UTF8.self)
+    }
+
+    @Test func `event types`() {
+        #expect(enc(KeyEvent(.character("a"), modifiers: .control, action: .repeat), 3) == "\(CSI)97;5:2u")
+        #expect(enc(KeyEvent(.character("a"), modifiers: .control, action: .release), 3) == "\(CSI)97;5:3u")
+        #expect(enc(KeyEvent(.character("a"), action: .release, text: "a"), 3) == "")
+        #expect(enc(KeyEvent(.up, action: .release), 3) == "\(CSI)1;1:3A")
+        #expect(enc(KeyEvent(.up, action: .release), 1) == "")
+        #expect(enc(KeyEvent(.character("a"), action: .release), 0) == "")
+    }
+
+    @Test func `all keys and text`() {
+        #expect(enc(KeyEvent(.character("a"), text: "a"), 8) == "\(CSI)97u")
+        #expect(enc(KeyEvent(.character("a"), modifiers: .shift, text: "A"), 8) == "\(CSI)97;2u")
+        #expect(enc(KeyEvent(.enter), 8) == "\(CSI)13u")
+        #expect(enc(KeyEvent(.character("a"), text: "a"), 24) == "\(CSI)97;1;97u")
+        #expect(enc(KeyEvent(.character("a"), modifiers: .shift, text: "A"), 24) == "\(CSI)97;2;65u")
+        #expect(enc(KeyEvent(.character("a"), modifiers: .shift, text: "A"), 1) == "A")
+        #expect(enc(KeyEvent(.function(5), modifiers: .alt), 1) == "\(CSI)15;3~")
+    }
+}
+
+struct KittyFlagGatingTests {
+    func enc(_ e: KeyEvent, _ flags: UInt8) -> String {
+        var out: [UInt8] = []
+        InputEncoder.encode(.key(e), modes: .initial, keyboardFlags: flags, into: &out)
+        return String(decoding: out, as: UTF8.self)
+    }
+
+    @Test func repeatsCarryNoEventFieldWithoutFlag2() {
+        #expect(enc(KeyEvent(.up, action: .repeat), 1) == "\(CSI)A")
+        #expect(enc(KeyEvent(.character("a"), modifiers: .control, action: .repeat), 1) == "\(CSI)97;5u")
+    }
+
+    @Test func flagsWithoutDisambiguateStayLegacy() {
+        #expect(enc(KeyEvent(.character("c"), modifiers: .control), 2) == "\u{03}")
+        #expect(enc(KeyEvent(.escape), 16) == "\u{1B}")
+        #expect(enc(KeyEvent(.escape, action: .release), 2) == "")
+    }
+}
