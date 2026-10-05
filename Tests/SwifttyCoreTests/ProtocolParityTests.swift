@@ -229,3 +229,72 @@ struct LinkTests {
         do { let ok = vt.state.link(at: TerminalPoint(row: 1, column: 2), detectURLs: false) == nil; #expect(ok) }
     }
 }
+
+/// Fixes from the review of milestones 2-4.
+struct ShellIntegrationReviewTests {
+    let promptA = "\u{1B}]133;A\u{07}", inputB = "\u{1B}]133;B\u{07}", outputC = "\u{1B}]133;C\u{07}"
+
+    @Test func `erasing the screen drops prompt marks`() {
+        var vt = VT(20, 6)
+        vt.feed("\(promptA)$ \(inputB)ls\r\n\(outputC)a\r\n\(promptA)$ \(inputB)x\r\n")
+        do { let ok = vt.state.promptRows().count == 2; #expect(ok) }
+        vt.feed("\(CSI)H\(CSI)2J")
+        do { let ok = vt.state.promptRows().isEmpty; #expect(ok) }
+        do { let ok = vt.state.hasSemanticPrompts; #expect(ok) }
+        vt.feed("\(promptA)$ \(inputB)y\r\n\(outputC)out\r\nmore\r\n")
+        do { let ok = vt.state.promptRows() == [vt.state.screenAbsoluteRow(0)]; #expect(ok) }
+        let range = vt.state.commandOutputRange(at: TerminalPoint(row: vt.state.screenAbsoluteRow(0), column: 0))
+        #expect(range?.end.row == vt.state.screenAbsoluteRow(2))
+    }
+
+    @Test func `clear screen keeping the cursor line drops marks below it`() {
+        var vt = VT(20, 6)
+        vt.feed("\(promptA)$ \(inputB)ls\r\n\(outputC)a\r\n\(promptA)$ \(inputB)x")
+        vt.state.clearScreenKeepingCursorLine()
+        do { let ok = vt.state.promptRows() == [vt.state.screenAbsoluteRow(0)]; #expect(ok) }
+        // The command line moved to the top; click-to-move follows it.
+        let row = vt.state.screenAbsoluteRow(0)
+        do { let ok = vt.state.promptCursorMoves(to: TerminalPoint(row: row, column: 2)) == -1; #expect(ok) }
+    }
+
+    @Test func `click to move survives a width change`() throws {
+        var vt = VT(20, 4)
+        vt.feed("out\r\n\(promptA)$ \(inputB)echo hello world")
+        vt.state.resize(columns: 10, rows: 4) // the command line now wraps
+        let start = vt.state.inputStart
+        #expect(start?.column == 2)
+        let cursor = (vt.state.screenAbsoluteRow(vt.state.cursor.y), vt.state.cursor.x)
+        // Back to the start of "hello": 11 characters ("hello world").
+        let target = try TerminalPoint(row: #require(start?.row), column: 7)
+        do { let ok = vt.state.promptCursorMoves(to: target) == -11; #expect(ok) }
+        #expect(cursor.0 > start!.row)
+        // Typing on wraps past the bottom and scrolls; the start stays put.
+        vt.feed(" and more text")
+        do { let ok = vt.state.scrollbackCount > 0; #expect(ok) }
+        do { let ok = vt.state.inputStart == start; #expect(ok) }
+    }
+
+    @Test func `keybind actions may contain equals signs`() {
+        var b = Keybindings()
+        #expect(b.apply("ctrl+e=text:export A=1\\n") == nil)
+        #expect(b.action(for: KeyEvent(.character("e"), modifiers: .control)) == .text("export A=1\n"))
+        #expect(b.apply("super+==increase_font_size:2") == nil)
+        #expect(b.action(for: KeyEvent(.character("="), modifiers: .command)) == .increaseFontSize(2))
+        #expect(b.apply("ctrl+k=csi:=1u") == nil)
+        #expect(b.action(for: KeyEvent(.character("k"), modifiers: .control)) == .csi("=1u"))
+    }
+
+    @Test func `command is split like a shell would`() {
+        #expect(Configuration.arguments(#""/Users/me/My Tools/fish" -l"#) == ["/Users/me/My Tools/fish", "-l"])
+        #expect(Configuration.arguments(#"sh -c 'echo  hi'"#) == ["sh", "-c", "echo  hi"])
+        #expect(Configuration.arguments(#"a\ b "c\"d" '' e"#) == ["a b", "c\"d", "", "e"])
+        #expect(Configuration.parse("command = \"/opt/my shell\" --login").sessionConfiguration().command == ["/opt/my shell", "--login"])
+    }
+
+    @Test func `only web, mail, ftp and ssh links open`() {
+        #expect(LinkPolicy.openableURL("https://example.com") != nil)
+        #expect(LinkPolicy.openableURL("file:///Users/x/evil.command") == nil)
+        #expect(LinkPolicy.openableURL("javascript:alert(1)") == nil)
+        #expect(ActionDispatch.viewportDelta(for: .scrollPageUp, rows: 24, history: 100) == 24)
+    }
+}

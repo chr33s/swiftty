@@ -198,8 +198,18 @@ public struct Keybindings: Sendable, Equatable {
             bindings = [:]
             return nil
         }
-        // The trigger may itself contain "=" (`super+=`), so split at the last one.
-        guard let eq = value.lastIndex(of: "="), eq != value.startIndex else { return "expected trigger=action" }
+        // The separator is the first "=" that is not itself the trigger's
+        // key (`super+=`); actions may contain "=" (`text:A=1`).
+        var separator: String.Index?
+        var i = value.startIndex
+        while i < value.endIndex {
+            if value[i] == "=", i != value.startIndex, value[value.index(before: i)] != "+" {
+                separator = i
+                break
+            }
+            i = value.index(after: i)
+        }
+        guard let eq = separator else { return "expected trigger=action" }
         var trigger = value[..<eq]
         let action = value[value.index(after: eq)...]
         // Prefixes that change scope; all bindings here are surface-local.

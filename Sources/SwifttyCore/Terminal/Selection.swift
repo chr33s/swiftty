@@ -156,6 +156,14 @@ public extension TerminalState {
         damage.setFull()
     }
 
+    /// Selects everything addressable: history and the screen.
+    mutating func selectAll() {
+        setSelection(Selection(
+            anchor: TerminalPoint(row: firstAbsoluteRow, column: 0),
+            head: TerminalPoint(row: firstAbsoluteRow + addressableRows - 1, column: columns - 1),
+        ))
+    }
+
     /// Selection was made on content that is gone (screen switch, resize,
     /// clear): drop it.
     internal mutating func invalidateSelection() {

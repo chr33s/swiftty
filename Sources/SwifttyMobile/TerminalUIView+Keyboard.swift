@@ -336,13 +336,7 @@
         }
 
         override func selectAll(_ sender: Any?) {
-            session.mutate { state in
-                let first = state.firstAbsoluteRow
-                state.setSelection(Selection(
-                    anchor: TerminalPoint(row: first, column: 0),
-                    head: TerminalPoint(row: first + state.addressableRows - 1, column: state.columns - 1),
-                ))
-            }
+            session.mutate { $0.selectAll() }
             hasSelection = true
         }
     }

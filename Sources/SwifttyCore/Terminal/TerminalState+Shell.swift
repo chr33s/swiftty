@@ -44,19 +44,20 @@ extension TerminalState {
                 grid.setMark(cursor.y, continuation ? .promptContinuation : .prompt)
             }
             semanticState = .prompt
-            inputStart = nil
+            hasSemanticPrompts = true
+            clearInputLine()
         case 0x42: // B
             semanticState = .input
-            inputStart = TerminalPoint(row: screenAbsoluteRow(cursor.y), column: cursor.x)
+            markInputLine()
         case 0x43: // C
             semanticState = .output
-            inputStart = nil
+            clearInputLine()
             if grid.mark(cursor.y) == .none {
                 grid.setMark(cursor.y, .output)
             }
         case 0x44: // D [; exit status]
             semanticState = .none
-            inputStart = nil
+            clearInputLine()
             var code: Int?
             var i = 2
             while i < rest.count, (0x30 ... 0x39).contains(rest[i]), (code ?? 0) < 100_000 {
@@ -68,6 +69,40 @@ extension TerminalState {
         default:
             break
         }
+    }
+
+    /// Flags the first row of the cursor's logical line and records the
+    /// cursor's offset in that line: the command line starts there.
+    private mutating func markInputLine() {
+        clearInputLine()
+        var top = cursor.y
+        while top > 0, grid.isWrapped(top - 1) {
+            top -= 1
+        }
+        grid.setInputLine(top, true)
+        inputOffset = (cursor.y - top) * columns + cursor.x
+    }
+
+    private mutating func clearInputLine() {
+        // Only `markInputLine` sets the flag, and it sets the offset too.
+        guard inputOffset != nil else { return }
+        inputOffset = nil
+        for y in 0 ..< rows where grid.isInputLine(y) {
+            grid.setInputLine(y, false)
+        }
+    }
+
+    /// Where the command line being edited starts (OSC 133 ; B), absolute;
+    /// nil unless the cursor is still on that logical line.
+    public var inputStart: TerminalPoint? {
+        guard semanticState == .input, !isAlternateScreen, let offset = inputOffset else { return nil }
+        // The first row of the cursor's logical line must carry the flag.
+        var top = cursor.y
+        while top > 0, grid.isWrapped(top - 1) {
+            top -= 1
+        }
+        guard grid.isInputLine(top) else { return nil }
+        return TerminalPoint(row: screenAbsoluteRow(top) + offset / columns, column: offset % columns)
     }
 
     /// Absolute row of screen row `y`, whatever the viewport shows.
@@ -210,7 +245,7 @@ extension TerminalState {
         cursor.x = 0
         cursor.y = y
         cursor.pendingWrap = false
-        inputStart = nil
+        inputOffset = nil
         damage.setFull()
     }
 
@@ -361,7 +396,8 @@ extension TerminalState {
     mutating func resetShellState() {
         semanticState = .none
         promptRedraws = false
-        inputStart = nil
+        inputOffset = nil
+        hasSemanticPrompts = false
         lastExitCode = nil
         titleStack = []
         penStack = []

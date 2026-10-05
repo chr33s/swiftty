@@ -97,11 +97,7 @@ extension TerminalView {
         selectionDragged = true
         session.mutate { state in
             // Dragging past the top or bottom edge scrolls the viewport.
-            if c.row < 0 {
-                state.scrollViewport(by: 1)
-            } else if c.row >= state.rows {
-                state.scrollViewport(by: -1)
-            }
+            state.scrollViewport(by: SelectionMath.edgeScroll(row: c.row, rows: state.rows))
             let row = min(max(c.row, 0), state.rows - 1)
             let p = state.clamp(TerminalPoint(row: state.absoluteRow(viewportRow: row), column: c.column))
             let span = switch unit {
@@ -109,11 +105,7 @@ extension TerminalView {
             case .word: state.wordRange(at: p)
             case .line: state.lineRange(at: p)
             }
-            // Keep the whole unit the gesture started on.
-            let selection = span.start < origin.start
-                ? Selection(anchor: origin.end, head: span.start, rectangle: rectangle)
-                : Selection(anchor: origin.start, head: span.end, rectangle: rectangle)
-            state.setSelection(selection)
+            state.setSelection(SelectionMath.extend(origin: origin, to: span, rectangle: rectangle))
         }
         hasSelection = true
     }
@@ -139,10 +131,9 @@ extension TerminalView {
     /// Click-to-move: while the shell is editing a command line (OSC 133),
     /// a click moves its cursor there with arrow keys.
     private func moveShellCursor(to p: TerminalPoint) {
-        guard let moves = session.withState({ $0.promptCursorMoves(to: p) }), moves != 0 else { return }
-        let key: Key = moves < 0 ? .left : .right
-        for _ in 0 ..< abs(moves) {
-            session.send(.key(KeyEvent(key)))
+        guard let moves = session.withState({ $0.promptCursorMoves(to: p) }) else { return }
+        for key in ClickToMove.keys(moves) {
+            session.send(.key(key))
         }
     }
 
@@ -154,9 +145,10 @@ extension TerminalView {
         return session.withState { $0.link(at: p, detectURLs: detect) }
     }
 
+    /// Opens web, mail, FTP and SSH links only: the application chooses
+    /// the target, so a `file:` link could launch a local program.
     func open(_ string: String) {
-        guard let url = URL(string: string), let scheme = url.scheme?.lowercased(),
-              ["http", "https", "mailto", "ftp", "file", "ssh"].contains(scheme) else {
+        guard let url = LinkPolicy.openableURL(string) else {
             NSSound.beep()
             return
         }
@@ -166,16 +158,12 @@ extension TerminalView {
     /// With Command held, the link under the pointer is underlined and the
     /// pointer becomes a hand.
     func updateHover(_ event: NSEvent) {
-        let link = event.modifierFlags.contains(.command) ? self.link(for: event) : nil
+        let link = event.modifierFlags.contains(.command)
+            ? self.link(for: event).flatMap { LinkPolicy.openableURL($0.url) != nil ? $0 : nil } : nil
         guard link != hoveredLink else { return }
         hoveredLink = link
         if let link {
-            let span = session.withState { state in
-                HighlightSpan(
-                    startRow: state.viewportRow(absoluteRow: link.range.start.row), startColumn: link.range.start.column,
-                    endRow: state.viewportRow(absoluteRow: link.range.end.row), endColumn: link.range.end.column,
-                )
-            }
+            let span = session.withState { LinkPolicy.span(of: link.range, firstVisibleRow: $0.absoluteRow(viewportRow: 0)) }
             renderer.options.hoveredLink = link.id
             renderer.options.underlinedSpan = link.id == 0 ? span : nil
             NSCursor.pointingHand.set()

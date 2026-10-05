@@ -183,8 +183,12 @@ public struct TerminalState: ~Copyable {
     public internal(set) var semanticState = SemanticState.none
     /// The shell redraws its prompt after a resize (OSC 133 `redraw=1`).
     var promptRedraws = false
-    /// Where the command line being typed starts (OSC 133 ; B), absolute.
-    public internal(set) var inputStart: TerminalPoint?
+    /// Where the command line being typed starts (OSC 133 ; B), as an
+    /// offset into its logical line; that line's first row carries the
+    /// grid's input-line flag, so the point follows scrolling and reflow.
+    var inputOffset: Int?
+    /// Whether any OSC 133 prompt has been seen (menus enable on it).
+    public internal(set) var hasSemanticPrompts = false
     public internal(set) var lastExitCode: Int?
     /// A command finished since the last `takeEvents()`.
     var commandFinished = false
@@ -1008,6 +1012,7 @@ public struct TerminalState: ~Copyable {
             clearCells(row: y, from: 0, to: columns, protected: protected)
             if !protected {
                 grid.setWrapped(y, false)
+                grid.clearMarks(y) // the prompt or output it marked is gone
             }
         }
     }
@@ -1904,7 +1909,7 @@ public struct TerminalState: ~Copyable {
         var cells: [Cell] = []
         var lineStarts: [Int] = []
         var lineWrapped: [Bool] = []
-        var lineMarks: [RowMark] = []
+        var lineMarks: [UInt8] = []
         var lineOpen = false
         // Per cursor: logical line, offset in it, and pending wrap.
         var marks = cursors.map { _ in (line: 0, offset: 0, pending: false) }
@@ -1914,7 +1919,7 @@ public struct TerminalState: ~Copyable {
             if !lineOpen {
                 lineStarts.append(cells.count)
                 lineWrapped.append(wrapped)
-                lineMarks.append(p < history ? grid.historyMark(p) : grid.mark(p - history))
+                lineMarks.append(p < history ? grid.historyMarkBits(p) : grid.markBits(p - history))
                 lineOpen = true
             }
             for (i, c) in cursors.enumerated() where p == history + c.y {
@@ -1941,12 +1946,12 @@ public struct TerminalState: ~Copyable {
         // 2. Re-wrap into rows of the new width.
         var out: [Cell] = []
         var outWrapped: [Bool] = []
-        var outMarks: [RowMark] = []
+        var outMarks: [UInt8] = []
         var placed = cursors.map { _ in (row: -1, column: 0, pending: false) }
         func newRow() {
             out.append(contentsOf: repeatElement(Cell.blank, count: newColumns))
             outWrapped.append(false)
-            outMarks.append(.none)
+            outMarks.append(0)
         }
         for line in 0 ..< lineStarts.count - 1 {
             let lo = lineStarts[line], hi = lineStarts[line + 1]
@@ -2018,13 +2023,13 @@ public struct TerminalState: ~Copyable {
             for r in 0 ..< top {
                 grid.appendHistory(
                     UnsafeBufferPointer(rebasing: buf[r * newColumns ..< (r + 1) * newColumns]),
-                    wrapped: outWrapped[r], mark: outMarks[r],
+                    wrapped: outWrapped[r], marks: outMarks[r],
                 )
             }
             for r in top ..< min(total, top + newRows) {
                 grid.setRow(
                     r - top, UnsafeBufferPointer(rebasing: buf[r * newColumns ..< (r + 1) * newColumns]),
-                    wrapped: outWrapped[r], mark: outMarks[r],
+                    wrapped: outWrapped[r], marks: outMarks[r],
                 )
             }
         }

@@ -11,11 +11,12 @@ extension TerminalView {
         case let .decreaseFontSize(n): fontSize = max(fontSize - CGFloat(n), 6); applyFont()
         case .resetFontSize: fontSize = CGFloat(config.fontSize); applyFont()
         case .selectAll: selectAll(nil)
-        case .scrollToTop: session.mutate { $0.scrollViewport(toTopRow: 0) }
-        case .scrollToBottom: session.mutate { $0.scrollViewportToBottom() }
-        case .scrollPageUp: session.scrollViewport(by: max(gridSize.rows - 1, 1))
-        case .scrollPageDown: session.scrollViewport(by: -max(gridSize.rows - 1, 1))
-        case let .scrollPageLines(n): session.scrollViewport(by: -n) // positive scrolls down
+        case .scrollToTop, .scrollToBottom, .scrollPageUp, .scrollPageDown, .scrollPageLines:
+            session.mutate { state in
+                if let delta = ActionDispatch.viewportDelta(for: action, rows: state.rows, history: state.scrollbackCount) {
+                    state.scrollViewport(by: delta)
+                }
+            }
         case let .jumpToPrompt(n): session.mutate { _ = $0.jumpToPrompt(n) }
         case .startSearch: showSearch(text: nil)
         case .searchSelection: showSearch(text: session.withState { $0.selectionText })
@@ -42,13 +43,7 @@ extension TerminalView {
     }
 
     override func selectAll(_ sender: Any?) {
-        session.mutate { state in
-            let first = state.firstAbsoluteRow
-            state.setSelection(Selection(
-                anchor: TerminalPoint(row: first, column: 0),
-                head: TerminalPoint(row: first + state.addressableRows - 1, column: state.columns - 1),
-            ))
-        }
+        session.mutate { $0.selectAll() }
         hasSelection = true
     }
 
@@ -100,7 +95,7 @@ extension TerminalView {
         switch item.action {
         case #selector(copy(_:)): session.withState { $0.selection != nil }
         case #selector(jumpToPreviousPrompt(_:)), #selector(jumpToNextPrompt(_:)), #selector(selectCommandOutput(_:)):
-            session.withState { !$0.promptRows().isEmpty }
+            session.withState { $0.hasSemanticPrompts }
         default: true
         }
     }

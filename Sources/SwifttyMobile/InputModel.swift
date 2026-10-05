@@ -365,24 +365,3 @@ public struct GridGeometry: Equatable, Sendable {
         cellSize.height / scale
     }
 }
-
-public enum SelectionMath {
-    /// Selection from the span a gesture started on to the span now under
-    /// the finger, keeping the whole starting unit (a word stays selected
-    /// when dragging backwards).
-    public static func extend(
-        origin: (start: TerminalPoint, end: TerminalPoint),
-        to span: (start: TerminalPoint, end: TerminalPoint),
-        rectangle: Bool = false,
-    ) -> Selection {
-        span.start < origin.start
-            ? Selection(anchor: origin.end, head: span.start, rectangle: rectangle)
-            : Selection(anchor: origin.start, head: span.end, rectangle: rectangle)
-    }
-
-    /// Viewport lines to scroll when dragging past the top (+1, into
-    /// history) or bottom (−1) of `rows` visible rows.
-    public static func edgeScroll(row: Int, rows: Int) -> Int {
-        row < 0 ? 1 : row >= rows ? -1 : 0
-    }
-}

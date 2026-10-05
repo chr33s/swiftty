@@ -48,6 +48,9 @@ final class TerminalView: MTKView, MTKViewDelegate {
 
     var searchBar: SearchBar?
     private var lastAccessibilityPost: CFTimeInterval = 0
+    private var accessibilityPostPending = false
+    /// Screen text for VoiceOver, rebuilt once per snapshot.
+    private var accessibilityCache: (sequence: UInt64, text: AccessibilityText)?
 
     var onTitle: ((String) -> Void)?
     var onExit: (() -> Void)?
@@ -137,10 +140,18 @@ final class TerminalView: MTKView, MTKViewDelegate {
         needsDisplay = true
     }
 
+    /// Replaces the configured options, keeping the ones the view drives
+    /// (composition, link hover, blink phase, focus).
     private func applyRenderOptions(scale: CGFloat) {
-        let preedit = renderer.options.preedit
-        renderer.options = config.renderOptions(scale: scale)
-        renderer.options.preedit = preedit
+        let current = renderer.options
+        var options = config.renderOptions(scale: scale)
+        options.preedit = current.preedit
+        options.hoveredLink = current.hoveredLink
+        options.underlinedSpan = current.underlinedSpan
+        options.textBlinkVisible = current.textBlinkVisible
+        options.cursorVisible = current.cursorVisible
+        options.isFocused = current.isFocused
+        renderer.options = options
     }
 
     private func loadShader() {
@@ -267,12 +278,37 @@ final class TerminalView: MTKView, MTKViewDelegate {
         }
     }
 
+    /// Tells VoiceOver the text changed, at most twice a second; a change
+    /// inside that window is posted when it ends, so the last output is
+    /// never missed.
     private func postAccessibilityChange() {
-        guard NSWorkspace.shared.isVoiceOverEnabled else { return }
-        let now = CACurrentMediaTime()
-        guard now - lastAccessibilityPost > 0.5 else { return }
-        lastAccessibilityPost = now
-        NSAccessibility.post(element: self, notification: .valueChanged)
+        guard NSWorkspace.shared.isVoiceOverEnabled, !accessibilityPostPending else { return }
+        let wait = lastAccessibilityPost + 0.5 - CACurrentMediaTime()
+        guard wait > 0 else {
+            lastAccessibilityPost = CACurrentMediaTime()
+            NSAccessibility.post(element: self, notification: .valueChanged)
+            return
+        }
+        accessibilityPostPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.accessibilityPostPending = false
+                self.lastAccessibilityPost = CACurrentMediaTime()
+                NSAccessibility.post(element: self, notification: .valueChanged)
+            }
+        }
+    }
+
+    /// The visible text for VoiceOver, cached per snapshot.
+    var accessibilityText: AccessibilityText? {
+        guard let snapshot = lastSnapshot else { return nil }
+        if let cache = accessibilityCache, cache.sequence == snapshot.sequence {
+            return cache.text
+        }
+        let text = AccessibilityText(snapshot)
+        accessibilityCache = (snapshot.sequence, text)
+        return text
     }
 
     // MARK: Keyboard

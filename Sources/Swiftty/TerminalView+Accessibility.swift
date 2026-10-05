@@ -4,10 +4,6 @@ import SwifttyCore
 /// VoiceOver: the view is a read-only text area holding the visible
 /// screen, with the insertion point at the terminal cursor.
 extension TerminalView {
-    private var accessibilityText: AccessibilityText? {
-        lastSnapshot.map(AccessibilityText.init)
-    }
-
     override func isAccessibilityElement() -> Bool {
         true
     }

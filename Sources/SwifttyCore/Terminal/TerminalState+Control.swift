@@ -162,6 +162,7 @@ extension TerminalState {
             for y in 1 ..< rows {
                 grid.fill(row: y, from: 0, to: columns, with: .blank)
                 grid.setWrapped(y, false)
+                grid.clearMarks(y)
             }
             grid.clearHistory()
         }

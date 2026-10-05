@@ -435,11 +435,60 @@ public struct Configuration: Sendable, Equatable {
     public func sessionConfiguration(scheme: ColorScheme = .dark) -> SessionConfiguration {
         var s = SessionConfiguration(workingDirectory: workingDirectory)
         if let command {
-            s.command = command.split(separator: " ").map(String.init)
+            s.command = Self.arguments(command)
         }
         s.scrollbackLimitBytes = scrollbackLimit
         s.palette = palette(for: scheme)
         return s
+    }
+
+    /// Splits a `command` value into arguments as a POSIX shell would:
+    /// whitespace separates them, single quotes are literal, double quotes
+    /// allow `\"`, `\\` and `\$`, and a backslash escapes the next character.
+    public static func arguments(_ command: String) -> [String] {
+        var args: [String] = []
+        var current = ""
+        var inArgument = false
+        var quote: Character?
+        var it = command.makeIterator()
+        while let c = it.next() {
+            switch (quote, c) {
+            case ("'", "'"), ("\"", "\""):
+                quote = nil
+            case ("'", _):
+                current.append(c)
+            case ("\"", "\\"):
+                if let next = it.next() {
+                    if !"\"\\$`".contains(next) {
+                        current.append("\\")
+                    }
+                    current.append(next)
+                }
+            case ("\"", _):
+                current.append(c)
+            case (nil, "'"), (nil, "\""):
+                quote = c
+                inArgument = true
+            case (nil, "\\"):
+                if let next = it.next() {
+                    current.append(next)
+                }
+                inArgument = true
+            case (nil, _) where c.isWhitespace:
+                if inArgument {
+                    args.append(current)
+                    current = ""
+                    inArgument = false
+                }
+            default:
+                current.append(c)
+                inArgument = true
+            }
+        }
+        if inArgument {
+            args.append(current)
+        }
+        return args
     }
 
     // MARK: Colors
