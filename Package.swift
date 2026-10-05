@@ -37,6 +37,13 @@ let package = Package(
             dependencies: ["SwifttyCore", "CAllocCounter"],
             swiftSettings: core,
         ),
-        .testTarget(name: "SwifttyMobileTests", dependencies: ["SwifttyMobile", "SwifttyCore"]),
+        // Recorded application sessions replay here, on macOS and on iOS.
+        .testTarget(
+            name: "SwifttyMobileTests",
+            dependencies: ["SwifttyMobile", "SwifttyCore"],
+            resources: [.copy("Fixtures")],
+        ),
+        // The macOS app's input handling.
+        .testTarget(name: "SwifttyAppTests", dependencies: ["Swiftty", "SwifttyCore"]),
     ],
 )

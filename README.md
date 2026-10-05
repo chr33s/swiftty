@@ -53,6 +53,11 @@ The iOS frontend builds with Xcode (the package's AppKit app keeps the
 xcodebuild -scheme SwifttyMobile -destination 'generic/platform=iOS Simulator' build
 ```
 
+`Tests/SwifttyMobileTests/Fixtures` holds recorded `sh`, `vim`, `less`,
+`tmux` and `top` sessions that the replay tests feed through `receive` (the
+iOS path, with no PTY) on macOS and the simulator. Re-record them with
+`SWIFTTY_RECORD=1 swift test --filter SessionRecorder`.
+
 ### Configuration
 
 Settings use Ghostty's syntax (`key = value`, `#` comments, repeatable keys,
@@ -282,8 +287,10 @@ cell updates.
   keyboard, dictation and IME, hardware keys with releases, the accessory bar,
   touch and pointer selection with an edit menu, momentum scrolling, mouse
   reporting, multitasking resize, keyboard avoidance, background pausing, and
-  an in-process demo shell. It builds for the iOS Simulator; its tests run on
-  macOS and the simulator.
+  an in-process demo shell. It builds for the iOS Simulator; its tests,
+  including replays of recorded `sh`, `vim`, `less`, `tmux` and `top`
+  sessions, run on macOS and the simulator. The macOS app's key handling has
+  its own tests (`SwifttyAppTests`).
 - Milestone 3: OSC 133 prompts (marks, prompt jumps, command-output
   selection, prompt clearing on resize with `redraw=1`, click-to-move), drawn
   underline styles and colors, blinking text, title and SGR stacks, OSC 21

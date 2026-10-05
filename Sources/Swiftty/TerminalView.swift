@@ -322,29 +322,39 @@ final class TerminalView: MTKView, MTKViewDelegate {
     }
 
     private func binding(for event: NSEvent) -> KeyAction? {
-        guard let key = Self.specialKeys[event.keyCode]
+        Self.trigger(for: event).flatMap { config.keybindings.action(for: $0) }
+    }
+
+    /// The key and modifiers a binding is matched against.
+    static func trigger(for event: NSEvent) -> KeyEvent? {
+        guard let key = specialKeys[event.keyCode]
             ?? event.charactersIgnoringModifiers?.unicodeScalars.first.map(Key.character) else { return nil }
-        return config.keybindings.action(for: KeyEvent(key, modifiers: Self.modifiers(event.modifierFlags)))
+        return KeyEvent(key, modifiers: modifiers(event.modifierFlags))
     }
 
     /// Sends keys the terminal encodes itself (specials, control
     /// combinations); returns false for text, which goes through the
     /// input method.
     func sendKey(_ event: NSEvent) -> Bool {
-        let mods = Self.modifiers(event.modifierFlags)
-        if let key = Self.specialKeys[event.keyCode] {
-            session.send(.key(KeyEvent(key, modifiers: mods)))
-            return true
+        guard let key = Self.terminalKey(for: event) else { return false }
+        session.send(.key(key))
+        return true
+    }
+
+    /// The key event for keys the terminal encodes itself, or nil for text.
+    static func terminalKey(for event: NSEvent) -> KeyEvent? {
+        let mods = modifiers(event.modifierFlags)
+        if let key = specialKeys[event.keyCode] {
+            return KeyEvent(key, modifiers: mods)
         }
         if mods.contains(.control), let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first {
-            session.send(.key(KeyEvent(
+            return KeyEvent(
                 .character(scalar), modifiers: mods.subtracting(.shift),
                 shiftedKey: event.characters?.unicodeScalars.first,
-                baseLayoutKey: Self.usLayout[event.keyCode],
-            )))
-            return true
+                baseLayoutKey: usLayout[event.keyCode],
+            )
         }
-        return false
+        return nil
     }
 
     static func modifiers(_ flags: NSEvent.ModifierFlags) -> KeyModifiers {

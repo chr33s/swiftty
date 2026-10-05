@@ -1,0 +1,23 @@
+Processes: 1335 total, 2 running, 1 stuck, 1332 sleeping, 5634 threads
+09:19:50 Load Avg: 2.50, 3.87, 3.79
+CPU usage: 6.1% user, 3.71% sys, 90.27% idle
+SharedLibs: 1906M resident, 261M data, 1094M linkedit.
+MemRegions: 0 total, 0B resident, 2673M private, 14G shared.
+PhysMem: 96G used (6354M wired, 0B compressor), 31G unused.
+VM: 616T vsize, 57G framework vsize, 0(0) swapins, 0(0) swapouts.
+Networks: packets: 5509787/2993M in, 7087033/6108M out.
+Disks: 12072172/196G read, 11105471/311G written.
+
+PID    COMMAND      %CPU TIME     #TH  #WQ  #POR MEM   PURG CMPR PGRP  PPID
+13367  dhcp6d       0.0  00:00.13 2    1    29   2144K 0B   0B   13367 1
+
+
+
+
+
+
+
+
+
+
+

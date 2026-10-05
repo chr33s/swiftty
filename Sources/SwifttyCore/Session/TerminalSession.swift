@@ -27,6 +27,9 @@ public final class TerminalSession: @unchecked Sendable {
     /// `mutate`), before `onUpdate`, with read access to the state. Use it to
     /// mirror values the host reads often (modes, scroll position).
     public var onStateChange: (@Sendable (borrowing TerminalState) -> Void)?
+    /// Called on `queue` with each chunk of program output before it is
+    /// parsed (recording sessions for replay). Costs nothing when nil.
+    public var onProgramOutput: (@Sendable ([UInt8]) -> Void)?
     /// Called on `queue` with tmux control-mode lines (between
     /// `.controlModeStarted` and `.controlModeEnded`), in arrival order.
     public var onControlModeData: (@Sendable ([UInt8]) -> Void)?
@@ -270,7 +273,9 @@ public final class TerminalSession: @unchecked Sendable {
             while budget > 0 {
                 let n = process.master.read(into: readBuffer)
                 if n > 0 {
-                    parse(UnsafeBufferPointer(start: readBuffer.baseAddress!.assumingMemoryBound(to: UInt8.self), count: n))
+                    let chunk = UnsafeBufferPointer(start: readBuffer.baseAddress!.assumingMemoryBound(to: UInt8.self), count: n)
+                    onProgramOutput?(Array(chunk))
+                    parse(chunk)
                     budget -= n
                     continue
                 }

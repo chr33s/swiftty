@@ -1,0 +1,24 @@
+$ echo left-pane                        │$ echo right-pane
+left-pane                               │right-pane
+$                                       │$
+                                        │
+                                        │
+                                        │
+                                        │
+                                        │
+                                        │
+                                        │
+                                        │
+                                        │
+                                        │
+                                        │
+                                        │
+                                        │
+                                        │
+                                        │
+                                        │
+                                        │
+                                        │
+                                        │
+                                        │
+[0] 0*
