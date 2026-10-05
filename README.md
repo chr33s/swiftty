@@ -273,6 +273,11 @@ streams are fed in 64 KiB chunks with the scrollback at its 10 MB limit:
 
 Peak RSS figures in the benchmark output include the 100 MB input buffers.
 
+`FrameTimeTests` (in the mobile tests, so it runs on iOS too) times a full
+120×40 redraw per frame, rendered offscreen and waited for: p95 6.5 ms on
+this Mac and 10.1 ms on the iPad Pro 13-inch (M5) simulator. No physical
+iPad was available; simulator GPU timings are only indicative.
+
 The allocation tests (`AllocationTests`) assert exactly zero heap
 allocations in steady state for ASCII, UTF-8 and CSI parsing and for grid
 cell updates.
