@@ -47,10 +47,9 @@ final class TerminalView: MTKView, MTKViewDelegate {
     private var cursorBlinks = false
 
     var searchBar: SearchBar?
-    private var lastAccessibilityPost: CFTimeInterval = 0
-    private var accessibilityPostPending = false
+    var accessibilityThrottle = NotificationThrottle(interval: 0.5)
     /// Screen text for VoiceOver, rebuilt once per snapshot.
-    private var accessibilityCache: (sequence: UInt64, text: AccessibilityText)?
+    var accessibilityCache = AccessibilityTextCache()
 
     var onTitle: ((String) -> Void)?
     var onExit: (() -> Void)?
@@ -143,15 +142,18 @@ final class TerminalView: MTKView, MTKViewDelegate {
     /// Replaces the configured options, keeping the ones the view drives
     /// (composition, link hover, blink phase, focus).
     private func applyRenderOptions(scale: CGFloat) {
-        let current = renderer.options
-        var options = config.renderOptions(scale: scale)
+        renderer.options = Self.merge(configured: config.renderOptions(scale: scale), current: renderer.options)
+    }
+
+    static func merge(configured: RenderOptions, current: RenderOptions) -> RenderOptions {
+        var options = configured
         options.preedit = current.preedit
         options.hoveredLink = current.hoveredLink
         options.underlinedSpan = current.underlinedSpan
         options.textBlinkVisible = current.textBlinkVisible
         options.cursorVisible = current.cursorVisible
         options.isFocused = current.isFocused
-        renderer.options = options
+        return options
     }
 
     private func loadShader() {
@@ -282,33 +284,33 @@ final class TerminalView: MTKView, MTKViewDelegate {
     /// inside that window is posted when it ends, so the last output is
     /// never missed.
     private func postAccessibilityChange() {
-        guard NSWorkspace.shared.isVoiceOverEnabled, !accessibilityPostPending else { return }
-        let wait = lastAccessibilityPost + 0.5 - CACurrentMediaTime()
-        guard wait > 0 else {
-            lastAccessibilityPost = CACurrentMediaTime()
+        guard NSWorkspace.shared.isVoiceOverEnabled else { return }
+        requestAccessibilityPost { [weak self] in
+            guard let self else { return }
             NSAccessibility.post(element: self, notification: .valueChanged)
-            return
         }
-        accessibilityPostPending = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.accessibilityPostPending = false
-                self.lastAccessibilityPost = CACurrentMediaTime()
-                NSAccessibility.post(element: self, notification: .valueChanged)
+    }
+
+    /// Runs `post` now, or when the throttle window ends.
+    func requestAccessibilityPost(_ post: @escaping @MainActor () -> Void) {
+        switch accessibilityThrottle.request(at: CACurrentMediaTime()) {
+        case .post:
+            post()
+        case let .schedule(after: wait):
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.accessibilityThrottle.fire(at: CACurrentMediaTime())
+                    post()
+                }
             }
+        case .skip:
+            break
         }
     }
 
     /// The visible text for VoiceOver, cached per snapshot.
     var accessibilityText: AccessibilityText? {
-        guard let snapshot = lastSnapshot else { return nil }
-        if let cache = accessibilityCache, cache.sequence == snapshot.sequence {
-            return cache.text
-        }
-        let text = AccessibilityText(snapshot)
-        accessibilityCache = (snapshot.sequence, text)
-        return text
+        lastSnapshot.map { accessibilityCache.text(for: $0) }
     }
 
     // MARK: Keyboard
@@ -448,5 +450,54 @@ final class TerminalView: MTKView, MTKViewDelegate {
         case "alias": .dragLink
         default: .iBeam
         }
+    }
+}
+
+/// Rate limit for change notifications: at most one per `interval`, and a
+/// request inside the window is delivered when it ends rather than dropped.
+struct NotificationThrottle {
+    enum Decision: Equatable {
+        case post
+        case schedule(after: CFTimeInterval)
+        /// One is already scheduled and will cover this change.
+        case skip
+    }
+
+    let interval: CFTimeInterval
+    private(set) var last = -CFTimeInterval.infinity
+    private(set) var pending = false
+
+    mutating func request(at now: CFTimeInterval) -> Decision {
+        guard !pending else { return .skip }
+        let wait = last + interval - now
+        guard wait > 0 else {
+            last = now
+            return .post
+        }
+        pending = true
+        return .schedule(after: wait)
+    }
+
+    /// The scheduled post went out.
+    mutating func fire(at now: CFTimeInterval) {
+        pending = false
+        last = now
+    }
+}
+
+/// `AccessibilityText` for the latest snapshot, built once per snapshot
+/// however many accessibility queries read it.
+struct AccessibilityTextCache {
+    private var cached: (sequence: UInt64, text: AccessibilityText)?
+    private(set) var builds = 0
+
+    mutating func text(for snapshot: RenderSnapshot) -> AccessibilityText {
+        if let cached, cached.sequence == snapshot.sequence {
+            return cached.text
+        }
+        let text = AccessibilityText(snapshot)
+        builds += 1
+        cached = (snapshot.sequence, text)
+        return text
     }
 }
