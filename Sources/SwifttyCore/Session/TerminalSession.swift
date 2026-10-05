@@ -47,11 +47,14 @@ public final class TerminalSession: @unchecked Sendable {
     private let readBuffer: UnsafeMutableRawBufferPointer
     private var updateScheduled = false
     private var synchronizedSince: UInt64 = 0
+    private var synchronizedTimeoutScheduled = false
     private var cellPixelSize = (width: 0, height: 0)
 
     public static let readBufferSize = 64 * 1024
     /// Max bytes parsed per read event so snapshots can interleave.
     public static let readBudget = 1 << 20
+    /// Longest a synchronized update (mode 2026) holds back redraws.
+    static let synchronizedTimeout: UInt64 = 1_000_000_000
 
     public init(columns: Int = 80, rows: Int = 24, configuration: SessionConfiguration = SessionConfiguration()) {
         state = TerminalState(
@@ -65,8 +68,13 @@ public final class TerminalSession: @unchecked Sendable {
     }
 
     deinit {
+        // Source handlers capture `self` weakly and hold it while they run,
+        // so none can be running once this executes.
         #if os(macOS)
-            process?.hangUp()
+            if let process {
+                process.hangUp()
+                Self.reap(process.pid)
+            }
             teardown()
         #endif
         readBuffer.deallocate()
@@ -85,16 +93,16 @@ public final class TerminalSession: @unchecked Sendable {
                 let fd = process.master.rawValue
 
                 let read = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
-                read.setEventHandler { [unowned self] in readAvailable() }
+                read.setEventHandler { [weak self] in self?.readAvailable() }
                 read.resume()
                 readSource = read
 
                 let write = DispatchSource.makeWriteSource(fileDescriptor: fd, queue: queue)
-                write.setEventHandler { [unowned self] in flushPendingWrite() }
+                write.setEventHandler { [weak self] in self?.flushPendingWrite() }
                 writeSource = write // resumed only while output is pending
 
                 let exit = DispatchSource.makeProcessSource(identifier: process.pid, eventMask: .exit, queue: queue)
-                exit.setEventHandler { [unowned self] in childExited() }
+                exit.setEventHandler { [weak self] in self?.childExited() }
                 exit.resume()
                 exitSource = exit
             }
@@ -102,8 +110,28 @@ public final class TerminalSession: @unchecked Sendable {
 
         public func stop() {
             queue.sync {
-                process?.hangUp()
+                guard let process else { return }
+                process.hangUp()
+                Self.reap(process.pid)
                 teardown()
+            }
+        }
+
+        /// Collects the exit status of a child whose exit source is being
+        /// torn down, so it does not linger as a zombie.
+        private static func reap(_ pid: pid_t) {
+            let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .global(qos: .utility))
+            // The handler retains the source until it cancels itself.
+            source.setEventHandler { [source] in
+                var status: Int32 = 0
+                waitpid(pid, &status, WNOHANG)
+                source.cancel()
+            }
+            source.resume()
+            // Already exited (the source may never fire for a zombie).
+            var status: Int32 = 0
+            if waitpid(pid, &status, WNOHANG) == pid {
+                source.cancel()
             }
         }
 
@@ -180,7 +208,7 @@ public final class TerminalSession: @unchecked Sendable {
         queue.sync {
             updateScheduled = false
             if state.modes.contains(.synchronizedOutput),
-               DispatchTime.now().uptimeNanoseconds - synchronizedSince < 1_000_000_000,
+               DispatchTime.now().uptimeNanoseconds - synchronizedSince < Self.synchronizedTimeout,
                let held = builder.repeatLast() {
                 return held
             }
@@ -287,7 +315,15 @@ public final class TerminalSession: @unchecked Sendable {
         }
         guard !state.damage.isEmpty, !updateScheduled else { return }
         if state.modes.contains(.synchronizedOutput),
-           DispatchTime.now().uptimeNanoseconds - synchronizedSince < 1_000_000_000 {
+           DispatchTime.now().uptimeNanoseconds - synchronizedSince < Self.synchronizedTimeout {
+            // Publish when the timeout lapses even if no more output arrives.
+            if !synchronizedTimeoutScheduled {
+                synchronizedTimeoutScheduled = true
+                queue.asyncAfter(deadline: DispatchTime(uptimeNanoseconds: synchronizedSince + Self.synchronizedTimeout)) { [weak self] in
+                    self?.synchronizedTimeoutScheduled = false
+                    self?.publish()
+                }
+            }
             return
         }
         updateScheduled = true

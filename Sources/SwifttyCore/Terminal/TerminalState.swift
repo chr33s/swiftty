@@ -501,7 +501,7 @@ public struct TerminalState: ~Copyable {
         case .ascii: return c
         case _ where c > 0xFF: return 0x20
         case .british: return c == 0x23 ? 0xA3 : c
-        case .decSpecialGraphics: return (0x60 ... 0x7E).contains(c) ? Self.decSpecial[Int(c - 0x5F)] : c
+        case .decSpecialGraphics: return (0x5F ... 0x7E).contains(c) ? Self.decSpecial[Int(c - 0x5F)] : c
         }
     }
 
@@ -601,6 +601,11 @@ public struct TerminalState: ~Copyable {
         row[x].glyph = id
         row[x].attributes.flags.insert(.grapheme)
         damage.insert(row: y)
+        // Entries are append-only, so the table only grows here; checking on
+        // every append bounds it on either screen, scrolling or not.
+        if graphemes.needsCompaction {
+            compactGraphemes()
+        }
     }
 
     /// Ghostty's `grapheme_max_len`: scalars joined to a cell's base.
@@ -705,9 +710,6 @@ public struct TerminalState: ~Copyable {
             grid.scrollUpIntoHistory(count: n, bottom: scrollBottom, fill: eraseCell)
             if viewportOffset > 0 {
                 viewportOffset = min(viewportOffset + n, grid.historyCount)
-            }
-            if graphemes.needsCompaction {
-                compactGraphemes()
             }
         }
         markScrolled()
@@ -1924,8 +1926,10 @@ public struct TerminalState: ~Copyable {
         if !pullsHistory {
             top = max(top, placed[screenTopMark].row)
         }
+        // Keep the live cursor visible, but never at the cost of rows below
+        // the screen: those would be neither on screen nor in history.
         if placed[0].row < top {
-            top = placed[0].row
+            top = max(placed[0].row, total - newRows)
         }
         grid.reset(columns: newColumns, rows: newRows)
         out.withUnsafeBufferPointer { buf in
@@ -1988,6 +1992,9 @@ public struct TerminalState: ~Copyable {
                 fresh.adopt(&line[x], from: graphemes)
             }
         }
+        // Live clusters alone may exceed the threshold; wait for as much
+        // garbage again so compaction stays amortized.
+        fresh.compactionLimit = max(GraphemeTable.compactionThreshold, fresh.scalars.count * 2)
         swap(&graphemes, &fresh)
         swap(&fresh, &spareGraphemes)
     }

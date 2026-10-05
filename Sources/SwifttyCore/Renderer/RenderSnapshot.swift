@@ -215,10 +215,12 @@ final class SnapshotStorage: @unchecked Sendable {
         }
         for y in 0 ..< rows {
             let changed = full || pending.contains(row: y)
-            rowRecords[y] = RowSnapshot(isDirty: damage.contains(row: y), isWrapped: false)
-            guard changed else { continue }
+            guard changed else {
+                rowRecords[y].isDirty = damage.contains(row: y) // isWrapped is still current
+                continue
+            }
             let (src, wrapped) = Self.row(y, of: state)
-            rowRecords[y].isWrapped = wrapped
+            rowRecords[y] = RowSnapshot(isDirty: damage.contains(row: y), isWrapped: wrapped)
             let dst = cells + y * columns
             let n = min(src.count, columns)
             if n > 0 {

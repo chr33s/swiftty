@@ -7,9 +7,11 @@ struct GraphemeTable: ~Copyable {
     private(set) var entries: [UInt64] = [] // start << 32 | count
 
     static let compactionThreshold = 1 << 18
+    /// Scalar count that triggers compaction; raised after compacting.
+    var compactionLimit = compactionThreshold
 
     var needsCompaction: Bool {
-        scalars.count > Self.compactionThreshold
+        scalars.count > compactionLimit
     }
 
     func scalars(_ id: UInt32) -> UnsafeBufferPointer<UInt32> {
@@ -55,6 +57,7 @@ struct GraphemeTable: ~Copyable {
     }
 
     mutating func removeAll() {
+        compactionLimit = Self.compactionThreshold
         scalars.removeAll(keepingCapacity: true)
         entries.removeAll(keepingCapacity: true)
     }

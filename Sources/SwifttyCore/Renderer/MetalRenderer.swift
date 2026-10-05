@@ -267,7 +267,11 @@ public final class MetalRenderer {
         // Cursor opacity animates every frame; it only touches the cursor row.
         var comparable = options
         comparable.cursorOpacity = lastOptions.cursorOpacity
-        var full = needsFullRebuild || snapshot.damage.isFull || comparable != lastOptions
+        // A skipped snapshot (no drawable that frame) carried damage these
+        // instances never saw.
+        let skipped = snapshot.sequence != lastSequence && snapshot.sequence != lastSequence &+ 1
+        var full = needsFullRebuild || snapshot.damage.isFull || comparable != lastOptions || skipped || atlas.wasReset
+        atlas.wasReset = false
         if gridSize != (columns, rows) || instances == nil {
             let length = max(1, columns * rows) * MemoryLayout<CellInstance>.stride
             if (instances?.length ?? 0) < length {
@@ -289,7 +293,7 @@ public final class MetalRenderer {
         let rowRecords = snapshot.rows
         for y in 0 ..< rows {
             let cursorRow = (cursor.isVisible && cursor.y == y) || (previous?.isVisible == true && previous?.y == y)
-            guard full || rowRecords[y].isDirty || cursorRow || atlas.wasReset else { continue }
+            guard full || rowRecords[y].isDirty || cursorRow else { continue }
             buildRow(y, snapshot: snapshot, cursor: cursor, palette: palette, options: options, into: base + y * columns)
         }
         if atlas.wasReset {
