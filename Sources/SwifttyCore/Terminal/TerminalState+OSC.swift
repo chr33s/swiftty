@@ -58,6 +58,9 @@ extension TerminalState {
                 ))
             }
         case 8: hyperlink(rest)
+        case 21: kittyColors(rest, terminator: st)
+        case 22: setPointerShape(rest)
+        case 133: semanticPrompt(rest)
         case 10, 11, 12:
             let spec = String(decoding: rest, as: UTF8.self)
             if spec == "?" {
@@ -93,7 +96,7 @@ extension TerminalState {
         case 110: palette.foreground = defaultPalette.foreground; damage.setFull()
         case 111: palette.background = defaultPalette.background; damage.setFull()
         case 112: palette.cursor = defaultPalette.cursor
-        default: break // 1, 8, 133, ... are ignored
+        default: break // 1 (icon title) and others are ignored
         }
     }
 

@@ -5,38 +5,60 @@ import SwifttyCore
 /// An MTKView hosting one terminal session.
 ///
 /// Draws on demand: the session's update callback marks the view dirty and
-/// AppKit coalesces redraws to the display refresh.
+/// AppKit coalesces redraws to the display refresh. Mouse handling, text
+/// input, key-binding actions and accessibility live in extensions.
 @MainActor
 final class TerminalView: MTKView, MTKViewDelegate {
-    let session = TerminalSession()
-    private let renderer: MetalRenderer
-    private var fontSize: CGFloat = 13
-    private var lastModes: Modes = .initial
-    private var scrollAccumulator: CGFloat = 0
-    private var gridSize = (columns: 0, rows: 0)
-    /// Cursor of the last drawn frame, for placing the IME candidate window.
-    private var lastCursor: CursorState?
+    let session: TerminalSession
+    let renderer: MetalRenderer
+    private(set) var config: Configuration
+    var fontSize: CGFloat
+    var lastModes: Modes = .initial
+    var scrollAccumulator: CGFloat = 0
+    var gridSize = (columns: 0, rows: 0)
+    /// The last drawn frame: the cursor for the IME candidate window, the
+    /// text for accessibility.
+    var lastSnapshot: RenderSnapshot?
+    var colorScheme: ColorScheme
 
     // Selection gesture in progress.
-    private enum SelectionUnit { case cell, word, line }
-    private var selectionUnit = SelectionUnit.cell
+    enum SelectionUnit { case cell, word, line }
+    var selectionUnit = SelectionUnit.cell
     /// Span the gesture started on (one cell, word or line).
-    private var selectionOrigin: (start: TerminalPoint, end: TerminalPoint)?
-    private var selectionDragged = false
-    private var hasSelection = false
+    var selectionOrigin: (start: TerminalPoint, end: TerminalPoint)?
+    var selectionDragged = false
+    var hasSelection = false
+    /// Where the last click landed, for "Select Command Output".
+    var lastClick: TerminalPoint?
 
-    // IME composition.
-    private var markedText = ""
+    /// Links and the pointer.
+    var hoveredLink: TerminalLink?
+    /// The pointer the application asked for (OSC 22).
+    var applicationCursor = NSCursor.iBeam
+
+    /// IME composition.
+    var markedText = ""
     /// The key event being interpreted, for commands the input system does not handle.
-    private var interpretingEvent: NSEvent?
+    var interpretingEvent: NSEvent?
+
+    // Blinking: one timer drives the cursor and SGR 5 text.
+    private var blinkTimer: Timer?
+    private var blinkOn = true
+    private var cursorBlinks = false
+
+    var searchBar: SearchBar?
+    private var lastAccessibilityPost: CFTimeInterval = 0
 
     var onTitle: ((String) -> Void)?
     var onExit: (() -> Void)?
 
-    init(fontSize: CGFloat = 13) throws {
-        self.fontSize = fontSize
+    init(configuration: Configuration) throws {
+        config = configuration
+        fontSize = CGFloat(configuration.fontSize)
+        colorScheme = Self.scheme(of: NSApp.effectiveAppearance)
+        session = TerminalSession(configuration: configuration.sessionConfiguration(scheme: colorScheme))
         guard let device = MTLCreateSystemDefaultDevice() else { throw RendererError.setup("no Metal device") }
-        renderer = try MetalRenderer(device: device, fontManager: CoreTextFontManager(), font: FontDescriptor(size: fontSize, scale: 2))
+        renderer = try MetalRenderer(device: device, fontManager: CoreTextFontManager(), font: configuration.fontDescriptor(scale: 2))
         super.init(frame: .zero, device: device)
         colorPixelFormat = .bgra8Unorm
         framebufferOnly = true
@@ -44,6 +66,8 @@ final class TerminalView: MTKView, MTKViewDelegate {
         enableSetNeedsDisplay = true
         autoResizeDrawable = true
         delegate = self
+        applyRenderOptions(scale: 2)
+        loadShader()
 
         session.onUpdate = { [weak self] in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.needsDisplay = true } }
@@ -59,18 +83,20 @@ final class TerminalView: MTKView, MTKViewDelegate {
 
     func start() throws {
         updateGrid()
-        try session.start(SessionConfiguration())
+        try session.start(config.sessionConfiguration(scheme: colorScheme))
+        session.mutate { $0.setColorScheme(colorScheme) }
     }
 
     func stop() {
+        blinkTimer?.invalidate()
         session.stop()
     }
 
     func preferredSize(columns: Int, rows: Int) -> NSSize {
         let scale = renderer.font.descriptor.scale
         return NSSize(
-            width: (CGFloat(columns) * renderer.cellSize.width + 2 * renderer.padding) / scale,
-            height: (CGFloat(rows) * renderer.cellSize.height + 2 * renderer.padding) / scale,
+            width: (CGFloat(columns) * renderer.cellSize.width + 2 * renderer.options.paddingX) / scale,
+            height: (CGFloat(rows) * renderer.cellSize.height + 2 * renderer.options.paddingY) / scale,
         )
     }
 
@@ -81,9 +107,67 @@ final class TerminalView: MTKView, MTKViewDelegate {
         case let .clipboard(text):
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
-        case .workingDirectory: break
+        case let .pointerShape(name):
+            applicationCursor = Self.cursor(named: name)
+            window?.invalidateCursorRects(for: self)
         case .exited: onExit?()
         default: break
+        }
+    }
+
+    // MARK: Configuration
+
+    /// Applies a reloaded configuration. The scrollback limit and command
+    /// only take effect in new windows.
+    func apply(_ configuration: Configuration) {
+        let fontChanged = configuration.fontDescriptor(scale: 1) != config.fontDescriptor(scale: 1)
+        let paletteChanged = configuration.palette(for: colorScheme) != config.palette(for: colorScheme)
+        config = configuration
+        if fontChanged {
+            fontSize = CGFloat(configuration.fontSize)
+            applyFont()
+        }
+        applyRenderOptions(scale: window?.backingScaleFactor ?? 2)
+        loadShader()
+        if paletteChanged {
+            let palette = configuration.palette(for: colorScheme)
+            session.mutate { $0.setDefaultPalette(palette) }
+        }
+        updateGrid()
+        needsDisplay = true
+    }
+
+    private func applyRenderOptions(scale: CGFloat) {
+        let preedit = renderer.options.preedit
+        renderer.options = config.renderOptions(scale: scale)
+        renderer.options.preedit = preedit
+    }
+
+    private func loadShader() {
+        do {
+            try renderer.setPostProcessShader(config.customShader.map { try String(contentsOfFile: $0, encoding: .utf8) })
+        } catch {
+            FileHandle.standardError.write(Data("swiftty: custom-shader: \(error)\n".utf8))
+            try? renderer.setPostProcessShader(nil)
+        }
+    }
+
+    static func scheme(of appearance: NSAppearance) -> ColorScheme {
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .aqua ? .light : .dark
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        let scheme = Self.scheme(of: effectiveAppearance)
+        guard scheme != colorScheme else { return }
+        let themeChanges = config.palette(for: scheme) != config.palette(for: colorScheme)
+        colorScheme = scheme
+        let palette = config.palette(for: scheme)
+        session.mutate { state in
+            if themeChanges {
+                state.setDefaultPalette(palette)
+            }
+            state.setColorScheme(scheme)
         }
     }
 
@@ -91,22 +175,24 @@ final class TerminalView: MTKView, MTKViewDelegate {
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
+        applyRenderOptions(scale: window?.backingScaleFactor ?? 2)
         applyFont()
     }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         updateGrid()
+        searchBar?.position(in: bounds)
     }
 
-    private func applyFont() {
+    func applyFont() {
         let scale = window?.backingScaleFactor ?? 2
-        renderer.setFont(FontDescriptor(size: fontSize, scale: scale))
+        renderer.setFont(config.fontDescriptor(scale: scale, size: Double(fontSize)))
         updateGrid()
         needsDisplay = true
     }
 
-    private func updateGrid() {
+    func updateGrid() {
         let scale = window?.backingScaleFactor ?? renderer.font.descriptor.scale
         let pixels = CGSize(width: bounds.width * scale, height: bounds.height * scale)
         let size = renderer.gridSize(for: pixels)
@@ -117,15 +203,15 @@ final class TerminalView: MTKView, MTKViewDelegate {
     }
 
     @objc func increaseFontSize(_ sender: Any?) {
-        fontSize = min(fontSize + 1, 72); applyFont()
+        perform(.increaseFontSize(1))
     }
 
     @objc func decreaseFontSize(_ sender: Any?) {
-        fontSize = max(fontSize - 1, 6); applyFont()
+        perform(.decreaseFontSize(1))
     }
 
     @objc func resetFontSize(_ sender: Any?) {
-        fontSize = 13; applyFont()
+        perform(.resetFontSize)
     }
 
     // MARK: Drawing
@@ -135,8 +221,58 @@ final class TerminalView: MTKView, MTKViewDelegate {
     func draw(in view: MTKView) {
         let snapshot = session.snapshot()
         lastModes = snapshot.modes
-        lastCursor = snapshot.cursor
+        lastSnapshot = snapshot
+        cursorBlinks = config.cursorStyleBlink ?? snapshot.cursor.isBlinking
+        renderer.options.isFocused = window?.isKeyWindow == true && window?.firstResponder === self
+        renderer.options.cursorVisible = blinkOn || !cursorBlinks || !renderer.options.isFocused
+        renderer.options.textBlinkVisible = blinkOn
         renderer.draw(snapshot, in: self)
+        updateBlinkTimer()
+        // A shader that animates needs frames without new output.
+        let animating = renderer.isAnimating
+        if animating == isPaused {
+            isPaused = !animating
+            enableSetNeedsDisplay = !animating
+        }
+        postAccessibilityChange()
+    }
+
+    private func updateBlinkTimer() {
+        let needed = (cursorBlinks && renderer.options.isFocused) || renderer.hasBlinkingText
+        if needed, blinkTimer == nil {
+            blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.blinkOn.toggle()
+                    self.needsDisplay = true
+                }
+            }
+        } else if !needed, let timer = blinkTimer {
+            timer.invalidate()
+            blinkTimer = nil
+            if !blinkOn {
+                blinkOn = true
+                needsDisplay = true
+            }
+        }
+    }
+
+    /// Input shows the cursor at once and restarts its blink.
+    func resetBlink() {
+        blinkTimer?.invalidate()
+        blinkTimer = nil
+        if !blinkOn {
+            blinkOn = true
+            needsDisplay = true
+        }
+    }
+
+    private func postAccessibilityChange() {
+        guard NSWorkspace.shared.isVoiceOverEnabled else { return }
+        let now = CACurrentMediaTime()
+        guard now - lastAccessibilityPost > 0.5 else { return }
+        lastAccessibilityPost = now
+        NSAccessibility.post(element: self, notification: .valueChanged)
     }
 
     // MARK: Keyboard
@@ -147,15 +283,34 @@ final class TerminalView: MTKView, MTKViewDelegate {
 
     override func becomeFirstResponder() -> Bool {
         session.send(.focus(true))
+        needsDisplay = true
         return true
     }
 
     override func resignFirstResponder() -> Bool {
         session.send(.focus(false))
+        needsDisplay = true
+        return true
+    }
+
+    /// Key bindings run before the menu's key equivalents.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard window?.firstResponder === self, !hasMarkedText(), let action = binding(for: event) else {
+            return super.performKeyEquivalent(with: event)
+        }
+        perform(action)
         return true
     }
 
     override func keyDown(with event: NSEvent) {
+        resetBlink()
+        if config.mouseHideWhileTyping {
+            NSCursor.setHiddenUntilMouseMoves(true)
+        }
+        if !hasMarkedText(), let action = binding(for: event) {
+            perform(action)
+            return
+        }
         clearSelection()
         // While composing, every key belongs to the input method.
         if !hasMarkedText(), sendKey(event) {
@@ -166,50 +321,30 @@ final class TerminalView: MTKView, MTKViewDelegate {
         interpretingEvent = nil
     }
 
+    private func binding(for event: NSEvent) -> KeyAction? {
+        guard let key = Self.specialKeys[event.keyCode]
+            ?? event.charactersIgnoringModifiers?.unicodeScalars.first.map(Key.character) else { return nil }
+        return config.keybindings.action(for: KeyEvent(key, modifiers: Self.modifiers(event.modifierFlags)))
+    }
+
     /// Sends keys the terminal encodes itself (specials, control
     /// combinations); returns false for text, which goes through the
     /// input method.
-    private func sendKey(_ event: NSEvent) -> Bool {
+    func sendKey(_ event: NSEvent) -> Bool {
         let mods = Self.modifiers(event.modifierFlags)
         if let key = Self.specialKeys[event.keyCode] {
             session.send(.key(KeyEvent(key, modifiers: mods)))
             return true
         }
         if mods.contains(.control), let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first {
-            session.send(.key(KeyEvent(.character(scalar), modifiers: mods.subtracting(.shift))))
+            session.send(.key(KeyEvent(
+                .character(scalar), modifiers: mods.subtracting(.shift),
+                shiftedKey: event.characters?.unicodeScalars.first,
+                baseLayoutKey: Self.usLayout[event.keyCode],
+            )))
             return true
         }
         return false
-    }
-
-    @objc func paste(_ sender: Any?) {
-        if let text = NSPasteboard.general.string(forType: .string) {
-            session.send(.paste(text))
-        }
-    }
-
-    @objc func copy(_ sender: Any?) {
-        guard let text = session.withState({ $0.selectionText }), !text.isEmpty else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    override func selectAll(_ sender: Any?) {
-        session.mutate { state in
-            let first = state.firstAbsoluteRow
-            state.setSelection(Selection(
-                anchor: TerminalPoint(row: first, column: 0),
-                head: TerminalPoint(row: first + state.addressableRows - 1, column: state.columns - 1),
-            ))
-        }
-        hasSelection = true
-    }
-
-    @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        if item.action == #selector(copy(_:)) {
-            return session.withState { $0.selection != nil }
-        }
-        return true
     }
 
     static func modifiers(_ flags: NSEvent.ModifierFlags) -> KeyModifiers {
@@ -238,237 +373,34 @@ final class TerminalView: MTKView, MTKViewDelegate {
         101: .function(9), 109: .function(10), 103: .function(11), 111: .function(12),
     ]
 
-    // MARK: Mouse
+    /// Keys of the US layout by virtual key code (kitty's base layout key).
+    static let usLayout: [UInt16: Unicode.Scalar] = {
+        let keys: [(UInt16, Unicode.Scalar)] = [
+            (0, "a"), (11, "b"), (8, "c"), (2, "d"), (14, "e"), (3, "f"), (5, "g"), (4, "h"), (34, "i"),
+            (38, "j"), (40, "k"), (37, "l"), (46, "m"), (45, "n"), (31, "o"), (35, "p"), (12, "q"), (15, "r"),
+            (1, "s"), (17, "t"), (32, "u"), (9, "v"), (13, "w"), (7, "x"), (16, "y"), (6, "z"),
+            (29, "0"), (18, "1"), (19, "2"), (20, "3"), (21, "4"), (23, "5"), (22, "6"), (26, "7"), (28, "8"),
+            (25, "9"), (27, "-"), (24, "="), (33, "["), (30, "]"), (42, "\\"), (41, ";"), (39, "'"),
+            (43, ","), (47, "."), (44, "/"), (50, "`"),
+        ]
+        return Dictionary(uniqueKeysWithValues: keys)
+    }()
 
-    private func cell(for event: NSEvent) -> (column: Int, row: Int) {
-        let c = unclampedCell(for: event)
-        return (max(0, c.column), max(0, c.row))
-    }
-
-    /// Grid cell under the pointer; may lie outside the grid.
-    private func unclampedCell(for event: NSEvent) -> (column: Int, row: Int) {
-        let scale = window?.backingScaleFactor ?? 2
-        let p = convert(event.locationInWindow, from: nil)
-        let x = (p.x * scale - renderer.padding) / renderer.cellSize.width
-        let y = ((bounds.height - p.y) * scale - renderer.padding) / renderer.cellSize.height
-        return (Int(x.rounded(.down)), Int(y.rounded(.down)))
-    }
-
-    private var tracking: Bool {
-        !lastModes.isDisjoint(with: Modes.mouseTracking)
-    }
-
-    private func sendMouse(_ action: MouseEvent.Action, _ button: MouseEvent.Button, _ event: NSEvent) {
-        guard tracking else { return }
-        let c = cell(for: event)
-        session.send(.mouse(MouseEvent(action, button, column: c.column, row: c.row, modifiers: Self.modifiers(event.modifierFlags))))
-    }
-
-    /// Shift selects even while the application tracks the mouse.
-    private func selects(_ event: NSEvent) -> Bool {
-        !tracking || event.modifierFlags.contains(.shift)
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        guard selects(event) else { sendMouse(.press, .left, event); return }
-        beginSelection(event)
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        guard selectionOrigin == nil else { endSelection(); return }
-        sendMouse(.release, .left, event)
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard selectionOrigin == nil else { extendSelection(event); return }
-        sendMouse(.motion, .left, event)
-    }
-
-    // MARK: Selection
-
-    private func beginSelection(_ event: NSEvent) {
-        let c = unclampedCell(for: event)
-        let rectangle = event.modifierFlags.contains(.option)
-        selectionUnit = switch event.clickCount {
-        case 2: .word
-        case 3...: .line
-        default: .cell
+    static func cursor(named name: String) -> NSCursor {
+        switch name {
+        case "default", "": .arrow
+        case "pointer": .pointingHand
+        case "crosshair", "cell": .crosshair
+        case "not-allowed", "no-drop": .operationNotAllowed
+        case "grab": .openHand
+        case "grabbing": .closedHand
+        case "ew-resize", "col-resize", "e-resize", "w-resize": .resizeLeftRight
+        case "ns-resize", "row-resize", "n-resize", "s-resize": .resizeUpDown
+        case "vertical-text": .iBeamCursorForVerticalLayout
+        case "context-menu": .contextualMenu
+        case "copy": .dragCopy
+        case "alias": .dragLink
+        default: .iBeam
         }
-        selectionDragged = false
-        let unit = selectionUnit
-        selectionOrigin = session.mutate { state in
-            let p = state.clamp(TerminalPoint(row: state.absoluteRow(viewportRow: c.row), column: c.column))
-            let span = switch unit {
-            case .cell: (start: p, end: p)
-            case .word: state.wordRange(at: p)
-            case .line: state.lineRange(at: p)
-            }
-            state.setSelection(unit == .cell ? nil : Selection(anchor: span.start, head: span.end, rectangle: rectangle))
-            return span
-        }
-        hasSelection = selectionUnit != .cell
-    }
-
-    private func extendSelection(_ event: NSEvent) {
-        guard let origin = selectionOrigin else { return }
-        let c = unclampedCell(for: event)
-        let rectangle = event.modifierFlags.contains(.option)
-        let unit = selectionUnit
-        selectionDragged = true
-        session.mutate { state in
-            // Dragging past the top or bottom edge scrolls the viewport.
-            if c.row < 0 {
-                state.scrollViewport(by: 1)
-            } else if c.row >= state.rows {
-                state.scrollViewport(by: -1)
-            }
-            let row = min(max(c.row, 0), state.rows - 1)
-            let p = state.clamp(TerminalPoint(row: state.absoluteRow(viewportRow: row), column: c.column))
-            let span = switch unit {
-            case .cell: (start: p, end: p)
-            case .word: state.wordRange(at: p)
-            case .line: state.lineRange(at: p)
-            }
-            // Keep the whole unit the gesture started on.
-            let selection = span.start < origin.start
-                ? Selection(anchor: origin.end, head: span.start, rectangle: rectangle)
-                : Selection(anchor: origin.start, head: span.end, rectangle: rectangle)
-            state.setSelection(selection)
-        }
-        hasSelection = true
-    }
-
-    private func endSelection() {
-        if selectionUnit == .cell, !selectionDragged {
-            clearSelection() // a plain click
-        }
-        selectionOrigin = nil
-    }
-
-    private func clearSelection() {
-        guard hasSelection else { return }
-        hasSelection = false
-        session.mutateAsync { $0.setSelection(nil) }
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        sendMouse(.press, .right, event)
-    }
-
-    override func rightMouseUp(with event: NSEvent) {
-        sendMouse(.release, .right, event)
-    }
-
-    override func otherMouseDown(with event: NSEvent) {
-        sendMouse(.press, .middle, event)
-    }
-
-    override func otherMouseUp(with event: NSEvent) {
-        sendMouse(.release, .middle, event)
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        if lastModes.contains(.mouseAny) {
-            sendMouse(.motion, .none, event)
-        }
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        for area in trackingAreas {
-            removeTrackingArea(area)
-        }
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self))
-    }
-
-    override func scrollWheel(with event: NSEvent) {
-        let lineHeight = renderer.cellSize.height / (window?.backingScaleFactor ?? 2)
-        scrollAccumulator += event.hasPreciseScrollingDeltas ? event.scrollingDeltaY / lineHeight : event.scrollingDeltaY
-        let lines = Int(scrollAccumulator)
-        guard lines != 0 else { return }
-        scrollAccumulator -= CGFloat(lines)
-        if tracking {
-            for _ in 0 ..< abs(lines) {
-                sendMouse(.press, lines > 0 ? .wheelUp : .wheelDown, event)
-            }
-        } else if lastModes.contains(.alternateScreen), lastModes.contains(.alternateScroll) {
-            for _ in 0 ..< abs(lines) {
-                session.send(.key(KeyEvent(lines > 0 ? .up : .down)))
-            }
-        } else {
-            session.scrollViewport(by: lines)
-        }
-    }
-}
-
-// MARK: - IME
-
-extension TerminalView: @MainActor NSTextInputClient {
-    func insertText(_ string: Any, replacementRange: NSRange) {
-        let text = (string as? NSAttributedString)?.string ?? string as? String ?? ""
-        setPreedit("")
-        if !text.isEmpty {
-            session.send(.text(text))
-        }
-    }
-
-    /// Selectors the input method did not turn into text (for example a
-    /// dead key followed by an arrow); send the key as typed.
-    override func doCommand(by selector: Selector) {
-        guard let event = interpretingEvent, !sendKey(event), let text = event.characters, !text.isEmpty else { return }
-        session.send(.text(text))
-    }
-
-    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
-        setPreedit((string as? NSAttributedString)?.string ?? string as? String ?? "")
-    }
-
-    func unmarkText() {
-        guard !markedText.isEmpty else { return }
-        insertText(markedText, replacementRange: NSRange(location: NSNotFound, length: 0))
-    }
-
-    private func setPreedit(_ text: String) {
-        guard text != markedText else { return }
-        markedText = text
-        renderer.options.preedit = Array(text.unicodeScalars)
-        needsDisplay = true
-    }
-
-    func hasMarkedText() -> Bool {
-        !markedText.isEmpty
-    }
-
-    func markedRange() -> NSRange {
-        hasMarkedText() ? NSRange(location: 0, length: markedText.utf16.count) : NSRange(location: NSNotFound, length: 0)
-    }
-
-    func selectedRange() -> NSRange {
-        NSRange(location: NSNotFound, length: 0)
-    }
-
-    func validAttributesForMarkedText() -> [NSAttributedString.Key] {
-        []
-    }
-
-    func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? {
-        nil
-    }
-
-    func characterIndex(for point: NSPoint) -> Int {
-        NSNotFound
-    }
-
-    /// The cursor cell in screen coordinates, where the candidate window goes.
-    func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
-        actualRange?.pointee = range
-        let scale = window?.backingScaleFactor ?? renderer.font.descriptor.scale
-        let column = CGFloat(lastCursor?.x ?? 0), row = CGFloat(lastCursor?.y ?? 0)
-        let cell = renderer.cellSize, padding = renderer.padding
-        let x: CGFloat = (padding + column * cell.width) / scale
-        let top: CGFloat = (padding + (row + 1) * cell.height) / scale
-        let rect = NSRect(x: x, y: bounds.height - top, width: cell.width / scale, height: cell.height / scale)
-        guard let window else { return rect }
-        return window.convertToScreen(convert(rect, to: nil))
     }
 }

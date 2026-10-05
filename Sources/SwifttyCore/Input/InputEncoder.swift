@@ -33,12 +33,22 @@ public struct KeyEvent: Sendable, Hashable {
     public var action: Action
     /// Text the key produced, for the kitty protocol's associated text flag.
     public var text: String?
+    /// For the kitty protocol's alternate keys flag: the key's character
+    /// with shift applied, and the key at the same position on a US
+    /// (PC-101) layout.
+    public var shiftedKey: Unicode.Scalar?
+    public var baseLayoutKey: Unicode.Scalar?
 
-    public init(_ key: Key, modifiers: KeyModifiers = [], action: Action = .press, text: String? = nil) {
+    public init(
+        _ key: Key, modifiers: KeyModifiers = [], action: Action = .press, text: String? = nil,
+        shiftedKey: Unicode.Scalar? = nil, baseLayoutKey: Unicode.Scalar? = nil,
+    ) {
         self.key = key
         self.modifiers = modifiers
         self.action = action
         self.text = text
+        self.shiftedKey = shiftedKey
+        self.baseLayoutKey = baseLayoutKey
     }
 }
 
@@ -282,6 +292,17 @@ public enum InputEncoder {
             return encodeKey(KeyEvent(event.key, modifiers: mods), modes: modes, into: &out)
         }
         var params = "\(code)"
+        if flags & 4 != 0 {
+            // Alternate keys: `code:shifted:base`, each part only when it adds information.
+            let shifted = mods.contains(.shift) ? event.shiftedKey.map(\.value).flatMap { $0 != code ? $0 : nil } : nil
+            let base = event.baseLayoutKey.map(\.value).flatMap { $0 != code ? $0 : nil }
+            if let shifted {
+                params += ":\(shifted)"
+            }
+            if let base {
+                params += (shifted == nil ? "::" : ":") + "\(base)"
+            }
+        }
         if bits != 0 || event2 != 1 {
             params += ";\(1 + bits)" + (event2 != 1 ? ":\(event2)" : "")
         }

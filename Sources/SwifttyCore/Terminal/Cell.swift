@@ -45,7 +45,7 @@ public struct CellFlags: OptionSet, Hashable, Sendable, BitwiseCopyable {
     public static let strikethrough = CellFlags(rawValue: 1 << 8)
     public static let overline = CellFlags(rawValue: 1 << 9)
     /// Underline style bits refining `.underline` (SGR 4:3/4:4/4:5):
-    /// curly = A, dotted = B, dashed = A+B. Drawn as a plain underline.
+    /// curly = A, dotted = B, dashed = A+B.
     public static let underlineStyleA = CellFlags(rawValue: 1 << 11)
     public static let underlineStyleB = CellFlags(rawValue: 1 << 15)
     public static let anyUnderline: CellFlags = [.underline, .doubleUnderline, .underlineStyleA, .underlineStyleB]
@@ -64,7 +64,9 @@ public struct CellFlags: OptionSet, Hashable, Sendable, BitwiseCopyable {
 }
 
 public struct CellAttributes: Hashable, Sendable, BitwiseCopyable {
-    public var foreground: TerminalColor
+    /// The foreground color; the top six bits of its tag byte (unused by
+    /// `TerminalColor`) hold `underlineColor`, so a cell stays 16 bytes.
+    @usableFromInline var foregroundBits: TerminalColor
     public var background: TerminalColor
     public var flags: CellFlags
     /// OSC 8 hyperlink id (`TerminalState.hyperlink(_:)`), 0 for none. Uses
@@ -77,13 +79,31 @@ public struct CellAttributes: Hashable, Sendable, BitwiseCopyable {
         flags: CellFlags = [],
         link: UInt8 = 0,
     ) {
-        self.foreground = foreground
+        foregroundBits = TerminalColor(rawValue: foreground.rawValue & Self.colorMask)
         self.background = background
         self.flags = flags
         self.link = link
     }
 
     public static let `default` = CellAttributes()
+
+    @usableFromInline static let colorMask: UInt32 = 0x03FF_FFFF
+
+    public var foreground: TerminalColor {
+        @inlinable get { TerminalColor(rawValue: foregroundBits.rawValue & Self.colorMask) }
+        @inlinable set {
+            foregroundBits.rawValue = newValue.rawValue & Self.colorMask | foregroundBits.rawValue & ~Self.colorMask
+        }
+    }
+
+    /// SGR 58 underline color: an id for `TerminalState.underlineColor(_:)`
+    /// (1...63), or 0 to underline in the text color.
+    public var underlineColor: UInt8 {
+        @inlinable get { UInt8(truncatingIfNeeded: foregroundBits.rawValue >> 26) }
+        @inlinable set {
+            foregroundBits.rawValue = foregroundBits.rawValue & Self.colorMask | UInt32(newValue & 0x3F) << 26
+        }
+    }
 }
 
 /// One grid cell. 16 bytes, trivially copyable, never heap allocated.
@@ -110,7 +130,7 @@ public struct Cell: Hashable, Sendable, BitwiseCopyable {
     }
 
     @inlinable public var isBlank: Bool {
-        glyph == 0 && width == 1 && attributes.foreground.rawValue == 0
+        glyph == 0 && width == 1 && attributes.foregroundBits.rawValue == 0
             && attributes.background.rawValue == 0 && attributes.flags.rawValue == 0 && attributes.link == 0
     }
 
@@ -133,6 +153,24 @@ public struct Palette: Sendable, Equatable {
     public var foreground: UInt32
     public var background: UInt32
     public var cursor: UInt32
+    /// Colors the application or configuration chose for these; nil keeps
+    /// the renderer's defaults (OSC 21, `selection-*`, `cursor-text`).
+    public var cursorText: UInt32?
+    public var selectionForeground: UInt32?
+    public var selectionBackground: UInt32?
+
+    public init(
+        colors: InlineArray<256, UInt32>, foreground: UInt32, background: UInt32, cursor: UInt32,
+        cursorText: UInt32? = nil, selectionForeground: UInt32? = nil, selectionBackground: UInt32? = nil,
+    ) {
+        self.colors = colors
+        self.foreground = foreground
+        self.background = background
+        self.cursor = cursor
+        self.cursorText = cursorText
+        self.selectionForeground = selectionForeground
+        self.selectionBackground = selectionBackground
+    }
 
     public static let standard: Palette = {
         let base: [UInt32] = [
@@ -165,8 +203,9 @@ public struct Palette: Sendable, Equatable {
     }
 
     public static func == (lhs: Palette, rhs: Palette) -> Bool {
-        guard lhs.foreground == rhs.foreground, lhs.background == rhs.background,
-              lhs.cursor == rhs.cursor else { return false }
+        guard lhs.foreground == rhs.foreground, lhs.background == rhs.background, lhs.cursor == rhs.cursor,
+              lhs.cursorText == rhs.cursorText, lhs.selectionForeground == rhs.selectionForeground,
+              lhs.selectionBackground == rhs.selectionBackground else { return false }
         for i in 0 ..< 256 where lhs.colors[i] != rhs.colors[i] {
             return false
         }

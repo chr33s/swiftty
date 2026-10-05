@@ -10,6 +10,7 @@ struct CellInstance {
     uint fg;
     uint bg;
     uint flags;
+    uint underline; // RGBA underline color; 0 uses fg
 };
 
 // Must match `Uniforms` in MetalRenderer.swift.
@@ -21,7 +22,7 @@ struct Uniforms {
     float underlinePosition;
     float underlineThickness;
     uint cursorColor;
-    uint pad;
+    uint blinkHidden; // text with FlagBlink is in its off phase
 };
 
 constant uint FlagColorGlyph = 1u << 0;
@@ -33,13 +34,26 @@ constant uint FlagCursorBar = 1u << 5;
 constant uint FlagCursorUnderline = 1u << 6;
 constant uint FlagFaint = 1u << 7;
 constant uint FlagCursorHollow = 1u << 8;
+constant uint FlagCurly = 1u << 9;
+constant uint FlagDotted = 1u << 10;
+constant uint FlagDashed = 1u << 11;
+constant uint FlagBlink = 1u << 12;
 constant uint DecorationSlots = 6;
+
+// Decoration patterns, in `VertexOut.colorGlyph` for the decoration pass.
+constant uint PatternSolid = 0;
+constant uint PatternDouble = 1;
+constant uint PatternCurly = 2;
+constant uint PatternDotted = 3;
+constant uint PatternDashed = 4;
 
 struct VertexOut {
     float4 position [[position]];
     float2 texCoord;
     float4 color;
     uint colorGlyph [[flat]];
+    // Decorations: rect height, line thickness, pattern period.
+    float3 pattern [[flat]];
 };
 
 static float4 unpack(uint rgba) {
@@ -66,6 +80,7 @@ vertex VertexOut background_vertex(uint vid [[vertex_id]], uint iid [[instance_i
     out.texCoord = float2(0);
     out.color = unpack(c.bg);
     out.colorGlyph = 0;
+    out.pattern = float3(0);
     return out;
 }
 
@@ -77,11 +92,13 @@ vertex VertexOut glyph_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
     float2 size = float2(c.atlasSize);
     float2 origin = u.origin + float2(c.grid) * u.cellSize + float2(c.offset);
     float2 k = corner(vid);
-    out.position = size.x == 0 ? float4(0) : toClip(origin + k * size, u);
+    bool hidden = size.x == 0 || ((c.flags & FlagBlink) && u.blinkHidden);
+    out.position = hidden ? float4(0) : toClip(origin + k * size, u);
     out.texCoord = (float2(c.atlasPos) + k * size) / u.atlasSize;
     out.color = unpack(c.fg);
     if (c.flags & FlagFaint) out.color.a *= 0.5;
     out.colorGlyph = (c.flags & FlagColorGlyph) ? 1 : 0;
+    out.pattern = float3(0);
     return out;
 }
 
@@ -96,9 +113,30 @@ vertex VertexOut decoration_vertex(uint vid [[vertex_id]], uint iid [[instance_i
     float t = u.underlineThickness;
     float4 rect = float4(0); // x, y, w, h
     float4 color = unpack(c.fg);
+    uint pattern = PatternSolid;
+    float period = 0;
     if (slot == 0) {
-        if (c.flags & FlagDoubleUnderline) rect = float4(0, u.underlinePosition - t, u.cellSize.x, t * 3);
-        else if (c.flags & FlagUnderline) rect = float4(0, u.underlinePosition, u.cellSize.x, t);
+        if (c.underline != 0) color = unpack(c.underline);
+        if (c.flags & FlagDoubleUnderline) {
+            rect = float4(0, u.underlinePosition - t, u.cellSize.x, t * 3);
+            pattern = PatternDouble;
+        } else if (c.flags & FlagCurly) {
+            // One wave per cell, so neighbouring cells join.
+            float h = max(t * 4, 4.0);
+            rect = float4(0, u.underlinePosition + t / 2 - h / 2, u.cellSize.x, h);
+            pattern = PatternCurly;
+            period = u.cellSize.x;
+        } else if (c.flags & FlagDotted) {
+            rect = float4(0, u.underlinePosition, u.cellSize.x, t);
+            pattern = PatternDotted;
+            period = max(t * 2, 2.0);
+        } else if (c.flags & FlagDashed) {
+            rect = float4(0, u.underlinePosition, u.cellSize.x, t);
+            pattern = PatternDashed;
+            period = u.cellSize.x / 2;
+        } else if (c.flags & FlagUnderline) {
+            rect = float4(0, u.underlinePosition, u.cellSize.x, t);
+        }
     } else if (slot == 1) {
         if (c.flags & FlagStrike) rect = float4(0, round(u.cellSize.y * 0.55), u.cellSize.x, t);
         else if (c.flags & FlagOverline) rect = float4(0, 0, u.cellSize.x, t);
@@ -116,11 +154,41 @@ vertex VertexOut decoration_vertex(uint vid [[vertex_id]], uint iid [[instance_i
         }
     }
     VertexOut out;
-    out.position = rect.z == 0 ? float4(0) : toClip(cell + rect.xy + corner(vid) * rect.zw, u);
-    out.texCoord = float2(0);
+    float2 k = corner(vid);
+    out.position = rect.z == 0 ? float4(0) : toClip(cell + rect.xy + k * rect.zw, u);
+    // Row-relative x keeps patterns continuous across cells; y is local.
+    out.texCoord = float2(cell.x - u.origin.x + rect.x + k.x * rect.z, k.y * rect.w);
     out.color = color;
-    out.colorGlyph = 0;
+    out.colorGlyph = pattern;
+    out.pattern = float3(rect.w, t, period);
     return out;
+}
+
+fragment float4 decoration_fragment(VertexOut in [[stage_in]]) {
+    float x = in.texCoord.x, y = in.texCoord.y;
+    float h = in.pattern.x, t = in.pattern.y, period = in.pattern.z;
+    float coverage = 1;
+    switch (in.colorGlyph) {
+    case PatternDouble:
+        coverage = (y < t || y >= h - t) ? 1 : 0;
+        break;
+    case PatternCurly: {
+        float amplitude = (h - t) / 2;
+        float center = h / 2 + amplitude * sin(x / period * 2 * M_PI_F);
+        coverage = clamp(t / 2 + 0.5 - abs(y - center), 0.0, 1.0);
+        break;
+    }
+    case PatternDotted:
+        coverage = fmod(x, period) < period / 2 ? 1 : 0;
+        break;
+    case PatternDashed:
+        coverage = fmod(x, period) < period * 0.6 ? 1 : 0;
+        break;
+    default:
+        break;
+    }
+    float a = in.color.a * coverage;
+    return float4(in.color.rgb * a, a);
 }
 
 fragment float4 solid_fragment(VertexOut in [[stage_in]]) {

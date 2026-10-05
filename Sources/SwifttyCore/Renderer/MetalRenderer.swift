@@ -34,8 +34,16 @@ public struct RenderOptions: Equatable, Sendable {
     public var selectedSearchBackground: UInt32 = 0xF2A65A
     /// OSC 8 link id to underline (the one under the pointer), 0 for none.
     public var hoveredLink: UInt8 = 0
+    /// Cells to underline, in snapshot rows (a detected URL under the pointer).
+    public var underlinedSpan: HighlightSpan?
     /// IME composition text, drawn underlined from the cursor.
     public var preedit: [Unicode.Scalar] = []
+    /// Blink phase for SGR 5 text; false hides it. Toggling it does not
+    /// rebuild any cells.
+    public var textBlinkVisible = true
+    /// Minimum WCAG contrast ratio between text and its background (1...21);
+    /// text below it is drawn in black or white (Ghostty's `minimum-contrast`).
+    public var minimumContrast: Double = 1
 
     public init() {}
 }
@@ -55,6 +63,7 @@ public final class MetalRenderer {
         var fg: UInt32
         var bg: UInt32
         var flags: UInt32
+        var underline: UInt32
     }
 
     struct Uniforms {
@@ -65,7 +74,7 @@ public final class MetalRenderer {
         var underlinePosition: Float
         var underlineThickness: Float
         var cursorColor: UInt32
-        var pad: UInt32 = 0
+        var blinkHidden: UInt32 = 0
     }
 
     /// Decoration quads per cell: underline, strike/overline, cursor, and
@@ -82,6 +91,10 @@ public final class MetalRenderer {
         static let cursorUnderline: UInt32 = 1 << 6
         static let faint: UInt32 = 1 << 7
         static let cursorHollow: UInt32 = 1 << 8
+        static let curly: UInt32 = 1 << 9
+        static let dotted: UInt32 = 1 << 10
+        static let dashed: UInt32 = 1 << 11
+        static let blink: UInt32 = 1 << 12
     }
 
     public let device: MTLDevice
@@ -101,6 +114,22 @@ public final class MetalRenderer {
     private var lastSequence: UInt64 = 0
     private var needsFullRebuild = true
     private let inFlight = DispatchSemaphore(value: 1)
+    /// Rows whose cells include SGR 5 text, as last built.
+    private var blinkingRows: [Bool] = []
+    private var postProcess: PostProcess?
+    private let startTime = CACurrentMediaTime()
+
+    /// Whether the last frame had blinking text, so the host knows to keep
+    /// toggling `RenderOptions.textBlinkVisible`.
+    public var hasBlinkingText: Bool {
+        blinkingRows.contains(true)
+    }
+
+    /// Whether a custom post-processing shader animates (uses `time`), so
+    /// the host keeps drawing.
+    public var isAnimating: Bool {
+        postProcess?.usesTime ?? false
+    }
 
     /// Padding around the grid, in pixels (`RenderOptions` overrides it).
     public var padding: CGFloat = 8 {
@@ -141,7 +170,7 @@ public final class MetalRenderer {
         }
         backgroundPipeline = try pipeline("background_vertex", "solid_fragment")
         glyphPipeline = try pipeline("glyph_vertex", "glyph_fragment")
-        decorationPipeline = try pipeline("decoration_vertex", "solid_fragment")
+        decorationPipeline = try pipeline("decoration_vertex", "decoration_fragment")
         atlas = try GlyphAtlas(device: device)
     }
 
@@ -226,6 +255,13 @@ public final class MetalRenderer {
 
         let commandBuffer = queue.makeCommandBuffer()!
         commandBuffer.addCompletedHandler { [inFlight] _ in inFlight.signal() }
+        // With a post-processing shader the grid is drawn offscreen first.
+        let target = pass.colorAttachments[0].texture
+        let intermediate = target.flatMap { postProcess?.intermediate(matching: $0, device: device) }
+        if let intermediate {
+            pass.colorAttachments[0].texture = intermediate
+            pass.colorAttachments[0].storeAction = .store
+        }
         let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass)!
         var uniforms = Uniforms(
             cellSize: SIMD2(Float(font.cellWidth), Float(font.cellHeight)),
@@ -235,6 +271,7 @@ public final class MetalRenderer {
             underlinePosition: Float(font.underlinePosition),
             underlineThickness: Float(font.underlineThickness),
             cursorColor: cursorColor << 8 | cursorAlpha,
+            blinkHidden: options.textBlinkVisible ? 0 : 1,
         )
         let count = snapshot.columns * snapshot.rowCount
         if let instances, count > 0 {
@@ -249,7 +286,20 @@ public final class MetalRenderer {
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: count * Self.decorationSlots)
         }
         encoder.endEncoding()
+        if let intermediate, let target, let postProcess {
+            postProcess.encode(
+                from: intermediate, to: target, commandBuffer: commandBuffer,
+                time: Float(CACurrentMediaTime() - startTime),
+            )
+            pass.colorAttachments[0].texture = target
+        }
         return commandBuffer
+    }
+
+    /// Installs a post-processing fragment shader (Metal source), or removes
+    /// it with nil. See `PostProcess` for the function it must define.
+    public func setPostProcessShader(_ source: String?) throws {
+        postProcess = try source.map { try PostProcess(device: device, source: $0) }
     }
 
     private func effectivePalette(_ snapshot: RenderSnapshot) -> Palette {
@@ -265,8 +315,10 @@ public final class MetalRenderer {
     private func updateInstances(_ snapshot: RenderSnapshot, palette: Palette, options: RenderOptions) {
         let columns = snapshot.columns, rows = snapshot.rowCount
         // Cursor opacity animates every frame; it only touches the cursor row.
+        // The text blink phase is a uniform.
         var comparable = options
         comparable.cursorOpacity = lastOptions.cursorOpacity
+        comparable.textBlinkVisible = lastOptions.textBlinkVisible
         // A skipped snapshot (no drawable that frame) carried damage these
         // instances never saw.
         let skipped = snapshot.sequence != lastSequence && snapshot.sequence != lastSequence &+ 1
@@ -279,6 +331,9 @@ public final class MetalRenderer {
             }
             gridSize = (columns, rows)
             full = true
+        }
+        if blinkingRows.count != rows {
+            blinkingRows = Array(repeating: false, count: rows)
         }
         var cursor = snapshot.cursor
         cursor.isVisible = cursor.isVisible && options.cursorVisible
@@ -321,6 +376,9 @@ public final class MetalRenderer {
             .layoutPreedit(options.preedit, at: cursor.x, columns: cells.count) : [:]
         // Break at the cursor whatever its blink phase, so ligatures don't flicker.
         let shaped = font.shapes ? shapeRow(cells, cursorX: snapshot.cursor.isVisible && cursor.y == y ? cursor.x : -1, skip: preedit) : []
+        let selectionForeground = options.selectionForeground ?? palette.selectionForeground
+        let selectionBackground = options.selectionBackground ?? palette.selectionBackground
+        var blinks = false
         for x in 0 ..< cells.count {
             var cell = cells[x]
             if let p = preedit[x] {
@@ -341,35 +399,31 @@ public final class MetalRenderer {
                 bgAlpha = 0xFF
             }
             if let selection, selection.contains(row: y, column: x) {
-                if options.selectionForeground == nil, options.selectionBackground == nil {
+                if selectionForeground == nil, selectionBackground == nil {
                     swap(&fg, &bg)
                 } else {
-                    fg = options.selectionForeground ?? fg
-                    bg = options.selectionBackground ?? bg
+                    fg = selectionForeground ?? fg
+                    bg = selectionBackground ?? bg
                 }
                 bgAlpha = 0xFF
             }
-            var flags: UInt32 = 0
-            if attrs.flags.contains(.underline) {
-                flags |= Flag.underline
+            if options.minimumContrast > 1 {
+                fg = Self.ensureContrast(fg, on: bg, ratio: options.minimumContrast)
             }
-            if attrs.flags.contains(.doubleUnderline) {
-                flags |= Flag.doubleUnderline
+            var flags = Self.decorationFlags(attrs.flags)
+            var underline: UInt32 = 0
+            if attrs.underlineColor != 0, Int(attrs.underlineColor) <= snapshot.underlineColors.count {
+                underline = palette.resolve(snapshot.underlineColors[Int(attrs.underlineColor) - 1], isForeground: true) << 8 | 0xFF
             }
-            if attrs.flags.contains(.strikethrough) {
-                flags |= Flag.strike
-            }
-            if attrs.flags.contains(.overline) {
-                flags |= Flag.overline
-            }
-            if attrs.flags.contains(.faint) {
-                flags |= Flag.faint
-            }
+            blinks = blinks || attrs.flags.contains(.blink)
 
             if !preedit.isEmpty, preedit[x] != nil {
                 flags |= Flag.underline
             }
             if options.hoveredLink != 0, attrs.link == options.hoveredLink {
+                flags |= Flag.underline
+            }
+            if let span = options.underlinedSpan, span.contains(row: y, column: x) {
                 flags |= Flag.underline
             }
             if cursor.isVisible, preedit.isEmpty, cursor.y == y, cursor.x == x {
@@ -380,7 +434,7 @@ public final class MetalRenderer {
                     // Blend so cursor opacity (and its animations) shows the cell beneath.
                     let t = max(0, min(1, options.cursorOpacity))
                     let cellBg = bg
-                    fg = Self.mix(fg, options.cursorTextColor ?? cellBg, t)
+                    fg = Self.mix(fg, options.cursorTextColor ?? palette.cursorText ?? cellBg, t)
                     bg = Self.mix(cellBg, options.cursorColor ?? palette.cursor, t)
                     bgAlpha = UInt32(Double(bgAlpha) + (255 - Double(bgAlpha)) * t)
                 case .bar: flags |= Flag.cursorBar
@@ -418,7 +472,11 @@ public final class MetalRenderer {
                 fg: fg << 8 | 0xFF,
                 bg: bg << 8 | bgAlpha,
                 flags: flags,
+                underline: underline,
             )
+        }
+        if y < blinkingRows.count {
+            blinkingRows[y] = blinks
         }
     }
 }
@@ -451,13 +509,57 @@ extension MetalRenderer {
                 for i in x ..< end {
                     out[i] = .empty
                 }
-                for g in shaper.shape(scalars, style: FontStyle(attrs.flags), font: font) {
-                    out[x + g.cell] = atlas.entry(glyph: g.glyph, in: g.font, isColor: g.isColor, font: font)
+                let style = FontStyle(attrs.flags)
+                let embolden = font.emboldened[Int(style.rawValue & 3)]
+                for g in shaper.shape(scalars, style: style, font: font) {
+                    out[x + g.cell] = atlas.entry(glyph: g.glyph, in: g.font, isColor: g.isColor, embolden: embolden, font: font)
                 }
             }
             x = end
         }
         return out
+    }
+
+    /// Shader flags for a cell's SGR decorations.
+    static func decorationFlags(_ cellFlags: CellFlags) -> UInt32 {
+        var flags: UInt32 = 0
+        if cellFlags.contains(.underline) {
+            flags |= Flag.underline
+            switch (cellFlags.contains(.underlineStyleA), cellFlags.contains(.underlineStyleB)) {
+            case (true, true): flags |= Flag.dashed
+            case (true, false): flags |= Flag.curly
+            case (false, true): flags |= Flag.dotted
+            case (false, false): break
+            }
+        }
+        let simple: [(CellFlags, UInt32)] = [
+            (.doubleUnderline, Flag.doubleUnderline), (.strikethrough, Flag.strike), (.overline, Flag.overline),
+            (.faint, Flag.faint), (.blink, Flag.blink),
+        ]
+        for (cell, flag) in simple where cellFlags.contains(cell) {
+            flags |= flag
+        }
+        return flags
+    }
+
+    /// `fg`, or black or white (whichever contrasts more) when `fg` falls
+    /// below `ratio` against `bg`.
+    static func ensureContrast(_ fg: UInt32, on bg: UInt32, ratio: Double) -> UInt32 {
+        let lb = luminance(bg)
+        func contrast(_ l: Double) -> Double {
+            (max(l, lb) + 0.05) / (min(l, lb) + 0.05)
+        }
+        guard contrast(luminance(fg)) < ratio else { return fg }
+        return contrast(1) >= contrast(0) ? 0xFFFFFF : 0x000000
+    }
+
+    /// WCAG relative luminance of a 0xRRGGBB colour.
+    static func luminance(_ rgb: UInt32) -> Double {
+        func channel(_ v: UInt32) -> Double {
+            let c = Double(v & 0xFF) / 255
+            return c <= 0.03928 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * channel(rgb >> 16) + 0.7152 * channel(rgb >> 8) + 0.0722 * channel(rgb)
     }
 
     /// Linear blend of two 0xRRGGBB colours.
@@ -519,13 +621,15 @@ final class GlyphAtlas {
     struct GlyphKey: Hashable {
         var font: CTFont
         var glyph: CGGlyph
+        var embolden: Bool
 
         static func == (a: GlyphKey, b: GlyphKey) -> Bool {
-            a.glyph == b.glyph && CFEqual(a.font, b.font)
+            a.glyph == b.glyph && a.embolden == b.embolden && CFEqual(a.font, b.font)
         }
 
         func hash(into hasher: inout Hasher) {
             hasher.combine(glyph)
+            hasher.combine(embolden)
             hasher.combine(CFHash(font))
         }
     }
@@ -565,7 +669,8 @@ final class GlyphAtlas {
             var glyph = lookup.glyph
             var rect = CGRect.zero
             CTFontGetBoundingRectsForGlyphs(lookup.font, .horizontal, &glyph, &rect, 1)
-            entry = rasterize(bounds: rect, isColor: lookup.isColor, font: font) { context, origin in
+            let embolden = !lookup.isColor && font.emboldened[Int(style.rawValue & 3)]
+            entry = rasterize(bounds: rect, isColor: lookup.isColor, embolden: embolden, font: font) { context, origin in
                 var position = origin
                 CTFontDrawGlyphs(lookup.font, &glyph, &position, 1, context)
             }
@@ -575,15 +680,15 @@ final class GlyphAtlas {
     }
 
     /// A shaped glyph, keyed by its font and glyph id.
-    func entry(glyph: CGGlyph, in glyphFont: CTFont, isColor: Bool, font: ResolvedFont) -> Entry {
-        let key = GlyphKey(font: glyphFont, glyph: glyph)
+    func entry(glyph: CGGlyph, in glyphFont: CTFont, isColor: Bool, embolden: Bool = false, font: ResolvedFont) -> Entry {
+        let key = GlyphKey(font: glyphFont, glyph: glyph, embolden: embolden && !isColor)
         if let entry = glyphs[key] {
             return entry
         }
         var g = glyph
         var rect = CGRect.zero
         CTFontGetBoundingRectsForGlyphs(glyphFont, .horizontal, &g, &rect, 1)
-        let entry = rasterize(bounds: rect, isColor: isColor, font: font) { context, origin in
+        let entry = rasterize(bounds: rect, isColor: isColor, embolden: key.embolden, font: font) { context, origin in
             var position = origin
             CTFontDrawGlyphs(glyphFont, &g, &position, 1, context)
         }
@@ -614,7 +719,8 @@ final class GlyphAtlas {
             let runFont = attrs[kCTFontAttributeName] as! CTFont
             return CTFontGetSymbolicTraits(runFont).contains(.traitColorGlyphs)
         }
-        let entry = rasterize(bounds: bounds, isColor: isColor, font: font) { context, origin in
+        let embolden = !isColor && font.emboldened[Int(style.rawValue & 3)]
+        let entry = rasterize(bounds: bounds, isColor: isColor, embolden: embolden, font: font) { context, origin in
             context.textPosition = origin
             CTLineDraw(line, context)
         }
@@ -655,9 +761,12 @@ final class GlyphAtlas {
 
     /// Draws into a scratch bitmap sized to `bounds` and uploads it.
     private func rasterize(
-        bounds: CGRect, isColor: Bool, font: ResolvedFont,
+        bounds: CGRect, isColor: Bool, embolden: Bool = false, font: ResolvedFont,
         draw: (CGContext, CGPoint) -> Void,
     ) -> Entry {
+        // Synthetic bold strokes the outline, growing it by half the width.
+        let stroke = embolden ? max(1, (font.descriptor.size * font.descriptor.scale / 32).rounded()) : 0
+        let bounds = bounds.insetBy(dx: -stroke / 2, dy: -stroke / 2)
         let pad = 1
         let width = Int(ceil(bounds.width)) + 2 * pad
         let height = Int(ceil(bounds.height)) + 2 * pad
@@ -678,6 +787,11 @@ final class GlyphAtlas {
         context.setAllowsFontSmoothing(false)
         context.setShouldAntialias(true)
         context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        if embolden {
+            context.setStrokeColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            context.setLineWidth(stroke)
+            context.setTextDrawingMode(.fillStroke)
+        }
         let originX = -floor(bounds.minX) + CGFloat(pad)
         let originY = -floor(bounds.minY) + CGFloat(pad)
         draw(context, CGPoint(x: originX, y: originY))

@@ -34,6 +34,8 @@ public struct Modes: OptionSet, Sendable, Hashable {
     public static let graphemeCluster = Modes(rawValue: 1 << 23) // 2027
     public static let enableColumnMode = Modes(rawValue: 1 << 24) // 40 (allows DECCOLM)
     public static let column132 = Modes(rawValue: 1 << 25) // DECCOLM 3
+    public static let colorSchemeUpdates = Modes(rawValue: 1 << 26) // 2031
+    public static let inBandResize = Modes(rawValue: 1 << 27) // 2048
 
     /// Grapheme clustering (2027) is on by default, like Ghostty's
     /// `grapheme-width-method = unicode`; Ghostty's bare `Terminal` has it off.
@@ -65,6 +67,8 @@ public struct Modes: OptionSet, Sendable, Hashable {
         case 1007: .alternateScroll
         case 2004: .bracketedPaste
         case 2026: .synchronizedOutput
+        case 2031: .colorSchemeUpdates
+        case 2048: .inBandResize
         case 47, 1047, 1049: .alternateScreen
         default: nil
         }

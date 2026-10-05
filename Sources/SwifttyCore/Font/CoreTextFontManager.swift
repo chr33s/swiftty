@@ -11,11 +11,26 @@ public struct FontDescriptor: Hashable, Sendable {
     /// Cell size adjustments as fractions (0.1 = 10% larger).
     public var cellWidthAdjust: CGFloat = 0
     public var cellHeightAdjust: CGFloat = 0
+    /// Further cell size adjustments in points (Ghostty's `adjust-cell-*`
+    /// given as a number rather than a percentage).
+    public var cellWidthOffset: CGFloat = 0
+    public var cellHeightOffset: CGFloat = 0
     /// Families tried, in order, before the system cascade (e.g. a symbols font).
     public var fallbackFamilies: [String] = []
     /// OpenType feature tags, `-tag` to disable (Ghostty's `font-feature`).
     /// Any enabled feature turns on shaping (ligatures, alternates).
     public var features: [String] = []
+    /// Families for the other styles (Ghostty's `font-family-bold` etc.);
+    /// nil derives the style from `family`.
+    public var boldFamily: String?
+    public var italicFamily: String?
+    public var boldItalicFamily: String?
+    /// Variable-font axes by four-letter tag (Ghostty's `font-variation`).
+    public var variations: [String: Double] = [:]
+    /// Draw a missing bold face by stroking the regular one, and a missing
+    /// italic by slanting it (Ghostty's `font-synthetic-style`).
+    public var synthesizeBold = true
+    public var synthesizeItalic = true
 
     public init(family: String = "Menlo", size: CGFloat = 13, scale: CGFloat = 2) {
         self.family = family
@@ -53,6 +68,8 @@ public final class ResolvedFont: @unchecked Sendable {
     public let fallbacks: [CTFont]
     /// Rows are shaped with CoreText (an enabled OpenType feature).
     public let shapes: Bool
+    /// Per style: no bold face exists, so glyphs are stroked to embolden them.
+    public let emboldened: [Bool]
 
     // Metrics in pixels.
     public let cellWidth: CGFloat
@@ -65,19 +82,28 @@ public final class ResolvedFont: @unchecked Sendable {
     init(descriptor: FontDescriptor) {
         self.descriptor = descriptor
         let pixelSize = descriptor.size * descriptor.scale
-        var regular = CTFontCreateWithName(descriptor.family as CFString, pixelSize, nil)
-        if !(CTFontCopyFamilyName(regular) as String).localizedCaseInsensitiveContains(descriptor.family) {
-            regular = CTFontCreateUIFontForLanguage(.userFixedPitch, pixelSize, nil) ?? regular
+        func named(_ family: String) -> CTFont? {
+            let font = CTFontCreateWithName(family as CFString, pixelSize, nil)
+            return (CTFontCopyFamilyName(font) as String).localizedCaseInsensitiveContains(family) ? font : nil
         }
-        func styled(_ traits: CTFontSymbolicTraits) -> CTFont {
+        let regular = named(descriptor.family) ?? CTFontCreateUIFontForLanguage(.userFixedPitch, pixelSize, nil)
+            ?? CTFontCreateWithName(descriptor.family as CFString, pixelSize, nil)
+        var emboldened = [false, false, false, false]
+        func styled(_ traits: CTFontSymbolicTraits, family: String?) -> CTFont {
+            if let family, let font = named(family) {
+                return font
+            }
             if let font = CTFontCreateCopyWithSymbolicTraits(regular, pixelSize, nil, traits, traits) {
                 return font
             }
-            // No such face: slant the upright one for italic.
-            let base = traits.contains(.traitBold)
-                ? CTFontCreateCopyWithSymbolicTraits(regular, pixelSize, nil, .traitBold, .traitBold) ?? regular
-                : regular
-            guard traits.contains(.traitItalic) else { return base }
+            // No such face: synthesize from the closest one.
+            let bold = traits.contains(.traitBold)
+            let boldFace = bold ? CTFontCreateCopyWithSymbolicTraits(regular, pixelSize, nil, .traitBold, .traitBold) : nil
+            if bold, boldFace == nil, descriptor.synthesizeBold {
+                emboldened[Int(traits.contains(.traitItalic) ? 3 : 1)] = true
+            }
+            let base = boldFace ?? regular
+            guard traits.contains(.traitItalic), descriptor.synthesizeItalic else { return base }
             var skew = CGAffineTransform(a: 1, b: 0, c: 0.2, d: 1, tx: 0, ty: 0)
             return CTFontCreateWithFontDescriptor(CTFontCopyFontDescriptor(base), pixelSize, &skew)
         }
@@ -95,11 +121,19 @@ public final class ResolvedFont: @unchecked Sendable {
         // Shaped runs resolve missing glyphs through CoreText's cascade, so
         // the fallback families go there too.
         let cascade = shapes ? fallbacks.map { CTFontCopyFontDescriptor($0) } : []
+        let variations = descriptor.variations.reduce(into: [NSNumber: Double]()) { out, axis in
+            // Axis identifiers are the tag's four bytes as a big-endian integer.
+            guard axis.key.utf8.count == 4 else { return }
+            out[NSNumber(value: axis.key.utf8.reduce(UInt32(0)) { $0 << 8 | UInt32($1) })] = axis.value
+        }
         func featured(_ font: CTFont) -> CTFont {
-            guard !settings.isEmpty || !cascade.isEmpty else { return font }
+            guard !settings.isEmpty || !cascade.isEmpty || !variations.isEmpty else { return font }
             var attributes: [CFString: Any] = [:]
             if !settings.isEmpty {
                 attributes[kCTFontFeatureSettingsAttribute] = settings
+            }
+            if !variations.isEmpty {
+                attributes[kCTFontVariationAttribute] = variations
             }
             if !cascade.isEmpty {
                 attributes[kCTFontCascadeListAttribute] = cascade
@@ -108,7 +142,13 @@ public final class ResolvedFont: @unchecked Sendable {
             var matrix = CTFontGetMatrix(font) // keeps a synthetic italic's slant
             return CTFontCreateWithFontDescriptor(d, CTFontGetSize(font), &matrix)
         }
-        faces = [regular, styled(.traitBold), styled(.traitItalic), styled([.traitBold, .traitItalic])].map(featured)
+        faces = [
+            regular,
+            styled(.traitBold, family: descriptor.boldFamily),
+            styled(.traitItalic, family: descriptor.italicFamily),
+            styled([.traitBold, .traitItalic], family: descriptor.boldItalicFamily),
+        ].map(featured)
+        self.emboldened = emboldened
         self.shapes = shapes
         emoji = CTFontCreateWithName("Apple Color Emoji" as CFString, pixelSize, nil)
 
@@ -120,9 +160,9 @@ public final class ResolvedFont: @unchecked Sendable {
         let baseAscent = ceil(CTFontGetAscent(regular))
         descent = ceil(CTFontGetDescent(regular))
         let leading = ceil(CTFontGetLeading(regular))
-        cellWidth = max(1, ceil(advance.width * (1 + descriptor.cellWidthAdjust)))
+        cellWidth = max(1, ceil(advance.width * (1 + descriptor.cellWidthAdjust) + descriptor.cellWidthOffset * descriptor.scale))
         let baseHeight = baseAscent + descent + leading
-        cellHeight = max(1, ceil(baseHeight * (1 + descriptor.cellHeightAdjust)))
+        cellHeight = max(1, ceil(baseHeight * (1 + descriptor.cellHeightAdjust) + descriptor.cellHeightOffset * descriptor.scale))
         // Extra height is split above and below the glyphs.
         ascent = baseAscent + floor((cellHeight - baseHeight) / 2)
         underlinePosition = ascent - CTFontGetUnderlinePosition(regular)

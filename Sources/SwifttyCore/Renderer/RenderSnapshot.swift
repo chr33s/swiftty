@@ -22,6 +22,14 @@ public struct HighlightSpan: Sendable, Equatable {
     public var endColumn: Int
     public var rectangle: Bool
 
+    public init(startRow: Int, startColumn: Int, endRow: Int, endColumn: Int, rectangle: Bool = false) {
+        self.startRow = startRow
+        self.startColumn = startColumn
+        self.endRow = endRow
+        self.endColumn = endColumn
+        self.rectangle = rectangle
+    }
+
     public func contains(row: Int, column: Int) -> Bool {
         guard row >= startRow, row <= endRow else { return false }
         if rectangle {
@@ -65,6 +73,8 @@ public struct RenderSnapshot: @unchecked Sendable {
     /// Rows that changed since the previous snapshot returned by the session.
     public internal(set) var damage: DamageRegion
     public let palette: Palette
+    /// Colors for `CellAttributes.underlineColor` ids (id 1 is index 0).
+    public let underlineColors: [TerminalColor]
     public let modes: Modes
     public let viewportOffset: Int
     public let scrollbackCount: Int
@@ -74,8 +84,8 @@ public struct RenderSnapshot: @unchecked Sendable {
     init(
         storage: SnapshotStorage, columns: Int, rowCount: Int, overscanRows: Int, cursor: CursorState,
         selection: HighlightSpan?, searchMatches: [HighlightSpan], selectedSearchMatch: Int?,
-        damage: DamageRegion, palette: Palette, modes: Modes, viewportOffset: Int, scrollbackCount: Int,
-        sequence: UInt64,
+        damage: DamageRegion, palette: Palette, underlineColors: [TerminalColor] = [], modes: Modes,
+        viewportOffset: Int, scrollbackCount: Int, sequence: UInt64,
     ) {
         self.storage = storage
         rowBase = storage.rowRecords
@@ -91,6 +101,7 @@ public struct RenderSnapshot: @unchecked Sendable {
         self.selectedSearchMatch = selectedSearchMatch
         self.damage = damage
         self.palette = palette
+        self.underlineColors = underlineColors
         self.modes = modes
         self.viewportOffset = viewportOffset
         self.scrollbackCount = scrollbackCount
@@ -335,6 +346,7 @@ struct SnapshotBuilder {
             selectedSearchMatch: selectedMatch,
             damage: damage,
             palette: state.palette,
+            underlineColors: state.underlineColors,
             modes: modes,
             viewportOffset: state.viewportOffset,
             scrollbackCount: state.scrollbackCount,

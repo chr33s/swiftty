@@ -16,6 +16,12 @@ public enum TerminalEvent: Sendable, Equatable {
     /// OSC 9;4 progress: state 0 remove, 1 set, 2 error, 3 indeterminate,
     /// 4 pause; `percent` is nil when not given.
     case progress(state: Int, percent: Int?)
+    /// OSC 22: the application asked for this mouse pointer shape (a CSS
+    /// cursor name such as `text`, `pointer`, `default`).
+    case pointerShape(String)
+    /// OSC 133 ; D: a command finished with this exit status (the latest,
+    /// once per batch).
+    case commandFinished(exitCode: Int?)
 }
 
 public struct Cursor: Sendable, Equatable {
@@ -44,7 +50,13 @@ public struct Cursor: Sendable, Equatable {
     /// DECSCA / SPA: printed cells are protected from selective erase.
     public var isProtected: Bool {
         get { pen.flags.contains(.protected) }
-        set { if newValue { pen.flags.insert(.protected) } else { pen.flags.remove(.protected) } }
+        set {
+            if newValue {
+                pen.flags.insert(.protected)
+            } else {
+                pen.flags.remove(.protected)
+            }
+        }
     }
 
     func charset(_ slot: UInt8) -> Charset {
@@ -167,6 +179,22 @@ public struct TerminalState: ~Copyable {
     /// Pixel size of one cell, for XTWINOPS reports.
     public var cellPixelSize = (width: 0, height: 0)
 
+    /// Shell integration and host-facing state (`TerminalState+Shell.swift`).
+    public internal(set) var semanticState = SemanticState.none
+    /// The shell redraws its prompt after a resize (OSC 133 `redraw=1`).
+    var promptRedraws = false
+    /// Where the command line being typed starts (OSC 133 ; B), absolute.
+    public internal(set) var inputStart: TerminalPoint?
+    public internal(set) var lastExitCode: Int?
+    /// A command finished since the last `takeEvents()`.
+    var commandFinished = false
+    var titleStack: [[UInt8]] = []
+    var penStack: [CellAttributes] = []
+    /// Appearance the host reports for color-scheme queries (mode 2031).
+    public internal(set) var colorScheme = ColorScheme.dark
+    var underlineColors: [TerminalColor] = []
+    var pointerShape = ""
+
     private let widths = UnicodeWidth.table
     private var lastPrinted: UInt32 = 0
 
@@ -201,7 +229,7 @@ public struct TerminalState: ~Copyable {
     /// Pending events, with title and directory changes coalesced to the
     /// latest value.
     public mutating func takeEvents() -> [TerminalEvent] {
-        guard !events.isEmpty || titleChanged || directoryChanged else { return [] }
+        guard !events.isEmpty || titleChanged || directoryChanged || commandFinished else { return [] }
         var out = events
         events.removeAll(keepingCapacity: true)
         if titleChanged {
@@ -210,8 +238,12 @@ public struct TerminalState: ~Copyable {
         if directoryChanged, let url = URL(string: String(decoding: directoryBytes, as: UTF8.self)), url.isFileURL {
             out.append(.workingDirectory(url.path))
         }
+        if commandFinished {
+            out.append(.commandFinished(exitCode: lastExitCode))
+        }
         titleChanged = false
         directoryChanged = false
+        commandFinished = false
         return out
     }
 
@@ -488,8 +520,12 @@ public struct TerminalState: ~Copyable {
 
     @inline(__always)
     static func kind(of cell: Cell) -> CellKind {
-        if cell.width == 2 { return .wide }
-        if cell.width == 0 || cell.flags.contains(.spacerTail) { return .spacerTail }
+        if cell.width == 2 {
+            return .wide
+        }
+        if cell.width == 0 || cell.flags.contains(.spacerTail) {
+            return .spacerTail
+        }
         return cell.flags.contains(.spacerHead) ? .spacerHead : .narrow
     }
 
@@ -549,7 +585,9 @@ public struct TerminalState: ~Copyable {
     /// unknown), so the batched path must hand it to `print`.
     @inline(__always)
     private static func mayJoin(_ c: UInt32, after previous: UInt32?, clustering: Bool, widths: WidthTable) -> Bool {
-        if c <= 0xFF { return false }
+        if c <= 0xFF {
+            return false
+        }
         guard clustering else { return widths.lookup(c) == 0 }
         guard let previous else { return true }
         return GraphemeBreak.mayJoin(previous: previous, c)
@@ -558,7 +596,9 @@ public struct TerminalState: ~Copyable {
     /// The last scalar of the cell a joining scalar would attach to, or a
     /// stand-in that joins at least as readily (nil: unknown).
     private func scalarBeforeCursor() -> UInt32? {
-        if !modes.contains(.autowrap), cursor.x == columns - 1 { return nil }
+        if !modes.contains(.autowrap), cursor.x == columns - 1 {
+            return nil
+        }
         var x = cursor.pendingWrap ? cursor.x : cursor.x - 1
         let row = grid.row(cursor.y)
         if x >= 0, Self.kind(of: row[x]) == .spacerTail {
@@ -575,9 +615,13 @@ public struct TerminalState: ~Copyable {
     /// Zero-width scalar outside a grapheme cluster (mode 2027 off, or no
     /// previous cell): attaches to the cell before the cursor.
     private mutating func attachZeroWidth(_ c: UInt32) {
-        if modes.contains(.graphemeCluster) { return }
+        if modes.contains(.graphemeCluster) {
+            return
+        }
         let left = modes.contains(.autowrap) && cursor.pendingWrap ? 0 : 1
-        if cursor.x == 0, left == 1 { return }
+        if cursor.x == 0, left == 1 {
+            return
+        }
         let row = grid.row(cursor.y)
         var x = cursor.x - left
         if Self.kind(of: row[x]) == .spacerTail, x > 0 {
@@ -791,7 +835,9 @@ public struct TerminalState: ~Copyable {
         if cursor.pendingWrap {
             count -= 1
             cursor.pendingWrap = false
-            if count == 0 { return }
+            if count == 0 {
+                return
+            }
         }
         let top = scrollTop, bottom = scrollBottom, right = scrollRight
         let left = cursor.x < scrollLeft ? 0 : scrollLeft
@@ -804,16 +850,24 @@ public struct TerminalState: ~Copyable {
             let amount = min(cursor.x - left, count)
             count -= amount
             cursor.x -= amount
-            if count == 0 { break }
+            if count == 0 {
+                break
+            }
             if cursor.y == top {
-                if wrap != .extended { break }
+                if wrap != .extended {
+                    break
+                }
                 cursor.x = right
                 cursor.y = bottom
                 count -= 1
                 continue
             }
-            if cursor.y == 0 { break }
-            if wrap != .extended, !grid.isWrapped(cursor.y - 1) { break }
+            if cursor.y == 0 {
+                break
+            }
+            if wrap != .extended, !grid.isWrapped(cursor.y - 1) {
+                break
+            }
             cursor.x = right
             cursor.y -= 1
             count -= 1
@@ -827,9 +881,13 @@ public struct TerminalState: ~Copyable {
             // Like Ghostty, a tab leaves a pending wrap alone.
             while cursor.x < scrollRight {
                 cursor.x += 1
-                if tabStops[cursor.x] { break }
+                if tabStops[cursor.x] {
+                    break
+                }
             }
-            if cursor.x == start { break }
+            if cursor.x == start {
+                break
+            }
         }
     }
 
@@ -840,9 +898,13 @@ public struct TerminalState: ~Copyable {
             let start = cursor.x
             while cursor.x > limit {
                 cursor.x -= 1
-                if tabStops[cursor.x] { break }
+                if tabStops[cursor.x] {
+                    break
+                }
             }
-            if cursor.x == start { break }
+            if cursor.x == start {
+                break
+            }
         }
     }
 
@@ -1146,9 +1208,13 @@ public struct TerminalState: ~Copyable {
             default: break
             }
         case (0x3F, 0, 0x6E): // ? n
-            if csi.value(0) == 6 {
-                reply("\u{1B}[?\(reportedRow);\(reportedColumn)R")
+            switch csi.value(0) {
+            case 6: reply("\u{1B}[?\(reportedRow);\(reportedColumn)R")
+            case 996: reportColorScheme()
+            default: break
             }
+        case (0, 0x23, 0x7B), (0, 0x23, 0x70): pushPen() // XTPUSHSGR # { and # p
+        case (0, 0x23, 0x7D), (0, 0x23, 0x71): popPen() // XTPOPSGR # } and # q
         case (0x3F, 0x24, 0x70): // DECRQM ? $ p
             let n = csi.value(0)
             let state = Modes.dec(n).map { modes.contains($0) ? 1 : 2 } ?? 0
@@ -1311,6 +1377,8 @@ public struct TerminalState: ~Copyable {
             reply("\u{1B}[4;\(rows * cellPixelSize.height);\(columns * cellPixelSize.width)t")
         case 16: reply("\u{1B}[6;\(cellPixelSize.height);\(cellPixelSize.width)t")
         case 18: reply("\u{1B}[8;\(rows);\(columns)t")
+        case 22: pushTitle()
+        case 23: popTitle()
         default: break
         }
     }
@@ -1372,7 +1440,10 @@ public struct TerminalState: ~Copyable {
             case 49: pen.background = .default
             case 53: pen.flags.insert(.overline)
             case 55: pen.flags.remove(.overline)
-            case 58: _ = extendedColor(csi, &i) // underline color: parsed, not rendered
+            case 58: if let c = extendedColor(csi, &i) {
+                    pen.underlineColor = internUnderlineColor(c)
+                }
+            case 59: pen.underlineColor = 0
             case 90 ... 97: pen.foreground = .palette(UInt8(p - 90 + 8))
             case 100 ... 107: pen.background = .palette(UInt8(p - 100 + 8))
             default: break
@@ -1491,6 +1562,7 @@ public struct TerminalState: ~Copyable {
             scrollLeft = 0
             scrollRight = columns - 1
         case .column132: setColumnMode(on)
+        case .inBandResize where on: reportSize()
         default: break
         }
     }
@@ -1570,6 +1642,7 @@ public struct TerminalState: ~Copyable {
 
     mutating func fullReset() {
         invalidateSelection()
+        resetShellState()
         hyperlinks = []
         hyperlinkHashes = []
         hyperlinkIndex.removeAll(keepingCapacity: true)
@@ -1752,6 +1825,7 @@ public struct TerminalState: ~Copyable {
             damage.setFull()
         }
         guard newColumns != columns || newRows != rows else { return }
+        clearPromptForResize()
         // A height-only change (an on-screen keyboard, an edit menu) keeps
         // lines intact, so a selection survives it; the rebuilt history
         // renumbers lines from zero, hence the shift. A width change
@@ -1799,6 +1873,9 @@ public struct TerminalState: ~Copyable {
                 setSelection(carried)
             }
         }
+        if modes.contains(.inBandResize) {
+            reportSize()
+        }
         damage.setFull()
     }
 
@@ -1827,6 +1904,7 @@ public struct TerminalState: ~Copyable {
         var cells: [Cell] = []
         var lineStarts: [Int] = []
         var lineWrapped: [Bool] = []
+        var lineMarks: [RowMark] = []
         var lineOpen = false
         // Per cursor: logical line, offset in it, and pending wrap.
         var marks = cursors.map { _ in (line: 0, offset: 0, pending: false) }
@@ -1836,6 +1914,7 @@ public struct TerminalState: ~Copyable {
             if !lineOpen {
                 lineStarts.append(cells.count)
                 lineWrapped.append(wrapped)
+                lineMarks.append(p < history ? grid.historyMark(p) : grid.mark(p - history))
                 lineOpen = true
             }
             for (i, c) in cursors.enumerated() where p == history + c.y {
@@ -1862,14 +1941,17 @@ public struct TerminalState: ~Copyable {
         // 2. Re-wrap into rows of the new width.
         var out: [Cell] = []
         var outWrapped: [Bool] = []
+        var outMarks: [RowMark] = []
         var placed = cursors.map { _ in (row: -1, column: 0, pending: false) }
         func newRow() {
             out.append(contentsOf: repeatElement(Cell.blank, count: newColumns))
             outWrapped.append(false)
+            outMarks.append(.none)
         }
         for line in 0 ..< lineStarts.count - 1 {
             let lo = lineStarts[line], hi = lineStarts[line + 1]
             newRow()
+            outMarks[outMarks.count - 1] = lineMarks[line]
             var col = 0
             for k in lo ..< hi {
                 let cell = cells[k]
@@ -1934,10 +2016,16 @@ public struct TerminalState: ~Copyable {
         grid.reset(columns: newColumns, rows: newRows)
         out.withUnsafeBufferPointer { buf in
             for r in 0 ..< top {
-                grid.appendHistory(UnsafeBufferPointer(rebasing: buf[r * newColumns ..< (r + 1) * newColumns]), wrapped: outWrapped[r])
+                grid.appendHistory(
+                    UnsafeBufferPointer(rebasing: buf[r * newColumns ..< (r + 1) * newColumns]),
+                    wrapped: outWrapped[r], mark: outMarks[r],
+                )
             }
             for r in top ..< min(total, top + newRows) {
-                grid.setRow(r - top, UnsafeBufferPointer(rebasing: buf[r * newColumns ..< (r + 1) * newColumns]), wrapped: outWrapped[r])
+                grid.setRow(
+                    r - top, UnsafeBufferPointer(rebasing: buf[r * newColumns ..< (r + 1) * newColumns]),
+                    wrapped: outWrapped[r], mark: outMarks[r],
+                )
             }
         }
         for i in cursors.indices {
