@@ -213,7 +213,7 @@ public struct Configuration: Sendable, Equatable {
             }
             if key == "config-file" {
                 let optional = value.hasPrefix("?")
-                let path = optional ? String(value.dropFirst()) : value
+                let path = ((optional ? String(value.dropFirst()) : value) as NSString).expandingTildeInPath
                 let url = path.hasPrefix("/") || directory == nil
                     ? URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
                     : directory!.appendingPathComponent(path)
@@ -229,9 +229,10 @@ public struct Configuration: Sendable, Equatable {
     /// Sets one key; returns an error message when it cannot be used.
     public mutating func set(_ key: String, _ value: String) -> String? {
         let defaults = Configuration()
-        func bool() -> Bool? {
+        func bool(_ defaultValue: Bool = true) -> Bool? {
             switch value {
-            case "true", "": true
+            case "": defaultValue
+            case "true": true
             case "false": false
             default: nil
             }
@@ -283,15 +284,17 @@ public struct Configuration: Sendable, Equatable {
         case "cursor-opacity":
             guard let v = value.isEmpty ? 1 : double(0 ... 1) else { return invalid() }
             cursorOpacity = v
-        case "cursor-click-to-move": guard let b = bool() else { return invalid() }; cursorClickToMove = b
+        case "cursor-click-to-move": guard let b = bool(defaults.cursorClickToMove) else { return invalid() }; cursorClickToMove = b
         case "copy-on-select":
             switch value {
-            case "true", "clipboard", "": copyOnSelect = true
+            case "": copyOnSelect = defaults.copyOnSelect
+            case "true", "clipboard": copyOnSelect = true
             case "false": copyOnSelect = false
             default: return invalid()
             }
-        case "mouse-hide-while-typing": guard let b = bool() else { return invalid() }; mouseHideWhileTyping = b
-        case "link-url": guard let b = bool() else { return invalid() }; linkURL = b
+        case "mouse-hide-while-typing": guard let b = bool(defaults.mouseHideWhileTyping)
+            else { return invalid() }; mouseHideWhileTyping = b
+        case "link-url": guard let b = bool(defaults.linkURL) else { return invalid() }; linkURL = b
         case "scrollback-limit":
             guard let v = value.isEmpty ? defaults.scrollbackLimit : Int(value), v >= 0 else { return invalid() }
             scrollbackLimit = v

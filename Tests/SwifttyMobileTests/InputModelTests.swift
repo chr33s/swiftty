@@ -19,6 +19,106 @@ private func bytes(_ s: String) -> [UInt8] {
 typealias Usage = KeyTranslator.Usage
 
 struct KeyTranslatorTests {
+    @Test func `kitty hardware text`() throws {
+        #expect(KeyTranslator.keyEvent(
+            usage: 4, modifiers: [], charactersIgnoringModifiers: "a", characters: "a", keyboardFlags: 8,
+        ) == nil)
+        var input = HardwareTextInput()
+        try input.begin(usage: 4, event: #require(KeyTranslator.identity(usage: 4, modifiers: [], base: "a", characters: "a")))
+        let committed = input.commit("a", keyboardFlags: 8)
+        let event = try #require(committed).event
+        var bytes: [UInt8] = []
+        #expect(InputEncoder.encode(.key(event), modes: .initial, keyboardFlags: 8, into: &bytes))
+        #expect(String(decoding: bytes, as: UTF8.self) == "\u{1B}[97u")
+        var released = event
+        released.action = .release
+        bytes.removeAll()
+        #expect(InputEncoder.encode(.key(released), modes: .initial, keyboardFlags: 10, into: &bytes))
+        #expect(String(decoding: bytes, as: UTF8.self) == "\u{1B}[97;1:3u")
+        #expect(KeyTranslator.keyEvent(
+            usage: 4,
+            modifiers: .alt,
+            charactersIgnoringModifiers: "a",
+            characters: "",
+            keyboardFlags: 8,
+        ) == nil)
+    }
+
+    @Test func `kitty text can start composition`() throws {
+        for flags: UInt8 in [1, 2, 4, 8, 16, 31] {
+            for mods: KeyModifiers in [[], .shift, .alt] {
+                #expect(KeyTranslator.keyEvent(
+                    usage: 4,
+                    modifiers: mods,
+                    charactersIgnoringModifiers: "a",
+                    characters: "a",
+                    keyboardFlags: flags,
+                ) == nil)
+            }
+            var input = HardwareTextInput()
+            let event = try #require(KeyTranslator.identity(usage: 4, modifiers: [], base: "a", characters: "a"))
+            input.begin(usage: 4, event: event)
+            // The initial forwarded key starts marked text before committing.
+            input.cancel()
+            #expect(input.commit("あ", keyboardFlags: flags) == nil)
+            // Even a composition that commits the original character stays text.
+            input.begin(usage: 4, event: event)
+            input.cancel()
+            #expect(input.commit("a", keyboardFlags: flags) == nil)
+        }
+    }
+
+    @Test func `hardware commits repeat and expire`() throws {
+        var input = HardwareTextInput()
+        let event = try #require(KeyTranslator.identity(usage: 4, modifiers: [], base: "a", characters: "a"))
+        input.begin(usage: 4, event: event)
+        let first = input.commit("a", keyboardFlags: 10)
+        #expect(try #require(first).event.action == .press)
+        let next = input.commit("a", keyboardFlags: 10)
+        let repeated = try #require(next).event
+        #expect(encoded([.key(repeated)], keyboardFlags: 10) == bytes("\u{1B}[97;1:2u"))
+        input.cancel(usage: 5)
+        #expect(input.commit("a", keyboardFlags: 8) != nil)
+        input.cancel(usage: 4)
+        #expect(input.commit("a", keyboardFlags: 8) == nil)
+        input.begin(usage: 4, event: event)
+        #expect(input.commit("dictated text", keyboardFlags: 8) == nil)
+        #expect(input.commit("a", keyboardFlags: 8) == nil)
+        input.begin(usage: 4, event: event)
+        #expect(input.commit("a", keyboardFlags: 0) == nil)
+    }
+
+    @Test func `refinement flags preserve committed option text`() throws {
+        let event = try #require(KeyTranslator.identity(usage: 4, modifiers: .alt, base: "a", characters: "å"))
+        for flags: UInt8 in [0, 2, 4, 16, 6, 18, 20, 22] {
+            var input = HardwareTextInput()
+            input.begin(usage: 4, event: event)
+            let committed = input.commit("å", keyboardFlags: flags)
+            #expect(committed == nil)
+            let inputs = committed.map { [TerminalInput.key($0.event)] } ?? KeyTranslator.inputs(forText: "å", modifiers: [])
+            #expect(encoded(inputs, keyboardFlags: flags) == bytes("å"))
+            #expect(KeyTranslator.keyEvent(
+                usage: 4,
+                modifiers: .command,
+                charactersIgnoringModifiers: "a",
+                characters: "a",
+                keyboardFlags: flags,
+            ) == nil)
+            let control = try #require(KeyTranslator.keyEvent(
+                usage: 4,
+                modifiers: [.control, .shift],
+                charactersIgnoringModifiers: "A",
+                keyboardFlags: flags,
+            ))
+            #expect(control.modifiers == .control)
+        }
+        for flags: UInt8 in [1, 8, 9, 5, 31] {
+            var input = HardwareTextInput()
+            input.begin(usage: 4, event: event)
+            #expect(input.commit("å", keyboardFlags: flags) != nil)
+        }
+    }
+
     @Test func `special keys`() throws {
         let cases: [(Int, Key)] = [
             (Usage.returnOrEnter, .enter), (Usage.keypadEnter, .enter), (Usage.tab, .tab),

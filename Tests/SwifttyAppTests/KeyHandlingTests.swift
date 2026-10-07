@@ -25,6 +25,67 @@ struct KeyHandlingTests {
         #expect(try TerminalView.terminalKey(for: key(0, "å", unmodified: "a", [.option])) == nil)
     }
 
+    @Test func `hardware text keys carry kitty identity and text`() throws {
+        let event = try key(0, "A", unmodified: "a", [.shift])
+        let translated = try #require(TerminalView.terminalKey(for: event, keyboardFlags: 8 | 16))
+        #expect(translated.key == .character("a"))
+        #expect(translated.modifiers == .shift && translated.text == "A")
+        #expect(translated.shiftedKey == "A" && translated.baseLayoutKey == "a")
+        var bytes: [UInt8] = []
+        #expect(InputEncoder.encode(.key(translated), modes: .initial, keyboardFlags: 8 | 16, into: &bytes))
+        #expect(String(decoding: bytes, as: UTF8.self) == "\u{1B}[97;2;65u")
+        let repeatEvent = try #require(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+            characters: "a", charactersIgnoringModifiers: "a", isARepeat: true, keyCode: 0,
+        ))
+        let repeated = try #require(TerminalView.terminalKey(for: repeatEvent, keyboardFlags: 10))
+        #expect(repeated.action == .repeat)
+        bytes.removeAll()
+        #expect(InputEncoder.encode(.key(repeated), modes: .initial, keyboardFlags: 10, into: &bytes))
+        #expect(String(decoding: bytes, as: UTF8.self) == "\u{1B}[97;1:2u")
+    }
+
+    @Test func `kitty punctuation uses the active unshifted layout`() throws {
+        for (code, shifted) in [(UInt16(18), "!"), (19, "@"), (27, "_"), (24, "+")] {
+            let event = try key(code, shifted, unmodified: shifted, [.shift])
+            let base = try #require(event.characters(byApplyingModifiers: [])?.unicodeScalars.first)
+            let translated = try #require(TerminalView.terminalKey(for: event, keyboardFlags: 8 | 4))
+            #expect(translated.key == .character(base))
+            #expect(translated.shiftedKey == shifted.unicodeScalars.first)
+            #expect(translated.baseLayoutKey == TerminalView.usLayout[code])
+            var out: [UInt8] = []
+            #expect(InputEncoder.encode(.key(translated), modes: .initial, keyboardFlags: 8, into: &out))
+            #expect(String(decoding: out, as: UTF8.self) == "\u{1B}[\(base.value);2u")
+            if code == 18, base == "1" {
+                #expect(String(decoding: out, as: UTF8.self) == "\u{1B}[49;2u")
+            }
+        }
+    }
+
+    @Test func `kitty alternate keys apply only shift`() throws {
+        for modifiers: NSEvent.ModifierFlags in [[.control, .shift], [.option, .shift], [.command, .shift]] {
+            let event = try key(0, "\u{1}", unmodified: "A", modifiers)
+            let translated = try #require(TerminalView.terminalKey(for: event, keyboardFlags: 1 | 4))
+            #expect(translated.shiftedKey == "A")
+            #expect(translated.text == "\u{1}")
+            var out: [UInt8] = []
+            #expect(InputEncoder.encode(.key(translated), modes: .initial, keyboardFlags: 1 | 4, into: &out))
+            let modifierNumber = modifiers.contains(.control) ? 6 : modifiers.contains(.option) ? 4 : 10
+            #expect(String(decoding: out, as: UTF8.self) == "\u{1B}[97:65;\(modifierNumber)u")
+        }
+    }
+
+    @Test func `refinement flags preserve legacy text routing`() throws {
+        for flags: UInt8 in [0, 2, 4, 16, 6, 18, 20, 22] {
+            #expect(try TerminalView.terminalKey(for: key(0, "å", unmodified: "a", [.option]), keyboardFlags: flags) == nil)
+            let event = try #require(TerminalView.terminalKey(
+                for: key(0, "\u{1}", unmodified: "A", [.control, .shift]),
+                keyboardFlags: flags,
+            ))
+            #expect(event.modifiers == .control)
+        }
+    }
+
     @Test func `bindings match events`() throws {
         let bindings = Keybindings.defaults
         func action(_ event: NSEvent) -> KeyAction? {

@@ -60,17 +60,18 @@ public enum KeyTranslator {
     ///     shifted key the kitty protocol reports.
     public static func keyEvent(
         usage: Int, modifiers: KeyModifiers, charactersIgnoringModifiers: String, characters: String = "",
-        action: KeyEvent.Action = .press,
+        action: KeyEvent.Action = .press, keyboardFlags: UInt8 = 0,
     ) -> KeyEvent? {
-        // Command combinations belong to the app (copy, paste, font size).
-        guard !modifiers.contains(.command) else { return nil }
+        // Unbound Command combinations can reach kitty applications.
+        let kittyActive = InputEncoder.isKittyKeyboardActive(keyboardFlags)
+        guard kittyActive || !modifiers.contains(.command) else { return nil }
         if let key = specialKeys[usage] {
             return KeyEvent(key, modifiers: modifiers, action: action)
         }
-        guard modifiers.contains(.control) else { return nil }
+        guard modifiers.contains(.control) || (kittyActive && modifiers.contains(.command)) else { return nil }
         return identity(
             usage: usage,
-            modifiers: modifiers.subtracting(.shift),
+            modifiers: kittyActive ? modifiers : modifiers.subtracting(.shift),
             base: charactersIgnoringModifiers,
             characters: characters,
             action: action,
@@ -101,6 +102,7 @@ public enum KeyTranslator {
             .character(key),
             modifiers: modifiers,
             action: action,
+            text: characters.isEmpty ? nil : characters,
             shiftedKey: shifted,
             baseLayoutKey: usLayoutKey(usage: usage),
         )
@@ -135,6 +137,34 @@ public enum KeyTranslator {
 
     private static func lowercased(_ scalar: Unicode.Scalar) -> Unicode.Scalar {
         ("A" ... "Z").contains(scalar) ? Unicode.Scalar(scalar.value + 0x20)! : scalar
+    }
+}
+
+/// Associates a text-system commit with the hardware press that produced it.
+/// Composition invalidates the association before any text is committed.
+struct HardwareTextInput {
+    private var pending: (usage: Int, event: KeyEvent)?
+
+    mutating func begin(usage: Int, event: KeyEvent) {
+        pending = (usage, event)
+    }
+
+    mutating func cancel(usage: Int? = nil) {
+        if usage == nil || pending?.usage == usage {
+            pending = nil
+        }
+    }
+
+    mutating func commit(_ text: String, keyboardFlags: UInt8) -> (usage: Int, event: KeyEvent)? {
+        guard var pending, !text.isEmpty, pending.event.text == text else {
+            self.pending = nil
+            return nil
+        }
+        guard InputEncoder.isKittyKeyboardActive(keyboardFlags) else { return nil }
+        let committed = pending
+        pending.event.action = .repeat
+        self.pending = pending
+        return committed
     }
 }
 

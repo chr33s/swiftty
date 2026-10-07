@@ -2,6 +2,7 @@ import AppKit
 import Metal
 @testable import Swiftty
 import SwifttyCore
+import Synchronization
 import Testing
 
 /// VoiceOver throttling and text caching, and render options surviving a
@@ -13,6 +14,23 @@ import Testing
     func makeView() throws -> TerminalView {
         _ = NSApplication.shared
         return try TerminalView(configuration: Configuration())
+    }
+
+    @Test(.enabled(if: hasMetal)) func `refinement flags keep hardware commits as text`() throws {
+        let view = try makeView()
+        let writes = Mutex<[UInt8]>([])
+        view.session.onWrite = { bytes in writes.withLock { $0.append(contentsOf: bytes) } }
+        view.interpretingEvent = try #require(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .option, timestamp: 0, windowNumber: 0, context: nil,
+            characters: "å", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0,
+        ))
+        for flags in [0, 2, 4, 16, 6, 18, 20, 22] {
+            view.session.feed(Array("\u{1B}[=\(flags)u".utf8))
+            writes.withLock { $0.removeAll() }
+            view.insertText("å", replacementRange: NSRange(location: NSNotFound, length: 0))
+            _ = view.session.snapshot() // Drain the queued send.
+            #expect(writes.withLock { $0 } == Array("å".utf8))
+        }
     }
 
     // MARK: Throttle

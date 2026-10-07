@@ -6,9 +6,18 @@ import SwifttyCore
 extension TerminalView: @MainActor NSTextInputClient {
     func insertText(_ string: Any, replacementRange: NSRange) {
         let text = (string as? NSAttributedString)?.string ?? string as? String ?? ""
+        let wasComposing = hasMarkedText()
         setPreedit("")
         if !text.isEmpty {
-            session.send(.text(text))
+            let flags = session.keyboardFlags
+            if !wasComposing, InputEncoder.isKittyKeyboardActive(flags), let event = interpretingEvent,
+               let key = Self.terminalKey(for: event, keyboardFlags: flags) {
+                var key = key
+                key.text = text
+                sendHardwareKey(key, event: event)
+            } else {
+                session.send(.text(text))
+            }
         }
     }
 

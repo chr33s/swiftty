@@ -50,6 +50,7 @@
         public weak var inputDelegate: UITextInputDelegate?
         /// Releases owed for keys that are down, by HID usage.
         var heldKeys: [Int: KeyEvent] = [:]
+        var hardwareTextInput = HardwareTextInput()
         /// Usages of presses handled here rather than by the text system.
         var handledPresses: Set<Int> = []
         var keyRepeat: Timer?

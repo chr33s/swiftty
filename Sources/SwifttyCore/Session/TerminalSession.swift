@@ -59,6 +59,7 @@ public final class TerminalSession: @unchecked Sendable {
     private var encodeBuffer: [UInt8] = []
     private let readBuffer: UnsafeMutableRawBufferPointer
     private var updateScheduled = false
+    private var drawnCursor: CursorState?
     private var synchronizedSince: UInt64 = 0
     private var synchronizedTimeoutScheduled = false
     private var cellPixelSize = (width: 0, height: 0)
@@ -242,6 +243,21 @@ public final class TerminalSession: @unchecked Sendable {
         queue.sync { state.modes }
     }
 
+    /// Negotiated kitty keyboard flags for hardware-key routing.
+    public var keyboardFlags: UInt8 {
+        queue.sync { state.keyboardFlags }
+    }
+
+    private var currentCursor: CursorState {
+        CursorState(
+            x: state.cursor.x,
+            y: state.cursor.y,
+            isVisible: state.modes.contains(.cursorVisible) && state.viewportOffset == 0,
+            style: state.cursorStyle,
+            isBlinking: state.modes.contains(.cursorBlink),
+        )
+    }
+
     /// - Parameter overscan: rows to include below the viewport while
     ///   scrolled back (see `RenderSnapshot.overscanRows`).
     public func snapshot(overscan: Int = 0) -> RenderSnapshot {
@@ -252,6 +268,7 @@ public final class TerminalSession: @unchecked Sendable {
                let held = builder.repeatLast() {
                 return held
             }
+            drawnCursor = currentCursor
             return builder.build(from: &state, overscan: overscan)
         }
     }
@@ -358,7 +375,7 @@ public final class TerminalSession: @unchecked Sendable {
         if ended {
             onEvent?(.controlModeEnded)
         }
-        guard !state.damage.isEmpty, !updateScheduled else { return }
+        guard !state.damage.isEmpty || drawnCursor != currentCursor, !updateScheduled else { return }
         if state.modes.contains(.synchronizedOutput),
            DispatchTime.now().uptimeNanoseconds - synchronizedSince < Self.synchronizedTimeout {
             // Publish when the timeout lapses even if no more output arrives.

@@ -85,6 +85,12 @@ public enum TerminalInput: Sendable {
 /// Encodes input into the byte sequences applications expect, following
 /// xterm conventions and the terminal's current modes.
 public enum InputEncoder {
+    /// Kitty encoding is activated by disambiguation or reporting all keys.
+    /// Event types, alternate keys, and associated text only refine encoding.
+    public static func isKittyKeyboardActive(_ flags: UInt8) -> Bool {
+        flags & 0b1001 != 0
+    }
+
     /// Appends the encoding of `input` to `out`. Returns false when the
     /// input has no encoding in the current modes (e.g. mouse with tracking off).
     /// - Parameter keyboardFlags: kitty keyboard protocol flags; bit 0
@@ -99,7 +105,7 @@ public enum InputEncoder {
         case let .key(event):
             // Kitty encoding needs "disambiguate" or "all keys"; other flags alone
             // only refine those.
-            if keyboardFlags & 0b1001 != 0 {
+            if isKittyKeyboardActive(keyboardFlags) {
                 return encodeKittyKey(event, flags: keyboardFlags, modes: modes, into: &out)
             }
             guard event.action != .release else { return false }
@@ -276,7 +282,7 @@ public enum InputEncoder {
         case .backspace: code = 127
         case let .character(scalar):
             code = String(scalar).lowercased().unicodeScalars.first?.value ?? scalar.value
-            producesText = bits & 0b110 == 0 // nothing but (possibly) shift
+            producesText = bits & ~1 == 0 // nothing but (possibly) shift
         default:
             return false
         }

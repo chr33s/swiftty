@@ -29,6 +29,7 @@
             session.send(.focus(false))
             renderer.options.isFocused = false
             stopKeyRepeat()
+            hardwareTextInput.cancel()
             stopBlinking()
             updateBlinkTimer()
             setNeedsDisplay()
@@ -77,12 +78,12 @@
 
         /// Returns true when the press was handled here.
         private func keyDown(_ key: UIKey) -> Bool {
+            hardwareTextInput.cancel()
             let usage = key.keyCode.rawValue
             let mods = Self.modifiers(key.modifierFlags).union(sticky.active)
             let base = key.charactersIgnoringModifiers
             // While composing, every key belongs to the input method.
             guard markedText.isEmpty else {
-                heldKeys[usage] = KeyTranslator.releaseEvent(usage: usage, modifiers: mods, charactersIgnoringModifiers: base)
                 return false
             }
             if let identity = KeyTranslator.identity(usage: usage, modifiers: mods, base: base, characters: key.characters),
@@ -94,8 +95,11 @@
             }
             guard let event = KeyTranslator.keyEvent(
                 usage: usage, modifiers: mods, charactersIgnoringModifiers: base, characters: key.characters,
+                keyboardFlags: session.keyboardFlags,
             ) else {
-                heldKeys[usage] = KeyTranslator.releaseEvent(usage: usage, modifiers: mods, charactersIgnoringModifiers: base)
+                if let identity = KeyTranslator.identity(usage: usage, modifiers: mods, base: base, characters: key.characters) {
+                    hardwareTextInput.begin(usage: usage, event: identity)
+                }
                 return false
             }
             _ = consumeSticky()
@@ -116,6 +120,7 @@
             for press in presses {
                 guard let key = press.key else { forwarded.insert(press); continue }
                 let usage = key.keyCode.rawValue
+                hardwareTextInput.cancel(usage: usage)
                 if let release = heldKeys.removeValue(forKey: usage) {
                     session.send(.key(release))
                 }
@@ -385,8 +390,17 @@
 
         public func insertText(_ text: String) {
             clearSelection()
+            let committed = hardwareTextInput.commit(text, keyboardFlags: session.keyboardFlags)
             setPreedit("", selection: NSRange(location: 0, length: 0))
-            send(KeyTranslator.inputs(forText: text, modifiers: consumeSticky()))
+            let modifiers = consumeSticky()
+            if let committed {
+                send([.key(committed.event)])
+                var release = committed.event
+                release.action = .release
+                heldKeys[committed.usage] = release
+            } else {
+                send(KeyTranslator.inputs(forText: text, modifiers: modifiers))
+            }
         }
 
         public func deleteBackward() {
@@ -395,6 +409,7 @@
         }
 
         public func insertDictationResult(_ dictationResult: [UIDictationPhrase]) {
+            hardwareTextInput.cancel()
             insertText(dictationResult.map(\.text).joined())
         }
 
@@ -410,6 +425,7 @@
         }
 
         public func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+            hardwareTextInput.cancel()
             setPreedit(markedText ?? "", selection: selectedRange)
         }
 

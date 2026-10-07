@@ -152,6 +152,7 @@ public struct TerminalState: ~Copyable {
 
     /// Kitty keyboard protocol flags stack (`CSI > flags u`); the top applies.
     public private(set) var keyboardFlagStack: [UInt8] = []
+    private var inactiveKeyboardFlagStack: [UInt8] = []
     public var keyboardFlags: UInt8 {
         keyboardFlagStack.last ?? 0
     }
@@ -1606,6 +1607,7 @@ public struct TerminalState: ~Copyable {
         guard !isAlternateScreen else { return }
         invalidateSelection()
         swap(&grid, &inactiveGrid)
+        swap(&keyboardFlagStack, &inactiveKeyboardFlagStack)
         modes.insert(.alternateScreen)
         if clear {
             grid.clear(rows: 0 ..< rows, with: eraseCell)
@@ -1618,6 +1620,7 @@ public struct TerminalState: ~Copyable {
         guard isAlternateScreen else { return }
         invalidateSelection()
         swap(&grid, &inactiveGrid)
+        swap(&keyboardFlagStack, &inactiveKeyboardFlagStack)
         modes.remove(.alternateScreen)
         damage.setFull()
     }
@@ -1677,6 +1680,7 @@ public struct TerminalState: ~Copyable {
         hyperlinkLastRow = []
         hyperlinkScanCooldown = 0
         keyboardFlagStack = []
+        inactiveKeyboardFlagStack = []
         if isAlternateScreen {
             leaveAlternateScreen()
         }
@@ -1864,6 +1868,7 @@ public struct TerminalState: ~Copyable {
         let alternate = isAlternateScreen
         if alternate {
             swap(&grid, &inactiveGrid)
+            swap(&keyboardFlagStack, &inactiveKeyboardFlagStack)
         } // `grid` is primary now
         // The live cursor first: it must stay on screen.
         var cursors = alternate ? [savedPrimary] : [cursor, savedPrimary]
@@ -1871,6 +1876,7 @@ public struct TerminalState: ~Copyable {
         if alternate {
             savedPrimary = cursors[0]
             swap(&grid, &inactiveGrid)
+            swap(&keyboardFlagStack, &inactiveKeyboardFlagStack)
             grid.resize(columns: newColumns, rows: newRows)
             cursor.x = min(cursor.x, newColumns - 1)
             cursor.y = min(cursor.y, newRows - 1)

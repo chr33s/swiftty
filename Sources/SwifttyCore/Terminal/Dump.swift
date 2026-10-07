@@ -41,7 +41,7 @@ extension TerminalState {
                 attrs.flags.subtract(.structural)
                 attrs.link = 0
                 if attrs != pen {
-                    Self.appendSGR(attrs, to: &out)
+                    appendSGR(attrs, to: &out)
                     pen = attrs
                 }
                 let scalars = scalars(of: cell)
@@ -67,14 +67,31 @@ extension TerminalState {
         return out
     }
 
-    static func appendSGR(_ a: CellAttributes, to out: inout [UInt8]) {
+    private func appendSGR(_ a: CellAttributes, to out: inout [UInt8]) {
         var params = ["0"]
         let flags: [(CellFlags, String)] = [
-            (.bold, "1"), (.faint, "2"), (.italic, "3"), (.underline, "4"), (.doubleUnderline, "21"),
+            (.bold, "1"), (.faint, "2"), (.italic, "3"),
             (.blink, "5"), (.inverse, "7"), (.invisible, "8"), (.strikethrough, "9"), (.overline, "53"),
         ]
         for (flag, code) in flags where a.flags.contains(flag) {
             params.append(code)
+        }
+        if a.flags.contains(.doubleUnderline) {
+            params.append("4:2")
+        } else if a.flags.contains(.underline) {
+            switch (a.flags.contains(.underlineStyleA), a.flags.contains(.underlineStyleB)) {
+            case (true, false): params.append("4:3")
+            case (false, true): params.append("4:4")
+            case (true, true): params.append("4:5")
+            case (false, false): params.append("4")
+            }
+        }
+        if let underline = underlineColor(a.underlineColor) {
+            switch underline.kind {
+            case .default: break
+            case let .palette(i): params.append("58;5;\(i)")
+            case let .rgb(v): params.append("58;2;\(v >> 16 & 0xFF);\(v >> 8 & 0xFF);\(v & 0xFF)")
+            }
         }
         func color(_ c: TerminalColor, _ base: Int) {
             switch c.kind {

@@ -40,6 +40,7 @@ final class TerminalView: MTKView, MTKViewDelegate {
     var markedText = ""
     /// The key event being interpreted, for commands the input system does not handle.
     var interpretingEvent: NSEvent?
+    var heldKeys: [UInt16: KeyEvent] = [:]
 
     // Blinking: one timer drives the cursor and SGR 5 text.
     private var blinkTimer: Timer?
@@ -359,6 +360,13 @@ final class TerminalView: MTKView, MTKViewDelegate {
         interpretingEvent = nil
     }
 
+    override func keyUp(with event: NSEvent) {
+        if var key = heldKeys.removeValue(forKey: event.keyCode) {
+            key.action = .release
+            session.send(.key(key))
+        }
+    }
+
     private func binding(for event: NSEvent) -> KeyAction? {
         Self.trigger(for: event).flatMap { config.keybindings.action(for: $0) }
     }
@@ -374,21 +382,35 @@ final class TerminalView: MTKView, MTKViewDelegate {
     /// combinations); returns false for text, which goes through the
     /// input method.
     func sendKey(_ event: NSEvent) -> Bool {
-        guard let key = Self.terminalKey(for: event) else { return false }
-        session.send(.key(key))
+        let flags = !event.modifierFlags.intersection([.command, .control]).isEmpty ? session.keyboardFlags : 0
+        guard let key = Self.terminalKey(for: event, keyboardFlags: flags) else { return false }
+        sendHardwareKey(key, event: event)
         return true
     }
 
+    func sendHardwareKey(_ key: KeyEvent, event: NSEvent) {
+        var key = key
+        key.action = event.isARepeat ? .repeat : .press
+        heldKeys[event.keyCode] = key
+        session.send(.key(key))
+    }
+
     /// The key event for keys the terminal encodes itself, or nil for text.
-    static func terminalKey(for event: NSEvent) -> KeyEvent? {
+    static func terminalKey(for event: NSEvent, keyboardFlags: UInt8 = 0) -> KeyEvent? {
         let mods = modifiers(event.modifierFlags)
+        let kittyActive = InputEncoder.isKittyKeyboardActive(keyboardFlags)
         if let key = specialKeys[event.keyCode] {
             return KeyEvent(key, modifiers: mods)
         }
-        if mods.contains(.control), let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first {
+        // AppKit's charactersIgnoringModifiers retains Shift. Translate without
+        // modifiers using the active layout so punctuation keeps its base key.
+        let base = kittyActive ? event.characters(byApplyingModifiers: []) : event.charactersIgnoringModifiers
+        if mods.contains(.control) || kittyActive, let scalar = base?.unicodeScalars.first {
             return KeyEvent(
-                .character(scalar), modifiers: mods.subtracting(.shift),
-                shiftedKey: event.characters?.unicodeScalars.first,
+                .character(scalar), modifiers: kittyActive ? mods : mods.subtracting(.shift),
+                action: event.isARepeat ? .repeat : .press,
+                text: event.characters,
+                shiftedKey: mods.contains(.shift) ? event.characters(byApplyingModifiers: [.shift])?.unicodeScalars.first : nil,
                 baseLayoutKey: usLayout[event.keyCode],
             )
         }
