@@ -218,6 +218,32 @@ public final class TerminalSession: @unchecked Sendable {
         queue.sync { state.programStatus.snapshot }
     }
 
+    /// Continues an external output stream previously parsed by `source`.
+    /// Copies its pending sequence, status records and prompt phase after
+    /// all output already queued there. Applied here in order with `receive`.
+    /// Stop feeding `source` before calling; call from outside both queues.
+    public func continueStream(from source: TerminalSession) {
+        let (continuation, status, phase) = source.queue.sync {
+            (source.parser.continuation, source.state.programStatus.snapshot, source.state.semanticState)
+        }
+        queue.async { [self] in
+            parser.restore(continuation)
+            state.replaceProgramStatus(with: status)
+            state.semanticState = phase
+            publish()
+        }
+    }
+
+    /// Starts capture replay with a clean parser and screen, keeping status.
+    /// Restore live parsing with `continueStream(from:)` after the replay.
+    public func resetForCapture() {
+        queue.async { [self] in
+            parser = Parser()
+            state.resetPreservingProgramStatus()
+            publish()
+        }
+    }
+
     /// Turns OSC 7501 consumption on or off, ordered with `receive`.
     /// Turning it off clears the records.
     public func setProgramStatusEnabled(_ enabled: Bool) {

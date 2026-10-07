@@ -39,7 +39,7 @@ public struct CSISequence: Sendable {
 /// everything else goes through a byte-at-a-time state machine. The parser
 /// owns no heap memory except a preallocated OSC buffer.
 public struct Parser: ~Copyable {
-    enum State: UInt8 {
+    enum State: UInt8, Sendable {
         case ground, escape, escapeIntermediate
         case csiEntry, csiParam, csiIntermediate, csiIgnore
         case oscString, stringIgnore
@@ -85,6 +85,56 @@ public struct Parser: ~Copyable {
     deinit {
         osc.deallocate()
         scalars.deallocate()
+    }
+
+    /// Owned parsing state for continuing a stream on another session.
+    /// Scratch buffers stay local; only the pending sequence is copied.
+    struct Continuation: Sendable {
+        var state: State
+        var csi: CSISequence
+        var currentParam: UInt32
+        var hasParam: Bool
+        var escIntermediate: UInt8
+        var controlModeLineStart: Bool
+        var codepoint: UInt32
+        var utf8Remaining: Int
+        var utf8Minimum: UInt32
+        var osc: [UInt8]
+        var oscOverflow: Bool
+    }
+
+    var continuation: Continuation {
+        Continuation(state: state, csi: csi, currentParam: currentParam,
+                     hasParam: hasParam, escIntermediate: escIntermediate,
+                     controlModeLineStart: controlModeLineStart,
+                     codepoint: codepoint, utf8Remaining: utf8Remaining,
+                     utf8Minimum: utf8Minimum,
+                     osc: Array(UnsafeBufferPointer(start: osc, count: oscCount)),
+                     oscOverflow: oscOverflow)
+    }
+
+    mutating func restore(_ continuation: Continuation) {
+        state = continuation.state
+        csi = continuation.csi
+        currentParam = continuation.currentParam
+        hasParam = continuation.hasParam
+        escIntermediate = continuation.escIntermediate
+        controlModeLineStart = continuation.controlModeLineStart
+        codepoint = continuation.codepoint
+        utf8Remaining = continuation.utf8Remaining
+        utf8Minimum = continuation.utf8Minimum
+        if continuation.osc.count > oscCapacity {
+            osc.deallocate()
+            while oscCapacity < continuation.osc.count { oscCapacity *= 2 }
+            osc = .allocate(capacity: oscCapacity)
+        }
+        oscCount = continuation.osc.count
+        continuation.osc.withUnsafeBufferPointer { buffer in
+            if let base = buffer.baseAddress {
+                osc.update(from: base, count: buffer.count)
+            }
+        }
+        oscOverflow = continuation.oscOverflow
     }
 
     /// Decodes printable ASCII and complete UTF-8 sequences into `scalars`
