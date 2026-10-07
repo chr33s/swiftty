@@ -61,6 +61,7 @@ extension TerminalState {
         case 21: kittyColors(rest, terminator: st)
         case 22: setPointerShape(rest)
         case 133: semanticPrompt(rest)
+        case 7501: programStatusCommand(rest, terminator: st)
         case 10, 11, 12:
             let spec = String(decoding: rest, as: UTF8.self)
             if spec == "?" {

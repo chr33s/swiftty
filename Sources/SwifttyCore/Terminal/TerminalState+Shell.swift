@@ -37,6 +37,11 @@ extension TerminalState {
         switch kind {
         case 0x41: // A
             let continuation = option("k").map { $0.count == 1 && ($0[0] == 0x63 || $0[0] == 0x73) } ?? false // c, s
+            // A new command boundary, not a continuation line or a redraw
+            // of the prompt already showing.
+            if !continuation, semanticState != .prompt, semanticState != .input {
+                programStatusPromptStarted()
+            }
             if let redraw = option("redraw") {
                 promptRedraws = !(redraw.count == 1 && redraw[0] == 0x30)
             }

@@ -145,6 +145,9 @@ public struct TerminalState: ~Copyable {
     /// Drop replies to queries: set when another terminal (e.g. tmux) has
     /// already answered the application.
     public var discardsReplies = false
+    /// With `discardsReplies`, still answer the OSC 7501 support query: the
+    /// other terminal passes it through unanswered (tmux does).
+    public var answersProgramStatusWhileDiscarding = false
     public var events: [TerminalEvent] = []
 
     /// Kitty keyboard protocol flags stack (`CSI > flags u`); the top applies.
@@ -198,6 +201,22 @@ public struct TerminalState: ~Copyable {
     public internal(set) var colorScheme = ColorScheme.dark
     var underlineColors: [TerminalColor] = []
     var pointerShape = ""
+
+    /// Consume OSC 7501 program status (and answer its support query).
+    /// Off by default: the terminal claims support only for an embedder
+    /// that reads `programStatus`. Turning it off clears the records.
+    public var programStatusEnabled = false {
+        didSet {
+            if !programStatusEnabled, programStatus.removeAll() {
+                programStatusChanged = true
+            }
+        }
+    }
+
+    /// OSC 7501 records (`TerminalState+ProgramStatus.swift`).
+    public internal(set) var programStatus = ProgramStatusStore()
+    /// `programStatus` changed since the last `takeProgramStatusChange()`.
+    public internal(set) var programStatusChanged = false
 
     private let widths = UnicodeWidth.table
     private var lastPrinted: UInt32 = 0
@@ -1648,6 +1667,9 @@ public struct TerminalState: ~Copyable {
     mutating func fullReset() {
         invalidateSelection()
         resetShellState()
+        if programStatus.removeAll() {
+            programStatusChanged = true
+        }
         hyperlinks = []
         hyperlinkHashes = []
         hyperlinkIndex.removeAll(keepingCapacity: true)

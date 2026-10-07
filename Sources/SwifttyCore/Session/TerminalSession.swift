@@ -6,7 +6,8 @@ import Dispatch
 /// The transport is either a child process on a PTY (`start`, macOS only) or
 /// external: the host delivers program output with `receive` and takes the
 /// terminal's replies and encoded input from `onWrite` (SSH channels, an
-/// in-process interpreter, tmux panes).
+/// in-process interpreter, tmux panes), or replies separately from
+/// `onTerminalReply`.
 ///
 /// All terminal state is owned by a single serial queue. PTY reads are
 /// delivered on that queue and parsed in place from a preallocated buffer;
@@ -23,6 +24,15 @@ public final class TerminalSession: @unchecked Sendable {
     /// Called on `queue` with bytes for the application when no PTY is
     /// attached: replies to queries and encoded keyboard/mouse input.
     public var onWrite: (@Sendable ([UInt8]) -> Void)?
+    /// Called on `queue`, when no PTY is attached, with replies the
+    /// terminal generated itself (query answers such as DA, DSR, OSC 7501),
+    /// so the host can route them apart from user input (e.g. to the tmux
+    /// pane that asked). When nil, replies go to `onWrite`.
+    public var onTerminalReply: (@Sendable ([UInt8]) -> Void)?
+    /// Called on `queue` after OSC 7501 program status changed (reports,
+    /// prompt start, reset, exit), once per batch, before `onUpdate`. Fires
+    /// whether or not any cell changed.
+    public var onProgramStatusChange: (@Sendable (ProgramStatusSnapshot) -> Void)?
     /// Called on `queue` after each batch of changes (parsed output, resize,
     /// `mutate`), before `onUpdate`, with read access to the state. Use it to
     /// mirror values the host reads often (modes, scroll position).
@@ -66,6 +76,7 @@ public final class TerminalSession: @unchecked Sendable {
             scrollbackLimitRows: configuration.scrollbackLimitRows,
             palette: configuration.palette,
         )
+        state.programStatusEnabled = configuration.programStatusEnabled
         readBuffer = .allocate(byteCount: Self.readBufferSize, alignment: 16)
         encodeBuffer.reserveCapacity(256)
     }
@@ -200,6 +211,32 @@ public final class TerminalSession: @unchecked Sendable {
         }
     }
 
+    /// Current OSC 7501 records; with `onProgramStatusChange`, all a
+    /// newly attached consumer needs.
+    public var programStatusSnapshot: ProgramStatusSnapshot {
+        queue.sync { state.programStatus.snapshot }
+    }
+
+    /// Turns OSC 7501 consumption on or off, ordered with `receive`.
+    /// Turning it off clears the records.
+    public func setProgramStatusEnabled(_ enabled: Bool) {
+        queue.async { [self] in
+            state.programStatusEnabled = enabled
+            publish()
+        }
+    }
+
+    /// For external transports: the program exited or the connection
+    /// closed. Drops transient program status (see
+    /// `TerminalState.programExited()`), ordered with `receive`. PTY
+    /// sessions do this themselves when the child exits.
+    public func programExited() {
+        queue.async { [self] in
+            state.programExited()
+            publish()
+        }
+    }
+
     /// Current modes (for frontends deciding how to route mouse/scroll).
     public var modes: Modes {
         queue.sync { state.modes }
@@ -298,8 +335,11 @@ public final class TerminalSession: @unchecked Sendable {
     private func publish() {
         onStateChange?(state)
         if !state.output.isEmpty {
-            writeToChild(state.output)
+            writeReply(state.output)
             state.output.removeAll(keepingCapacity: true)
+        }
+        if let status = state.takeProgramStatusChange() {
+            onProgramStatusChange?(status)
         }
         let events = state.takeEvents()
         // Start event, then data, then end event: a stream that opens and
@@ -333,6 +373,22 @@ public final class TerminalSession: @unchecked Sendable {
         }
         updateScheduled = true
         onUpdate?()
+    }
+
+    /// Terminal-generated replies: to the PTY, else `onTerminalReply`,
+    /// else `onWrite`.
+    private func writeReply(_ bytes: [UInt8]) {
+        #if os(macOS)
+            if process != nil {
+                writeToChild(bytes)
+                return
+            }
+        #endif
+        if let onTerminalReply {
+            onTerminalReply(bytes)
+        } else {
+            onWrite?(bytes)
+        }
     }
 
     private func writeToChild(_ bytes: [UInt8]) {
@@ -380,6 +436,8 @@ public final class TerminalSession: @unchecked Sendable {
             waitpid(process.pid, &status, WNOHANG)
             let code = (status & 0x7F) == 0 ? (status >> 8) & 0xFF : 128 + (status & 0x7F)
             teardown()
+            state.programExited()
+            publish()
             onEvent?(.exited(code))
         }
 

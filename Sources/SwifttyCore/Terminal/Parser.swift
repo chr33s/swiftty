@@ -44,6 +44,11 @@ public struct Parser: ~Copyable {
         case csiEntry, csiParam, csiIntermediate, csiIgnore
         case oscString, stringIgnore
         case dcsEntry, dcsParam, dcsIntermediate, dcsIgnore, dcsPassthrough
+        /// tmux control mode (`DCS 1000 p`): a line protocol whose blocks
+        /// carry raw text, escape sequences included (`capture-pane -e`).
+        /// Only `ESC \` at the start of a line (after `%exit`) ends it;
+        /// any other ESC is data. CAN and SUB still abort.
+        case controlMode, controlModeEscape
     }
 
     private var state = State.ground
@@ -51,6 +56,8 @@ public struct Parser: ~Copyable {
     private var currentParam: UInt32 = 0
     private var hasParam = false
     private var escIntermediate: UInt8 = 0
+    /// In `controlMode`: the next byte starts a line.
+    private var controlModeLineStart = true
 
     // UTF-8 decoding state.
     private var codepoint: UInt32 = 0
@@ -61,6 +68,8 @@ public struct Parser: ~Copyable {
     private var osc: UnsafeMutablePointer<UInt8>
     private var oscCount = 0
     private var oscCapacity: Int
+    /// An OSC 7501 body passed its limit: the sequence is dropped whole.
+    private var oscOverflow = false
     public static let maxOSCBytes = 8 << 20
 
     // Scratch for decoded scalars of a mixed (non-ASCII) printable run.
@@ -108,6 +117,21 @@ public struct Parser: ~Copyable {
         let n = buffer.count
         var i = 0
         while i < n {
+            if state == .controlMode {
+                // Hand over everything up to the next ESC/CAN/SUB in one piece.
+                var end = i
+                while end < n, base[end] != 0x1B, base[end] != 0x18, base[end] != 0x1A {
+                    end += 1
+                }
+                if end > i {
+                    terminal.dcsPut(UnsafeBufferPointer(start: base + i, count: end - i))
+                    controlModeLineStart = base[end - 1] == 0x0A
+                    i = end
+                    if i == n {
+                        break
+                    }
+                }
+            }
             if state == .dcsPassthrough {
                 // Hand over everything up to the next ESC/CAN/SUB in one piece.
                 var end = i
@@ -193,11 +217,16 @@ public struct Parser: ~Copyable {
 
     @inline(__always)
     private mutating func step(_ byte: UInt8, _ t: inout TerminalState) {
+        if state == .controlMode || state == .controlModeEscape {
+            controlModeStep(byte, &t)
+            return
+        }
         // Anywhere transitions.
         switch byte {
         case 0x18, 0x1A: // CAN, SUB
             if state == .oscString {
                 oscCount = 0
+                oscOverflow = false
             }
             if state == .dcsPassthrough {
                 t.dcsUnhook()
@@ -229,7 +258,7 @@ public struct Parser: ~Copyable {
             case 0x00 ... 0x1F: t.execute(byte)
             case 0x20 ... 0x2F: escIntermediate = byte; state = .escapeIntermediate
             case 0x5B: enterCSI() // [
-            case 0x5D: oscCount = 0; state = .oscString // ]
+            case 0x5D: oscCount = 0; oscOverflow = false; state = .oscString // ]
             case 0x50: enterCSI(); state = .dcsEntry // P
             case 0x58, 0x5E, 0x5F: state = .stringIgnore // X ^ _
             case 0x7F: break
@@ -292,6 +321,9 @@ public struct Parser: ~Copyable {
 
         case .dcsEntry, .dcsParam, .dcsIntermediate, .dcsPassthrough:
             dcsStep(byte, &t)
+
+        case .controlMode, .controlModeEscape:
+            break // handled before the anywhere transitions
         }
     }
 
@@ -414,10 +446,48 @@ public struct Parser: ~Copyable {
     private mutating func hookDCS(_ final: UInt8, _ t: inout TerminalState) {
         csi.final = final
         t.dcsHook(csi)
-        state = .dcsPassthrough
+        if csi.marker == 0, csi.intermediate == 0, final == 0x70, csi.value(0) == 1000 {
+            state = .controlMode
+            controlModeLineStart = true
+        } else {
+            state = .dcsPassthrough
+        }
+    }
+
+    /// tmux control mode, one byte at a time (see `State.controlMode`).
+    private mutating func controlModeStep(_ byte: UInt8, _ t: inout TerminalState) {
+        if state == .controlModeEscape {
+            state = .controlMode
+            if byte == 0x5C { // ST after `%exit`
+                t.dcsUnhook()
+                state = .ground
+                return
+            }
+            // The ESC was data (e.g. SGR at the start of a captured line).
+            withUnsafePointer(to: UInt8(0x1B)) { t.dcsPut(UnsafeBufferPointer(start: $0, count: 1)) }
+            controlModeLineStart = false
+        }
+        switch byte {
+        case 0x18, 0x1A: // CAN, SUB
+            t.dcsUnhook()
+            state = .ground
+        case 0x1B where controlModeLineStart:
+            state = .controlModeEscape
+        default:
+            withUnsafePointer(to: byte) { t.dcsPut(UnsafeBufferPointer(start: $0, count: 1)) }
+            controlModeLineStart = byte == 0x0A
+        }
     }
 
     private mutating func appendOSC(_ byte: UInt8) {
+        // OSC 7501 has its own bound, below the generic one; a longer
+        // report is discarded rather than truncated.
+        if oscCount >= ProgramStatusCommand.maxBodyBytes, !oscOverflow, isProgramStatusOSC {
+            oscOverflow = true
+        }
+        if oscOverflow {
+            return
+        }
         if oscCount == oscCapacity {
             guard oscCapacity < Self.maxOSCBytes else { return }
             let grown = UnsafeMutablePointer<UInt8>.allocate(capacity: oscCapacity * 2)
@@ -430,8 +500,15 @@ public struct Parser: ~Copyable {
         oscCount += 1
     }
 
+    private var isProgramStatusOSC: Bool {
+        oscCount >= 5 && osc[0] == 0x37 && osc[1] == 0x35 && osc[2] == 0x30 && osc[3] == 0x31 && osc[4] == 0x3B // 7501;
+    }
+
     private mutating func dispatchOSC(_ t: inout TerminalState, bell: Bool) {
-        t.oscDispatch(UnsafeBufferPointer(start: osc, count: oscCount), terminatedByBell: bell)
+        if !oscOverflow {
+            t.oscDispatch(UnsafeBufferPointer(start: osc, count: oscCount), terminatedByBell: bell)
+        }
         oscCount = 0
+        oscOverflow = false
     }
 }

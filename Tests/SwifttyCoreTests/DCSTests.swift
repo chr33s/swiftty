@@ -20,6 +20,41 @@ struct DCSTests {
         #expect(vt.lines[0] == "ab")
     }
 
+    @Test func `control mode blocks carry raw escapes`() {
+        var vt = VT(20, 3)
+        // capture-pane -e output: SGR at a line start and mid-line, a
+        // mid-line ST (OSC 8), and a UTF-8 glyph with a 0x9D byte (❯).
+        let block = "%begin 1 3 1\n\(ESC)[35m❯\(ESC)[39m x\(ESC)]8;;u\(ESC)\\y\n\(ESC)[0m\n%end 1 3 1\n"
+        vt.feed("\(ESC)P1000p" + block)
+        vt.feed("%exit\n\(ESC)\\z")
+        let data = String(decoding: vt.state.controlModeData, as: UTF8.self)
+        #expect(data == block + "%exit\n")
+        let events = vt.state.takeEvents()
+        #expect(events == [.controlModeStarted, .controlModeEnded])
+        #expect(vt.lines[0] == "z")
+    }
+
+    @Test func `control mode line-start escape split across reads`() {
+        var vt = VT(20, 3)
+        vt.feed("\(ESC)P1000p%begin 1 4 1\n\(ESC)")
+        vt.feed("[1mx\n%end 1 4 1\n")
+        let open = vt.state.isControlMode
+        #expect(open)
+        let data = String(decoding: vt.state.controlModeData, as: UTF8.self)
+        #expect(data == "%begin 1 4 1\n\(ESC)[1mx\n%end 1 4 1\n")
+    }
+
+    @Test func `CAN aborts control mode mid-line`() {
+        var vt = VT(20, 3)
+        vt.feed("\(ESC)P1000p%output %1 partial")
+        vt.feed("\u{18}q")
+        let closed = !vt.state.isControlMode
+        #expect(closed)
+        let events = vt.state.takeEvents()
+        #expect(events == [.controlModeStarted, .controlModeEnded])
+        #expect(vt.lines[0] == "q")
+    }
+
     @Test func `control mode split across reads`() {
         var vt = VT(20, 3)
         vt.feed("\(ESC)P10")

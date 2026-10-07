@@ -14,6 +14,9 @@ public struct SessionConfiguration: Sendable {
     /// Cap on history lines (Ghostty's `scrollback-limit-lines`).
     public var scrollbackLimitRows = 100_000
     public var palette = Palette.standard
+    /// Consume OSC 7501 program status and answer its support query
+    /// (`TerminalState.programStatusEnabled`).
+    public var programStatusEnabled = false
 
     public init(command: [String]? = nil, environment: [String: String] = [:], workingDirectory: String? = nil) {
         self.command = command

@@ -55,6 +55,7 @@ extension TerminalState {
             case "Smulx": #"\E[4:%p1%dm"#
             case "setrgbf": #"\E[38:2:%p1%d:%p2%d:%p3%dm"#
             case "setrgbb": #"\E[48:2:%p1%d:%p2%d:%p3%dm"#
+            case "Pst" where programStatusEnabled: #"\E]7501;%p1%s\E\\"# // OSC 7501 program status
             default: nil
             }
             if let value {
