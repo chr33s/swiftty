@@ -17,7 +17,7 @@ public struct FontDescriptor: Hashable, Sendable {
     public var cellHeightOffset: CGFloat = 0
     /// Families tried, in order, before the system cascade (e.g. a symbols font).
     public var fallbackFamilies: [String] = []
-    /// OpenType feature tags, `-tag` to disable (Ghostty's `font-feature`).
+    /// OpenType feature settings, e.g. `tag`, `-tag`, `tag=2` (Ghostty's `font-feature`).
     /// Any enabled feature turns on shaping (ligatures, alternates).
     public var features: [String] = []
     /// Families for the other styles (Ghostty's `font-family-bold` etc.);
@@ -26,16 +26,40 @@ public struct FontDescriptor: Hashable, Sendable {
     public var italicFamily: String?
     public var boldItalicFamily: String?
     /// Variable-font axes by four-letter tag (Ghostty's `font-variation`).
+    /// Nonfinite values are ignored.
     public var variations: [String: Double] = [:]
     /// Draw a missing bold face by stroking the regular one, and a missing
     /// italic by slanting it (Ghostty's `font-synthetic-style`).
     public var synthesizeBold = true
     public var synthesizeItalic = true
+    /// Bold italic is controlled independently of the single styles.
+    public var synthesizeBoldItalic = true
 
     public init(family: String = "Menlo", size: CGFloat = 13, scale: CGFloat = 2) {
         self.family = family
         self.size = size
         self.scale = scale
+    }
+
+    /// CoreText propagates nonfinite dimensions and variation values.
+    /// Normalize before creation and cache lookup, including product overflow.
+    var normalized: FontDescriptor {
+        var result = self
+        if !size.isFinite || size <= 0 {
+            result.size = 13
+        }
+        if !scale.isFinite || scale <= 0 {
+            result.scale = 2
+        }
+        let pixels = result.size * result.scale
+        if !pixels.isFinite || pixels <= 0 {
+            result.size = 13
+            result.scale = 2
+        }
+        if variations.values.contains(where: { !$0.isFinite }) {
+            result.variations = variations.filter(\.value.isFinite)
+        }
+        return result
     }
 }
 
@@ -66,6 +90,9 @@ public final class ResolvedFont: @unchecked Sendable {
     public let faces: [CTFont]
     public let emoji: CTFont
     public let fallbacks: [CTFont]
+    /// Configured fallback families resolved independently for each style.
+    private let fallbackFaces: [[CTFont]]
+    private let fallbackEmboldened: [[Bool]]
     /// Rows are shaped with CoreText (an enabled OpenType feature).
     public let shapes: Bool
     /// Per style: no bold face exists, so glyphs are stroked to embolden them.
@@ -80,53 +107,60 @@ public final class ResolvedFont: @unchecked Sendable {
     public let underlineThickness: CGFloat
 
     init(descriptor: FontDescriptor) {
+        let descriptor = descriptor.normalized
         self.descriptor = descriptor
         let pixelSize = descriptor.size * descriptor.scale
         func named(_ family: String) -> CTFont? {
             let font = CTFontCreateWithName(family as CFString, pixelSize, nil)
-            return (CTFontCopyFamilyName(font) as String).localizedCaseInsensitiveContains(family) ? font : nil
+            // CoreText also accepts PostScript and full face names. Check
+            // those names to distinguish a match from its default font.
+            let names = [CTFontCopyFamilyName(font), CTFontCopyPostScriptName(font), CTFontCopyFullName(font), CTFontCopyDisplayName(font)]
+            return names.contains { ($0 as String).caseInsensitiveCompare(family) == .orderedSame } ? font : nil
         }
         let regular = named(descriptor.family) ?? CTFontCreateUIFontForLanguage(.userFixedPitch, pixelSize, nil)
             ?? CTFontCreateWithName(descriptor.family as CFString, pixelSize, nil)
-        var emboldened = [false, false, false, false]
-        func styled(_ traits: CTFontSymbolicTraits, family: String?) -> CTFont {
+        func styled(_ regular: CTFont, _ traits: CTFontSymbolicTraits, family: String? = nil) -> (CTFont, Bool) {
             if let family, let font = named(family) {
-                return font
+                return (font, false)
             }
             if let font = CTFontCreateCopyWithSymbolicTraits(regular, pixelSize, nil, traits, traits) {
-                return font
+                return (font, false)
             }
             // No such face: synthesize from the closest one.
             let bold = traits.contains(.traitBold)
+            let italic = traits.contains(.traitItalic)
+            let synthesize = bold && italic ? descriptor.synthesizeBoldItalic
+                : bold ? descriptor.synthesizeBold : descriptor.synthesizeItalic
+            guard synthesize else { return (regular, false) }
             let boldFace = bold ? CTFontCreateCopyWithSymbolicTraits(regular, pixelSize, nil, .traitBold, .traitBold) : nil
-            if bold, boldFace == nil, descriptor.synthesizeBold {
-                emboldened[Int(traits.contains(.traitItalic) ? 3 : 1)] = true
-            }
+            let embolden = bold && boldFace == nil
             let base = boldFace ?? regular
-            guard traits.contains(.traitItalic), descriptor.synthesizeItalic else { return base }
+            guard italic else { return (base, embolden) }
             var skew = CGAffineTransform(a: 1, b: 0, c: 0.2, d: 1, tx: 0, ty: 0)
-            return CTFontCreateWithFontDescriptor(CTFontCopyFontDescriptor(base), pixelSize, &skew)
+            return (CTFontCreateWithFontDescriptor(CTFontCopyFontDescriptor(base), pixelSize, &skew), embolden)
         }
-        fallbacks = descriptor.fallbackFamilies.compactMap { family in
-            let font = CTFontCreateWithName(family as CFString, pixelSize, nil)
-            return (CTFontCopyFamilyName(font) as String).localizedCaseInsensitiveContains(family) ? font : nil
+        let fallbackFonts = descriptor.fallbackFamilies.compactMap(named)
+        var features: [FontFeature] = []
+        var featureIndices: [String: Int] = [:]
+        for raw in descriptor.features {
+            guard let feature = FontFeature(raw) else { continue }
+            if let index = featureIndices[feature.tag] {
+                features[index] = feature
+            } else {
+                featureIndices[feature.tag] = features.count
+                features.append(feature)
+            }
         }
-        let settings = descriptor.features.compactMap { raw -> [CFString: Any]? in
-            let off = raw.hasPrefix("-")
-            let tag = off ? String(raw.dropFirst()) : raw
-            guard tag.utf8.count == 4 else { return nil }
-            return [kCTFontOpenTypeFeatureTag: tag, kCTFontOpenTypeFeatureValue: off ? 0 : 1]
+        let settings: [[CFString: Any]] = features.map {
+            [kCTFontOpenTypeFeatureTag: $0.tag, kCTFontOpenTypeFeatureValue: $0.value]
         }
-        let shapes = descriptor.features.contains { !$0.hasPrefix("-") }
-        // Shaped runs resolve missing glyphs through CoreText's cascade, so
-        // the fallback families go there too.
-        let cascade = shapes ? fallbacks.map { CTFontCopyFontDescriptor($0) } : []
+        let shapes = features.contains { $0.value != 0 }
         let variations = descriptor.variations.reduce(into: [NSNumber: Double]()) { out, axis in
             // Axis identifiers are the tag's four bytes as a big-endian integer.
             guard axis.key.utf8.count == 4 else { return }
             out[NSNumber(value: axis.key.utf8.reduce(UInt32(0)) { $0 << 8 | UInt32($1) })] = axis.value
         }
-        func featured(_ font: CTFont) -> CTFont {
+        func featured(_ font: CTFont, cascade: [CTFontDescriptor] = []) -> CTFont {
             guard !settings.isEmpty || !cascade.isEmpty || !variations.isEmpty else { return font }
             var attributes: [CFString: Any] = [:]
             if !settings.isEmpty {
@@ -142,35 +176,79 @@ public final class ResolvedFont: @unchecked Sendable {
             var matrix = CTFontGetMatrix(font) // keeps a synthetic italic's slant
             return CTFontCreateWithFontDescriptor(d, CTFontGetSize(font), &matrix)
         }
-        faces = [
-            regular,
-            styled(.traitBold, family: descriptor.boldFamily),
-            styled(.traitItalic, family: descriptor.italicFamily),
-            styled([.traitBold, .traitItalic], family: descriptor.boldItalicFamily),
-        ].map(featured)
-        self.emboldened = emboldened
+        let fallbackStyles = fallbackFonts.map { regular in
+            [(regular, false), styled(regular, .traitBold), styled(regular, .traitItalic), styled(regular, [.traitBold, .traitItalic])]
+        }
+        let styledFallbacks = (0 ..< 4).map { style in fallbackStyles.map { featured($0[style].0) } }
+        fallbackFaces = styledFallbacks
+        fallbackEmboldened = (0 ..< 4).map { style in fallbackStyles.map { $0[style].1 } }
+        fallbacks = fallbackFaces[0]
+        let primaryStyles = [
+            (regular, false),
+            styled(regular, .traitBold, family: descriptor.boldFamily),
+            styled(regular, .traitItalic, family: descriptor.italicFamily),
+            styled(regular, [.traitBold, .traitItalic], family: descriptor.boldItalicFamily),
+        ]
+        // Shaped rows and grapheme clusters need the same styled cascade
+        // as scalar lookup, including when no features enable row shaping.
+        faces = primaryStyles.enumerated().map { style, face in
+            featured(face.0, cascade: styledFallbacks[style].map { CTFontCopyFontDescriptor($0) })
+        }
+        emboldened = primaryStyles.map(\.1)
         self.shapes = shapes
         emoji = CTFontCreateWithName("Apple Color Emoji" as CFString, pixelSize, nil)
 
+        // Variations can change advances and vertical metrics. Measure the
+        // configured face that will actually be used to render regular text.
+        let metrics = faces[0]
         var glyph = CGGlyph(0)
         var m: UniChar = 0x4D // "M"
-        CTFontGetGlyphsForCharacters(regular, &m, &glyph, 1)
+        CTFontGetGlyphsForCharacters(metrics, &m, &glyph, 1)
         var advance = CGSize.zero
-        CTFontGetAdvancesForGlyphs(regular, .horizontal, &glyph, &advance, 1)
-        let baseAscent = ceil(CTFontGetAscent(regular))
-        descent = ceil(CTFontGetDescent(regular))
-        let leading = ceil(CTFontGetLeading(regular))
-        cellWidth = max(1, ceil(advance.width * (1 + descriptor.cellWidthAdjust) + descriptor.cellWidthOffset * descriptor.scale))
-        let baseHeight = baseAscent + descent + leading
-        cellHeight = max(1, ceil(baseHeight * (1 + descriptor.cellHeightAdjust) + descriptor.cellHeightOffset * descriptor.scale))
+        CTFontGetAdvancesForGlyphs(metrics, .horizontal, &glyph, &advance, 1)
+        let baseAscent = ceil(CTFontGetAscent(metrics))
+        descent = ceil(CTFontGetDescent(metrics))
+        let leading = ceil(CTFontGetLeading(metrics))
+        func adjusted(_ base: CGFloat, fraction: CGFloat, offset: CGFloat) -> CGFloat {
+            let fraction = fraction.isFinite ? fraction : 0
+            let offset = offset.isFinite ? offset : 0
+            let result = ceil(base * (1 + fraction) + offset * descriptor.scale)
+            if result.isNaN {
+                return max(1, ceil(base))
+            }
+            return max(1, min(result, .greatestFiniteMagnitude))
+        }
+        cellWidth = adjusted(advance.width, fraction: descriptor.cellWidthAdjust, offset: descriptor.cellWidthOffset)
+        let baseHeight = min(.greatestFiniteMagnitude, baseAscent + descent + leading)
+        cellHeight = adjusted(baseHeight, fraction: descriptor.cellHeightAdjust, offset: descriptor.cellHeightOffset)
         // Extra height is split above and below the glyphs.
-        ascent = baseAscent + floor((cellHeight - baseHeight) / 2)
-        underlinePosition = ascent - CTFontGetUnderlinePosition(regular)
-        underlineThickness = max(1, round(CTFontGetUnderlineThickness(regular)))
+        ascent = min(.greatestFiniteMagnitude, baseAscent + floor((cellHeight - baseHeight) / 2))
+        let underline = ascent - CTFontGetUnderlinePosition(metrics)
+        underlinePosition = min(.greatestFiniteMagnitude, max(-.greatestFiniteMagnitude, underline))
+        underlineThickness = max(1, round(CTFontGetUnderlineThickness(metrics)))
     }
 
     public func face(_ style: FontStyle) -> CTFont {
         faces[Int(style.rawValue & 3)]
+    }
+
+    func fallbackFaces(_ style: FontStyle) -> [CTFont] {
+        fallbackFaces[Int(style.rawValue & 3)]
+    }
+
+    /// Synthetic weight belongs to the font drawing a glyph, rather than
+    /// the primary face that happened to request its fallback.
+    func shouldEmbolden(_ glyphFont: CTFont, style: FontStyle) -> Bool {
+        guard !CTFontGetSymbolicTraits(glyphFont).contains(.traitColorGlyphs) else { return false }
+        let index = Int(style.rawValue & 3)
+        if CFEqual(glyphFont, faces[index]) {
+            return emboldened[index]
+        }
+        for (family, fallback) in fallbackFaces[index].enumerated() where CFEqual(glyphFont, fallback) {
+            return fallbackEmboldened[index][family]
+        }
+        guard style.contains(.bold), !CTFontGetSymbolicTraits(glyphFont).contains(.traitBold) else { return false }
+        return style.contains(.italic) ? descriptor.synthesizeBoldItalic : descriptor.synthesizeBold
     }
 }
 
@@ -183,18 +261,39 @@ public struct GlyphLookup: @unchecked Sendable {
 
 /// Resolves fonts and per-scalar glyphs with fallback, using CoreText directly.
 public final class CoreTextFontManager {
-    private var fonts: [FontDescriptor: ResolvedFont] = [:]
+    /// The 16 most recently resolved bundles, oldest first. Zoom and
+    /// configuration reloads must not retain every past family and size.
+    private var fonts: [ResolvedFont] = []
+    private static let fontCacheLimit = 16
     private var lookups: [UInt64: GlyphLookup?] = [:]
-    private var lookupFont: ObjectIdentifier?
+    static let glyphCacheLimit = 16384
+    var cachedGlyphCount: Int {
+        lookups.count
+    }
+
+    /// Retain the glyph cache's owner so eviction cannot recycle its identity.
+    private var lookupFont: ResolvedFont?
 
     public init() {}
 
+    /// Invalid sizes and scales use their defaults (13 points and 2).
+    /// If their product overflows or underflows to zero, both use defaults.
+    /// Nonfinite variation values are ignored, preserving other configured axes.
     public func resolve(_ descriptor: FontDescriptor) -> ResolvedFont {
-        if let font = fonts[descriptor] {
+        let descriptor = descriptor.normalized
+        if let index = fonts.lastIndex(where: { $0.descriptor == descriptor }) {
+            let font = fonts[index]
+            if index != fonts.count - 1 {
+                fonts.remove(at: index)
+                fonts.append(font)
+            }
             return font
         }
         let font = ResolvedFont(descriptor: descriptor)
-        fonts[descriptor] = font
+        if fonts.count == Self.fontCacheLimit {
+            fonts.removeFirst()
+        }
+        fonts.append(font)
         return font
     }
 
@@ -204,17 +303,20 @@ public final class CoreTextFontManager {
     }
 
     /// Glyph for `scalar` in `style`, falling back to emoji and system
-    /// cascade fonts. Results are cached per font.
+    /// cascade fonts. Results are cached per font in a bounded working set.
     public func lookup(_ scalar: Unicode.Scalar, style: FontStyle, in font: ResolvedFont) -> GlyphLookup? {
-        if lookupFont != ObjectIdentifier(font) {
+        if lookupFont !== font {
             lookups.removeAll(keepingCapacity: true)
-            lookupFont = ObjectIdentifier(font)
+            lookupFont = font
         }
         let key = UInt64(scalar.value) | UInt64(style.rawValue) << 32
         if let cached = lookups[key] {
             return cached
         }
         let result = resolveGlyph(scalar, style: style, font: font)
+        if lookups.count >= Self.glyphCacheLimit {
+            lookups.removeAll(keepingCapacity: true)
+        }
         lookups[key] = result
         return result
     }
@@ -223,14 +325,14 @@ public final class CoreTextFontManager {
         let face = font.face(style)
         let emojiPresentation = scalar.properties.isEmojiPresentation
         if !emojiPresentation, let glyph = Self.glyph(scalar, in: face) {
-            return GlyphLookup(font: face, glyph: glyph, isColor: false)
+            return GlyphLookup(font: face, glyph: glyph, isColor: CTFontGetSymbolicTraits(face).contains(.traitColorGlyphs))
         }
         if scalar.properties.isEmoji, let glyph = Self.glyph(scalar, in: font.emoji) {
             return GlyphLookup(font: font.emoji, glyph: glyph, isColor: true)
         }
-        for fallback in font.fallbacks {
+        for fallback in font.fallbackFaces(style) {
             if let glyph = Self.glyph(scalar, in: fallback) {
-                return GlyphLookup(font: fallback, glyph: glyph, isColor: false)
+                return GlyphLookup(font: fallback, glyph: glyph, isColor: CTFontGetSymbolicTraits(fallback).contains(.traitColorGlyphs))
             }
         }
         let string = String(scalar) as CFString
@@ -243,9 +345,27 @@ public final class CoreTextFontManager {
     }
 
     static func glyph(_ scalar: Unicode.Scalar, in font: CTFont) -> CGGlyph? {
-        var utf16 = Array(String(scalar).utf16)
-        var glyphs = [CGGlyph](repeating: 0, count: utf16.count)
-        guard CTFontGetGlyphsForCharacters(font, &utf16, &glyphs, utf16.count), glyphs[0] != 0 else { return nil }
-        return glyphs[0]
+        // Every scalar occupies at most two UTF-16 code units.
+        var utf16 = InlineArray<2, UniChar>(repeating: 0)
+        let value = scalar.value
+        let count: Int
+        if value < 0x10000 {
+            utf16[0] = UniChar(value)
+            count = 1
+        } else {
+            let supplementary = value - 0x10000
+            utf16[0] = 0xD800 | UniChar(supplementary >> 10)
+            utf16[1] = 0xDC00 | UniChar(supplementary & 0x3FF)
+            count = 2
+        }
+        var glyphs = InlineArray<2, CGGlyph>(repeating: 0)
+        return utf16.span.withUnsafeBufferPointer { characters in
+            var span = glyphs.mutableSpan
+            return span.withUnsafeMutableBufferPointer { output in
+                guard CTFontGetGlyphsForCharacters(font, characters.baseAddress!, output.baseAddress!, count),
+                      output[0] != 0 else { return nil }
+                return output[0]
+            }
+        }
     }
 }

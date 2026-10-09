@@ -17,11 +17,29 @@ swiftty="$(cd "$(dirname "$0")/.." && pwd)/.build/release/swiftty-bench"
 out="${OUT:-$corpus/results}"
 mkdir -p "$out"
 
-for data in "$corpus"/*.bin; do
+# Hyperfine's -N still tokenizes command strings; quote each argument.
+command_line() {
+  local arg
+  for arg in "$@"; do
+    arg=${arg//\\/\\\\}
+    arg=${arg//\"/\\\"}
+    printf '"%s" ' "$arg"
+  done
+}
+
+shopt -s nullglob
+inputs=("$corpus"/*.bin)
+if ((${#inputs[@]} == 0)); then
+  printf 'No .bin inputs found in %s\n' "$corpus" >&2
+  exit 1
+fi
+
+for data in "${inputs[@]}"; do
   name=$(basename "$data" .bin)
   hyperfine --warmup 2 --runs "${RUNS:-10}" -N --export-json "$out/$name.json" \
-    -n ghostty "$ghostty +terminal-stream --data=$data --terminal-cols=$cols --terminal-rows=$rows" \
-    -n swiftty "$swiftty stream --data=$data --terminal-cols=$cols --terminal-rows=$rows" \
+    -n ghostty "$(command_line "$ghostty" +terminal-stream "--data=$data" "--terminal-cols=$cols" "--terminal-rows=$rows")" \
+    -n swiftty "$(command_line "$swiftty" stream "--data=$data" "--terminal-cols=$cols" "--terminal-rows=$rows")" \
     > "$out/$name.txt" 2>&1
-  printf '%-22s %s\n' "$name" "$(jq -r '[.results[] | "\(.command)=\(.median*1000|floor)ms"] | join("  ")' "$out/$name.json")"
+  summary=$(jq -r '[.results[] | "\(.command)=\(.median*1000|floor)ms"] | join("  ")' "$out/$name.json")
+  printf '%-22s %s\n' "$name" "$summary"
 done

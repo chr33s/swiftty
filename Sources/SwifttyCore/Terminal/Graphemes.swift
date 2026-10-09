@@ -2,11 +2,13 @@
 ///
 /// Cells flagged `.grapheme` store an id into this table. Entries are
 /// append-only; `TerminalState` compacts the table when garbage grows.
+/// Each entry contains a base scalar and at least one joined scalar.
 struct GraphemeTable: ~Copyable {
     private(set) var scalars: [UInt32] = []
     private(set) var entries: [UInt64] = [] // start << 32 | count
 
-    static let compactionThreshold = 1 << 18
+    /// Bound retained garbage in small terminals; live content raises the limit.
+    static let compactionThreshold = 1 << 16
     /// Scalar count that triggers compaction; raised after compacting.
     var compactionLimit = compactionThreshold
 
@@ -14,11 +16,17 @@ struct GraphemeTable: ~Copyable {
         scalars.count > compactionLimit
     }
 
-    func scalars(_ id: UInt32) -> UnsafeBufferPointer<UInt32> {
+    /// Cluster contents, valid while this table is borrowed.
+    @_lifetime(borrow self)
+    func scalars(_ id: UInt32) -> Span<UInt32> {
         let entry = entries[Int(id)]
-        return scalars.withUnsafeBufferPointer {
-            UnsafeBufferPointer(rebasing: $0[Int(entry >> 32) ..< Int(entry >> 32) + Int(entry & 0xFFFF_FFFF)])
-        }
+        let start = Int(entry >> 32), count = Int(entry & 0xFFFF_FFFF)
+        return scalars.span.extracting(start ..< start + count)
+    }
+
+    /// Number of scalars in a cluster, without constructing a buffer view.
+    func scalarCount(_ id: UInt32) -> Int {
+        Int(entries[Int(id)] & 0xFFFF_FFFF)
     }
 
     /// Returns the id of `cell`'s cluster extended by `scalar`.

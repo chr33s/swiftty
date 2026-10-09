@@ -4,5 +4,5 @@
 --wraparguments before-first
 --wrapcollections before-first
 --stripunusedargs closure-only
---disable redundantSelf,wrapMultilineStatementBraces,preferForLoop,hoistPatternLet,redundantReturn
+--disable redundantSelf,wrapMultilineStatementBraces,preferForLoop,hoistPatternLet,redundantReturn,swiftTestingTestCaseNames
 --exclude Sources/SwifttyCore/Unicode/Tables.swift

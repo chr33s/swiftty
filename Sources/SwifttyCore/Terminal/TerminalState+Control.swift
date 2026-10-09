@@ -3,6 +3,30 @@
 extension TerminalState {
     // MARK: DCS
 
+    /// The terminal-owned half of a pending parser control string.
+    struct ControlStringContinuation: Sendable {
+        var kind: DCSKind
+        var buffer: [UInt8]
+        var isControlMode: Bool
+    }
+
+    var controlStringContinuation: ControlStringContinuation {
+        ControlStringContinuation(kind: dcsKind, buffer: dcsBuffer, isControlMode: isControlMode)
+    }
+
+    mutating func restoreControlString(_ continuation: ControlStringContinuation) {
+        if continuation.isControlMode != isControlMode {
+            if continuation.isControlMode {
+                events.append(.controlModeStarted)
+            } else {
+                endControlMode()
+            }
+        }
+        dcsKind = continuation.kind
+        dcsBuffer = continuation.buffer
+        isControlMode = continuation.isControlMode
+    }
+
     mutating func dcsHook(_ csi: borrowing CSISequence) {
         dcsBuffer.removeAll(keepingCapacity: true)
         switch (csi.marker, csi.intermediate, csi.final) {
@@ -20,8 +44,25 @@ extension TerminalState {
         switch dcsKind {
         case .tmux: controlModeData.append(contentsOf: bytes)
         case .termcap, .statusString:
-            if dcsBuffer.count + bytes.count <= 4096 {
-                dcsBuffer.append(contentsOf: bytes)
+            // DEL is ignored in DCS requests, including for the body limit.
+            // Append contiguous runs so ordinary requests still copy in bulk.
+            var start = 0
+            while start < bytes.count {
+                if bytes[start] == 0x7F {
+                    start += 1
+                    continue
+                }
+                var end = start + 1
+                while end < bytes.count, bytes[end] != 0x7F {
+                    end += 1
+                }
+                guard end - start <= 4096 - dcsBuffer.count else {
+                    dcsKind = .ignored
+                    dcsBuffer.removeAll(keepingCapacity: true)
+                    return
+                }
+                dcsBuffer.append(contentsOf: UnsafeBufferPointer(rebasing: bytes[start ..< end]))
+                start = end
             }
         case .ignored: break
         }
@@ -30,14 +71,28 @@ extension TerminalState {
     mutating func dcsUnhook() {
         switch dcsKind {
         case .tmux:
-            isControlMode = false
-            events.append(.controlModeEnded)
+            endControlMode()
         case .termcap: replyTermcap()
         case .statusString: replyStatusString()
         case .ignored: break
         }
         dcsKind = .ignored
         dcsBuffer.removeAll(keepingCapacity: true)
+    }
+
+    /// Abandons a DCS without replying to an incomplete request.
+    mutating func discardControlString() {
+        if isControlMode {
+            endControlMode()
+        }
+        dcsKind = .ignored
+        dcsBuffer.removeAll(keepingCapacity: true)
+    }
+
+    private mutating func endControlMode() {
+        isControlMode = false
+        controlModeEndOffsets.append(controlModeData.count)
+        events.append(.controlModeEnded)
     }
 
     /// XTGETTCAP: names are hex-encoded and `;`-separated.
@@ -90,9 +145,15 @@ extension TerminalState {
         let pen = cursor.pen
         var out = "0"
         let f = pen.flags
-        if f.contains(.bold) { out += ";1" }
-        if f.contains(.faint) { out += ";2" }
-        if f.contains(.italic) { out += ";3" }
+        if f.contains(.bold) {
+            out += ";1"
+        }
+        if f.contains(.faint) {
+            out += ";2"
+        }
+        if f.contains(.italic) {
+            out += ";3"
+        }
         if f.contains(.doubleUnderline) {
             out += ";4:2"
         } else if f.contains(.underline) {
@@ -103,11 +164,21 @@ extension TerminalState {
             case (false, false): out += ";4"
             }
         }
-        if f.contains(.overline) { out += ";53" }
-        if f.contains(.blink) { out += ";5" }
-        if f.contains(.inverse) { out += ";7" }
-        if f.contains(.invisible) { out += ";8" }
-        if f.contains(.strikethrough) { out += ";9" }
+        if f.contains(.overline) {
+            out += ";53"
+        }
+        if f.contains(.blink) {
+            out += ";5"
+        }
+        if f.contains(.inverse) {
+            out += ";7"
+        }
+        if f.contains(.invisible) {
+            out += ";8"
+        }
+        if f.contains(.strikethrough) {
+            out += ";9"
+        }
         func color(_ c: TerminalColor, _ base: Int, _ bright: Int, _ extended: Int) -> String {
             switch c.kind {
             case .default: return ""
@@ -119,6 +190,13 @@ extension TerminalState {
         }
         out += color(pen.foreground, 30, 90, 38)
         out += color(pen.background, 40, 100, 48)
+        if let underline = underlineColor(pen.underlineColor) {
+            switch underline.kind {
+            case .default: break
+            case let .palette(i): out += ";58:5:\(i)"
+            case let .rgb(v): out += ";58:2::\(v >> 16 & 0xFF):\(v >> 8 & 0xFF):\(v & 0xFF)"
+            }
+        }
         return out
     }
 
@@ -129,10 +207,12 @@ extension TerminalState {
         }.joined()
     }
 
-    static func unhex(_ s: Substring) -> String {
+    static func unhex(_ s: Substring) -> String? {
         var bytes: [UInt8] = []
         var i = s.startIndex
-        while i < s.endIndex, let j = s.index(i, offsetBy: 2, limitedBy: s.endIndex), let b = UInt8(s[i ..< j], radix: 16) {
+        while i < s.endIndex {
+            guard let j = s.index(i, offsetBy: 2, limitedBy: s.endIndex),
+                  let b = UInt8(s[i ..< j], radix: 16) else { return nil }
             bytes.append(b)
             i = j
         }
@@ -152,6 +232,7 @@ extension TerminalState {
     /// Clears the screen and scrollback, keeping the cursor's line (e.g. a
     /// shell prompt) as the new top line.
     public mutating func clearScreenKeepingCursorLine() {
+        let keptRow = screenAbsoluteRow(cursor.y)
         invalidateSelection()
         forgetHyperlinkRows()
         if !isAlternateScreen, cursor.y > 0 {
@@ -160,12 +241,16 @@ extension TerminalState {
             cursor.y = 0
         }
         if !isAlternateScreen {
+            addressingGeneration &+= 1
+            // The continuation below the retained row is discarded.
+            grid.setWrapped(0, false)
             for y in 1 ..< rows {
                 grid.fill(row: y, from: 0, to: columns, with: .blank)
                 grid.setWrapped(y, false)
                 grid.clearMarks(y)
             }
             grid.clearHistory()
+            shiftSearchRows(by: -keptRow)
         }
         viewportOffset = 0
         damage.setFull()

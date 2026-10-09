@@ -2,7 +2,109 @@ import Foundation
 
 // Platform-neutral frontend behavior shared by the macOS and iOS apps: what
 // key-binding actions do to the viewport, OSC 22 pointer shapes, the blink
-// phase, which links open, click-to-move, and selection gestures.
+// phase, which links open, click-to-move, scrolling, and selection gestures.
+
+/// Turns fractional scroll distances into whole lines, carrying the rest.
+public struct ScrollAccumulator: Sendable {
+    public private(set) var remainder: CGFloat = 0
+
+    public init() {}
+
+    /// Adds `lines` (positive scrolls back into history) and returns the
+    /// whole lines to scroll now. Nonfinite or unrepresentable distances
+    /// are ignored, preserving the accumulated fraction.
+    public mutating func add(_ lines: CGFloat) -> Int {
+        let total = remainder + lines
+        guard let whole = Int(exactly: total.rounded(.towardZero)), whole != .min else { return 0 }
+        remainder = total - CGFloat(whole)
+        return whole
+    }
+
+    public mutating func reset() {
+        remainder = 0
+    }
+}
+
+/// Conversions at the frontend boundary, where scaled configuration
+/// values can overflow even though their inputs were finite.
+public enum TerminalGeometry {
+    /// Nonnegative pixels for terminal reports, saturated to an integer.
+    public static func pixelExtent(_ value: CGFloat) -> Int {
+        guard value > 0 else { return 0 }
+        if value >= CGFloat(Int.max) {
+            return .max
+        }
+        return Int(value)
+    }
+
+    /// A cell coordinate, retaining out-of-grid positions for dragging.
+    /// Bounds match the renderer's grid and leave room for row arithmetic.
+    public static func cellIndex(_ value: CGFloat) -> Int {
+        guard !value.isNaN else { return 0 }
+        let limit = CGFloat(UInt16.max)
+        return Int(min(limit, max(-limit, value)).rounded(.down))
+    }
+
+    /// Maps an IME UTF-16 position to the columns used by preedit rendering.
+    /// Positions inside a grapheme snap to its start, or its end when
+    /// `roundUp` is true (for the end of a nonempty text range).
+    public static func compositionColumn(in scalars: [Unicode.Scalar], atUTF16Offset target: Int, roundUp: Bool = false) -> Int {
+        compositionPosition(in: scalars, atUTF16Offset: target, roundUp: roundUp).column
+    }
+
+    /// The rendered column and matching UTF-16 grapheme boundary of an IME
+    /// position. Out-of-range positions clamp to the composition's bounds.
+    public static func compositionPosition(
+        in scalars: [Unicode.Scalar], atUTF16Offset target: Int, roundUp: Bool = false,
+    ) -> (column: Int, utf16Offset: Int) {
+        guard target > 0 else { return (0, 0) }
+        let values = scalars.map(\.value)
+        var offset = 0, utf16 = 0, column = 0
+        while offset < values.count {
+            let (length, width) = GraphemeBreak.graphemeWidth(values[offset...])
+            let columns = max(1, width)
+            var end = utf16
+            for i in offset ..< offset + length {
+                end += values[i] > 0xFFFF ? 2 : 1
+            }
+            if target < end {
+                return roundUp ? (column + columns, end) : (column, utf16)
+            }
+            column += columns
+            if target == end {
+                return (column, end)
+            }
+            utf16 = end
+            offset += length
+        }
+        return (column, utf16)
+    }
+
+    /// Grapheme boundaries around a rendered preedit column. Positions
+    /// outside the composition return an empty range at the nearest end.
+    public static func compositionRange(
+        in scalars: [Unicode.Scalar], atColumn target: CGFloat,
+    ) -> (columns: Range<Int>, utf16: Range<Int>) {
+        guard target >= 0 else { return (0 ..< 0, 0 ..< 0) }
+        let values = scalars.map(\.value)
+        var offset = 0, utf16 = 0, column = 0
+        while offset < values.count {
+            let (length, width) = GraphemeBreak.graphemeWidth(values[offset...])
+            let endColumn = column + max(1, width)
+            var end = utf16
+            for i in offset ..< offset + length {
+                end += values[i] > 0xFFFF ? 2 : 1
+            }
+            if target < CGFloat(endColumn) {
+                return (column ..< endColumn, utf16 ..< end)
+            }
+            column = endColumn
+            utf16 = end
+            offset += length
+        }
+        return (column ..< column, utf16 ..< utf16)
+    }
+}
 
 // MARK: - Key-binding actions
 
@@ -19,7 +121,7 @@ public enum ActionDispatch {
         case .scrollPageUp: rows
         case .scrollPageDown: -rows
         // Ghostty's `scroll_page_lines:n` scrolls down for positive n.
-        case let .scrollPageLines(n): -n
+        case let .scrollPageLines(n): n == .min ? .max : -n
         default: nil
         }
     }
@@ -37,7 +139,7 @@ public enum ActionDispatch {
         case .scrollToBottom: "Scroll to Bottom"
         case .scrollPageUp: "Page Up"
         case .scrollPageDown: "Page Down"
-        case let .scrollPageLines(n): n < 0 ? "Scroll Up \(-n) Lines" : "Scroll Down \(n) Lines"
+        case let .scrollPageLines(n): n < 0 ? "Scroll Up \(n.magnitude) Lines" : "Scroll Down \(n) Lines"
         case let .jumpToPrompt(n): n < 0 ? "Previous Prompt" : "Next Prompt"
         case .startSearch: "Find…"
         case .searchSelection: "Find Selection"
@@ -45,7 +147,7 @@ public enum ActionDispatch {
         case .endSearch: "End Find"
         case .clearScreen: "Clear Screen"
         case .reset: "Reset Terminal"
-        case .text, .csi, .esc: "Send Text"
+        case .text, .textBytes, .csi, .esc: "Send Text"
         case .ignore: "Ignore"
         }
     }

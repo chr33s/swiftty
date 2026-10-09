@@ -69,6 +69,7 @@
         }
 
         @objc private func handleTap(_ tap: UITapGestureRecognizer) {
+            stopMomentum()
             let point = tap.location(in: self)
             let mods = Self.modifiers(tap.modifierFlags)
             if !isFirstResponder {
@@ -88,7 +89,7 @@
             let c = geometry.cell(at: point)
             let detect = configuration.linkURL
             let (link, moves) = session.withState { state in
-                let p = TerminalPoint(row: state.absoluteRow(viewportRow: max(0, c.row)), column: max(0, c.column))
+                let p = state.viewportPoint(row: c.row, column: c.column)
                 return (state.link(at: p, detectURLs: detect), state.promptCursorMoves(to: p))
             }
             if let link, let url = LinkPolicy.openableURL(link.url) {
@@ -99,6 +100,7 @@
         }
 
         @objc private func handleSecondaryClick(_ tap: UITapGestureRecognizer) {
+            stopMomentum()
             let point = tap.location(in: self)
             let mods = Self.modifiers(tap.modifierFlags)
             if tracking, !mods.contains(.shift) {
@@ -112,11 +114,26 @@
         @objc private func handlePointerDrag(_ pan: UIPanGestureRecognizer) {
             let point = pan.location(in: self)
             let mods = Self.modifiers(pan.modifierFlags)
-            if selectionOrigin == nil, tracking, !mods.contains(.shift) {
+            var start = point
+            if pan.state == .began {
+                stopMomentum()
+                let translation = pan.translation(in: self)
+                start = CGPoint(x: point.x - translation.x, y: point.y - translation.y)
+                reportsPointerMouseGesture = tracking && !mods.contains(.shift)
+                selectionOrigin = nil
+            }
+            if reportsPointerMouseGesture {
                 switch pan.state {
-                case .began: sendMouse(.press, .left, at: point, modifiers: mods)
+                case .began:
+                    sendMouse(.press, .left, at: start, modifiers: mods)
+                    if cell(at: start) != cell(at: point) {
+                        sendMouse(.motion, .left, at: point, modifiers: mods)
+                    }
                 case .changed: sendMouse(.motion, .left, at: point, modifiers: mods)
-                case .ended, .cancelled: sendMouse(.release, .left, at: point, modifiers: mods)
+                case .ended, .cancelled:
+                    sendMouse(.release, .left, at: point, modifiers: mods)
+                    reportsPointerMouseGesture = false
+                case .failed: reportsPointerMouseGesture = false
                 default: break
                 }
                 return
@@ -124,11 +141,13 @@
             switch pan.state {
             case .began:
                 // The press happened where the drag started.
-                let start = CGPoint(x: point.x - pan.translation(in: self).x, y: point.y - pan.translation(in: self).y)
                 beginSelection(at: start, unit: .cell, rectangle: mods.contains(.alt))
                 extendSelection(to: point, rectangle: mods.contains(.alt))
             case .changed: extendSelection(to: point, rectangle: mods.contains(.alt))
-            case .ended, .cancelled: endSelection()
+            case .ended:
+                extendSelection(to: point, rectangle: mods.contains(.alt), scrollEdges: false)
+                endSelection()
+            case .cancelled: endSelection()
             default: break
             }
         }
@@ -136,23 +155,35 @@
         @objc private func handleHover(_ hover: UIHoverGestureRecognizer) {
             guard hover.state == .began || hover.state == .changed else {
                 hoverCell = nil
+                hoverPoint = nil
+                hoverModes = nil
                 setHoveredLink(nil)
                 return
             }
             let point = hover.location(in: self)
             let c = cell(at: point)
-            guard hoverCell.map({ $0 != c }) ?? true else { return }
+            let modifiers = Self.modifiers(hover.modifierFlags)
+            hoverPoint = point
+            guard (hoverCell.map { $0 != c } ?? true) || hoverModifiers != modifiers || hoverModes != lastModes else { return }
             hoverCell = c
+            hoverModifiers = modifiers
+            hoverModes = lastModes
             if lastModes.contains(.mouseAny) {
-                sendMouse(.motion, .none, at: point, modifiers: Self.modifiers(hover.modifierFlags))
+                sendMouse(.motion, .none, at: point, modifiers: modifiers)
             }
+            refreshHoveredLink(at: point)
+        }
+
+        /// Updates link presentation independently of mouse motion reports.
+        func refreshHoveredLink(at point: CGPoint) {
             if tracking {
                 setHoveredLink(nil)
                 return
             }
+            let c = cell(at: point)
             let detect = configuration.linkURL
             let hovered = session.withState { state -> (id: UInt8, span: HighlightSpan)? in
-                let p = TerminalPoint(row: state.absoluteRow(viewportRow: c.row), column: c.column)
+                let p = state.viewportPoint(row: c.row, column: c.column)
                 guard let link = state.link(at: p, detectURLs: detect), LinkPolicy.openableURL(link.url) != nil else { return nil }
                 return (link.id, LinkPolicy.span(of: link.range, firstVisibleRow: state.absoluteRow(viewportRow: 0)))
             }
@@ -212,13 +243,15 @@
 
         @objc private func handlePinch(_ pinch: UIPinchGestureRecognizer) {
             switch pinch.state {
-            case .began: pinchStartSize = fontSize
-            case .changed:
-                let size = (pinchStartSize * pinch.scale).rounded()
-                if size != fontSize {
-                    setFontSize(size)
-                }
-            default: break
+            case .began:
+                stopMomentum()
+                pinchStartSize = fontSize
+            case .changed, .ended: break
+            default: return
+            }
+            let size = (pinchStartSize * pinch.scale).rounded()
+            if size != fontSize {
+                setFontSize(size)
             }
         }
 
@@ -229,11 +262,14 @@
             switch press.state {
             case .began:
                 editMenu.dismissMenu()
-                UISelectionFeedbackGenerator(view: self).selectionChanged()
+                #if !os(visionOS)
+                    UISelectionFeedbackGenerator(view: self).selectionChanged()
+                #endif
                 beginSelection(at: point, unit: .word, rectangle: false)
             case .changed:
                 extendSelection(to: point, rectangle: false)
             case .ended:
+                extendSelection(to: point, rectangle: false, scrollEdges: false)
                 endSelection()
                 editMenu.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: point))
             case .cancelled, .failed:
@@ -243,38 +279,50 @@
         }
 
         func beginSelection(at point: CGPoint, unit: SelectionUnit, rectangle: Bool) {
+            stopMomentum()
             let c = geometry.cell(at: point)
             selectionUnit = unit
             selectionOrigin = session.mutate { state in
-                let p = state.clamp(TerminalPoint(row: state.absoluteRow(viewportRow: max(0, c.row)), column: c.column))
+                let p = state.viewportPoint(row: c.row, column: c.column)
                 let span = switch unit {
                 case .cell: (start: p, end: p)
                 case .word: state.wordRange(at: p)
                 case .line: state.lineRange(at: p)
                 }
                 state.setSelection(unit == .cell ? nil : Selection(anchor: span.start, head: span.end, rectangle: rectangle))
-                return span
+                return (span.start, span.end, state.addressingGeneration)
             }
             hasSelection = unit != .cell
         }
 
-        func extendSelection(to point: CGPoint, rectangle: Bool) {
+        func extendSelection(to point: CGPoint, rectangle: Bool, scrollEdges: Bool = true) {
             guard let origin = selectionOrigin else { return }
             let c = geometry.cell(at: point)
             let unit = selectionUnit
-            session.mutate { state in
+            let requiresSelection = hasSelection
+            let extended = session.mutate { state -> (extended: Bool, hasSelection: Bool) in
+                // Output may invalidate an active drag before the next frame.
+                guard state.addressingGeneration == origin.generation,
+                      state.line(absoluteRow: origin.start.row) != nil,
+                      state.line(absoluteRow: origin.end.row) != nil,
+                      !requiresSelection || state.selection != nil else { return (false, state.selection != nil) }
                 // Dragging past the top or bottom edge scrolls the viewport.
-                state.scrollViewport(by: SelectionMath.edgeScroll(row: c.row, rows: state.rows))
-                let row = min(max(c.row, 0), state.rows - 1)
-                let p = state.clamp(TerminalPoint(row: state.absoluteRow(viewportRow: row), column: c.column))
+                if scrollEdges {
+                    state.scrollViewport(by: SelectionMath.edgeScroll(row: c.row, rows: state.rows))
+                }
+                let p = state.viewportPoint(row: c.row, column: c.column)
                 let span = switch unit {
                 case .cell: (start: p, end: p)
                 case .word: state.wordRange(at: p)
                 case .line: state.lineRange(at: p)
                 }
-                state.setSelection(SelectionMath.extend(origin: origin, to: span, rectangle: rectangle))
+                state.setSelection(SelectionMath.extend(origin: (origin.start, origin.end), to: span, rectangle: rectangle))
+                return (true, true)
             }
-            hasSelection = true
+            hasSelection = extended.hasSelection
+            if !extended.extended {
+                selectionOrigin = nil
+            }
         }
 
         func endSelection() {
@@ -295,14 +343,25 @@
         ) -> UIMenu? {
             var children = suggestedActions
             let c = geometry.cell(at: configuration.sourcePoint)
-            let output = session.withState { state in
-                state.commandOutputRange(at: TerminalPoint(row: state.absoluteRow(viewportRow: max(0, c.row)), column: max(0, c.column)))
+            let context = session.withState { state in
+                (
+                    output: state.commandOutputRange(at: state.viewportPoint(row: c.row, column: c.column)),
+                    generation: state.addressingGeneration,
+                )
             }
-            if let output {
+            if let output = context.output {
                 children
                     .append(UIAction(title: "Select Command Output", image: UIImage(systemName: "text.badge.checkmark")) { [weak self] _ in
                         guard let self else { return }
-                        session.mutate { $0.setSelection(Selection(anchor: output.start, head: output.end)) }
+                        let selected = session.mutate { state in
+                            guard state.addressingGeneration == context.generation,
+                                  state.mark(absoluteRow: output.start.row) == .output,
+                                  let current = state.commandOutputRange(at: output.start),
+                                  current.start == output.start else { return false }
+                            state.setSelection(Selection(anchor: current.start, head: current.end))
+                            return true
+                        }
+                        guard selected else { return }
                         hasSelection = true
                         editMenu.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: configuration.sourcePoint))
                     })
@@ -314,58 +373,95 @@
 
         @objc private func handleScroll(_ pan: UIPanGestureRecognizer) {
             let point = pan.location(in: self)
+            let modifiers = Self.modifiers(pan.modifierFlags)
             switch pan.state {
             case .began:
                 stopMomentum()
                 scrollAccumulator.reset()
+                horizontalScrollAccumulator.reset()
                 editMenu.dismissMenu()
-            case .changed:
-                let dy = pan.translation(in: self).y
-                pan.setTranslation(.zero, in: self)
-                scroll(lines: dy / geometry.lineHeight, at: point)
-            case .ended:
-                startMomentum(velocity: pan.velocity(in: self).y / geometry.lineHeight, at: point)
-            default: break
+            case .changed, .ended:
+                break
+            case .cancelled, .failed:
+                stopMomentum()
+                scrollAccumulator.reset()
+                horizontalScrollAccumulator.reset()
+                return
+            default: return
+            }
+            // Translation can change on the first and final callbacks too.
+            let distance = pan.translation(in: self)
+            pan.setTranslation(.zero, in: self)
+            scroll(
+                lines: distance.y / geometry.lineHeight,
+                columns: distance.x / (geometry.cellSize.width / geometry.scale), at: point, modifiers: modifiers,
+            )
+            if pan.state == .ended {
+                let velocity = pan.velocity(in: self)
+                startMomentum(
+                    velocity: velocity.y / geometry.lineHeight,
+                    horizontalVelocity: velocity.x / (geometry.cellSize.width / geometry.scale), at: point, modifiers: modifiers,
+                )
             }
         }
 
         /// Scrolls by `lines` (positive reveals history, as content follows
         /// the finger down), routed the way the application asked.
-        func scroll(lines: CGFloat, at point: CGPoint) {
+        func scroll(lines: CGFloat, columns: CGFloat = 0, at point: CGPoint, modifiers: KeyModifiers = []) {
             let n = scrollAccumulator.add(lines)
-            guard n != 0 else { return }
             switch ScrollRouting(modes: lastModes) {
             case .wheel:
+                let horizontal = horizontalScrollAccumulator.add(columns)
                 for _ in 0 ..< abs(n) {
-                    sendMouse(.press, n > 0 ? .wheelUp : .wheelDown, at: point)
+                    sendMouse(.press, n > 0 ? .wheelUp : .wheelDown, at: point, modifiers: modifiers)
+                }
+                for _ in 0 ..< abs(horizontal) {
+                    sendMouse(.press, horizontal > 0 ? .wheelLeft : .wheelRight, at: point, modifiers: modifiers)
                 }
             case .arrows:
+                horizontalScrollAccumulator.reset()
                 for _ in 0 ..< abs(n) {
                     session.send(.key(KeyEvent(n > 0 ? .up : .down)))
                 }
             case .viewport:
+                horizontalScrollAccumulator.reset()
+                guard n != 0 else { return }
                 session.scrollViewport(by: n)
             }
         }
 
-        private func startMomentum(velocity: CGFloat, at point: CGPoint) {
+        private func startMomentum(velocity: CGFloat, horizontalVelocity: CGFloat, at point: CGPoint, modifiers: KeyModifiers) {
+            momentumTimestamp = nil
             momentum = ScrollMomentum(velocity: velocity)
-            guard momentum.isActive, !isRenderingPaused else { return }
+            horizontalMomentum = ScrollMomentum(velocity: tracking ? horizontalVelocity : 0)
+            guard momentum.isActive || horizontalMomentum.isActive, !isRenderingPaused else { return }
             momentumPoint = point
+            momentumModifiers = modifiers
             let link = CADisplayLink(target: self, selector: #selector(momentumFrame(_:)))
             link.add(to: .main, forMode: .common)
             momentumLink = link
         }
 
         @objc private func momentumFrame(_ link: CADisplayLink) {
-            scroll(lines: momentum.step(link.targetTimestamp - link.timestamp), at: momentumPoint)
-            if !momentum.isActive {
+            guard isSurfaceVisible, !isRenderingPaused else {
+                stopMomentum()
+                return
+            }
+            let target = link.targetTimestamp
+            let dt = target - (momentumTimestamp ?? link.timestamp)
+            guard dt.isFinite, dt > 0 else { return }
+            momentumTimestamp = target
+            scroll(lines: momentum.step(dt), columns: horizontalMomentum.step(dt), at: momentumPoint, modifiers: momentumModifiers)
+            if !momentum.isActive, !horizontalMomentum.isActive {
                 stopMomentum()
             }
         }
 
         func stopMomentum() {
             momentum.stop()
+            horizontalMomentum.stop()
+            momentumTimestamp = nil
+            momentumModifiers = []
             momentumLink?.invalidate()
             momentumLink = nil
         }

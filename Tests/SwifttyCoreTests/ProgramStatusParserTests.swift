@@ -1,6 +1,7 @@
 import Foundation
 @testable import SwifttyCore
 import Testing
+import TestSupport
 
 /// OSC 7501 framing and validation.
 struct ProgramStatusParserTests {
@@ -96,7 +97,7 @@ struct ProgramStatusParserTests {
         var vt = vt()
         vt.feed("x" + osc("state=working:id=a") + "y" + osc("state=error:id=b", bell: true) + osc("state=clear:id=a"))
         #expect(vt.state.programStatus.records.map(\.id) == ["b"])
-        #expect(vt.lines[0].hasPrefix("xy"))
+        #expect(TestFixture(vt.lines[0].hasPrefix("xy")) == TestFixture(true))
     }
 
     @Test func `repeated keys take the last value`() {
@@ -132,8 +133,8 @@ struct ProgramStatusParserTests {
         #expect(record("state=idle:id=a.b_c-D9/x")?.id == "a.b_c-D9/x")
         #expect(record("state=idle:id=c++/build")?.id == "c++/build")
         for bad in ["", "/", "a/", "/a", "a//b", "a b", "é", "a\\b", "a=b"] {
-            #expect(parse("state=idle:id=\(bad)") == nil, "\(bad)")
-            #expect(parse("state=clear:id=\(bad)") == nil, "clear \(bad)")
+            #expect(parse("state=idle:id=\(bad)") == nil, Comment(rawValue: escapedTestText("\(bad)")))
+            #expect(parse("state=clear:id=\(bad)") == nil, Comment(rawValue: escapedTestText("clear \(bad)")))
         }
     }
 
@@ -162,7 +163,7 @@ struct ProgramStatusParserTests {
         // Outside `[A-Za-z0-9_.+-]`: absent, the report still applies.
         for bad in ["a b", "a\u{7F}", "a!", "é", "a/b"] {
             let r = record("state=idle:app=\(bad)")
-            #expect(r?.state == .idle && r?.app == nil, "\(bad)")
+            #expect(r?.state == .idle && r?.app == nil, Comment(rawValue: escapedTestText("\(bad)")))
         }
         #expect(record("state=idle:app=g++_1.2-x")?.app == "g++_1.2-x")
         #expect(record("state=idle:app=a:app=a/b")?.app == nil) // last value wins, absent
@@ -197,19 +198,20 @@ struct ProgramStatusParserTests {
     @Test func `support query reply repeats the query`() {
         var vt = vt()
         vt.feed("\u{1B}]7501;?\u{07}")
-        #expect(vt.takeOutput() == "\u{1B}]7501;?\u{07}")
+        #expect(TestFixture(vt.takeOutput()) == TestFixture("\u{1B}]7501;?\u{07}"))
         vt.feed("\u{1B}]7501;?\u{1B}\\")
-        #expect(vt.takeOutput() == "\u{1B}]7501;?\u{1B}\\")
+        #expect(TestFixture(vt.takeOutput()) == TestFixture("\u{1B}]7501;?\u{1B}\\"))
     }
 
     @Test func `terminfo Pst capability advertised only while enabled`() {
         let query = "\u{1B}P+q\(TerminalState.hex("Pst"))\u{1B}\\"
         var vt = vt()
         vt.feed(query)
-        #expect(vt.takeOutput() == "\u{1B}P1+r\(TerminalState.hex("Pst"))=\(TerminalState.hex("\\E]7501;%p1%s\\E\\\\"))\u{1B}\\")
+        #expect(TestFixture(vt.takeOutput()) ==
+            TestFixture("\u{1B}P1+r\(TerminalState.hex("Pst"))=\(TerminalState.hex("\\E]7501;%p1%s\\E\\\\"))\u{1B}\\"))
         vt.state.programStatusEnabled = false
         vt.feed(query)
-        #expect(vt.takeOutput() == "\u{1B}P0+r\(TerminalState.hex("Pst"))\u{1B}\\")
+        #expect(TestFixture(vt.takeOutput()) == TestFixture("\u{1B}P0+r\(TerminalState.hex("Pst"))\u{1B}\\"))
     }
 
     @Test func `oversized report is dropped, not truncated`() {
@@ -226,7 +228,7 @@ struct ProgramStatusParserTests {
         #expect(record("state=blocked:progress=7")?.progress == 7)
         for bad in ["101", "-1", "+5", "1.5", "", "abc", "0100", "999999999999"] {
             let r = record("state=working:progress=\(bad)")
-            #expect(r?.state == .working && r?.progress == nil, "\(bad)")
+            #expect(r?.state == .working && r?.progress == nil, Comment(rawValue: escapedTestText("\(bad)")))
         }
         // Only working and blocked carry progress.
         #expect(record("state=done:progress=50")?.progress == nil)
@@ -244,7 +246,7 @@ struct ProgramStatusParserTests {
 
     @Test func `invalid base64 discards`() {
         for bad in ["Y", "YQ=", "Y===", "=YWI", "YQ==YQ==", "YW,I", "YW-I"] {
-            #expect(parse("state=idle:title=\(bad)") == nil, "\(bad)")
+            #expect(parse("state=idle:title=\(bad)") == nil, Comment(rawValue: escapedTestText("\(bad)")))
         }
         // Nonzero leftover bits are tolerated, as by standard decoders.
         #expect(record("state=idle:title=YR==")?.title == "a")
@@ -259,7 +261,7 @@ struct ProgramStatusParserTests {
 
     @Test func `control characters discard`() {
         for text in ["a\u{1B}[31mb", "line\nbreak", "tab\there", "del\u{7F}", "c1\u{9B}x", "nul\u{0}"] {
-            #expect(parse("state=idle:title=\(b64(text))") == nil, "\(text.debugDescription)")
+            #expect(parse("state=idle:title=\(b64(text))") == nil, Comment(rawValue: escapedTestText("\(text.debugDescription)")))
         }
     }
 

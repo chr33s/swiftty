@@ -11,6 +11,8 @@ final class Shaper {
         var glyph: CGGlyph
         var font: CTFont
         var isColor: Bool
+        /// Position relative to the first glyph assigned to this cell.
+        var offset: CGPoint
     }
 
     private struct Key: Hashable {
@@ -20,6 +22,13 @@ final class Shaper {
 
     private var cache: [Key: [Glyph]] = [:]
     static let cacheLimit = 4096
+    private let memoryLimit: Int
+    private(set) var cachedMemoryCost = 0
+
+    init(memoryLimit: Int = 8 * 1024 * 1024) {
+        precondition(memoryLimit >= 128)
+        self.memoryLimit = memoryLimit
+    }
 
     /// Shapes `scalars` (one per cell) in `style`.
     func shape(_ scalars: [UInt32], style: FontStyle, font: ResolvedFont) -> [Glyph] {
@@ -42,28 +51,79 @@ final class Shaper {
         ])
         let line = CTLineCreateWithAttributedString(attributed)
         var glyphs: [Glyph] = []
-        var taken = Set<Int>()
+        var origins = [CGPoint?](repeating: nil, count: scalars.count)
         for run in CTLineGetGlyphRuns(line) as? [CTRun] ?? [] {
             let count = CTRunGetGlyphCount(run)
             guard count > 0 else { continue }
             let attrs = CTRunGetAttributes(run) as NSDictionary
             let runFont = attrs[kCTFontAttributeName] as! CTFont
             let isColor = CTFontGetSymbolicTraits(runFont).contains(.traitColorGlyphs)
-            var ids = [CGGlyph](repeating: 0, count: count)
-            var indices = [CFIndex](repeating: 0, count: count)
-            CTRunGetGlyphs(run, CFRange(location: 0, length: count), &ids)
-            CTRunGetStringIndices(run, CFRange(location: 0, length: count), &indices)
-            for k in 0 ..< count where indices[k] < cellForUTF16.count {
-                let cell = cellForUTF16[indices[k]]
-                // One glyph per cell: the first wins (decompositions are rare).
-                guard ids[k] != 0, taken.insert(cell).inserted else { continue }
-                glyphs.append(Glyph(cell: cell, glyph: ids[k], font: runFont, isColor: isColor))
+            let range = CFRange(location: 0, length: count)
+            let glyphBase = CTRunGetGlyphsPtr(run)
+            let indexBase = CTRunGetStringIndicesPtr(run)
+            let positionBase = CTRunGetPositionsPtr(run)
+            Self.withRunBuffer(glyphBase, count: count) {
+                CTRunGetGlyphs(run, range, $0)
+            } body: { ids in
+                Self.withRunBuffer(indexBase, count: count) {
+                    CTRunGetStringIndices(run, range, $0)
+                } body: { indices in
+                    Self.withRunBuffer(positionBase, count: count) {
+                        CTRunGetPositions(run, range, $0)
+                    } body: { positions in
+                        for k in 0 ..< count where indices[k] >= 0 && indices[k] < cellForUTF16.count && ids[k] != 0 {
+                            let cell = cellForUTF16[indices[k]]
+                            let origin = origins[cell] ?? positions[k]
+                            origins[cell] = origin
+                            glyphs.append(Glyph(
+                                cell: cell, glyph: ids[k], font: runFont, isColor: isColor,
+                                offset: CGPoint(x: positions[k].x - origin.x, y: positions[k].y - origin.y),
+                            ))
+                        }
+                    }
+                }
             }
         }
-        if cache.count >= Self.cacheLimit {
+        // Keep all components of a cell together, preserving their drawing
+        // order, including when CoreText splits the cell across font runs.
+        glyphs.sort { $0.cell < $1.cell }
+        // Account for retained array storage as well as dictionary entries.
+        // An oversized run still renders, without evicting useful small runs.
+        let overhead = 128
+        guard scalars.capacity <= (memoryLimit - overhead) / MemoryLayout<UInt32>.stride else {
+            return glyphs
+        }
+        let scalarCost = scalars.capacity * MemoryLayout<UInt32>.stride
+        guard glyphs.capacity <= (memoryLimit - overhead - scalarCost) / MemoryLayout<Glyph>.stride else {
+            return glyphs
+        }
+        let cost = overhead + scalarCost + glyphs.capacity * MemoryLayout<Glyph>.stride
+        if cache.count >= Self.cacheLimit || cost > memoryLimit - cachedMemoryCost {
             cache.removeAll(keepingCapacity: true)
+            cachedMemoryCost = 0
         }
         cache[key] = glyphs
+        cachedMemoryCost += cost
         return glyphs
+    }
+
+    /// CoreText may expose its storage directly; otherwise copy into scoped scratch.
+    @inline(__always)
+    private static func withRunBuffer<Element: BitwiseCopyable>(
+        _ pointer: UnsafePointer<Element>?, count: Int,
+        copy: (UnsafeMutablePointer<Element>) -> Void,
+        body: (borrowing Span<Element>) -> Void,
+    ) {
+        if let pointer {
+            body(Span(_unsafeStart: pointer, count: count))
+            return
+        }
+        withTemporaryAllocation(of: Element.self, capacity: count) { output in
+            output.withUnsafeMutableBufferPointer { buffer, initializedCount in
+                copy(buffer.baseAddress!)
+                initializedCount = count
+            }
+            body(output.span)
+        }
     }
 }

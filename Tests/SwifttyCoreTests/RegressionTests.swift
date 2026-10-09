@@ -2,6 +2,7 @@ import Dispatch
 import Metal
 @testable import SwifttyCore
 import Testing
+import TestSupport
 
 /// Fixes from the whole-codebase review.
 struct RegressionTests {
@@ -9,7 +10,7 @@ struct RegressionTests {
         var vt = VT(10, 2)
         vt.feed("\(ESC)]99999999999999999999;x\u{07}\(ESC)]2;ok\u{07}hi")
         #expect(vt.state.title == "ok")
-        #expect(vt.lines[0] == "hi")
+        #expect(TestFixture(vt.lines[0]) == TestFixture("hi"))
     }
 
     @Test func `DEC special graphics maps underscore to blank`() {
@@ -28,7 +29,7 @@ struct RegressionTests {
             vt.feed(chunk)
         }
         #expect(vt.state.graphemes.scalars.count <= GraphemeTable.compactionThreshold + 2)
-        #expect(vt.lines[0] == "e\u{301}")
+        #expect(TestFixture(vt.lines[0]) == TestFixture("e\u{301}"))
     }
 
     @Test func `shrinking height keeps rows below the cursor`() {
@@ -60,6 +61,42 @@ struct RegressionTests {
         session.feed(Array("\(CSI)?2026hx".utf8))
         #expect(updated.wait(timeout: .now() + 0.3) == .timedOut)
         #expect(updated.wait(timeout: .now() + 3) == .success)
+    }
+
+    @Test func `a new synchronized frame in the same batch gets its own timeout`() {
+        let session = TerminalSession(columns: 10, rows: 2)
+        session.feed(Array("a".utf8))
+        _ = session.snapshot()
+        let updated = DispatchSemaphore(value: 0)
+        session.onUpdate = { updated.signal() }
+        session.feed(Array("\(CSI)?2026hb".utf8))
+        #expect(updated.wait(timeout: .now() + 3) == .success)
+        #expect(TestFixture(session.snapshot().text[0]) == TestFixture("ab"))
+
+        // Both sides of this batch have mode 2026 set. The new frame
+        // must not inherit the expired deadline of the previous frame.
+        session.feed(Array("\(CSI)?2026l\(CSI)?2026hc".utf8))
+        #expect(TestFixture(session.snapshot().text[0]) == TestFixture("ab"))
+        #expect(updated.wait(timeout: .now() + 0.3) == .timedOut)
+        #expect(updated.wait(timeout: .now() + 3) == .success)
+        #expect(TestFixture(session.snapshot().text[0]) == TestFixture("abc"))
+    }
+
+    @Test func `a pending timeout follows the latest synchronized frame`() {
+        let session = TerminalSession(columns: 10, rows: 2)
+        session.feed(Array("a".utf8))
+        _ = session.snapshot()
+        let updated = DispatchSemaphore(value: 0)
+        session.onUpdate = { updated.signal() }
+        session.feed(Array("\(CSI)?2026hb".utf8))
+        #expect(updated.wait(timeout: .now() + 0.6) == .timedOut)
+        session.feed(Array("\(CSI)?2026l\(CSI)?2026hc".utf8))
+        // The first deadline will fire during this wait. It must defer
+        // publication until the second frame's deadline.
+        #expect(updated.wait(timeout: .now() + 0.6) == .timedOut)
+        #expect(TestFixture(session.snapshot().text[0]) == TestFixture("a"))
+        #expect(updated.wait(timeout: .now() + 3) == .success)
+        #expect(TestFixture(session.snapshot().text[0]) == TestFixture("abc"))
     }
 }
 

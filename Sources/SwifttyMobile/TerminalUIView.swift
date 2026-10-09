@@ -15,9 +15,14 @@
     /// and an animated custom shader (the display link) draw on their own.
     @MainActor
     public final class TerminalUIView: MTKView, MTKViewDelegate {
+        private static let surfaces = NSHashTable<TerminalUIView>.weakObjects()
         public let session: TerminalSession
         public private(set) var configuration: Configuration
         let renderer: MetalRenderer
+        private lazy var redraw = DisplayDrawScheduler { [weak self] in self?.drawPendingFrame() }
+        private var drewFrame = false
+        private var submittedFrame: UInt64 = 0
+        private var visibilityObservers: [NSKeyValueObservation] = []
         /// Point size set by the user (pinch, key bindings); nil follows
         /// the configuration, or Dynamic Type when it sets no size.
         private var explicitFontSize: CGFloat?
@@ -30,18 +35,27 @@
         private var keyboardInset: CGFloat = 0
         /// Set while the scene is in the background: no frames are drawn.
         private(set) var isRenderingPaused = false
+        private var isSceneActive = true
+        private var reportedFocus = false
         /// Appearance last reported to the terminal (mode 2031) and used
         /// for the palette.
         private var colorScheme: ColorScheme?
+        /// Last configured palette, separate from application OSC overrides.
+        private var configuredPalette: Palette?
 
         // Keyboard input.
         var sticky = StickyModifiers()
-        lazy var accessoryBar: TerminalAccessoryBar = {
+        private(set) var loadedAccessoryBar: TerminalAccessoryBar?
+        var accessoryBar: TerminalAccessoryBar {
+            if let bar = loadedAccessoryBar {
+                return bar
+            }
             let bar = TerminalAccessoryBar()
             bar.onKey = { [weak self] key in self?.accessoryKey(key) }
             bar.onDismiss = { [weak self] in _ = self?.resignFirstResponder() }
+            loadedAccessoryBar = bar
             return bar
-        }()
+        }
 
         /// IME composition, drawn as the renderer's preedit.
         var markedText = ""
@@ -54,30 +68,48 @@
         /// Usages of presses handled here rather than by the text system.
         var handledPresses: Set<Int> = []
         var keyRepeat: Timer?
-        /// Key commands built from the bindings, and their actions by index.
+        /// HID usage owning the repeat timer; other releases leave it running.
+        var keyRepeatUsage: Int?
+        /// Key commands and their actions, keyed by unique issued identifiers.
         var keyCommandCache: [UIKeyCommand]?
-        var keyCommandActions: [KeyAction] = []
+        var keyCommandBindings: [String: Keybindings.Binding] = [:]
+        /// Defaults to the system clipboard; tests can use a local pasteboard.
+        var pasteboard = UIPasteboard.general
 
         // Selection gesture in progress.
         enum SelectionUnit { case cell, word, line }
         var selectionUnit = SelectionUnit.cell
         /// Span the gesture started on (one cell, word or line).
-        var selectionOrigin: (start: TerminalPoint, end: TerminalPoint)?
+        var selectionOrigin: (start: TerminalPoint, end: TerminalPoint, generation: UInt64)?
         var hasSelection = false
+        /// Whether the active pointer drag reported its initial press.
+        var reportsPointerMouseGesture = false
         lazy var editMenu = UIEditMenuInteraction(delegate: self)
         lazy var searchBar: TerminalSearchBar = makeSearchBar()
+        var isSearchVisible = false
 
         // Scrolling.
         var scrollAccumulator = ScrollAccumulator()
+        var horizontalScrollAccumulator = ScrollAccumulator()
         var momentum = ScrollMomentum()
+        var horizontalMomentum = ScrollMomentum()
         var momentumLink: CADisplayLink?
+        /// The previous callback's presentation target, so missed callbacks
+        /// still count toward the fling's elapsed time.
+        var momentumTimestamp: CFTimeInterval?
         /// Where the fling started, for wheel events it reports.
         var momentumPoint = CGPoint.zero
+        var momentumModifiers: KeyModifiers = []
         var pinchStartSize: CGFloat = 0
 
         /// Pointer.
         /// Last cell the pointer hovered over.
         var hoverCell: (column: Int, row: Int)?
+        var hoverPoint: CGPoint?
+        var hoverModifiers: KeyModifiers = []
+        var hoverModes: Modes?
+        var hoverViewportOffset: Int?
+        var hoverGeometry: GridGeometry?
         /// The pointer is over a link.
         var overLink = false
         /// OSC 22 shape the application asked for; empty for the default.
@@ -90,9 +122,26 @@
         /// The cursor blinks (DECSCUSR / mode 12, or `cursor-style-blink`).
         private var cursorBlinks = false
 
-        // Accessibility.
+        /// Accessibility.
+        /// UIKit's text-input defaults must not turn the container into a
+        /// single element that hides its reading element and find controls.
+        override public var isAccessibilityElement: Bool {
+            get { false }
+            set {}
+        }
+
+        override public var isHidden: Bool {
+            didSet {
+                updateFrameDriving()
+                if !isHidden {
+                    setNeedsDisplay()
+                }
+            }
+        }
+
         /// Screen text for VoiceOver; kept only while VoiceOver runs.
         var accessibilityScreen: AccessibilityText?
+        lazy var accessibilityTerminal = TerminalAccessibilityElement(terminal: self)
         private var lastAccessibilityPost: CFTimeInterval = 0
         private var accessibilityPostPending = false
 
@@ -124,15 +173,16 @@
         /// current appearance.
         /// - Parameter fontSize: point size overriding the configuration;
         ///   by default its `font-size`, or 13 pt scaled for Dynamic Type
-        ///   when it sets none.
+        ///   when it sets none. Sizes are clamped to 1–200 pt; NaN uses 13 pt.
         public init(session: TerminalSession, configuration: Configuration = Configuration(), fontSize: CGFloat? = nil) throws {
             self.session = session
             self.configuration = configuration
-            explicitFontSize = fontSize
+            let overrideSize = fontSize.map(Self.boundedFontSize)
+            explicitFontSize = overrideSize
             guard let device = MTLCreateSystemDefaultDevice() else { throw RendererError.setup("no Metal device") }
             let traits = UITraitCollection.current
             let scale = max(traits.displayScale, 1)
-            let size = fontSize ?? Self.baseFontSize(configuration, traits)
+            let size = overrideSize ?? Self.baseFontSize(configuration, traits)
             renderer = try MetalRenderer(
                 device: device, fontManager: CoreTextFontManager(),
                 font: configuration.fontDescriptor(scale: scale, size: Double(size)),
@@ -141,9 +191,10 @@
             colorPixelFormat = .bgra8Unorm
             framebufferOnly = true
             isPaused = true
-            enableSetNeedsDisplay = true
+            enableSetNeedsDisplay = false
             autoResizeDrawable = true
             delegate = self
+            renderer.options.isFocused = false
             contentScaleFactor = scale
             applyRenderOptions()
             applyTranslucency()
@@ -157,23 +208,28 @@
             }
 
             installGestures()
-            isAccessibilityElement = true
+            Self.surfaces.add(self)
             accessibilityLabel = "Terminal"
             accessibilityTraits = [.causesPageTurn, .allowsDirectInteraction]
+            updateAccessibilityElements()
 
             let center = NotificationCenter.default
-            center.addObserver(
-                self,
-                selector: #selector(keyboardFrameChanged(_:)),
-                name: UIResponder.keyboardWillChangeFrameNotification,
-                object: nil,
-            )
-            center.addObserver(
-                self,
-                selector: #selector(keyboardFrameChanged(_:)),
-                name: UIResponder.keyboardWillHideNotification,
-                object: nil,
-            )
+            #if !os(visionOS)
+                // The visionOS keyboard occupies its own window and does
+                // not send these screen-coordinate notifications.
+                center.addObserver(
+                    self,
+                    selector: #selector(keyboardFrameChanged(_:)),
+                    name: UIResponder.keyboardWillChangeFrameNotification,
+                    object: nil,
+                )
+                center.addObserver(
+                    self,
+                    selector: #selector(keyboardFrameChanged(_:)),
+                    name: UIResponder.keyboardWillHideNotification,
+                    object: nil,
+                )
+            #endif
             center.addObserver(
                 self,
                 selector: #selector(voiceOverChanged),
@@ -189,6 +245,15 @@
             applyColorScheme()
         }
 
+        func performBinding(_ binding: Keybindings.Binding) -> Bool {
+            guard binding.appliesToAll else { return perform(binding.action) }
+            let surfaces = Self.surfaces.allObjects
+            for surface in surfaces {
+                surface.perform(binding.action)
+            }
+            return !surfaces.isEmpty
+        }
+
         @available(*, unavailable) required init(coder: NSCoder) {
             fatalError()
         }
@@ -196,7 +261,9 @@
         private func handle(_ event: TerminalEvent) {
             switch event {
             case let .title(title): onTitle?(title)
-            case .bell: UIImpactFeedbackGenerator(style: .light, view: self).impactOccurred()
+            #if !os(visionOS)
+                case .bell: UIImpactFeedbackGenerator(style: .light, view: self).impactOccurred()
+            #endif
             case let .clipboard(text): UIPasteboard.general.string = text
             case .exited: onExit?()
             case let .pointerShape(name):
@@ -213,7 +280,7 @@
         public func apply(_ configuration: Configuration) {
             self.configuration = configuration
             keyCommandCache = nil
-            colorScheme = nil
+            keyCommandBindings.removeAll()
             applyColorScheme()
             applyTranslucency()
             loadShader()
@@ -244,11 +311,15 @@
             var options = configuration.renderOptions(scale: contentScaleFactor)
             options.isFocused = current.isFocused
             options.preedit = current.preedit
+            options.preeditSelection = current.preeditSelection
             options.hoveredLink = current.hoveredLink
             options.underlinedSpan = current.underlinedSpan
             options.cursorVisible = blink.cursorVisible
             options.textBlinkVisible = blink.textVisible
             renderer.options = options
+            if let point = hoverPoint {
+                refreshHoveredLink(at: point)
+            }
         }
 
         private var isTranslucent: Bool {
@@ -267,11 +338,15 @@
         func applyColorScheme() {
             let scheme: ColorScheme = traitCollection.userInterfaceStyle == .light ? .light : .dark
             keyboardAppearance = scheme == .light ? .light : .dark
-            guard scheme != colorScheme else { return }
-            colorScheme = scheme
             let palette = configuration.palette(for: scheme)
+            let paletteChanged = palette != configuredPalette
+            guard scheme != colorScheme || paletteChanged else { return }
+            colorScheme = scheme
+            configuredPalette = palette
             session.mutateAsync { state in
-                state.setDefaultPalette(palette)
+                if paletteChanged {
+                    state.setDefaultPalette(palette)
+                }
                 state.setColorScheme(scheme)
             }
         }
@@ -289,17 +364,34 @@
 
         override public func layoutSubviews() {
             super.layoutSubviews()
+            if isSearchVisible {
+                searchBar.position(in: safeAreaLayoutGuide.layoutFrame)
+            }
             updateGrid()
+            updateFrameDriving()
         }
 
         override public func didMoveToWindow() {
             super.didMoveToWindow()
+            observeVisibility()
             let center = NotificationCenter.default
             center.removeObserver(self, name: UIScene.didEnterBackgroundNotification, object: nil)
             center.removeObserver(self, name: UIScene.willEnterForegroundNotification, object: nil)
+            center.removeObserver(self, name: UIScene.willDeactivateNotification, object: nil)
+            center.removeObserver(self, name: UIScene.didActivateNotification, object: nil)
+            center.removeObserver(self, name: UIWindow.didBecomeKeyNotification, object: nil)
+            center.removeObserver(self, name: UIWindow.didResignKeyNotification, object: nil)
+            if let window {
+                center.addObserver(self, selector: #selector(windowKeyChanged), name: UIWindow.didBecomeKeyNotification, object: window)
+                center.addObserver(self, selector: #selector(windowKeyChanged), name: UIWindow.didResignKeyNotification, object: window)
+            }
+            isSceneActive = window?.windowScene.map { $0.activationState == .foregroundActive } ?? true
+            isRenderingPaused = window?.windowScene?.activationState == .background
+            updateFocus()
+            updateFrameDriving()
             guard let scene = window?.windowScene else {
                 stopMomentum()
-                stopKeyRepeat()
+                releaseHardwareKeys()
                 stopBlinking()
                 return
             }
@@ -315,49 +407,97 @@
                 name: UIScene.willEnterForegroundNotification,
                 object: scene,
             )
-            isRenderingPaused = scene.activationState == .background
+            center.addObserver(self, selector: #selector(sceneWillDeactivate), name: UIScene.willDeactivateNotification, object: scene)
+            center.addObserver(self, selector: #selector(sceneDidActivate), name: UIScene.didActivateNotification, object: scene)
             applyFont()
-            updateFrameDriving()
         }
 
-        @objc private func sceneDidEnterBackground() {
+        @objc func sceneDidEnterBackground() {
             isRenderingPaused = true
+            isSceneActive = false
+            updateFocus()
             stopMomentum()
-            stopKeyRepeat()
+            releaseHardwareKeys()
             stopBlinking()
             updateFrameDriving()
         }
 
-        @objc private func sceneWillEnterForeground() {
+        @objc func sceneWillEnterForeground() {
             isRenderingPaused = false
             updateFrameDriving()
             setNeedsDisplay() // updates that arrived meanwhile are still pending
         }
 
-        /// Follows the docked keyboard: rows it covers leave the grid. A
-        /// floating or undocked keyboard covers nothing.
-        @objc private func keyboardFrameChanged(_ notification: Notification) {
-            var inset: CGFloat = 0
-            if notification.name != UIResponder.keyboardWillHideNotification,
-               let frame = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue,
-               let screen = window?.windowScene?.screen {
-                let local = convert(frame, from: screen.coordinateSpace)
-                if local.maxY >= bounds.maxY - 1, local.intersects(bounds) {
-                    inset = max(0, bounds.maxY - local.minY)
-                }
-            }
-            guard inset != keyboardInset else { return }
-            keyboardInset = inset
-            updateGrid()
+        @objc func sceneWillDeactivate() {
+            isSceneActive = false
+            updateFocus()
         }
+
+        @objc func sceneDidActivate() {
+            isRenderingPaused = false
+            isSceneActive = true
+            updateFocus()
+            updateFrameDriving()
+            setNeedsDisplay()
+        }
+
+        @objc private func windowKeyChanged() {
+            updateFrameDriving()
+            updateFocus()
+        }
+
+        /// UIKit can retain its responder while the scene is inactive.
+        /// Report the terminal's effective focus once for each transition.
+        func updateFocus() {
+            let focused = isFirstResponder && window?.isKeyWindow == true && isSceneActive && !isRenderingPaused
+            guard focused != reportedFocus else { return }
+            if !focused {
+                releaseHardwareKeys()
+                stopBlinking()
+            }
+            reportedFocus = focused
+            renderer.options.isFocused = focused
+            session.send(.focus(focused))
+            updateBlinkTimer()
+            setNeedsDisplay()
+        }
+
+        #if !os(visionOS)
+            /// Follows the docked keyboard: rows it covers leave the grid. A
+            /// floating or undocked keyboard covers nothing.
+            @objc private func keyboardFrameChanged(_ notification: Notification) {
+                // Keyboard notifications are global, including those for
+                // windows on a different display.
+                if let screen = notification.object as? UIScreen,
+                   let windowScreen = window?.windowScene?.screen, screen !== windowScreen {
+                    return
+                }
+                var inset: CGFloat = 0
+                if notification.name != UIResponder.keyboardWillHideNotification,
+                   let frame = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue,
+                   let screen = window?.windowScene?.screen {
+                    let local = convert(frame, from: screen.coordinateSpace)
+                    if local.maxY >= bounds.maxY - 1, local.intersects(bounds) {
+                        inset = max(0, bounds.maxY - local.minY)
+                    }
+                }
+                guard inset != keyboardInset else { return }
+                keyboardInset = inset
+                updateGrid()
+            }
+        #endif
 
         /// The configured size, or 13 pt scaled for Dynamic Type when the
         /// configuration leaves `font-size` at its default.
         private static func baseFontSize(_ configuration: Configuration, _ traits: UITraitCollection) -> CGFloat {
             if configuration.fontSize != Configuration().fontSize {
-                return CGFloat(configuration.fontSize)
+                return boundedFontSize(CGFloat(configuration.fontSize))
             }
-            return UIFontMetrics(forTextStyle: .body).scaledValue(for: 13, compatibleWith: traits).rounded()
+            return boundedFontSize(UIFontMetrics(forTextStyle: .body).scaledValue(for: 13, compatibleWith: traits).rounded())
+        }
+
+        private static func boundedFontSize(_ size: CGFloat) -> CGFloat {
+            CGFloat(Configuration.boundedFontSize(Double(size)))
         }
 
         public var fontSize: CGFloat {
@@ -381,26 +521,81 @@
             let pixels = CGSize(width: bounds.width * scale, height: max(0, bounds.height - keyboardInset) * scale)
             guard pixels.width > 0, pixels.height > 0 else { return }
             let size = renderer.gridSize(for: pixels)
-            session.setCellPixelSize(width: Int(renderer.cellSize.width), height: Int(renderer.cellSize.height))
+            session.setCellPixelSize(
+                width: TerminalGeometry.pixelExtent(renderer.cellSize.width),
+                height: TerminalGeometry.pixelExtent(renderer.cellSize.height),
+            )
             guard size != gridSize else { return }
             gridSize = size
             session.resize(columns: size.columns, rows: size.rows)
         }
 
         func setFontSize(_ size: CGFloat?) {
-            explicitFontSize = size.map { min(max($0, 6), 72) }
+            stopMomentum()
+            explicitFontSize = size.map(Self.boundedFontSize)
             applyFont()
         }
 
         // MARK: Drawing
 
+        override public func setNeedsDisplay() {
+            requestRedraw()
+        }
+
+        override public func setNeedsDisplay(_ rect: CGRect) {
+            requestRedraw()
+        }
+
+        private func requestRedraw() {
+            // A layer animation can make a transparent surface visible without changing its model alpha.
+            if !redraw.isActive, isPaused, !isRenderingPaused, surfaceVisibility != .hidden {
+                updateFrameDriving()
+            }
+            redraw.request()
+        }
+
+        private func drawPendingFrame() {
+            guard isSurfaceVisible, !isRenderingPaused else {
+                updateFrameDriving()
+                redraw.request()
+                return
+            }
+            // Once a fade becomes visible, an animated shader resumes continuous drawing.
+            if renderer.isAnimating, isPaused {
+                updateFrameDriving()
+            }
+            drewFrame = false
+            draw()
+            if !drewFrame {
+                redraw.request()
+            }
+        }
+
         public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
         public func draw(in view: MTKView) {
             guard !isRenderingPaused else { return }
+            let surfaceVisible = isSurfaceVisible
             let snapshot = session.snapshot()
+            let modesChanged = lastModes != snapshot.modes
             lastModes = snapshot.modes
+            if modesChanged {
+                pointerInteraction?.invalidate()
+            }
+            if let point = hoverPoint,
+               modesChanged || !snapshot.damage.isEmpty || hoverViewportOffset != snapshot.viewportOffset || hoverGeometry != geometry {
+                refreshHoveredLink(at: point)
+            }
+            hoverViewportOffset = snapshot.viewportOffset
+            hoverGeometry = geometry
             lastCursor = snapshot.cursor
+            if hasSelection, snapshot.selection == nil {
+                hasSelection = false
+                selectionOrigin = nil
+            }
+            if isSearchVisible {
+                searchBar.showCount(selected: snapshot.searchSelectedIndex, total: snapshot.searchMatchCount)
+            }
             if snapshot.palette.background != lastBackground {
                 let rgb = snapshot.palette.background
                 lastBackground = rgb
@@ -413,25 +608,140 @@
                 }
                 onBackgroundColor?(color)
             }
-            renderer.draw(snapshot, in: self)
+            if surfaceVisible, let drawable = currentDrawable, currentRenderPassDescriptor != nil {
+                submittedFrame &+= 1
+                #if !targetEnvironment(simulator)
+                    let frame = submittedFrame
+                    // A skipped final frame needs another draw even when output stops.
+                    drawable.addPresentedHandler { [weak self] drawable in
+                        guard drawable.presentedTime == 0 else { return }
+                        DispatchQueue.main.async {
+                            guard let self, self.submittedFrame == frame else { return }
+                            self.redraw.request()
+                        }
+                    }
+                #endif
+                renderer.draw(snapshot, in: self)
+                drewFrame = true
+            }
             cursorBlinks = configuration.cursorStyleBlink ?? snapshot.cursor.isBlinking
-            updateBlinkTimer()
+            if surfaceVisible {
+                updateBlinkTimer()
+            } else {
+                updateFrameDriving()
+            }
             if UIAccessibility.isVoiceOverRunning {
                 let text = AccessibilityText(snapshot)
                 if text != accessibilityScreen {
                     accessibilityScreen = text
-                    accessibilityValue = text.lines.indices.contains(text.cursorLine) ? text.lines[text.cursorLine] : nil
                     postAccessibilityChange()
                 }
             }
         }
 
+        var isSurfaceVisible: Bool {
+            surfaceVisibility == .visible
+        }
+
+        private enum SurfaceVisibility { case hidden, awaitingOpacity, visible }
+
+        private var surfaceVisibility: SurfaceVisibility {
+            guard window != nil, bounds.width > 0, bounds.height > 0 else { return .hidden }
+            var awaitingOpacity = false
+            var ancestor: UIView? = self
+            while let view = ancestor {
+                if view.isHidden {
+                    return .hidden
+                }
+                if view.alpha <= 0 {
+                    // Presentation opacity can lag a direct change; keep drawing only during an actual fade.
+                    guard hasOpacityAnimation(view.layer) else { return .hidden }
+                    if (view.layer.presentation()?.opacity ?? 0) <= 0 {
+                        guard hasOpacityAnimation(view.layer, awaitingPresentation: true) else { return .hidden }
+                        awaitingOpacity = true
+                    }
+                }
+                ancestor = view.superview
+            }
+            return awaitingOpacity ? .awaitingOpacity : .visible
+        }
+
+        private func hasOpacityAnimation(_ layer: CALayer, awaitingPresentation: Bool = false) -> Bool {
+            layer.animationKeys()?.contains { key in
+                guard let animation = layer.animation(forKey: key) else { return false }
+                if awaitingPresentation {
+                    var speed = animation.speed
+                    var ancestor: CALayer? = layer
+                    while let current = ancestor {
+                        speed *= current.speed
+                        ancestor = current.superlayer
+                    }
+                    guard speed != 0 else { return false }
+                    // Retained animations still run; stop polling only after their active time ends.
+                    // Core Animation resolves a zero begin time when it commits the animation.
+                    if !animation.isRemovedOnCompletion, animation.beginTime != 0 {
+                        let time = (layer.convertTime(CACurrentMediaTime(), from: nil) - animation.beginTime)
+                            * Double(animation.speed) + animation.timeOffset
+                        let cycles = animation.repeatCount > 0 ? Double(animation.repeatCount) : 1
+                        let duration = animation.repeatDuration > 0 ? animation.repeatDuration
+                            : animation.duration * (animation.autoreverses ? 2 : 1) * cycles
+                        if speed > 0 ? time >= duration : time <= 0 {
+                            return false
+                        }
+                    }
+                }
+                return Self.animatesOpacity(animation)
+            } ?? false
+        }
+
+        private static func animatesOpacity(_ animation: CAAnimation) -> Bool {
+            if let property = animation as? CAPropertyAnimation {
+                return property.keyPath == "opacity"
+            }
+            return (animation as? CAAnimationGroup)?.animations?.contains(where: animatesOpacity) ?? false
+        }
+
         /// An animated custom shader draws every display frame; otherwise
         /// frames are drawn only on demand.
         private func updateFrameDriving() {
-            let animate = renderer.isAnimating && !isRenderingPaused && window != nil
-            enableSetNeedsDisplay = !animate
+            let visibility = surfaceVisibility
+            let active = visibility == .visible && !isRenderingPaused
+            let animate = renderer.isAnimating && active
+            enableSetNeedsDisplay = false
+            #if !os(visionOS)
+                preferredFramesPerSecond = window?.screen.maximumFramesPerSecond ?? 60
+            #endif
             isPaused = !animate
+            redraw.configure(
+                active: visibility != .hidden && !isRenderingPaused && !animate,
+                framesPerSecond: preferredFramesPerSecond > 0 ? preferredFramesPerSecond : 60,
+            )
+            if !active {
+                stopMomentum()
+            }
+            updateBlinkTimer()
+        }
+
+        private func observeVisibility() {
+            visibilityObservers.removeAll()
+            let refresh: @Sendable () -> Void = { [weak self] in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.observeVisibility()
+                    self.updateFrameDriving()
+                    self.setNeedsDisplay()
+                }
+            }
+            visibilityObservers.append(layer.observe(\.opacity) { _, _ in refresh() })
+            // Watch layer properties; sublayer changes rebuild the ancestor
+            // chain when a container moves within the same window.
+            var ancestor = superview
+            while let view = ancestor {
+                visibilityObservers.append(view.layer.observe(\.isHidden) { _, _ in refresh() })
+                visibilityObservers.append(view.layer.observe(\.opacity) { _, _ in refresh() })
+                visibilityObservers.append(view.layer.observe(\.sublayers) { _, _ in refresh() })
+                ancestor = view.superview
+            }
         }
 
         // MARK: Blinking
@@ -440,11 +750,17 @@
         func updateBlinkTimer() {
             let needed = BlinkState.needsTimer(
                 cursorBlinks: cursorBlinks, textBlinks: renderer.hasBlinkingText,
-                focused: renderer.options.isFocused, background: isRenderingPaused,
+                focused: renderer.options.isFocused, background: isRenderingPaused || !isSurfaceVisible,
             )
             if needed, blinkTimer == nil {
-                blinkTimer = Timer.scheduledTimer(withTimeInterval: BlinkState.interval, repeats: true) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.blinkTick() }
+                blinkTimer = Timer.scheduledTimer(withTimeInterval: BlinkState.interval, repeats: true) { [weak self] timer in
+                    guard let self else { timer.invalidate(); return }
+                    let identity = ObjectIdentifier(timer)
+                    MainActor.assumeIsolated {
+                        guard self.blinkTimer.map(ObjectIdentifier.init) == identity else { return }
+                        guard self.isSurfaceVisible, !self.isRenderingPaused else { self.updateFrameDriving(); return }
+                        self.blinkTick()
+                    }
                 }
             } else if !needed, blinkTimer != nil {
                 stopBlinking()
@@ -471,8 +787,9 @@
             showBlinkPhase()
         }
 
-        /// Input shows the cursor and restarts its phase.
+        /// Input stops momentum scrolling, shows the cursor, and restarts its phase.
         func noteInput() {
+            stopMomentum()
             guard blinkTimer != nil else { return }
             stopBlinking()
             updateBlinkTimer()

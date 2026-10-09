@@ -1,3 +1,5 @@
+import TestSupport
+
 // Ghostty oracle tests ported from upstream src/terminal/Terminal.zig
 // (`test "Terminal: ..."` blocks at lines [11089, 14035)).
 //
@@ -48,7 +50,9 @@ private extension VT {
             var row = ""
             for x in 0 ..< state.columns {
                 let c = state.grid[x, y]
-                if c.isSpacer { continue }
+                if c.isSpacer {
+                    continue
+                }
                 let scalars = state.scalars(of: c)
                 if scalars.isEmpty {
                     row.append(" ")
@@ -111,7 +115,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)2D")
         vt.feed("X")
         do { let ok = vt.t3PendingWrap; #expect(ok) }
-        #expect(vt.t3Plain == "ABCDX\n1")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("ABCDX\n1"))
     }
 
     @Test func `cursorLeft reverse wrap with no soft wrap`() {
@@ -120,7 +124,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("ABCDE\r\n1")
         vt.feed("\(CSI)2D")
         vt.feed("X")
-        #expect(vt.t3Plain == "ABCDE\nX")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("ABCDE\nX"))
     }
 
     @Test func `cursorLeft reverse wrap before left margin`() {
@@ -129,7 +133,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)3r")
         vt.feed("\(CSI)1D")
         vt.feed("X")
-        #expect(vt.t3Plain == "\n\nX")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("\n\nX"))
     }
 
     @Test func `cursorLeft extended reverse wrap`() {
@@ -138,7 +142,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("ABCDE\r\n1")
         vt.feed("\(CSI)2D")
         vt.feed("X")
-        #expect(vt.t3Plain == "ABCDX\n1")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("ABCDX\n1"))
     }
 
     @Test func `cursorLeft extended reverse wrap bottom wraparound`() {
@@ -147,7 +151,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("ABCDE\r\n1")
         vt.feed("\(CSI)\(1 + 5 + 1)D")
         vt.feed("X")
-        #expect(vt.t3Plain == "ABCDE\n1\n    X")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("ABCDE\n1\n    X"))
     }
 
     @Test func `cursorLeft extended reverse wrap is priority if both set`() {
@@ -156,7 +160,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("ABCDE\r\n1")
         vt.feed("\(CSI)\(1 + 5 + 1)D")
         vt.feed("X")
-        #expect(vt.t3Plain == "ABCDE\n1\n    X")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("ABCDE\n1\n    X"))
     }
 
     @Test func `cursorLeft extended reverse wrap above top scroll region`() {
@@ -182,14 +186,14 @@ struct GhosttyTerminal3Tests {
     @Test func `cursorDown basic`() {
         var vt = VT(5, 5)
         vt.feed("A\(CSI)10BX")
-        #expect(vt.t3Plain == "A\n\n\n\n X")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("A\n\n\n\n X"))
     }
 
     @Test func `cursorDown above bottom scroll margin`() {
         var vt = VT(5, 5)
         vt.feed("\(CSI)1;3r")
         vt.feed("A\(CSI)10BX")
-        #expect(vt.t3Plain == "A\n\n X")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("A\n\n X"))
     }
 
     @Test func `cursorDown below bottom scroll margin`() {
@@ -198,7 +202,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("A")
         vt.feed("\(CSI)4;1H")
         vt.feed("\(CSI)10BX")
-        #expect(vt.t3Plain == "A\n\n\n\nX")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("A\n\n\n\nX"))
     }
 
     @Test func `cursorDown resets wrap`() {
@@ -208,7 +212,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)1B")
         do { let ok = !vt.t3PendingWrap; #expect(ok) }
         vt.feed("X")
-        #expect(vt.t3Plain == "ABCDE\n    X")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("ABCDE\n    X"))
     }
 
     @Test func `cursorRight resets wrap`() {
@@ -249,7 +253,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("ABC\r\nDEF\r\nGHI")
         vt.feed("\(CSI)2;2H")
         vt.feed("\(CSI)M")
-        #expect(vt.t3Plain == "ABC\nGHI")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("ABC\nGHI"))
     }
 
     @Test func `deleteLines colors with bg color`() {
@@ -258,9 +262,9 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)2;2H")
         vt.feed(t3BgRed)
         vt.feed("\(CSI)M")
-        #expect(vt.t3Plain == "ABC\nGHI")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("ABC\nGHI"))
         for x in 0 ..< 5 {
-            #expect(vt.cell(x, 4).attributes.background == t3Red, "x=\(x)")
+            #expect(vt.cell(x, 4).attributes.background == t3Red, Comment(rawValue: escapedTestText("x=\(x)")))
         }
     }
 
@@ -271,7 +275,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)M")
         vt.feed("E\r\n")
         #expect(vt.cursor == (0, 2))
-        #expect(vt.t3Plain == "A\nE\nD")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("A\nE\nD"))
     }
 
     @Test func `deleteLines with scroll region`() {
@@ -281,7 +285,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)1;1H")
         vt.feed("\(CSI)M")
         vt.feed("E\r\n")
-        #expect(vt.t3Plain == "E\nC\n\nD")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("E\nC\n\nD"))
     }
 
     @Test func `deleteLines with scroll region, large count`() {
@@ -291,7 +295,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)1;1H")
         vt.feed("\(CSI)5M")
         vt.feed("E\r\n")
-        #expect(vt.t3Plain == "E\n\n\nD")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("E\n\n\nD"))
     }
 
     @Test func `deleteLines with scroll region, cursor outside of region`() {
@@ -300,7 +304,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)1;3r")
         vt.feed("\(CSI)4;1H")
         vt.feed("\(CSI)M")
-        #expect(vt.t3Plain == "A\nB\nC\nD")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("A\nB\nC\nD"))
     }
 
     @Test func `deleteLines resets pending wrap`() {
@@ -320,10 +324,10 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)1;1H")
         vt.feed("\(CSI)M")
         vt.feed("X")
-        #expect(vt.t3Plain == "XBC\n\nDEF")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("XBC\n\nDEF"))
         for y in 0 ..< 3 {
             let w = vt.t3Wrapped(y)
-            #expect(!w, "row \(y) wrapped")
+            #expect(!w, Comment(rawValue: escapedTestText("row \(y) wrapped")))
         }
     }
 
@@ -333,7 +337,7 @@ struct GhosttyTerminal3Tests {
         vt.t3Margins(left: 1, right: 3)
         vt.feed("\(CSI)2;2H")
         vt.feed("\(CSI)M")
-        #expect(vt.t3Plain == "ABC123\nDHI756\nG   89")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("ABC123\nDHI756\nG   89"))
     }
 
     @Test func `deleteLines left/right scroll region from top`() {
@@ -342,7 +346,7 @@ struct GhosttyTerminal3Tests {
         vt.t3Margins(left: 1, right: 3)
         vt.feed("\(CSI)1;2H")
         vt.feed("\(CSI)M")
-        #expect(vt.t3Plain == "AEF423\nDHI756\nG   89")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("AEF423\nDHI756\nG   89"))
     }
 
     @Test func `deleteLines left/right scroll region high count`() {
@@ -351,7 +355,7 @@ struct GhosttyTerminal3Tests {
         vt.t3Margins(left: 1, right: 3)
         vt.feed("\(CSI)2;2H")
         vt.feed("\(CSI)100M")
-        #expect(vt.t3Plain == "ABC123\nD   56\nG   89")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("ABC123\nD   56\nG   89"))
     }
 
     @Test func `deleteLines wide character spacer head`() {
@@ -359,8 +363,8 @@ struct GhosttyTerminal3Tests {
         vt.feed("AAAAABBBB\u{1F600}CCC")
         vt.feed("\(CSI)1;1H")
         vt.feed("\(CSI)M")
-        #expect(vt.t3Plain == "BBBB\n\u{1F600}CCC")
-        #expect(vt.t3Unwrapped == "BBBB\n\u{1F600}CCC")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("BBBB\n\u{1F600}CCC"))
+        #expect(TestFixture(vt.t3Unwrapped) == TestFixture("BBBB\n\u{1F600}CCC"))
     }
 
     @Test func `deleteLines wide character spacer head left scroll margin`() {
@@ -369,7 +373,7 @@ struct GhosttyTerminal3Tests {
         vt.t3Margins(left: 2, right: 4)
         vt.feed("\(CSI)1;3H")
         vt.feed("\(CSI)M")
-        #expect(vt.t3Plain == "AABB\nBBCCC\n\u{1F600}")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("AABB\nBBCCC\n\u{1F600}"))
         #expect(vt.t3Unwrapped == "AABB BBCCC\u{1F600}")
     }
 
@@ -379,7 +383,7 @@ struct GhosttyTerminal3Tests {
         vt.t3Margins(left: 0, right: 3)
         vt.feed("\(CSI)1;1H")
         vt.feed("\(CSI)M")
-        #expect(vt.t3Plain == "BBBBA\n\u{1F600}CC\n    C")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("BBBBA\n\u{1F600}CC\n    C"))
         #expect(vt.t3Unwrapped == "BBBBA\u{1F600}CC     C")
     }
 
@@ -389,7 +393,7 @@ struct GhosttyTerminal3Tests {
         vt.t3Margins(left: 2, right: 3)
         vt.feed("\(CSI)1;3H")
         vt.feed("\(CSI)M")
-        #expect(vt.t3Plain == "AABBA\nBBCC\n\u{1F600}  C")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("AABBA\nBBCC\n\u{1F600}  C"))
         #expect(vt.t3Unwrapped == "AABBABBCC\u{1F600}  C")
     }
 
@@ -399,7 +403,7 @@ struct GhosttyTerminal3Tests {
         vt.t3Margins(left: 1, right: 3)
         vt.feed("\(CSI)1;2H")
         vt.feed("\(CSI)M")
-        #expect(vt.t3Plain == "ABBBA\nB CC\n    C")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("ABBBA\nB CC\n    C"))
         #expect(vt.t3Unwrapped == "ABBBAB CC     C")
     }
 
@@ -458,7 +462,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("A\r\nB")
         vt.feed("\(ESC)#8")
         #expect(vt.cursor == (0, 0))
-        #expect(vt.t3Plain == "EE\nEE")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("EE\nEE"))
     }
 
     @Test func `decaln reset margins`() {
@@ -467,7 +471,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)2;3r")
         vt.feed("\(ESC)#8")
         vt.feed("\(CSI)1T")
-        #expect(vt.t3Plain == "\nEEE\nEEE")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("\nEEE\nEEE"))
     }
 
     @Test func `decaln preserves color`() {
@@ -477,7 +481,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)2;3r")
         vt.feed("\(ESC)#8")
         vt.feed("\(CSI)1T")
-        #expect(vt.t3Plain == "\nEEE\nEEE")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("\nEEE\nEEE"))
         #expect(vt.cell(0, 0).attributes.background == t3Red)
     }
 
@@ -488,11 +492,11 @@ struct GhosttyTerminal3Tests {
         vt.feed(t3Family)
         vt.feed("\(ESC)#8")
         #expect(vt.cursor == (0, 0))
-        #expect(vt.t3Plain == "EEE\nEEE\nEEE")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("EEE\nEEE\nEEE"))
         // cursor.protected and protected_mode == .iso: a printed cell is
         // protected and survives a plain EL; the DECALN cells are not.
         vt.feed("X\(CSI)1;1H\(CSI)K")
-        #expect(vt.lines[0] == "X")
+        #expect(TestFixture(vt.lines[0]) == TestFixture("X"))
     }
 
     // MARK: insertBlanks
@@ -627,10 +631,10 @@ struct GhosttyTerminal3Tests {
         let link = vt.cell(2, 0).attributes.link
         #expect(link != 0)
         for x in 2 ..< 5 {
-            #expect(vt.cell(x, 0).attributes.link == link, "x=\(x)")
+            #expect(vt.cell(x, 0).attributes.link == link, Comment(rawValue: escapedTestText("x=\(x)")))
         }
         for x in 0 ..< 2 {
-            #expect(vt.cell(x, 0).attributes.link == 0, "x=\(x)")
+            #expect(vt.cell(x, 0).attributes.link == 0, Comment(rawValue: escapedTestText("x=\(x)")))
         }
     }
 
@@ -642,7 +646,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)3@")
         #expect(vt.t3Plain == "")
         for x in 0 ..< 3 {
-            #expect(vt.cell(x, 0).attributes.link == 0, "x=\(x)")
+            #expect(vt.cell(x, 0).attributes.link == 0, Comment(rawValue: escapedTestText("x=\(x)")))
         }
     }
 
@@ -691,7 +695,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("hello")
         vt.feed("\(CSI)4h")
         vt.feed("X")
-        #expect(vt.t3Plain == "hello\nX")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("hello\nX"))
     }
 
     @Test func `insert mode with wide characters`() {
@@ -708,7 +712,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("well")
         vt.feed("\(CSI)4h")
         vt.feed("\u{1F600}")
-        #expect(vt.t3Plain == "well\n\u{1F600}")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("well\n\u{1F600}"))
     }
 
     @Test func `insert mode pushing off wide character`() {
@@ -772,7 +776,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)1P")
         do { let ok = !vt.t3Wrapped(0); #expect(ok) }
         vt.feed("X")
-        #expect(vt.t3Plain == "XCDE\n123")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("XCDE\n123"))
     }
 
     @Test func `deleteChars simple operation`() {
@@ -791,7 +795,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)2P")
         #expect(vt.t3Plain == "AB23")
         for x in 8 ..< 10 {
-            #expect(vt.cell(x, 0).attributes.background == t3Red, "x=\(x)")
+            #expect(vt.cell(x, 0).attributes.background == t3Red, Comment(rawValue: escapedTestText("x=\(x)")))
         }
     }
 
@@ -882,12 +886,12 @@ struct GhosttyTerminal3Tests {
     @Test func `deleteChars wide char wrap boundary conditions`() {
         var vt = VT(8, 3)
         vt.feed(".......\u{1F600}abcde\u{1F600}......")
-        #expect(vt.t3Plain == ".......\n\u{1F600}abcde\n\u{1F600}......")
+        #expect(TestFixture(vt.t3Plain) == TestFixture(".......\n\u{1F600}abcde\n\u{1F600}......"))
         #expect(vt.t3Unwrapped == ".......\u{1F600}abcde\u{1F600}......")
         vt.feed("\(CSI)2;2H")
         vt.feed("\(CSI)3P")
-        #expect(vt.t3Plain == ".......\n cde\n\u{1F600}......")
-        #expect(vt.t3Unwrapped == ".......  cde\n\u{1F600}......")
+        #expect(TestFixture(vt.t3Plain) == TestFixture(".......\n cde\n\u{1F600}......"))
+        #expect(TestFixture(vt.t3Unwrapped) == TestFixture(".......  cde\n\u{1F600}......"))
     }
 
     @Test func `deleteChars wide char across right margin`() {
@@ -936,7 +940,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("B")
         vt.feed("\(ESC)8")
         vt.feed("X")
-        #expect(vt.t3Plain == "B   A\nX")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("B   A\nX"))
     }
 
     @Test func `saveCursor origin mode`() {
@@ -971,7 +975,7 @@ struct GhosttyTerminal3Tests {
         // cursor.protected must be restored: the next printed cell survives
         // a plain EL (ISO protection is still the active mode).
         vt.feed("A\(CSI)1;1H\(CSI)K")
-        #expect(vt.lines[0] == "         A")
+        #expect(TestFixture(vt.lines[0]) == TestFixture("         A"))
     }
 
     @Test func `saveCursor doesn't modify hyperlink state`() {
@@ -1031,7 +1035,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)K")
         do { let ok = !vt.t3Wrapped(0); #expect(ok) }
         vt.feed("X")
-        #expect(vt.t3Plain == "X\n123")
+        #expect(TestFixture(vt.t3Plain) == TestFixture("X\n123"))
     }
 
     @Test func `eraseLine right preserves background sgr`() {
@@ -1042,7 +1046,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)K")
         #expect(vt.t3Plain == "A")
         for x in 1 ..< 5 {
-            #expect(vt.cell(x, 0).attributes.background == t3Red, "x=\(x)")
+            #expect(vt.cell(x, 0).attributes.background == t3Red, Comment(rawValue: escapedTestText("x=\(x)")))
         }
     }
 
@@ -1120,7 +1124,7 @@ struct GhosttyTerminal3Tests {
         vt.feed("\(CSI)1K")
         #expect(vt.t3Plain == "  CDE")
         for x in 0 ..< 2 {
-            #expect(vt.cell(x, 0).attributes.background == t3Red, "x=\(x)")
+            #expect(vt.cell(x, 0).attributes.background == t3Red, Comment(rawValue: escapedTestText("x=\(x)")))
         }
     }
 }

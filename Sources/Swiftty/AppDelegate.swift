@@ -181,6 +181,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     var onClose: (() -> Void)?
     private let terminal: TerminalView
+    private lazy var searchFieldEditor: SearchFieldEditor = {
+        let editor = SearchFieldEditor(frame: .zero)
+        editor.isFieldEditor = true
+        editor.terminal = terminal
+        return editor
+    }()
 
     init(configuration: Configuration, columns: Int = 100, rows: Int = 30) throws {
         terminal = try TerminalView(configuration: configuration)
@@ -210,10 +216,24 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         applyBackground(configuration)
     }
 
+    func windowWillReturnFieldEditor(_ sender: NSWindow, to client: Any?) -> Any? {
+        guard let field = terminal.searchBar?.field, (client as? NSSearchField) === field else { return nil }
+        return searchFieldEditor
+    }
+
     /// A translucent background (`background-opacity`) shows the desktop,
     /// blurred behind a visual-effect view when `background-blur` is set.
     private func applyBackground(_ configuration: Configuration) {
         guard let window else { return }
+        let focusedView: NSView? = if let field = terminal.searchBar?.field, window.firstResponder === field.currentEditor() {
+            field
+        } else if let view = window.firstResponder as? NSView, view === terminal || view.isDescendant(of: terminal) {
+            view
+        } else {
+            nil
+        }
+        let selection = (focusedView as? NSControl)?.currentEditor()?.selectedRange
+        var reparented = false
         let translucent = configuration.backgroundOpacity < 1
         window.isOpaque = !translucent
         window.backgroundColor = translucent ? .clear : .windowBackgroundColor
@@ -230,11 +250,18 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
             terminal.autoresizingMask = [.width, .height]
             effect.addSubview(terminal)
             window.contentView = effect
+            reparented = true
         } else if window.contentView !== terminal {
             terminal.removeFromSuperview()
             window.contentView = terminal
+            reparented = true
         }
-        window.makeFirstResponder(terminal)
+        if reparented, let focusedView {
+            window.makeFirstResponder(focusedView)
+            if let selection, let control = focusedView as? NSControl {
+                control.currentEditor()?.selectedRange = selection
+            }
+        }
     }
 
     func windowWillClose(_ notification: Notification) {

@@ -32,7 +32,11 @@ run = "swift run -c release swiftty"
 
 [tasks.unicode]
 description = "Regenerate Unicode width tables"
-run = "swift Scripts/gen-unicode-tables.swift > Sources/SwifttyCore/Unicode/Tables.swift"
+run = "Scripts/update-unicode-tables.sh"
+
+[tasks.graphemes]
+description = "Regenerate grapheme property tables and conformance test data from a UCD directory"
+run = "Scripts/update-grapheme-tables.sh"
 
 [tasks.format]
 description = "Format sources"

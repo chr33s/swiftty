@@ -3,7 +3,7 @@ extension TerminalState {
     /// oldest line first. Soft-wrapped rows are joined, so replaying the
     /// dump into a terminal of any width reflows it. Empty when blank.
     public func dumpPrimaryANSI() -> [UInt8] {
-        isAlternateScreen ? dump(inactiveGrid, cursorRow: nil) : dump(grid, cursorRow: cursor.y)
+        isAlternateScreen ? dump(inactiveGrid, cursorRow: inactivePrimaryCursor.y) : dump(grid, cursorRow: cursor.y)
     }
 
     private func dump(_ screen: borrowing Grid, cursorRow: Int?) -> [UInt8] {
@@ -44,13 +44,22 @@ extension TerminalState {
                     appendSGR(attrs, to: &out)
                     pen = attrs
                 }
-                let scalars = scalars(of: cell)
-                if scalars.isEmpty {
-                    out.append(0x20)
-                } else {
-                    for s in scalars {
-                        out.append(contentsOf: String(s).utf8)
+                if cell.isGrapheme {
+                    var appended = false
+                    let scalars = graphemeScalars(cell.glyph)
+                    for point in scalars {
+                        if let scalar = Unicode.Scalar(point) {
+                            out.append(contentsOf: scalar.utf8)
+                            appended = true
+                        }
                     }
+                    if !appended {
+                        out.append(0x20)
+                    }
+                } else if cell.glyph != 0, let scalar = Unicode.Scalar(cell.glyph) {
+                    out.append(contentsOf: scalar.utf8)
+                } else {
+                    out.append(0x20)
                 }
             }
             if !wrapped, index < lines.count - 1 {

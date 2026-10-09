@@ -17,7 +17,7 @@ public struct CSISequence: Sendable {
     /// Raw parameter value; missing parameters read as 0.
     @inline(__always)
     public func value(_ i: Int) -> Int {
-        i < count ? Int(params[i]) : 0
+        i >= 0 && i < count ? Int(params[i]) : 0
     }
 
     /// Parameter with VT defaulting: missing or 0 reads as `fallback`.
@@ -29,7 +29,7 @@ public struct CSISequence: Sendable {
 
     @inline(__always)
     public func isSubparameter(_ i: Int) -> Bool {
-        i < count && colonMask & (1 << UInt32(i)) != 0
+        i >= 0 && i < count && colonMask & (1 << UInt32(i)) != 0
     }
 }
 
@@ -43,7 +43,7 @@ public struct Parser: ~Copyable {
         case ground, escape, escapeIntermediate
         case csiEntry, csiParam, csiIntermediate, csiIgnore
         case oscString, stringIgnore
-        case dcsEntry, dcsParam, dcsIntermediate, dcsIgnore, dcsPassthrough
+        case dcsEntry, dcsParam, dcsIntermediate, dcsIgnore, dcsPassthrough, dcsEscape
         /// tmux control mode (`DCS 1000 p`): a line protocol whose blocks
         /// carry raw text, escape sequences included (`capture-pane -e`).
         /// Only `ESC \` at the start of a line (after `%exit`) ends it;
@@ -55,6 +55,7 @@ public struct Parser: ~Copyable {
     private var csi = CSISequence()
     private var currentParam: UInt32 = 0
     private var hasParam = false
+    private var parameterOverflow = false
     private var escIntermediate: UInt8 = 0
     /// In `controlMode`: the next byte starts a line.
     private var controlModeLineStart = true
@@ -68,7 +69,7 @@ public struct Parser: ~Copyable {
     private var osc: UnsafeMutablePointer<UInt8>
     private var oscCount = 0
     private var oscCapacity: Int
-    /// An OSC 7501 body passed its limit: the sequence is dropped whole.
+    /// An OSC body failed validation or passed its limit: drop it whole.
     private var oscOverflow = false
     public static let maxOSCBytes = 8 << 20
 
@@ -94,6 +95,7 @@ public struct Parser: ~Copyable {
         var csi: CSISequence
         var currentParam: UInt32
         var hasParam: Bool
+        var parameterOverflow: Bool
         var escIntermediate: UInt8
         var controlModeLineStart: Bool
         var codepoint: UInt32
@@ -104,13 +106,20 @@ public struct Parser: ~Copyable {
     }
 
     var continuation: Continuation {
-        Continuation(state: state, csi: csi, currentParam: currentParam,
-                     hasParam: hasParam, escIntermediate: escIntermediate,
-                     controlModeLineStart: controlModeLineStart,
-                     codepoint: codepoint, utf8Remaining: utf8Remaining,
-                     utf8Minimum: utf8Minimum,
-                     osc: Array(UnsafeBufferPointer(start: osc, count: oscCount)),
-                     oscOverflow: oscOverflow)
+        Continuation(
+            state: state,
+            csi: csi,
+            currentParam: currentParam,
+            hasParam: hasParam,
+            parameterOverflow: parameterOverflow,
+            escIntermediate: escIntermediate,
+            controlModeLineStart: controlModeLineStart,
+            codepoint: codepoint,
+            utf8Remaining: utf8Remaining,
+            utf8Minimum: utf8Minimum,
+            osc: Array(UnsafeBufferPointer(start: osc, count: oscCount)),
+            oscOverflow: oscOverflow,
+        )
     }
 
     mutating func restore(_ continuation: Continuation) {
@@ -118,6 +127,7 @@ public struct Parser: ~Copyable {
         csi = continuation.csi
         currentParam = continuation.currentParam
         hasParam = continuation.hasParam
+        parameterOverflow = continuation.parameterOverflow
         escIntermediate = continuation.escIntermediate
         controlModeLineStart = continuation.controlModeLineStart
         codepoint = continuation.codepoint
@@ -125,7 +135,9 @@ public struct Parser: ~Copyable {
         utf8Minimum = continuation.utf8Minimum
         if continuation.osc.count > oscCapacity {
             osc.deallocate()
-            while oscCapacity < continuation.osc.count { oscCapacity *= 2 }
+            while oscCapacity < continuation.osc.count {
+                oscCapacity *= 2
+            }
             osc = .allocate(capacity: oscCapacity)
         }
         oscCount = continuation.osc.count
@@ -142,12 +154,39 @@ public struct Parser: ~Copyable {
     @inline(__always)
     private func decodeRun(_ p: UnsafePointer<UInt8>, from start: Int, to end: Int) -> (count: Int, end: Int) {
         var i = start, count = 0
+        // Probe each UTF-8 width only until its first batch miss in a run.
+        var canBatch = true
+        var canBatchTwo = true
         while i < end, count < Self.scalarCapacity {
             let b = p[i]
             if b &- 0x20 < 0x5F {
                 scalars[count] = UInt32(b)
                 i += 1
-            } else if b >= 0xC2, let (cp, length) = Self.decodeUTF8(p + i, available: end - i) {
+            } else if b &- 0xC2 < 0x1E {
+                if canBatchTwo {
+                    if end - i >= 16, count <= Self.scalarCapacity - 8,
+                       Self.decodeTwoByteBlock(p + i, into: scalars + count) {
+                        count += 8
+                        i += 16
+                        continue
+                    }
+                    canBatchTwo = false
+                }
+                guard let (cp, length) = Self.decodeUTF8(p + i, available: end - i) else { break }
+                scalars[count] = cp
+                i += length
+            } else if b >= 0xC2 {
+                if canBatch {
+                    if b < 0xF0, end - i >= 16, count <= Self.scalarCapacity - 4,
+                       p[i + 3] & 0xF0 == 0xE0, p[i + 6] & 0xF0 == 0xE0, p[i + 9] & 0xF0 == 0xE0,
+                       Self.decodeThreeByteBlock(p + i, into: scalars + count) {
+                        count += 4
+                        i += 12
+                        continue
+                    }
+                    canBatch = false
+                }
+                guard let (cp, length) = Self.decodeUTF8(p + i, available: end - i) else { break }
                 scalars[count] = cp
                 i += length
             } else {
@@ -158,16 +197,60 @@ public struct Parser: ~Copyable {
         return (count, i)
     }
 
+    /// Requires sixteen readable bytes. Writes eight scalars only after validation.
+    @inline(never)
+    private static func decodeTwoByteBlock(_ p: UnsafePointer<UInt8>, into output: UnsafeMutablePointer<UInt32>) -> Bool {
+        let bytes = UnsafeRawPointer(p).loadUnaligned(as: SIMD16<UInt8>.self)
+        let lead = SIMD8<UInt8>(bytes[0], bytes[2], bytes[4], bytes[6], bytes[8], bytes[10], bytes[12], bytes[14])
+        let continuation = SIMD8<UInt8>(bytes[1], bytes[3], bytes[5], bytes[7], bytes[9], bytes[11], bytes[13], bytes[15])
+        guard all((lead &- SIMD8(repeating: 0xC2)) .< SIMD8(repeating: 0x1E)),
+              all((continuation & SIMD8(repeating: 0xC0)) .== SIMD8(repeating: 0x80)) else { return false }
+        let a = SIMD8<UInt32>(truncatingIfNeeded: lead)
+        let b = SIMD8<UInt32>(truncatingIfNeeded: continuation)
+        let scalars = ((a & SIMD8(repeating: 0x1F)) &* SIMD8(repeating: 64)) | (b & SIMD8(repeating: 0x3F))
+        UnsafeMutableRawPointer(output).storeBytes(of: scalars, as: SIMD8<UInt32>.self)
+        return true
+    }
+
+    /// Requires sixteen readable bytes with four three-byte leads.
+    /// Writes four scalars only when all four sequences validate.
+    /// Keep vector temporaries out of the ordinary decode loop.
+    @inline(never)
+    private static func decodeThreeByteBlock(_ p: UnsafePointer<UInt8>, into output: UnsafeMutablePointer<UInt32>) -> Bool {
+        let bytes = UnsafeRawPointer(p).loadUnaligned(as: SIMD16<UInt8>.self)
+        let continuation = SIMD8<UInt8>(bytes[1], bytes[2], bytes[4], bytes[5], bytes[7], bytes[8], bytes[10], bytes[11])
+        guard all((continuation & SIMD8(repeating: 0xC0)) .== SIMD8(repeating: 0x80)) else { return false }
+        let lead = SIMD4<UInt8>(bytes[0], bytes[3], bytes[6], bytes[9])
+        let first = SIMD4<UInt8>(continuation[0], continuation[2], continuation[4], continuation[6])
+        let second = SIMD4<UInt8>(continuation[1], continuation[3], continuation[5], continuation[7])
+        // Three-byte UTF-8 fits in sixteen bits. Widen only the validated result.
+        let a = SIMD4<UInt16>(truncatingIfNeeded: lead)
+        let b = SIMD4<UInt16>(truncatingIfNeeded: first)
+        let c = SIMD4<UInt16>(truncatingIfNeeded: second)
+        let scalars = ((a & SIMD4(repeating: 0x0F)) &* SIMD4(repeating: 4096))
+            | ((b & SIMD4(repeating: 0x3F)) &* SIMD4(repeating: 64))
+            | (c & SIMD4(repeating: 0x3F))
+        let invalidScalar = (scalars .< SIMD4(repeating: 0x800))
+            .| ((scalars &- SIMD4(repeating: 0xD800)) .< SIMD4(repeating: 0x800))
+        guard !any(invalidScalar) else { return false }
+        let widened = SIMD4<UInt32>(truncatingIfNeeded: scalars)
+        UnsafeMutableRawPointer(output).storeBytes(of: widened, as: SIMD4<UInt32>.self)
+        return true
+    }
+
     public mutating func consume(_ bytes: borrowing Span<UInt8>, into terminal: inout TerminalState) {
         bytes.withUnsafeBufferPointer { consume($0, into: &terminal) }
     }
 
     public mutating func consume(_ buffer: UnsafeBufferPointer<UInt8>, into terminal: inout TerminalState) {
-        guard let base = buffer.baseAddress else { return }
+        guard let base = buffer.baseAddress, !buffer.isEmpty else { return }
+        defer {
+            terminal.refreshSearchIfNeeded()
+        }
         let n = buffer.count
         var i = 0
         while i < n {
-            if state == .controlMode {
+            if state == .controlMode || state == .dcsPassthrough {
                 // Hand over everything up to the next ESC/CAN/SUB in one piece.
                 var end = i
                 while end < n, base[end] != 0x1B, base[end] != 0x18, base[end] != 0x1A {
@@ -175,21 +258,9 @@ public struct Parser: ~Copyable {
                 }
                 if end > i {
                     terminal.dcsPut(UnsafeBufferPointer(start: base + i, count: end - i))
-                    controlModeLineStart = base[end - 1] == 0x0A
-                    i = end
-                    if i == n {
-                        break
+                    if state == .controlMode {
+                        controlModeLineStart = base[end - 1] == 0x0A
                     }
-                }
-            }
-            if state == .dcsPassthrough {
-                // Hand over everything up to the next ESC/CAN/SUB in one piece.
-                var end = i
-                while end < n, base[end] != 0x1B, base[end] != 0x18, base[end] != 0x1A {
-                    end += 1
-                }
-                if end > i {
-                    terminal.dcsPut(UnsafeBufferPointer(start: base + i, count: end - i))
                     i = end
                     if i == n {
                         break
@@ -204,6 +275,14 @@ public struct Parser: ~Copyable {
                     if i == n {
                         break
                     }
+                }
+                // Ordinary line endings need both controls, but only one
+                // pass through the parser's ground-state dispatch.
+                if base[i] == 0x0D, i + 1 < n, base[i + 1] == 0x0A {
+                    terminal.execute(0x0D)
+                    terminal.execute(0x0A)
+                    i += 2
+                    continue
                 }
                 // Complete multi-byte sequences decode inline; partial or
                 // invalid ones fall through to the state machine.
@@ -267,6 +346,16 @@ public struct Parser: ~Copyable {
 
     @inline(__always)
     private mutating func step(_ byte: UInt8, _ t: inout TerminalState) {
+        if state == .dcsEscape {
+            if byte == 0x5C {
+                t.dcsUnhook()
+                state = .ground
+                return
+            }
+            // ESC begins another sequence unless followed by the ST final.
+            t.discardControlString()
+            state = .escape
+        }
         if state == .controlMode || state == .controlModeEscape {
             controlModeStep(byte, &t)
             return
@@ -279,22 +368,23 @@ public struct Parser: ~Copyable {
                 oscOverflow = false
             }
             if state == .dcsPassthrough {
-                t.dcsUnhook()
+                t.discardControlString()
             }
             resetUTF8()
             state = .ground
             return
         case 0x1B:
+            let finishingDCS = state == .dcsPassthrough
             if state == .oscString {
                 dispatchOSC(&t, bell: false)
-            }
-            if state == .dcsPassthrough {
-                t.dcsUnhook()
             }
             if utf8Remaining > 0 {
                 resetUTF8(); t.print(0xFFFD)
             }
             enterEscape()
+            if finishingDCS {
+                state = .dcsEscape
+            }
             return
         default: break
         }
@@ -304,6 +394,7 @@ public struct Parser: ~Copyable {
             ground(byte, &t)
 
         case .escape:
+            guard byte < 0xA0 else { return }
             switch byte {
             case 0x00 ... 0x1F: t.execute(byte)
             case 0x20 ... 0x2F: escIntermediate = byte; state = .escapeIntermediate
@@ -316,9 +407,13 @@ public struct Parser: ~Copyable {
             }
 
         case .escapeIntermediate:
+            guard byte < 0xA0 else { return }
             switch byte {
             case 0x00 ... 0x1F: t.execute(byte)
-            case 0x20 ... 0x2F: break
+            case 0x20 ... 0x2F:
+                // No supported ESC command has multiple intermediates. Keep
+                // consuming the sequence with a byte no dispatch can match.
+                escIntermediate = 0xFF
             case 0x7F: break
             default: t.escDispatch(intermediate: escIntermediate, final: byte); state = .ground
             }
@@ -330,7 +425,12 @@ public struct Parser: ~Copyable {
                 hasParam = true
                 state = .csiParam
             case 0x3B: pushParam(colon: false); state = .csiParam
-            case 0x3A: pushParam(colon: true); state = .csiParam
+            case 0x3A:
+                if state == .csiEntry {
+                    state = .csiIgnore
+                } else {
+                    pushParam(colon: true)
+                }
             case 0x3C ... 0x3F:
                 if state == .csiEntry, csi.marker == 0 {
                     csi.marker = byte; state = .csiParam
@@ -345,7 +445,7 @@ public struct Parser: ~Copyable {
 
         case .csiIntermediate:
             switch byte {
-            case 0x20 ... 0x2F: break
+            case 0x20 ... 0x2F: state = .csiIgnore
             case 0x40 ... 0x7E: dispatchCSI(byte, &t)
             case 0x00 ... 0x1F: t.execute(byte)
             case 0x30 ... 0x3F: state = .csiIgnore
@@ -362,7 +462,12 @@ public struct Parser: ~Copyable {
         case .oscString:
             switch byte {
             case 0x07: dispatchOSC(&t, bell: true); state = .ground
-            case 0x00 ... 0x1F: break
+            case 0x00 ... 0x1F:
+                // Ignoring controls inside Base64 would turn a corrupted
+                // clipboard write into apparently valid data.
+                if isClipboardOSC {
+                    oscOverflow = true
+                }
             default: appendOSC(byte)
             }
 
@@ -372,7 +477,7 @@ public struct Parser: ~Copyable {
         case .dcsEntry, .dcsParam, .dcsIntermediate, .dcsPassthrough:
             dcsStep(byte, &t)
 
-        case .controlMode, .controlModeEscape:
+        case .dcsEscape, .controlMode, .controlModeEscape:
             break // handled before the anywhere transitions
         }
     }
@@ -423,6 +528,7 @@ public struct Parser: ~Copyable {
     }
 
     private mutating func enterCSI() {
+        parameterOverflow = false
         csi.count = 0
         csi.colonMask = 0
         csi.marker = 0
@@ -436,14 +542,19 @@ public struct Parser: ~Copyable {
         if csi.count < CSISequence.maxParams {
             csi.params[csi.count] = UInt16(currentParam)
             csi.count += 1
-            if colon, csi.count < CSISequence.maxParams {
-                csi.colonMask |= 1 << UInt32(csi.count)
-            }
+        } else {
+            parameterOverflow = true
+        }
+        if colon {
+            // Keep the separator even beyond inline parameter storage so a
+            // non-SGR sequence cannot hide an invalid colon by overflowing it.
+            csi.colonMask |= 1 << UInt32(csi.count)
         }
         currentParam = 0
         hasParam = false
     }
 
+    @inline(__always)
     private mutating func finishParams() {
         if hasParam || csi.count > 0 || csi.colonMask != 0 {
             pushParam(colon: false)
@@ -451,8 +562,11 @@ public struct Parser: ~Copyable {
     }
 
     private mutating func dispatchCSI(_ final: UInt8, _ t: inout TerminalState) {
-        csi.final = final
-        t.csiDispatch(csi)
+        // Colon-separated subparameters are supported only by SGR.
+        if !parameterOverflow, final == 0x6D || csi.colonMask == 0 {
+            csi.final = final
+            t.csiDispatch(csi)
+        }
         state = .ground
     }
 
@@ -480,7 +594,7 @@ public struct Parser: ~Copyable {
 
         case .dcsIntermediate:
             switch byte {
-            case 0x20 ... 0x2F: break
+            case 0x20 ... 0x2F: state = .dcsIgnore
             case 0x30 ... 0x3F: state = .dcsIgnore
             case 0x40 ... 0x7E: hookDCS(byte, &t)
             default: break
@@ -494,6 +608,10 @@ public struct Parser: ~Copyable {
     }
 
     private mutating func hookDCS(_ final: UInt8, _ t: inout TerminalState) {
+        guard !parameterOverflow else {
+            state = .dcsIgnore
+            return
+        }
         csi.final = final
         t.dcsHook(csi)
         if csi.marker == 0, csi.intermediate == 0, final == 0x70, csi.value(0) == 1000 {
@@ -539,7 +657,10 @@ public struct Parser: ~Copyable {
             return
         }
         if oscCount == oscCapacity {
-            guard oscCapacity < Self.maxOSCBytes else { return }
+            guard oscCapacity < Self.maxOSCBytes else {
+                oscOverflow = true
+                return
+            }
             let grown = UnsafeMutablePointer<UInt8>.allocate(capacity: oscCapacity * 2)
             grown.update(from: osc, count: oscCount)
             osc.deallocate()
@@ -548,6 +669,14 @@ public struct Parser: ~Copyable {
         }
         osc[oscCount] = byte
         oscCount += 1
+    }
+
+    private var isClipboardOSC: Bool {
+        var start = 0
+        while start < oscCount, osc[start] == 0x30 {
+            start += 1
+        }
+        return start + 2 < oscCount && osc[start] == 0x35 && osc[start + 1] == 0x32 && osc[start + 2] == 0x3B
     }
 
     private var isProgramStatusOSC: Bool {

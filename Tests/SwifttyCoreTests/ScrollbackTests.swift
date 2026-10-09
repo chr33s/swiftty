@@ -2,6 +2,32 @@
 import Testing
 
 struct ScrollbackTests {
+    @Test(arguments: [0, -1])
+    func `session honors disabled history row limits`(_ limit: Int) {
+        var configuration = SessionConfiguration()
+        configuration.scrollbackLimitRows = limit
+        let session = TerminalSession(columns: 4, rows: 2, configuration: configuration)
+        for columns in [4, 8, 2] {
+            session.resize(columns: columns, rows: 2)
+            session.feed(Array("a\r\nb\r\nc\r\n".utf8))
+            #expect(session.withState { $0.grid.historyCount } == 0)
+            session.reset()
+        }
+    }
+
+    @Test(arguments: [0, -1])
+    func `nonpositive history row limits disable history`(_ limit: Int) {
+        var grid = Grid(columns: 4, rows: 2, historyLimitBytes: 1024, maxHistoryRows: limit)
+        for columns in [4, 8, 2] {
+            grid.resize(columns: columns, rows: 2)
+            fill(grid, row: 0, "x")
+            grid.scrollUpIntoHistory(count: 1, fill: .blank)
+            #expect(grid.historyCapacity == 0)
+            #expect(grid.historyCount == 0)
+            #expect(text(grid.cells(row: 0)) == "")
+        }
+    }
+
     func fill(_ grid: borrowing Grid, row y: Int, _ s: String) {
         for (x, scalar) in s.unicodeScalars.enumerated() {
             grid[x, y] = Cell(glyph: scalar.value, attributes: .default, width: 1)

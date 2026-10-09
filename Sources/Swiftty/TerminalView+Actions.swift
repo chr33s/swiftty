@@ -3,43 +3,61 @@ import SwifttyCore
 
 /// Key-binding actions and the menu commands that share them.
 extension TerminalView {
-    func perform(_ action: KeyAction) {
+    @discardableResult
+    func perform(_ action: KeyAction) -> Bool {
         switch action {
-        case .copyToClipboard: copy(nil)
-        case .pasteFromClipboard: paste(nil)
-        case let .increaseFontSize(n): fontSize = min(fontSize + CGFloat(n), 72); applyFont()
-        case let .decreaseFontSize(n): fontSize = max(fontSize - CGFloat(n), 6); applyFont()
-        case .resetFontSize: fontSize = CGFloat(config.fontSize); applyFont()
+        case .copyToClipboard: return copySelection()
+        case .pasteFromClipboard: return pasteClipboard()
+        case let .increaseFontSize(n): setFontSize(fontSize + CGFloat(n))
+        case let .decreaseFontSize(n): setFontSize(fontSize - CGFloat(n))
+        case .resetFontSize: setFontSize(nil)
         case .selectAll: selectAll(nil)
         case .scrollToTop, .scrollToBottom, .scrollPageUp, .scrollPageDown, .scrollPageLines:
-            session.mutate { state in
+            return session.mutate { state in
+                let before = state.viewportOffset
                 if let delta = ActionDispatch.viewportDelta(for: action, rows: state.rows, history: state.scrollbackCount) {
                     state.scrollViewport(by: delta)
                 }
+                return state.viewportOffset != before
             }
-        case let .jumpToPrompt(n): session.mutate { _ = $0.jumpToPrompt(n) }
+        case let .jumpToPrompt(n): return session.mutate { $0.jumpToPrompt(n) }
         case .startSearch: showSearch(text: nil)
-        case .searchSelection: showSearch(text: session.withState { $0.selectionText })
+        case .searchSelection:
+            guard let text = session.withState({ $0.selectionText }), !text.isEmpty else { return false }
+            showSearch(text: text)
         // Matching starts at the newest output, so "next" walks back through history.
-        case let .navigateSearch(next): session.mutate { _ = $0.selectSearchMatch(forward: !next) }
-        case .endSearch: closeSearch()
+        case let .navigateSearch(next): return session.mutate { $0.selectSearchMatch(forward: !next) != nil }
+        case .endSearch:
+            guard searchBar != nil else { return false }
+            closeSearch()
         case .clearScreen: session.mutate { $0.clearScreenKeepingCursorLine() }
-        case .reset: session.mutate { $0.reset() }
-        case .text, .csi, .esc: action.bytes.map { session.send(.bytes($0)) }
+        case .reset: session.reset()
+        case .text, .textBytes, .csi, .esc: action.bytes.map { session.send(.bytes($0)) }
         case .ignore: break
         }
+        return true
     }
 
     @objc func paste(_ sender: Any?) {
-        if let text = NSPasteboard.general.string(forType: .string) {
-            session.send(.paste(text))
-        }
+        _ = pasteClipboard()
+    }
+
+    private func pasteClipboard() -> Bool {
+        guard let text = pasteboard.string(forType: .string) else { return false }
+        clearSelection()
+        session.send(.paste(text))
+        return true
     }
 
     @objc func copy(_ sender: Any?) {
-        guard let text = session.withState({ $0.selectionText }), !text.isEmpty else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        _ = copySelection()
+    }
+
+    private func copySelection() -> Bool {
+        guard let text = session.withState({ $0.selectionText }), !text.isEmpty else { return false }
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        return true
     }
 
     override func selectAll(_ sender: Any?) {
@@ -50,10 +68,31 @@ extension TerminalView {
     /// Selects the output of the command at the last click (or the most
     /// recent one), from shell-integration marks.
     @objc func selectCommandOutput(_ sender: Any?) {
-        let click = lastClick
+        let context = lastClick
         let found = session.mutate { state -> Bool in
-            let p = click ?? TerminalPoint(row: state.promptRows().last.map { $0 - 1 } ?? 0, column: 0)
-            guard let range = state.commandOutputRange(at: p) else { return false }
+            let click: TerminalPoint? = if let context, context.generation == state.addressingGeneration,
+                                           context.point.row >= state.firstAbsoluteRow,
+                                           context.point.row - state.firstAbsoluteRow < state.addressableRows {
+                context.point
+            } else {
+                nil
+            }
+            let prompts = state.promptRows()
+            let prompt = prompts.last ?? 0
+            let p = click ?? TerminalPoint(row: prompt, column: 0)
+            var output = state.commandOutputRange(at: p)
+            if output == nil, click == nil {
+                // Fresh prompts and commands without output are skipped.
+                for boundary in prompts.reversed() {
+                    // Probe before the boundary so output remains reachable
+                    // even when its own prompt has already left history.
+                    output = state.commandOutputRange(at: TerminalPoint(row: boundary - 1, column: 0))
+                    if output != nil {
+                        break
+                    }
+                }
+            }
+            guard let range = output else { return false }
             state.setSelection(Selection(anchor: range.start, head: range.end))
             state.scrollToShow(row: range.start.row)
             return true
@@ -75,7 +114,8 @@ extension TerminalView {
 
     @objc func performFindPanelAction(_ sender: Any?) {
         let tag = (sender as? NSMenuItem)?.tag ?? Int(NSFindPanelAction.showFindPanel.rawValue)
-        switch NSFindPanelAction(rawValue: UInt(tag)) {
+        let action = UInt(exactly: tag).flatMap { NSFindPanelAction(rawValue: $0) }
+        switch action {
         case .next: perform(.navigateSearch(next: true))
         case .previous: perform(.navigateSearch(next: false))
         case .setFindString: perform(.searchSelection)
@@ -133,11 +173,22 @@ extension TerminalView {
     }
 }
 
+/// Routes find commands from the query editor to the terminal's results.
+@MainActor
+final class SearchFieldEditor: NSTextView {
+    weak var terminal: TerminalView?
+
+    override func performFindPanelAction(_ sender: Any?) {
+        terminal?.performFindPanelAction(sender)
+    }
+}
+
 /// The find bar: a search field with previous/next buttons, pinned to the
 /// top-right of the terminal.
 @MainActor
 final class SearchBar: NSView, NSSearchFieldDelegate {
     let field = NSSearchField()
+    private let navigationButtons: [NSButton]
     var onChange: ((String) -> Void)?
     var onNavigate: ((Bool) -> Void)?
     var onClose: (() -> Void)?
@@ -148,6 +199,10 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
     }
 
     init() {
+        navigationButtons = [
+            NSButton(title: "▲", target: nil, action: nil),
+            NSButton(title: "▼", target: nil, action: nil),
+        ]
         super.init(frame: NSRect(x: 0, y: 0, width: 300, height: 32))
         wantsLayer = true
         layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
@@ -156,9 +211,9 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
         field.delegate = self
         field.sendsSearchStringImmediately = true
         addSubview(field)
-        let previous = NSButton(title: "▲", target: self, action: #selector(previous))
-        let next = NSButton(title: "▼", target: self, action: #selector(next))
-        for (i, button) in [previous, next].enumerated() {
+        for (i, button) in navigationButtons.enumerated() {
+            button.target = self
+            button.action = i == 0 ? #selector(previous) : #selector(next)
             button.bezelStyle = .smallSquare
             button.frame = NSRect(x: 232 + i * 32, y: 5, width: 28, height: 22)
             addSubview(button)
@@ -170,7 +225,26 @@ final class SearchBar: NSView, NSSearchFieldDelegate {
     }
 
     func position(in bounds: NSRect) {
-        setFrameOrigin(NSPoint(x: bounds.maxX - frame.width - 12, y: bounds.maxY - frame.height - 8))
+        let margin = min(12, max(0, bounds.width / 4))
+        let width = min(300, max(0, bounds.width - 2 * margin))
+        let height = min(32, max(0, bounds.height))
+        frame = NSRect(
+            x: bounds.maxX - width - margin, y: max(bounds.minY, bounds.maxY - height - 8),
+            width: width, height: height,
+        )
+        // Keep room to edit the query; Return/Shift-Return still navigate
+        // when a narrow surface cannot fit the buttons.
+        let showButtons = width >= 120
+        let inset = min(6, width / 2)
+        let controlHeight = min(22, height)
+        let y = (height - controlHeight) / 2
+        field.frame = NSRect(
+            x: inset, y: y, width: max(0, width - 2 * inset - (showButtons ? 68 : 0)), height: controlHeight,
+        )
+        for (i, button) in navigationButtons.enumerated() {
+            button.isHidden = !showButtons
+            button.frame = NSRect(x: width - 68 + CGFloat(i) * 32, y: y, width: 28, height: controlHeight)
+        }
     }
 
     func controlTextDidChange(_ notification: Notification) {

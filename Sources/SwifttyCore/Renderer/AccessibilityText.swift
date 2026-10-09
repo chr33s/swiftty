@@ -9,7 +9,8 @@ public struct AccessibilityText: Sendable, Equatable {
     public let string: String
     /// Range of each line in `string`, in UTF-16 units, excluding the newline.
     public let lineRanges: [NSRange]
-    /// UTF-16 offset of the cursor in `string` (clamped to its line's end).
+    /// UTF-16 offset of the cursor in `string`, clamped to the visible text
+    /// when scrollback places the cursor outside the viewport.
     public let cursorOffset: Int
     public let cursorLine: Int
 
@@ -26,11 +27,12 @@ public struct AccessibilityText: Sendable, Equatable {
         self.lines = lines
         string = lines.joined(separator: "\n")
         lineRanges = ranges
-        let y = min(max(snapshot.cursor.y, 0), max(lines.count - 1, 0))
+        let cursorRow = snapshot.cursor.y + snapshot.viewportOffset
+        let y = min(max(cursorRow, 0), max(lines.count - 1, 0))
         cursorLine = y
         // Text before the cursor's column, as the line renders it.
         var prefix = 0
-        if y < lines.count {
+        if y < lines.count, cursorRow == y {
             let cells = snapshot.cells(row: y)
             for x in 0 ..< min(snapshot.cursor.x, cells.count) where !cells[x].isSpacer {
                 let cell = cells[x]
@@ -44,6 +46,8 @@ public struct AccessibilityText: Sendable, Equatable {
                 }
             }
             cursorOffset = ranges[y].location + min(prefix, ranges[y].length)
+        } else if y < ranges.count {
+            cursorOffset = ranges[y].location + (cursorRow > y ? ranges[y].length : 0)
         } else {
             cursorOffset = 0
         }

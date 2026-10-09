@@ -9,6 +9,7 @@ extension TerminalView: @MainActor NSTextInputClient {
         let wasComposing = hasMarkedText()
         setPreedit("")
         if !text.isEmpty {
+            clearSelection()
             let flags = session.keyboardFlags
             if !wasComposing, InputEncoder.isKittyKeyboardActive(flags), let event = interpretingEvent,
                let key = Self.terminalKey(for: event, keyboardFlags: flags) {
@@ -29,7 +30,7 @@ extension TerminalView: @MainActor NSTextInputClient {
     }
 
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
-        setPreedit((string as? NSAttributedString)?.string ?? string as? String ?? "")
+        setPreedit((string as? NSAttributedString)?.string ?? string as? String ?? "", selection: selectedRange)
     }
 
     func unmarkText() {
@@ -37,10 +38,16 @@ extension TerminalView: @MainActor NSTextInputClient {
         insertText(markedText, replacementRange: NSRange(location: NSNotFound, length: 0))
     }
 
-    private func setPreedit(_ text: String) {
-        guard text != markedText else { return }
+    private func setPreedit(_ text: String, selection: NSRange = NSRange(location: NSNotFound, length: 0)) {
+        let length = text.utf16.count
+        let start = min(length, max(0, selection.location))
+        markedSelection = length == 0 ? NSRange(location: NSNotFound, length: 0)
+            : NSRange(location: start, length: min(length - start, max(0, selection.length)))
+        let renderedSelection = text.isEmpty ? nil : markedSelection
+        guard text != markedText || renderer.options.preeditSelection != renderedSelection else { return }
         markedText = text
         renderer.options.preedit = Array(text.unicodeScalars)
+        renderer.options.preeditSelection = renderedSelection
         needsDisplay = true
     }
 
@@ -53,7 +60,7 @@ extension TerminalView: @MainActor NSTextInputClient {
     }
 
     func selectedRange() -> NSRange {
-        NSRange(location: NSNotFound, length: 0)
+        hasMarkedText() ? markedSelection : NSRange(location: NSNotFound, length: 0)
     }
 
     func validAttributesForMarkedText() -> [NSAttributedString.Key] {
@@ -68,15 +75,26 @@ extension TerminalView: @MainActor NSTextInputClient {
         NSNotFound
     }
 
-    /// The cursor cell in screen coordinates, where the candidate window goes.
+    /// The composition range in screen coordinates, where the candidate window goes.
     func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
-        actualRange?.pointee = range
+        let location = range.location == NSNotFound ? 0 : max(0, range.location)
+        let length = range.location == NSNotFound ? 0 : max(0, range.length)
+        let (end, overflow) = location.addingReportingOverflow(length)
+        let scalars = renderer.options.preedit
+        let startPosition = TerminalGeometry.compositionPosition(in: scalars, atUTF16Offset: location)
+        let endPosition = length > 0 ? TerminalGeometry.compositionPosition(
+            in: scalars, atUTF16Offset: overflow ? .max : end, roundUp: true,
+        ) : startPosition
+        actualRange?.pointee = NSRange(
+            location: startPosition.utf16Offset, length: endPosition.utf16Offset - startPosition.utf16Offset,
+        )
         let scale = window?.backingScaleFactor ?? renderer.font.descriptor.scale
-        let column = CGFloat(lastSnapshot?.cursor.x ?? 0), row = CGFloat(lastSnapshot?.cursor.y ?? 0)
+        let column = CGFloat(lastSnapshot?.cursor.x ?? 0) + CGFloat(startPosition.column), row = CGFloat(lastSnapshot?.cursor.y ?? 0)
         let cell = renderer.cellSize
         let x: CGFloat = (renderer.options.paddingX + column * cell.width) / scale
         let top: CGFloat = (renderer.options.paddingY + (row + 1) * cell.height) / scale
-        let rect = NSRect(x: x, y: bounds.height - top, width: cell.width / scale, height: cell.height / scale)
+        let width = CGFloat(endPosition.column - startPosition.column) * cell.width / scale
+        let rect = NSRect(x: x, y: bounds.height - top, width: width, height: cell.height / scale)
         guard let window else { return rect }
         return window.convertToScreen(convert(rect, to: nil))
     }

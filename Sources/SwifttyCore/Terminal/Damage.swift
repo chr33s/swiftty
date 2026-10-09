@@ -18,12 +18,17 @@ public struct DamageRegion: Sendable, Equatable {
 
     @inline(__always)
     public mutating func insert(row: Int) {
+        guard row >= 0 else { return }
         guard row < Self.maxTrackedRows else { isFull = true; return }
         bits[row >> 6] |= 1 << UInt64(row & 63)
     }
 
     public mutating func insert(rows: Range<Int>) {
-        for row in rows {
+        guard !rows.isEmpty else { return }
+        if rows.upperBound > Self.maxTrackedRows {
+            isFull = true
+        }
+        for row in rows.clamped(to: 0 ..< Self.maxTrackedRows) {
             insert(row: row)
         }
     }
@@ -43,6 +48,7 @@ public struct DamageRegion: Sendable, Equatable {
 
     @inline(__always)
     public func contains(row: Int) -> Bool {
+        guard row >= 0 else { return false }
         if isFull {
             return true
         }

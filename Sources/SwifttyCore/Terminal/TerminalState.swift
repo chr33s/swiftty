@@ -1,92 +1,5 @@
 import Foundation
 
-/// Side effects the frontend must handle, drained after each parse batch.
-public enum TerminalEvent: Sendable, Equatable {
-    case title(String)
-    case bell
-    case clipboard(String)
-    case workingDirectory(String)
-    case exited(Int32)
-    /// `DCS 1000 p`: tmux control mode began; its stream follows through
-    /// `TerminalState.controlModeData` until `.controlModeEnded`.
-    case controlModeStarted
-    case controlModeEnded
-    /// OSC 9 / OSC 777;notify desktop notification.
-    case notification(title: String, body: String)
-    /// OSC 9;4 progress: state 0 remove, 1 set, 2 error, 3 indeterminate,
-    /// 4 pause; `percent` is nil when not given.
-    case progress(state: Int, percent: Int?)
-    /// OSC 22: the application asked for this mouse pointer shape (a CSS
-    /// cursor name such as `text`, `pointer`, `default`).
-    case pointerShape(String)
-    /// OSC 133 ; D: a command finished with this exit status (the latest,
-    /// once per batch).
-    case commandFinished(exitCode: Int?)
-}
-
-public struct Cursor: Sendable, Equatable {
-    public enum Charset: UInt8, Sendable { case ascii, decSpecialGraphics, british }
-
-    public var x = 0
-    public var y = 0
-    /// Set after printing in the last column; the next print wraps first.
-    public var pendingWrap = false
-    public var pen = CellAttributes.default
-    public var g0 = Charset.ascii
-    public var g1 = Charset.ascii
-    public var g2 = Charset.ascii
-    public var g3 = Charset.ascii
-    /// Slot (0...3) invoked into GL by SI/SO/LS2/LS3.
-    public var gl: UInt8 = 0
-    /// Slot used for the next printed cell only (SS2/SS3).
-    public var singleShift: UInt8?
-
-    /// SO selects G1 into GL.
-    public var shiftedOut: Bool {
-        get { gl == 1 }
-        set { gl = newValue ? 1 : 0 }
-    }
-
-    /// DECSCA / SPA: printed cells are protected from selective erase.
-    public var isProtected: Bool {
-        get { pen.flags.contains(.protected) }
-        set {
-            if newValue {
-                pen.flags.insert(.protected)
-            } else {
-                pen.flags.remove(.protected)
-            }
-        }
-    }
-
-    func charset(_ slot: UInt8) -> Charset {
-        switch slot {
-        case 0: g0
-        case 1: g1
-        case 2: g2
-        default: g3
-        }
-    }
-
-    mutating func setCharset(_ slot: UInt8, _ set: Charset) {
-        switch slot {
-        case 0: g0 = set
-        case 1: g1 = set
-        case 2: g2 = set
-        default: g3 = set
-        }
-    }
-
-    @inline(__always) var activeCharset: Charset {
-        charset(singleShift ?? gl)
-    }
-
-    /// No translation applies to the next printed cell.
-    @inline(__always) var printsPlain: Bool {
-        singleShift == nil && charset(gl) == .ascii
-    }
-}
-
 /// Complete terminal model: screens, scrollback, cursor, modes.
 ///
 /// Mutated only by the parser on the session's terminal queue. All cell
@@ -99,11 +12,13 @@ public struct TerminalState: ~Copyable {
     public internal(set) var grid: Grid
     var inactiveGrid: Grid
     var graphemes = GraphemeTable()
-    private let scrollbackLimitBytes: Int
 
     public internal(set) var cursor = Cursor()
     var savedPrimary = Cursor()
     var savedAlternate = Cursor()
+    /// Position of the live primary cursor while its grid is inactive;
+    /// independent of the application's DECSC saved cursor.
+    var inactivePrimaryCursor = Cursor()
     private var savedPrimaryModes: Modes = .initial
     private var savedAlternateModes: Modes = .initial
 
@@ -120,6 +35,9 @@ public struct TerminalState: ~Copyable {
     var protectedMode = ProtectedMode.off
 
     public internal(set) var modes: Modes = .initial
+    /// Identifies each new synchronized frame, even when a single parser
+    /// batch ends one frame and begins the next.
+    private(set) var synchronizedOutputGeneration: UInt64 = 0
     public internal(set) var cursorStyle = CursorStyle.block
     public internal(set) var palette: Palette
     var defaultPalette: Palette
@@ -165,28 +83,55 @@ public struct TerminalState: ~Copyable {
     /// Per slot: last absolute row its cells can occupy (.max: unknown).
     var hyperlinkLastRow: [Int] = []
     var hyperlinkScanCooldown = 0
+    /// First history row at which a fully occupied link table may free an id.
+    var hyperlinkReclaimAfter: Int?
 
     /// Current selection, in absolute rows (see `Selection.swift`).
     public internal(set) var selection: Selection?
+    /// Changes when resizing, clearing, resetting or switching screens
+    /// invalidates retained cell coordinates. Ordinary output and viewport
+    /// scrolling preserve it; callers must also check row availability.
+    public internal(set) var addressingGeneration: UInt64 = 0
     /// Search matches, oldest first, and the selected one.
+    /// Search results ordered by both start and end position.
     public internal(set) var searchMatches: [TerminalRange] = []
     public internal(set) var searchSelected: Int?
+    var searchQuery: String?
+    var searchNeedsRefresh = false
 
     /// tmux control-mode bytes received since the host last drained them.
     public var controlModeData: [UInt8] = []
+    /// Byte offsets for pending end events, keeping multiple streams apart.
+    var controlModeEndOffsets: [Int] = []
     public internal(set) var isControlMode = false
     var dcsKind = DCSKind.ignored
     var dcsBuffer: [UInt8] = []
 
-    enum DCSKind { case ignored, tmux, termcap, statusString }
+    enum DCSKind: Sendable { case ignored, tmux, termcap, statusString }
 
-    /// Pixel size of one cell, for XTWINOPS reports.
-    public var cellPixelSize = (width: 0, height: 0)
+    /// Pixel size of one cell, for XTWINOPS and in-band resize reports.
+    public var cellPixelSize = (width: 0, height: 0) {
+        didSet {
+            cellPixelSize = (max(0, cellPixelSize.width), max(0, cellPixelSize.height))
+            if cellPixelSize.width != oldValue.width || cellPixelSize.height != oldValue.height,
+               modes.contains(.inBandResize) {
+                reportSize()
+            }
+        }
+    }
+
+    var textAreaPixelSize: (width: Int, height: Int) {
+        func extent(_ cells: Int, _ size: Int) -> Int {
+            let (value, overflow) = cells.multipliedReportingOverflow(by: size)
+            return overflow ? Int.max : value
+        }
+        return (extent(columns, cellPixelSize.width), extent(rows, cellPixelSize.height))
+    }
 
     /// Shell integration and host-facing state (`TerminalState+Shell.swift`).
     public internal(set) var semanticState = SemanticState.none
-    /// The shell redraws its prompt after a resize (OSC 133 `redraw=1`).
-    var promptRedraws = false
+    /// Which prompt rows the shell redraws after a resize (OSC 133 `redraw`).
+    var promptRedraw = PromptRedraw.none
     /// Where the command line being typed starts (OSC 133 ; B), as an
     /// offset into its logical line; that line's first row carries the
     /// grid's input-line flag, so the point follows scrolling and reflow.
@@ -219,12 +164,13 @@ public struct TerminalState: ~Copyable {
     /// `programStatus` changed since the last `takeProgramStatusChange()`.
     public internal(set) var programStatusChanged = false
 
-    private let widths = UnicodeWidth.table
-    private var lastPrinted: UInt32 = 0
+    let widths = UnicodeWidth.table
+    var lastPrinted: UInt32 = 0
 
     /// - Parameters:
     ///   - scrollbackLimitBytes: cell memory for history (Ghostty's `scrollback-limit`).
-    ///   - scrollbackLimitRows: additional cap on history lines.
+    ///   - scrollbackLimitRows: additional cap on history lines;
+    ///     nonpositive values disable history.
     public init(
         columns: Int, rows: Int, scrollbackLimitBytes: Int = 10_000_000,
         scrollbackLimitRows: Int = 100_000, palette: Palette = .standard,
@@ -232,11 +178,9 @@ public struct TerminalState: ~Copyable {
         let columns = max(1, columns), rows = max(1, rows)
         self.columns = columns
         self.rows = rows
-        grid = Grid(columns: columns, rows: rows)
-        self.scrollbackLimitBytes = scrollbackLimitBytes
         grid = Grid(
             columns: columns, rows: rows, historyLimitBytes: scrollbackLimitBytes,
-            maxHistoryRows: max(1, scrollbackLimitRows),
+            maxHistoryRows: scrollbackLimitRows,
         )
         inactiveGrid = Grid(columns: columns, rows: rows)
         scrollBottom = rows - 1
@@ -253,6 +197,7 @@ public struct TerminalState: ~Copyable {
     /// Pending events, with title and directory changes coalesced to the
     /// latest value.
     public mutating func takeEvents() -> [TerminalEvent] {
+        controlModeEndOffsets.removeAll(keepingCapacity: true)
         guard !events.isEmpty || titleChanged || directoryChanged || commandFinished else { return [] }
         var out = events
         events.removeAll(keepingCapacity: true)
@@ -288,416 +233,6 @@ public struct TerminalState: ~Copyable {
         let d = damage
         damage = .none
         return d
-    }
-
-    // MARK: Printing
-
-    /// Fast paths only handle the common case: full-width margins, no
-    /// insert mode and no charset translation.
-    @inline(__always) private var printsFast: Bool {
-        !modes.contains(.insert) && cursor.printsPlain && scrollLeft == 0 && scrollRight == columns - 1
-    }
-
-    /// Bulk path for printable ASCII (0x20...0x7E).
-    mutating func printASCII(_ bytes: UnsafeBufferPointer<UInt8>) {
-        if !printsFast {
-            for b in bytes {
-                print(UInt32(b))
-            }
-            return
-        }
-        let pen = cursor.pen
-        let n = bytes.count
-        var i = 0
-        while i < n {
-            if cursor.pendingWrap {
-                guard modes.contains(.autowrap) else {
-                    // No autowrap: the last column keeps being overwritten.
-                    writeCell(UInt32(bytes[n - 1]), .narrow)
-                    break
-                }
-                printWrap()
-            }
-            let row = grid.row(cursor.y)
-            var x = cursor.x
-            let chunk = min(columns - x, n - i)
-            let end = x + chunk
-            // Cells before the extent may hold wide characters to split.
-            let checked = min(end, grid.extent(cursor.y))
-            if x < checked {
-                // Overwriting the first half of a wide character at the
-                // chunk's edge orphans its tail; other cells are rewritten.
-                if row[x].width == 0 || (x <= 1 && row[x].width == 2) {
-                    writeCell(UInt32(bytes[i]), .narrow)
-                    x += 1
-                    i += 1
-                }
-                while x < checked {
-                    row[x] = Cell(glyph: UInt32(bytes[i]), attributes: pen, width: 1)
-                    x += 1
-                    i += 1
-                }
-                if x < columns, row[x].width == 0 {
-                    // The last write split a wide character.
-                    row[x] = eraseCell
-                }
-            }
-            // Past the extent every cell is blank: store whole 16-byte cells.
-            if x < end {
-                Self.storeASCII(bytes.baseAddress! + i, count: end - x, pen: pen, into: row + x)
-                i += end - x
-                x = end
-            }
-            grid.extend(cursor.y, to: x)
-            damage.insert(row: cursor.y)
-            if x >= columns {
-                cursor.x = columns - 1
-                cursor.pendingWrap = true
-            } else {
-                cursor.x = x
-            }
-        }
-        lastPrinted = UInt32(bytes[n - 1])
-    }
-
-    /// Writes ASCII cells as SIMD stores of a cell template whose first
-    /// lane (the glyph) is replaced per byte.
-    /// A cell as one 16-byte vector (its size is 15 bytes, stride 16).
-    @inline(__always)
-    static func cellVector(_ cell: Cell) -> SIMD4<UInt32> {
-        var v = SIMD4<UInt32>()
-        withUnsafeMutableBytes(of: &v) { $0.storeBytes(of: cell, as: Cell.self) }
-        return v
-    }
-
-    @inline(__always)
-    static func storeASCII(_ src: UnsafePointer<UInt8>, count: Int, pen: CellAttributes, into dst: UnsafeMutablePointer<Cell>) {
-        let base = cellVector(Cell(glyph: 0, attributes: pen, width: 1))
-        let raw = UnsafeMutableRawPointer(dst)
-        for k in 0 ..< count {
-            var cell = base
-            cell[0] = UInt32(src[k])
-            raw.storeBytes(of: cell, toByteOffset: k &* 16, as: SIMD4<UInt32>.self)
-        }
-    }
-
-    /// Batched path for a run of printable scalars (mixed ASCII/UTF-8).
-    /// Narrow and wide scalars that cannot join the previous cluster are
-    /// written inline; anything else defers to `print`.
-    mutating func printScalars(_ scalars: UnsafeBufferPointer<UInt32>) {
-        if !printsFast {
-            for cp in scalars {
-                print(cp)
-            }
-            return
-        }
-        let pen = cursor.pen
-        var tailPen = pen
-        tailPen.flags.insert(.spacerTail)
-        let narrow = Self.cellVector(Cell(glyph: 0, attributes: pen, width: 1))
-        let wide = Self.cellVector(Cell(glyph: 0, attributes: pen, width: 2))
-        let tail = Self.cellVector(Cell(glyph: 0, attributes: tailPen, width: 0))
-        let autowrap = modes.contains(.autowrap)
-        let clustering = modes.contains(.graphemeCluster)
-        let widths = widths
-        let graphemeTables = GraphemeBreak.tables
-        let scalarInfo = ScalarInfoTable.shared
-        let columns = columns
-        let n = scalars.count
-        var i = 0
-        // Last scalar of the cell before the cursor, looked up only when a
-        // scalar that could join it arrives.
-        var previous: UInt32?
-        var previousKnown = false
-        while i < n {
-            let cp = scalars[i]
-            if cp > 0xFF, !previousKnown {
-                previous = scalarBeforeCursor()
-                previousKnown = true
-            }
-            if Self.mayJoin(cp, after: previous, clustering: clustering, widths: widths) {
-                print(cp)
-                previous = cp
-                i += 1
-                continue
-            }
-            if cursor.pendingWrap {
-                guard autowrap else { print(cp); previous = cp; previousKnown = true; i += 1; continue }
-                printWrap()
-            }
-            // Write a run of narrow and wide scalars on the current row; a
-            // wide scalar that does not fit goes through `print` to wrap.
-            // Cells at or past the row's extent are blank, so only cells
-            // before it need wide-character splitting.
-            let row = grid.row(cursor.y)
-            let raw = UnsafeMutableRawPointer(row)
-            let clean = grid.extent(cursor.y)
-            var x = cursor.x
-            let start = i
-            // Break class of the previous scalar in this run: below U+0300
-            // every scalar behaves as Other for joining purposes.
-            var previousClass = 0
-            while i < n, x < columns {
-                let c = scalars[i]
-                let w: Int, cls: Int
-                if c < 0x300 {
-                    (w, cls) = (1, 0)
-                } else {
-                    let info = scalarInfo.lookup(c)
-                    w = Int(info >> 5)
-                    cls = Int(info & 0x1F)
-                    // Joining within the run (the first scalar was checked above).
-                    if clustering, i > start, graphemeTables.joinMask[previousClass] >> UInt32(cls) & 1 != 0 {
-                        break
-                    }
-                }
-                if w == 0 || (w == 2 && x + 1 >= columns) {
-                    break
-                }
-                previousClass = cls
-                if x < clean {
-                    if row[x].width != 1 {
-                        splitWide(row, x)
-                    }
-                    if w == 2, row[x + 1].width != 1 {
-                        splitWide(row, x + 1)
-                    }
-                }
-                var cell = w == 1 ? narrow : wide
-                cell[0] = c
-                raw.storeBytes(of: cell, toByteOffset: x &* 16, as: SIMD4<UInt32>.self)
-                if w == 2 {
-                    raw.storeBytes(of: tail, toByteOffset: (x &+ 1) &* 16, as: SIMD4<UInt32>.self)
-                }
-                x += w
-                i += 1
-            }
-            if i > start {
-                lastPrinted = scalars[i - 1]
-                previous = scalars[i - 1]
-                previousKnown = true
-            }
-            if x == cursor.x, i < n, !cursor.pendingWrap {
-                print(scalars[i]) // wide scalar at the last column, or a joiner
-                previous = scalars[i]
-                previousKnown = true
-                i += 1
-                continue
-            }
-            grid.extend(cursor.y, to: x)
-            damage.insert(row: cursor.y)
-            if x >= columns {
-                cursor.x = columns - 1
-                cursor.pendingWrap = true
-            } else {
-                cursor.x = x
-            }
-        }
-    }
-
-    /// General path for one printable scalar (Ghostty `Terminal.print`).
-    mutating func print(_ c: UInt32) {
-        let rightLimit = cursor.x > scrollRight ? columns : scrollRight + 1
-        if c > 0xFF, modes.contains(.graphemeCluster), cursor.x > 0, printJoining(c, rightLimit: rightLimit) {
-            return
-        }
-        // Regional indicators pair into a two-column flag.
-        let width = c <= 0xFF ? 1 : (0x1F1E6 ... 0x1F1FF).contains(c) ? 2 : Int(widths.lookup(c))
-        if width == 0 {
-            attachZeroWidth(c)
-            return
-        }
-        lastPrinted = c
-        if cursor.pendingWrap, modes.contains(.autowrap) {
-            printWrap()
-        }
-        if modes.contains(.insert), cursor.x + width < columns {
-            insertBlanks(width)
-        }
-        if width == 1 {
-            writeCell(c, .narrow)
-        } else if rightLimit - scrollLeft > 1 {
-            if cursor.x == rightLimit - 1 {
-                guard modes.contains(.autowrap) else { return }
-                if rightLimit == columns {
-                    grid.setWrapped(cursor.y, true)
-                    writeCell(0, .spacerHead)
-                } else {
-                    writeCell(0, .narrow)
-                }
-                printWrap()
-            }
-            writeCell(c, .wide)
-            cursor.x += 1
-            writeCell(0, .spacerTail)
-        } else {
-            writeCell(0, .narrow) // a wide character never fits one column
-        }
-        if cursor.x == rightLimit - 1 {
-            cursor.pendingWrap = true
-        } else {
-            cursor.x += 1
-        }
-    }
-
-    enum CellKind { case narrow, wide, spacerTail, spacerHead }
-
-    @inline(__always)
-    static func kind(of cell: Cell) -> CellKind {
-        if cell.width == 2 {
-            return .wide
-        }
-        if cell.width == 0 || cell.flags.contains(.spacerTail) {
-            return .spacerTail
-        }
-        return cell.flags.contains(.spacerHead) ? .spacerHead : .narrow
-    }
-
-    /// Translates `c` through the invoked charset, consuming a single shift.
-    private mutating func mapCharset(_ c: UInt32) -> UInt32 {
-        let set = cursor.charset(cursor.singleShift ?? cursor.gl)
-        cursor.singleShift = nil
-        switch set {
-        case .ascii: return c
-        case _ where c > 0xFF: return 0x20
-        case .british: return c == 0x23 ? 0xA3 : c
-        case .decSpecialGraphics: return (0x5F ... 0x7E).contains(c) ? Self.decSpecial[Int(c - 0x5F)] : c
-        }
-    }
-
-    /// Writes one cell at the cursor (Ghostty `printCell`), clearing the
-    /// other half of a wide character it replaces.
-    mutating func writeCell(_ c: UInt32, _ kind: CellKind) {
-        let glyph = cursor.printsPlain ? c : mapCharset(c)
-        let row = grid.row(cursor.y)
-        let x = cursor.x
-        let old = Self.kind(of: row[x])
-        if old != kind {
-            switch old {
-            case .wide where x < columns - 1:
-                row[x + 1] = eraseCell
-                clearSpacerHeadAbove(x)
-            case .spacerTail where x > 0:
-                row[x - 1] = eraseCell
-                clearSpacerHeadAbove(x)
-            default: break
-            }
-        }
-        var attributes = cursor.pen
-        switch kind {
-        case .narrow, .wide: break
-        case .spacerTail: attributes.flags.insert(.spacerTail)
-        case .spacerHead: attributes.flags.insert(.spacerHead)
-        }
-        row[x] = Cell(
-            glyph: kind == .narrow || kind == .wide ? glyph : 0, attributes: attributes,
-            width: kind == .wide ? 2 : kind == .spacerTail ? 0 : 1,
-        )
-        grid.extend(cursor.y, to: x + 1)
-        damage.insert(row: cursor.y)
-    }
-
-    /// A wide character at the start of a row lost its spacer head on the
-    /// row above.
-    private func clearSpacerHeadAbove(_ x: Int) {
-        guard cursor.y > 0, x <= 1 else { return }
-        let above = grid.row(cursor.y - 1)
-        above[columns - 1].attributes.flags.remove(.spacerHead)
-    }
-
-    /// Whether `c` might extend the cluster ending in `previous` (nil:
-    /// unknown), so the batched path must hand it to `print`.
-    @inline(__always)
-    private static func mayJoin(_ c: UInt32, after previous: UInt32?, clustering: Bool, widths: WidthTable) -> Bool {
-        if c <= 0xFF {
-            return false
-        }
-        guard clustering else { return widths.lookup(c) == 0 }
-        guard let previous else { return true }
-        return GraphemeBreak.mayJoin(previous: previous, c)
-    }
-
-    /// The last scalar of the cell a joining scalar would attach to, or a
-    /// stand-in that joins at least as readily (nil: unknown).
-    private func scalarBeforeCursor() -> UInt32? {
-        if !modes.contains(.autowrap), cursor.x == columns - 1 {
-            return nil
-        }
-        var x = cursor.pendingWrap ? cursor.x : cursor.x - 1
-        let row = grid.row(cursor.y)
-        if x >= 0, Self.kind(of: row[x]) == .spacerTail {
-            x -= 1
-        }
-        guard x >= 0 else { return 0x20 } // nothing to join
-        let cell = row[x]
-        if cell.isGrapheme {
-            return graphemes.scalars(cell.glyph).last
-        }
-        return cell.glyph == 0 ? 0x20 : cell.glyph
-    }
-
-    /// Zero-width scalar outside a grapheme cluster (mode 2027 off, or no
-    /// previous cell): attaches to the cell before the cursor.
-    private mutating func attachZeroWidth(_ c: UInt32) {
-        if modes.contains(.graphemeCluster) {
-            return
-        }
-        let left = modes.contains(.autowrap) && cursor.pendingWrap ? 0 : 1
-        if cursor.x == 0, left == 1 {
-            return
-        }
-        let row = grid.row(cursor.y)
-        var x = cursor.x - left
-        if Self.kind(of: row[x]) == .spacerTail, x > 0 {
-            x -= 1
-        }
-        guard row[x].glyph != 0 || row[x].isGrapheme else { return }
-        if c == 0xFE0F || c == 0xFE0E {
-            let base = row[x].isGrapheme ? graphemes.scalars(row[x].glyph).first ?? 0 : row[x].glyph
-            guard GraphemeBreak.isExtendedPictographic(base) else { return }
-        }
-        appendGrapheme(c, x: x, y: cursor.y)
-    }
-
-    /// Appends `c` to the cluster in cell (`x`, `y`).
-    mutating func appendGrapheme(_ c: UInt32, x: Int, y: Int) {
-        let row = grid.row(y)
-        if row[x].isGrapheme, graphemes.scalars(row[x].glyph).count > Self.graphemeMaxLength {
-            return
-        }
-        let id = graphemes.appending(c, to: row[x])
-        row[x].glyph = id
-        row[x].attributes.flags.insert(.grapheme)
-        damage.insert(row: y)
-        // Entries are append-only, so the table only grows here; checking on
-        // every append bounds it on either screen, scrolling or not.
-        if graphemes.needsCompaction {
-            compactGraphemes()
-        }
-    }
-
-    /// Ghostty's `grapheme_max_len`: scalars joined to a cell's base.
-    static let graphemeMaxLength = 64
-
-    /// Clears the other half of a wide character being overwritten at `x`.
-    @inline(__always)
-    private func splitWide(_ row: UnsafeMutablePointer<Cell>, _ x: Int) {
-        let cell = row[x]
-        if cell.width == 2, x + 1 < columns {
-            row[x + 1] = eraseCell
-        } else if cell.width == 0, x > 0 {
-            row[x - 1] = eraseCell
-        }
-    }
-
-    /// Wraps to the left margin of the next line (Ghostty `printWrap`);
-    /// only a wrap from the last column marks the row soft-wrapped.
-    mutating func printWrap() {
-        if cursor.x == columns - 1 {
-            grid.setWrapped(cursor.y, true)
-        }
-        index()
-        cursor.x = scrollLeft
     }
 
     // MARK: C0 controls
@@ -739,6 +274,7 @@ public struct TerminalState: ~Copyable {
             } else if hasHorizontalMargins {
                 scrollUp(1)
             } else {
+                invalidateSelection(rows: scrollTop ..< scrollBottom + 1, from: 0, to: columns)
                 grid.scrollUp(top: scrollTop, bottom: scrollBottom, count: 1, fill: eraseCell)
                 markScrolled()
             }
@@ -772,10 +308,27 @@ public struct TerminalState: ~Copyable {
         let n = min(count, scrollBottom + 1)
         guard n > 0 else { return }
         if isAlternateScreen {
+            invalidateSelection(rows: 0 ..< scrollBottom + 1, from: 0, to: columns)
             grid.scrollUp(top: 0, bottom: scrollBottom, count: n, fill: eraseCell)
         } else {
             // Rows move into history by id; no cells are copied.
+            let regionEnd = screenAbsoluteRow(scrollBottom)
             grid.scrollUpIntoHistory(count: n, bottom: scrollBottom, fill: eraseCell)
+            if let selection {
+                // Stationary rows below the region acquire new absolute row
+                // numbers. A selection crossing the boundary is no longer
+                // contiguous because the region gains blank rows between them.
+                if selection.start.row <= regionEnd, selection.end.row > regionEnd {
+                    setSelection(nil)
+                } else {
+                    var retained = selection
+                    if retained.start.row > regionEnd {
+                        retained.anchor.row += n
+                        retained.head.row += n
+                    }
+                    clipSelectionToAvailableRows(retained)
+                }
+            }
             if viewportOffset > 0 {
                 viewportOffset = min(viewportOffset + n, grid.historyCount)
             }
@@ -807,6 +360,7 @@ public struct TerminalState: ~Copyable {
     }
 
     private mutating func markScrolled() {
+        markSearchDirty()
         if scrollTop == 0, scrollBottom == rows - 1 {
             damage.setFull()
         } else {
@@ -949,10 +503,12 @@ public struct TerminalState: ~Copyable {
                 while b < x1, !row[b].flags.contains(.protected) {
                     b += 1
                 }
+                invalidateSelection(rows: y ..< y + 1, from: a, to: b)
                 grid.fill(row: y, from: a, to: b, with: eraseCell)
                 a = b
             }
         } else {
+            invalidateSelection(rows: y ..< y + 1, from: x0, to: x1)
             grid.fill(row: y, from: x0, to: x1, with: eraseCell)
         }
         damage.insert(row: y)
@@ -960,50 +516,61 @@ public struct TerminalState: ~Copyable {
 
     /// Clears a wide character straddling the boundary before column `x`
     /// of the cursor row (Ghostty `splitCellBoundary`).
-    private mutating func splitCellBoundary(_ x: Int) {
+    private mutating func splitCellBoundary(_ x: Int, protected: Bool = false) {
         let y = cursor.y
         let row = grid.row(y)
         if x == columns {
             if grid.isWrapped(y), row[columns - 1].flags.contains(.spacerHead) {
-                clearCells(row: y, from: columns - 1, to: columns)
+                clearCells(row: y, from: columns - 1, to: columns, protected: protected)
             }
             return
         }
         if x <= 1, y > 0, grid.isWrapped(y - 1), row[0].width == 2,
            grid.row(y - 1)[columns - 1].flags.contains(.spacerHead) {
-            clearCells(row: y - 1, from: columns - 1, to: columns)
+            clearCells(row: y - 1, from: columns - 1, to: columns, protected: protected)
         }
         if x > 0, row[x - 1].width == 2 {
-            clearCells(row: y, from: x - 1, to: x + 1)
+            clearCells(row: y, from: x - 1, to: x + 1, protected: protected)
         }
     }
 
     /// Clears the pending wrap and unwraps the cursor row.
-    private mutating func resetCursorWrap() {
+    private mutating func resetCursorWrap(protected: Bool = false) {
         cursor.pendingWrap = false
         guard grid.isWrapped(cursor.y) else { return }
+        markSearchDirty()
         grid.setWrapped(cursor.y, false)
-        if grid.row(cursor.y)[columns - 1].flags.contains(.spacerHead) {
-            clearCells(row: cursor.y, from: columns - 1, to: columns)
+        let row = grid.row(cursor.y)
+        if row[columns - 1].flags.contains(.spacerHead) {
+            if protected, row[columns - 1].flags.contains(.protected) {
+                // Unwrapping removes the spacer role, but a protected blank
+                // still keeps its colors, attributes, and selection.
+                row[columns - 1].attributes.flags.remove(.spacerHead)
+                damage.insert(row: cursor.y)
+            } else {
+                clearCells(row: cursor.y, from: columns - 1, to: columns)
+            }
         }
     }
 
     /// ECH: erases `n` cells from the cursor, including a wide character's
     /// tail at the end.
     private mutating func eraseChars(_ n: Int) {
+        let protected = protectedMode == .iso
         let remaining = columns - cursor.x
         var count = min(remaining, max(n, 1))
         if count != remaining, grid.row(cursor.y)[cursor.x + count - 1].width == 2 {
             count += 1
         }
-        splitCellBoundary(cursor.x)
-        splitCellBoundary(cursor.x + count)
-        resetCursorWrap()
-        clearCells(row: cursor.y, from: cursor.x, to: cursor.x + count, protected: protectedMode == .iso)
+        splitCellBoundary(cursor.x, protected: protected)
+        splitCellBoundary(cursor.x + count, protected: protected)
+        resetCursorWrap(protected: protected)
+        clearCells(row: cursor.y, from: cursor.x, to: cursor.x + count, protected: protected)
     }
 
     /// EL / DECSEL (`selective`: protected cells survive).
     private mutating func eraseLine(_ mode: Int, selective: Bool = false) {
+        let protected = selective || protectedMode == .iso
         let row = grid.row(cursor.y)
         let start: Int, end: Int
         switch mode {
@@ -1012,18 +579,18 @@ public struct TerminalState: ~Copyable {
             if x > 0, Self.kind(of: row[x]) == .spacerTail {
                 x -= 1
             }
-            resetCursorWrap()
+            resetCursorWrap(protected: protected)
             (start, end) = (x, columns)
         case 1:
             let x = row[cursor.x].width == 2 ? cursor.x + 1 : cursor.x
             (start, end) = (0, x + 1)
         case 2:
-            resetCursorWrap()
+            resetCursorWrap(protected: protected)
             (start, end) = (0, columns)
         default: return
         }
         cursor.pendingWrap = false
-        clearCells(row: cursor.y, from: start, to: end, protected: selective || protectedMode == .iso)
+        clearCells(row: cursor.y, from: start, to: end, protected: protected)
     }
 
     /// Clears whole rows; an unprotected clear also unwraps them.
@@ -1048,9 +615,11 @@ public struct TerminalState: ~Copyable {
             eraseLine(1, selective: selective)
             clearRows(0 ..< cursor.y, protected: protected)
         case 2:
+            addressingGeneration &+= 1
             clearRows(0 ..< rows, protected: protected)
             cursor.pendingWrap = false
         case 3:
+            addressingGeneration &+= 1
             invalidateSelection()
             forgetHyperlinkRows()
             if isAlternateScreen {
@@ -1079,7 +648,8 @@ public struct TerminalState: ~Copyable {
     /// Prepares row `y` for having cells in the margins moved: clears wide
     /// characters cut by a margin and drops a spacer head that would no
     /// longer lead into the next row.
-    private func rowWillBeShifted(_ y: Int) {
+    private mutating func rowWillBeShifted(_ y: Int) {
+        invalidateSelection(rows: y ..< y + 1, from: scrollLeft, to: scrollRight + 1)
         let row = grid.row(y)
         if scrollRight == columns - 1 || scrollLeft < 2 {
             row[columns - 1].attributes.flags.remove(.spacerHead)
@@ -1164,10 +734,11 @@ public struct TerminalState: ~Copyable {
 
     /// ICH: inserts blanks at the cursor, shifting cells up to the right
     /// margin.
-    private mutating func insertBlanks(_ n: Int) {
+    mutating func insertBlanks(_ n: Int) {
         cursor.pendingWrap = false
         guard n > 0, cursor.x >= scrollLeft, cursor.x <= scrollRight else { return }
         let y = cursor.y, x = cursor.x
+        invalidateSelection(rows: y ..< y + 1, from: x, to: scrollRight + 1)
         let row = grid.row(y)
         if Self.kind(of: row[x]) == .spacerTail, x > 0 {
             clearCells(row: y, from: x - 1, to: x + 1)
@@ -1194,6 +765,7 @@ public struct TerminalState: ~Copyable {
         guard n > 0, cursor.x >= scrollLeft, cursor.x <= scrollRight else { return }
         let y = cursor.y, x = cursor.x
         let rem = scrollRight - x + 1
+        invalidateSelection(rows: y ..< y + 1, from: x, to: scrollRight + 1)
         let count = min(n, rem)
         splitCellBoundary(x)
         splitCellBoundary(x + count)
@@ -1252,6 +824,7 @@ public struct TerminalState: ~Copyable {
         case (0x3E, 0, 0x71): reply("\u{1B}P>|swiftty 0.1\u{1B}\\") // XTVERSION
         case (0, 0x20, 0x71): // DECSCUSR
             let p = csi.value(0)
+            guard csi.count <= 1, (0 ... 6).contains(p) else { return }
             cursorStyle = p <= 2 ? .block : p <= 4 ? .underline : .bar
             if p == 0 || p % 2 == 1 {
                 modes.insert(.cursorBlink)
@@ -1399,124 +972,12 @@ public struct TerminalState: ~Copyable {
     private mutating func windowOperation(_ csi: borrowing CSISequence) {
         switch csi.value(0) {
         case 14:
-            reply("\u{1B}[4;\(rows * cellPixelSize.height);\(columns * cellPixelSize.width)t")
+            reply("\u{1B}[4;\(textAreaPixelSize.height);\(textAreaPixelSize.width)t")
         case 16: reply("\u{1B}[6;\(cellPixelSize.height);\(cellPixelSize.width)t")
         case 18: reply("\u{1B}[8;\(rows);\(columns)t")
         case 22: pushTitle()
         case 23: popTitle()
         default: break
-        }
-    }
-
-    // MARK: SGR
-
-    private mutating func selectGraphicRendition(_ csi: borrowing CSISequence) {
-        if csi.count == 0 {
-            // SGR leaves hyperlinks and protection alone.
-            cursor.pen = CellAttributes(flags: cursor.pen.flags.intersection(.protected), link: cursor.pen.link)
-            return
-        }
-        var pen = cursor.pen
-        var i = 0
-        while i < csi.count {
-            let p = csi.value(i)
-            switch p {
-            case 0: pen = CellAttributes(flags: pen.flags.intersection(.protected), link: pen.link)
-            case 1: pen.flags.insert(.bold)
-            case 2: pen.flags.insert(.faint)
-            case 3: pen.flags.insert(.italic)
-            case 4:
-                if csi.isSubparameter(i + 1) {
-                    i += 1
-                    pen.flags.subtract(.anyUnderline)
-                    switch csi.value(i) {
-                    case 0: break
-                    case 2: pen.flags.insert(.doubleUnderline)
-                    case 3: pen.flags.formUnion([.underline, .underlineStyleA])
-                    case 4: pen.flags.formUnion([.underline, .underlineStyleB])
-                    case 5: pen.flags.formUnion([.underline, .underlineStyleA, .underlineStyleB])
-                    default: pen.flags.insert(.underline)
-                    }
-                } else {
-                    pen.flags.subtract(.anyUnderline)
-                    pen.flags.insert(.underline)
-                }
-            case 5, 6: pen.flags.insert(.blink)
-            case 7: pen.flags.insert(.inverse)
-            case 8: pen.flags.insert(.invisible)
-            case 9: pen.flags.insert(.strikethrough)
-            case 21: pen.flags.subtract(.anyUnderline); pen.flags.insert(.doubleUnderline)
-            case 22: pen.flags.remove([.bold, .faint])
-            case 23: pen.flags.remove(.italic)
-            case 24: pen.flags.subtract(.anyUnderline)
-            case 25: pen.flags.remove(.blink)
-            case 27: pen.flags.remove(.inverse)
-            case 28: pen.flags.remove(.invisible)
-            case 29: pen.flags.remove(.strikethrough)
-            case 30 ... 37: pen.foreground = .palette(UInt8(p - 30))
-            case 38: if let c = extendedColor(csi, &i) {
-                    pen.foreground = c
-                }
-            case 39: pen.foreground = .default
-            case 40 ... 47: pen.background = .palette(UInt8(p - 40))
-            case 48: if let c = extendedColor(csi, &i) {
-                    pen.background = c
-                }
-            case 49: pen.background = .default
-            case 53: pen.flags.insert(.overline)
-            case 55: pen.flags.remove(.overline)
-            case 58: if let c = extendedColor(csi, &i) {
-                    pen.underlineColor = internUnderlineColor(c)
-                }
-            case 59: pen.underlineColor = 0
-            case 90 ... 97: pen.foreground = .palette(UInt8(p - 90 + 8))
-            case 100 ... 107: pen.background = .palette(UInt8(p - 100 + 8))
-            default: break
-            }
-            i += 1
-        }
-        cursor.pen = pen
-    }
-
-    /// Parses `38;5;n`, `38;2;r;g;b` and their colon forms; leaves `i` on
-    /// the last consumed parameter.
-    private func extendedColor(_ csi: borrowing CSISequence, _ i: inout Int) -> TerminalColor? {
-        if csi.isSubparameter(i + 1) {
-            var end = i + 1
-            while csi.isSubparameter(end + 1) {
-                end += 1
-            }
-            defer { i = end }
-            let kind = csi.value(i + 1)
-            let args = end - (i + 1)
-            if kind == 5, args >= 1 {
-                return .palette(UInt8(clamping: csi.value(i + 2)))
-            }
-            if kind == 2, args >= 3 {
-                let base = end - 2 // last three are r, g, b (optional colorspace id first)
-                return .rgb(
-                    UInt8(clamping: csi.value(base)),
-                    UInt8(clamping: csi.value(base + 1)),
-                    UInt8(clamping: csi.value(base + 2)),
-                )
-            }
-            return nil
-        }
-        switch csi.value(i + 1) {
-        case 5:
-            defer { i += 2 }
-            return i + 2 < csi.count ? .palette(UInt8(clamping: csi.value(i + 2))) : nil
-        case 2:
-            defer { i += 4 }
-            guard i + 4 < csi.count else { return nil }
-            return .rgb(
-                UInt8(clamping: csi.value(i + 2)),
-                UInt8(clamping: csi.value(i + 3)),
-                UInt8(clamping: csi.value(i + 4)),
-            )
-        default:
-            i += 1
-            return nil
         }
     }
 
@@ -1536,7 +997,14 @@ public struct TerminalState: ~Copyable {
         case 1049:
             if on {
                 saveCursor()
-                enterAlternateScreen(clear: true)
+                enterAlternateScreen()
+                // Every 1049 enable clears, including when already on
+                // the alternate screen. It also saves that screen's cursor.
+                addressingGeneration &+= 1
+                invalidateSelection()
+                grid.clear(rows: 0 ..< rows, with: eraseCell)
+                cursor.pendingWrap = false
+                damage.setFull()
             } else {
                 leaveAlternateScreen()
                 restoreCursor()
@@ -1544,17 +1012,18 @@ public struct TerminalState: ~Copyable {
             return
         case 1047:
             if on {
-                enterAlternateScreen(clear: false)
+                enterAlternateScreen()
             } else {
                 if isAlternateScreen {
-                    grid.clear(rows: 0 ..< rows, with: .blank)
+                    grid.clear(rows: 0 ..< rows, with: eraseCell)
+                    cursor.pendingWrap = false
                 }
                 leaveAlternateScreen()
             }
             return
         case 47:
             if on {
-                enterAlternateScreen(clear: false)
+                enterAlternateScreen()
             } else {
                 leaveAlternateScreen()
             }
@@ -1570,6 +1039,9 @@ public struct TerminalState: ~Copyable {
         }
         guard let mode = Modes.dec(n) else { return }
         if on {
+            if mode == .synchronizedOutput, !modes.contains(mode) {
+                synchronizedOutputGeneration &+= 1
+            }
             if Modes.mouseTracking.contains(mode) {
                 modes.subtract(Modes.mouseTracking)
             }
@@ -1603,21 +1075,23 @@ public struct TerminalState: ~Copyable {
         setCursorPosition(row: 1, column: 1)
     }
 
-    private mutating func enterAlternateScreen(clear: Bool) {
+    private mutating func enterAlternateScreen() {
         guard !isAlternateScreen else { return }
+        inactivePrimaryCursor.x = cursor.x
+        inactivePrimaryCursor.y = cursor.y
+        inactivePrimaryCursor.pendingWrap = cursor.pendingWrap
+        addressingGeneration &+= 1
         invalidateSelection()
         swap(&grid, &inactiveGrid)
         swap(&keyboardFlagStack, &inactiveKeyboardFlagStack)
         modes.insert(.alternateScreen)
-        if clear {
-            grid.clear(rows: 0 ..< rows, with: eraseCell)
-        }
         viewportOffset = 0
         damage.setFull()
     }
 
     private mutating func leaveAlternateScreen() {
         guard isAlternateScreen else { return }
+        addressingGeneration &+= 1
         invalidateSelection()
         swap(&grid, &inactiveGrid)
         swap(&keyboardFlagStack, &inactiveKeyboardFlagStack)
@@ -1651,8 +1125,23 @@ public struct TerminalState: ~Copyable {
     }
 
     private mutating func softReset() {
-        modes.subtract([.insert, .origin, .cursorKeys, .keypadApplication])
+        modes.subtract([
+            .insert,
+            .origin,
+            .cursorKeys,
+            .keypadApplication,
+            .cursorBlink,
+            .reverseWrap,
+            .reverseWrapExtended,
+            .leftRightMargin,
+        ])
         modes.insert([.autowrap, .cursorVisible])
+        cursorStyle = .block
+        for index in 0 ..< 256 where palette.colors[index] != defaultPalette.colors[index] {
+            palette.colors = defaultPalette.colors
+            damage.setFull()
+            break
+        }
         cursor.pen = .default
         (cursor.g0, cursor.g1, cursor.g2, cursor.g3) = (.ascii, .ascii, .ascii, .ascii)
         cursor.gl = 0
@@ -1663,11 +1152,20 @@ public struct TerminalState: ~Copyable {
         scrollBottom = rows - 1
         scrollLeft = 0
         scrollRight = columns - 1
-        savedPrimary = Cursor()
-        savedAlternate = Cursor()
+        // DECSTR resets only the active screen's saved cursor. The
+        // inactive screen may still need it when the application returns.
+        if isAlternateScreen {
+            savedAlternate = Cursor()
+            savedAlternateModes = .initial
+        } else {
+            savedPrimary = Cursor()
+            savedPrimaryModes = .initial
+        }
     }
 
     mutating func fullReset() {
+        addressingGeneration &+= 1
+        discardControlString()
         invalidateSelection()
         resetShellState()
         if programStatus.removeAll() {
@@ -1679,6 +1177,7 @@ public struct TerminalState: ~Copyable {
         freeHyperlinkSlots = []
         hyperlinkLastRow = []
         hyperlinkScanCooldown = 0
+        hyperlinkReclaimAfter = nil
         keyboardFlagStack = []
         inactiveKeyboardFlagStack = []
         if isAlternateScreen {
@@ -1691,6 +1190,9 @@ public struct TerminalState: ~Copyable {
         cursor = Cursor()
         savedPrimary = Cursor()
         savedAlternate = Cursor()
+        inactivePrimaryCursor = Cursor()
+        savedPrimaryModes = .initial
+        savedAlternateModes = .initial
         modes = .initial
         cursorStyle = .block
         palette = defaultPalette
@@ -1737,6 +1239,7 @@ public struct TerminalState: ~Copyable {
             protectedMode = .iso
         case (0, 0x57): cursor.isProtected = false // EPA W
         case (0x23, 0x38): // DECALN #8
+            invalidateSelection()
             cursor.pen = CellAttributes(
                 foreground: cursor.pen.foreground, background: cursor.pen.background,
                 flags: cursor.pen.flags.intersection(.protected), link: cursor.pen.link,
@@ -1761,92 +1264,6 @@ public struct TerminalState: ~Copyable {
         output.append(contentsOf: s.utf8)
     }
 
-    // MARK: Viewport
-
-    /// Scrolls the viewport by `delta` lines (positive = towards history).
-    public mutating func scrollViewport(by delta: Int) {
-        guard !isAlternateScreen else { return }
-        let target = min(max(viewportOffset + delta, 0), grid.historyCount)
-        if target != viewportOffset {
-            viewportOffset = target
-            damage.setFull()
-        }
-    }
-
-    public mutating func scrollViewportToBottom() {
-        scrollViewport(by: -viewportOffset)
-    }
-
-    /// Lines of primary-screen history.
-    public var scrollbackCount: Int {
-        isAlternateScreen ? inactiveGrid.historyCount : grid.historyCount
-    }
-
-    /// History line `index` (0 = oldest) of the primary screen.
-    public func scrollbackLine(_ index: Int) -> (cells: UnsafeBufferPointer<Cell>, wrapped: Bool) {
-        isAlternateScreen ? inactiveGrid.historyLine(index) : grid.historyLine(index)
-    }
-
-    /// Cells shown at visible row `y`, which may come from scrollback.
-    public func viewportRow(_ y: Int) -> (cells: UnsafeBufferPointer<Cell>, wrapped: Bool) {
-        if viewportOffset == 0 {
-            return (grid.cells(row: y), grid.isWrapped(y))
-        }
-        // A non-zero offset implies the primary screen is active.
-        let history = grid.historyCount
-        let v = history - viewportOffset + y
-        if v < history {
-            return grid.historyLine(v)
-        }
-        return (grid.cells(row: v - history), grid.isWrapped(v - history))
-    }
-
-    /// Scalars making up `cell`'s content (empty for a blank cell).
-    public func scalars(of cell: Cell) -> [Unicode.Scalar] {
-        if cell.isGrapheme {
-            return graphemes.scalars(cell.glyph).compactMap(Unicode.Scalar.init)
-        }
-        if cell.glyph == 0 || cell.isSpacer {
-            return []
-        }
-        return Unicode.Scalar(cell.glyph).map { [$0] } ?? []
-    }
-
-    func graphemeScalars(_ id: UInt32) -> UnsafeBufferPointer<UInt32> {
-        graphemes.scalars(id)
-    }
-
-    /// Text of active-screen row `y` with trailing blanks trimmed.
-    public func text(row y: Int) -> String {
-        Self.text(of: grid.cells(row: y), self)
-    }
-
-    /// The visible screen as text lines (trailing blanks trimmed).
-    public var screenLines: [String] {
-        (0 ..< rows).map { Self.text(of: viewportRow($0).cells, self) }
-    }
-
-    public func scrollbackText(_ index: Int) -> String {
-        Self.text(of: scrollbackLine(index).cells, self)
-    }
-
-    private static func text(of cells: UnsafeBufferPointer<Cell>, _ state: borrowing TerminalState) -> String {
-        var s = String.UnicodeScalarView()
-        for cell in cells where !cell.isSpacer {
-            let scalars = state.scalars(of: cell)
-            if scalars.isEmpty {
-                s.append(" ")
-            } else {
-                s.append(contentsOf: scalars)
-            }
-        }
-        var str = String(s)
-        while str.last == " " {
-            str.removeLast()
-        }
-        return str
-    }
-
     // MARK: Resize
 
     public mutating func resize(columns newColumns: Int, rows newRows: Int) {
@@ -1856,6 +1273,7 @@ public struct TerminalState: ~Copyable {
             damage.setFull()
         }
         guard newColumns != columns || newRows != rows else { return }
+        addressingGeneration &+= 1
         clearPromptForResize()
         // A height-only change (an on-screen keyboard, an edit menu) keeps
         // lines intact, so a selection survives it; the rebuilt history
@@ -1871,16 +1289,20 @@ public struct TerminalState: ~Copyable {
             swap(&keyboardFlagStack, &inactiveKeyboardFlagStack)
         } // `grid` is primary now
         // The live cursor first: it must stay on screen.
-        var cursors = alternate ? [savedPrimary] : [cursor, savedPrimary]
+        var cursors = alternate ? [inactivePrimaryCursor, savedPrimary] : [cursor, savedPrimary]
         reflowPrimary(columns: newColumns, rows: newRows, cursors: &cursors, rewrap: modes.contains(.autowrap))
         if alternate {
-            savedPrimary = cursors[0]
+            inactivePrimaryCursor = cursors[0]
+            savedPrimary = cursors[1]
             swap(&grid, &inactiveGrid)
             swap(&keyboardFlagStack, &inactiveKeyboardFlagStack)
             grid.resize(columns: newColumns, rows: newRows)
             cursor.x = min(cursor.x, newColumns - 1)
             cursor.y = min(cursor.y, newRows - 1)
-            cursor.pendingWrap = cursor.pendingWrap && cursor.x == newColumns - 1
+            if cursor.pendingWrap, cursor.x < newColumns - 1 {
+                cursor.x += 1
+                cursor.pendingWrap = false
+            }
         } else {
             cursor = cursors[0]
             savedPrimary = cursors[1]
@@ -1888,6 +1310,16 @@ public struct TerminalState: ~Copyable {
         }
         savedAlternate.x = min(savedAlternate.x, newColumns - 1)
         savedAlternate.y = min(savedAlternate.y, newRows - 1)
+        if savedAlternate.pendingWrap, savedAlternate.x < newColumns - 1 {
+            savedAlternate.x += 1
+            savedAlternate.pendingWrap = false
+        }
+        // Height-only reflow renumbers retained primary rows from zero.
+        // Move old search ranges with them before refreshing, so matching
+        // the selected range still identifies the same occurrence.
+        if !alternate, newColumns == columns, firstBefore != 0 {
+            shiftSearchRows(by: -firstBefore)
+        }
         columns = newColumns
         rows = newRows
         scrollTop = 0
@@ -1902,170 +1334,14 @@ public struct TerminalState: ~Copyable {
             let shift = isAlternateScreen ? 0 : -firstBefore
             carried.anchor.row += shift
             carried.head.row += shift
-            if carried.end.row >= firstAbsoluteRow {
-                setSelection(carried)
-            }
+            clipSelectionToAvailableRows(carried)
         }
+        clearLastPromptRowAfterResize()
         if modes.contains(.inBandResize) {
             reportSize()
         }
         damage.setFull()
-    }
-
-    /// Re-wraps primary screen + scrollback to a new width, keeping each
-    /// cursor on the same logical position (a pending wrap is the position
-    /// after its cell). Without `rewrap` (autowrap off) rows are truncated
-    /// instead. Allocates temporaries; resize is not a hot path.
-    private mutating func reflowPrimary(columns newColumns: Int, rows newRows: Int, cursors: inout [Cursor], rewrap: Bool) {
-        // A height change keeps the old top row in place, as Ghostty does:
-        // shrinking drops blank rows below the content before pushing rows
-        // into history, and growing pulls history back down only when the
-        // live cursor sits on the bottom row. The old top row is tracked as
-        // one more mark. A width change re-wraps and keeps the bottom.
-        let pullsHistory = newColumns != grid.columns
-            || (newRows > grid.rows && cursors[0].y >= grid.rows - 1)
-        let screenTopMark = cursors.count
-        cursors.append(Cursor())
-        defer { cursors.removeLast() }
-        // 1. Gather logical lines.
-        var lastRow = min(cursors.map(\.y).max() ?? 0, grid.rows - 1)
-        for y in stride(from: grid.rows - 1, to: lastRow, by: -1)
-            where grid.cells(row: y).contains(where: { !$0.isBlank }) {
-            lastRow = y
-            break
-        }
-        var cells: [Cell] = []
-        var lineStarts: [Int] = []
-        var lineWrapped: [Bool] = []
-        var lineMarks: [UInt8] = []
-        var lineOpen = false
-        // Per cursor: logical line, offset in it, and pending wrap.
-        var marks = cursors.map { _ in (line: 0, offset: 0, pending: false) }
-        let history = grid.historyCount
-        for p in 0 ..< history + lastRow + 1 {
-            let (row, wrapped) = p < history ? grid.historyLine(p) : (grid.cells(row: p - history), grid.isWrapped(p - history))
-            if !lineOpen {
-                lineStarts.append(cells.count)
-                lineWrapped.append(wrapped)
-                lineMarks.append(p < history ? grid.historyMarkBits(p) : grid.markBits(p - history))
-                lineOpen = true
-            }
-            for (i, c) in cursors.enumerated() where p == history + c.y {
-                let line = lineStarts.count - 1
-                let x = rewrap ? c.x : min(c.x, newColumns - 1)
-                let pending = c.pendingWrap && x == c.x
-                marks[i] = (line, cells.count - lineStarts[line] + x + (pending ? 1 : 0), pending)
-            }
-            var length = row.count
-            if !wrapped || !rewrap {
-                while length > 0, row[length - 1].isBlank {
-                    length -= 1
-                }
-            }
-            for k in 0 ..< length where rewrap ? !row[k].flags.contains(.spacerHead) : true {
-                cells.append(row[k])
-            }
-            if !wrapped || !rewrap {
-                lineOpen = false
-            }
-        }
-        lineStarts.append(cells.count)
-
-        // 2. Re-wrap into rows of the new width.
-        var out: [Cell] = []
-        var outWrapped: [Bool] = []
-        var outMarks: [UInt8] = []
-        var placed = cursors.map { _ in (row: -1, column: 0, pending: false) }
-        func newRow() {
-            out.append(contentsOf: repeatElement(Cell.blank, count: newColumns))
-            outWrapped.append(false)
-            outMarks.append(0)
-        }
-        for line in 0 ..< lineStarts.count - 1 {
-            let lo = lineStarts[line], hi = lineStarts[line + 1]
-            newRow()
-            outMarks[outMarks.count - 1] = lineMarks[line]
-            var col = 0
-            for k in lo ..< hi {
-                let cell = cells[k]
-                for i in marks.indices where marks[i].line == line && k - lo == marks[i].offset && placed[i].row < 0 {
-                    placed[i] = (outWrapped.count - 1, min(col, newColumns - 1), false)
-                }
-                if cell.width == 0 {
-                    continue
-                } // tails are re-created with their lead
-                let w = Int(cell.width)
-                if col + w > newColumns {
-                    guard rewrap else { break } // truncated; a cut wide character is dropped
-                    if w == 2, col < newColumns {
-                        out[out.count - newColumns + col] = Cell(glyph: 0, attributes: CellAttributes(flags: .spacerHead), width: 1)
-                    }
-                    outWrapped[outWrapped.count - 1] = true
-                    newRow()
-                    col = 0
-                    for i in marks.indices where marks[i].line == line && k - lo == marks[i].offset {
-                        placed[i] = (outWrapped.count - 1, 0, false)
-                    }
-                }
-                guard w <= newColumns else { continue }
-                let base = out.count - newColumns
-                out[base + col] = cell
-                if w == 2 {
-                    var tail = cell.attributes
-                    tail.flags.subtract(.grapheme)
-                    tail.flags.insert(.spacerTail)
-                    out[base + col + 1] = Cell(glyph: 0, attributes: tail, width: 0)
-                }
-                col += w
-            }
-            if !rewrap {
-                outWrapped[outWrapped.count - 1] = lineWrapped[line]
-            }
-            for i in marks.indices where marks[i].line == line && placed[i].row < 0 {
-                // The cursor sits past the end of the line's content.
-                // Blank cells after it are not kept, so it is clamped to
-                // the last column; a pending wrap there stays pending.
-                let position = col + (marks[i].offset - (hi - lo))
-                let pending = marks[i].pending && position == newColumns
-                placed[i] = (outWrapped.count - 1, min(position, newColumns - 1), pending)
-            }
-        }
-        for i in placed.indices where placed[i].row < 0 {
-            newRow()
-            placed[i] = (outWrapped.count - 1, 0, false)
-        }
-
-        // 3. Split between scrollback and screen, keeping the live cursor visible.
-        let total = outWrapped.count
-        var top = max(0, total - newRows)
-        if !pullsHistory {
-            top = max(top, placed[screenTopMark].row)
-        }
-        // Keep the live cursor visible, but never at the cost of rows below
-        // the screen: those would be neither on screen nor in history.
-        if placed[0].row < top {
-            top = max(placed[0].row, total - newRows)
-        }
-        grid.reset(columns: newColumns, rows: newRows)
-        out.withUnsafeBufferPointer { buf in
-            for r in 0 ..< top {
-                grid.appendHistory(
-                    UnsafeBufferPointer(rebasing: buf[r * newColumns ..< (r + 1) * newColumns]),
-                    wrapped: outWrapped[r], marks: outMarks[r],
-                )
-            }
-            for r in top ..< min(total, top + newRows) {
-                grid.setRow(
-                    r - top, UnsafeBufferPointer(rebasing: buf[r * newColumns ..< (r + 1) * newColumns]),
-                    wrapped: outWrapped[r], marks: outMarks[r],
-                )
-            }
-        }
-        for i in cursors.indices {
-            cursors[i].x = placed[i].column
-            cursors[i].y = min(max(placed[i].row - top, 0), newRows - 1)
-            cursors[i].pendingWrap = placed[i].pending
-        }
+        refreshSearchIfNeeded()
     }
 
     /// Debug check: cells past each row's extent are blank (both screens).
@@ -2085,7 +1361,7 @@ public struct TerminalState: ~Copyable {
 
     // MARK: Graphemes
 
-    private mutating func compactGraphemes() {
+    mutating func compactGraphemes() {
         var fresh = GraphemeTable()
         swap(&fresh, &spareGraphemes) // reuse the previous table's capacity
         fresh.removeAll()

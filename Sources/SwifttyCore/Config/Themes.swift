@@ -41,7 +41,7 @@ public enum Themes {
     }
 
     static func text(named name: String, searching directories: [URL]) -> String? {
-        if name.contains("/") {
+        if name.unicodeScalars.contains("/") {
             return try? String(contentsOfFile: (name as NSString).expandingTildeInPath, encoding: .utf8)
         }
         for directory in directories {
@@ -55,12 +55,13 @@ public enum Themes {
     /// The color keys of a theme file; anything else is ignored.
     public static func parse(_ text: String) -> ColorSet {
         var colors = ColorSet()
-        for raw in text.split(separator: "\n") {
+        for raw in text.split(whereSeparator: \.isNewline) {
             let line = raw.trimmingCharacters(in: .whitespaces)
-            guard !line.hasPrefix("#"), let eq = line.firstIndex(of: "=") else { continue }
-            let key = line[..<eq].trimmingCharacters(in: .whitespaces)
-            let value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
-            _ = colors.set(key, value)
+            let scalars = line.unicodeScalars
+            guard scalars.first != "#", let eq = scalars.firstIndex(of: "=") else { continue }
+            let key = String(scalars[..<eq]).trimmingCharacters(in: .whitespaces)
+            let value = String(scalars[scalars.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
+            _ = colors.set(key, Configuration.unquote(value))
         }
         return colors
     }

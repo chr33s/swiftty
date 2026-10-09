@@ -24,7 +24,7 @@
                 if key.modifier == nil {
                     // Keys fire on touch down and repeat while held.
                     button.addTarget(self, action: #selector(keyDown(_:)), for: .touchDown)
-                    button.addTarget(self, action: #selector(keyUp), for: [.touchUpInside, .touchUpOutside, .touchCancel])
+                    button.addTarget(self, action: #selector(keyUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
                 } else {
                     button.addAction(UIAction { [weak self] _ in self?.press(key) }, for: .primaryActionTriggered)
                 }
@@ -65,9 +65,18 @@
             fatalError()
         }
 
-        var enableInputClicksWhenVisible: Bool {
-            true
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window == nil {
+                stopRepeating()
+            }
         }
+
+        #if !os(visionOS)
+            var enableInputClicksWhenVisible: Bool {
+                true
+            }
+        #endif
 
         /// Shows each modifier's state: latched tinted, locked filled.
         func update(_ sticky: StickyModifiers) {
@@ -109,28 +118,40 @@
         // MARK: Key repeat
 
         private var repeatTimer: Timer?
+        private weak var repeatingButton: UIButton?
 
         private func press(_ key: AccessoryKey) {
-            UIDevice.current.playInputClick()
+            #if !os(visionOS)
+                UIDevice.current.playInputClick()
+            #endif
             onKey?(key)
         }
 
         @objc private func keyDown(_ sender: UIButton) {
             guard let key = buttons.first(where: { $0.value === sender })?.key else { return }
-            press(key)
             repeatTimer?.invalidate()
+            repeatingButton = sender
             repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: false) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    self?.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.06, repeats: true) { _ in
-                        MainActor.assumeIsolated { self?.onKey?(key) }
+                    self?.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.06, repeats: true) { [weak self] timer in
+                        guard let self else { timer.invalidate(); return }
+                        MainActor.assumeIsolated { self.onKey?(key) }
                     }
                 }
             }
+            // The handler may cancel repeats or detach the bar synchronously.
+            press(key)
         }
 
-        @objc private func keyUp() {
+        @objc private func keyUp(_ sender: UIButton) {
+            guard repeatingButton === sender else { return }
+            stopRepeating()
+        }
+
+        func stopRepeating() {
             repeatTimer?.invalidate()
             repeatTimer = nil
+            repeatingButton = nil
         }
     }
 #endif

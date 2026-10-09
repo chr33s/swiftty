@@ -863,3 +863,5 @@ enum GraphemeBreakTestData {
     /// Scalars in `cases` with Grapheme_Cluster_Break Control, CR or LF.
     static let controls: Set<UInt32> = [0x0000, 0x000A, 0x000D]
 }
+
+// swiftlint:enable all

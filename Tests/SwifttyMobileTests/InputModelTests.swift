@@ -2,6 +2,7 @@ import CoreGraphics
 import SwifttyCore
 @testable import SwifttyMobile
 import Testing
+import TestSupport
 
 /// Encodes inputs the way the session would, with default modes.
 private func encoded(_ inputs: [TerminalInput], keyboardFlags: UInt8 = 0) -> [UInt8] {
@@ -19,6 +20,23 @@ private func bytes(_ s: String) -> [UInt8] {
 typealias Usage = KeyTranslator.Usage
 
 struct KeyTranslatorTests {
+    @Test(arguments: [UInt8(0), 2, 4, 16, 6])
+    func `hardware text remains a repeat when kitty reporting is activated during a held press`(_ initialFlags: UInt8) throws {
+        var input = HardwareTextInput()
+        let event = try #require(KeyTranslator.identity(usage: 4, modifiers: [], base: "a", characters: "a"))
+        input.begin(usage: 4, event: event)
+        #expect(input.commit("a", keyboardFlags: initialFlags) == nil)
+        #expect(input.commit("a", keyboardFlags: initialFlags) == nil)
+        let reported = input.commit("a", keyboardFlags: 10)
+        let repeated = try #require(reported).event
+        #expect(repeated.action == .repeat)
+        #expect(TestFixture(encoded([.key(repeated)], keyboardFlags: 10)) == TestFixture(bytes("\u{1B}[97;1:2u")))
+        input.cancel(usage: 4)
+        input.begin(usage: 4, event: event)
+        let restarted = input.commit("a", keyboardFlags: 10)
+        #expect(try #require(restarted).event.action == .press)
+    }
+
     @Test func `kitty hardware text`() throws {
         #expect(KeyTranslator.keyEvent(
             usage: 4, modifiers: [], charactersIgnoringModifiers: "a", characters: "a", keyboardFlags: 8,
@@ -28,13 +46,13 @@ struct KeyTranslatorTests {
         let committed = input.commit("a", keyboardFlags: 8)
         let event = try #require(committed).event
         var bytes: [UInt8] = []
-        #expect(InputEncoder.encode(.key(event), modes: .initial, keyboardFlags: 8, into: &bytes))
-        #expect(String(decoding: bytes, as: UTF8.self) == "\u{1B}[97u")
+        #expect(TestFixture(InputEncoder.encode(.key(event), modes: .initial, keyboardFlags: 8, into: &bytes)) == TestFixture(true))
+        #expect(TestFixture(String(decoding: bytes, as: UTF8.self)) == TestFixture("\u{1B}[97u"))
         var released = event
         released.action = .release
         bytes.removeAll()
-        #expect(InputEncoder.encode(.key(released), modes: .initial, keyboardFlags: 10, into: &bytes))
-        #expect(String(decoding: bytes, as: UTF8.self) == "\u{1B}[97;1:3u")
+        #expect(TestFixture(InputEncoder.encode(.key(released), modes: .initial, keyboardFlags: 10, into: &bytes)) == TestFixture(true))
+        #expect(TestFixture(String(decoding: bytes, as: UTF8.self)) == TestFixture("\u{1B}[97;1:3u"))
         #expect(KeyTranslator.keyEvent(
             usage: 4,
             modifiers: .alt,
@@ -76,7 +94,7 @@ struct KeyTranslatorTests {
         #expect(try #require(first).event.action == .press)
         let next = input.commit("a", keyboardFlags: 10)
         let repeated = try #require(next).event
-        #expect(encoded([.key(repeated)], keyboardFlags: 10) == bytes("\u{1B}[97;1:2u"))
+        #expect(TestFixture(encoded([.key(repeated)], keyboardFlags: 10)) == TestFixture(bytes("\u{1B}[97;1:2u")))
         input.cancel(usage: 5)
         #expect(input.commit("a", keyboardFlags: 8) != nil)
         input.cancel(usage: 4)
@@ -131,9 +149,9 @@ struct KeyTranslatorTests {
             #expect(KeyTranslator.keyEvent(usage: usage, modifiers: [], charactersIgnoringModifiers: "") == KeyEvent(key))
         }
         let shiftTab = KeyTranslator.keyEvent(usage: Usage.tab, modifiers: .shift, charactersIgnoringModifiers: "\t")
-        #expect(try encoded([.key(#require(shiftTab))]) == bytes("\u{1B}[Z"))
+        #expect(try TestFixture(encoded([.key(#require(shiftTab))])) == TestFixture(bytes("\u{1B}[Z")))
         let ctrlUp = KeyTranslator.keyEvent(usage: Usage.up, modifiers: .control, charactersIgnoringModifiers: "")
-        #expect(try encoded([.key(#require(ctrlUp))]) == bytes("\u{1B}[1;5A"))
+        #expect(try TestFixture(encoded([.key(#require(ctrlUp))])) == TestFixture(bytes("\u{1B}[1;5A")))
     }
 
     @Test func `text goes to the text system`() {
@@ -167,7 +185,7 @@ struct KeyTranslatorTests {
         // Legacy encoding has no releases; the kitty event-types flag (2)
         // with disambiguate (1) reports them.
         #expect(encoded([.key(up)]).isEmpty)
-        #expect(encoded([.key(up)], keyboardFlags: 0b11) == bytes("\u{1B}[1;1:3A"))
+        #expect(TestFixture(encoded([.key(up)], keyboardFlags: 0b11)) == TestFixture(bytes("\u{1B}[1;1:3A")))
     }
 
     /// Kitty flag 4: the shifted character and the US-layout key.
@@ -184,7 +202,12 @@ struct KeyTranslatorTests {
         #expect(azerty.shiftedKey == nil)
         // Ctrl+Shift+A: the typed character is a control code, so the
         // shifted key falls back to the capital.
-        let ctrlShift = try #require(KeyTranslator.identity(usage: 4, modifiers: [.control, .shift], base: "a", characters: "\u{1}"))
+        let ctrlShift = try #require(TestFixture(KeyTranslator.identity(
+            usage: 4,
+            modifiers: [.control, .shift],
+            base: "a",
+            characters: "\u{1}",
+        )).value)
         #expect(ctrlShift.shiftedKey == "A")
         #expect(KeyTranslator.usLayoutKey(usage: 0x38) == "/")
         #expect(KeyTranslator.usLayoutKey(usage: 0x27) == "0")
@@ -197,12 +220,12 @@ struct KeyTranslatorTests {
             keyboardFlags: 0b101,
             into: &out,
         )
-        #expect(out == bytes("\u{1B}[97::113;5u"))
+        #expect(TestFixture(out) == TestFixture(bytes("\u{1B}[97::113;5u")))
     }
 
     @Test func `text input`() {
         #expect(encoded(KeyTranslator.inputs(forText: "ls", modifiers: [])) == bytes("ls"))
-        #expect(encoded(KeyTranslator.inputs(forText: "\n", modifiers: [])) == [0x0D])
+        #expect(TestFixture(encoded(KeyTranslator.inputs(forText: "\n", modifiers: []))) == TestFixture([0x0D]))
         #expect(encoded(KeyTranslator.inputs(forText: "é", modifiers: [])) == bytes("é"))
         #expect(KeyTranslator.inputs(forText: "", modifiers: []).isEmpty)
         // A sticky Ctrl applies to software keyboard letters, including
@@ -210,8 +233,8 @@ struct KeyTranslatorTests {
         #expect(encoded(KeyTranslator.inputs(forText: "c", modifiers: .control)) == [0x03])
         #expect(encoded(KeyTranslator.inputs(forText: "D", modifiers: .control)) == [0x04])
         // Alt sends ESC-prefixed text.
-        #expect(encoded(KeyTranslator.inputs(forText: "b", modifiers: .alt)) == bytes("\u{1B}b"))
-        #expect(encoded(KeyTranslator.inputs(forText: "\n", modifiers: .alt)) == bytes("\u{1B}\r"))
+        #expect(TestFixture(encoded(KeyTranslator.inputs(forText: "b", modifiers: .alt))) == TestFixture(bytes("\u{1B}b")))
+        #expect(TestFixture(encoded(KeyTranslator.inputs(forText: "\n", modifiers: .alt))) == TestFixture(bytes("\u{1B}\r")))
     }
 }
 
@@ -252,8 +275,8 @@ struct StickyModifierTests {
         #expect(AccessoryKey.control.modifier == .control)
         #expect(encoded(AccessoryKey.escape.inputs(modifiers: [])) == [0x1B])
         #expect(encoded(AccessoryKey.tab.inputs(modifiers: [])) == [0x09])
-        #expect(encoded(AccessoryKey.up.inputs(modifiers: [])) == bytes("\u{1B}[A"))
-        #expect(encoded(AccessoryKey.left.inputs(modifiers: .control)) == bytes("\u{1B}[1;5D"))
+        #expect(TestFixture(encoded(AccessoryKey.up.inputs(modifiers: []))) == TestFixture(bytes("\u{1B}[A")))
+        #expect(TestFixture(encoded(AccessoryKey.left.inputs(modifiers: .control))) == TestFixture(bytes("\u{1B}[1;5D")))
         #expect(encoded(AccessoryKey.symbol("|").inputs(modifiers: [])) == bytes("|"))
         #expect(encoded(AccessoryKey.symbol("\\").inputs(modifiers: .control)) == [0x1C])
         #expect(AccessoryKey.standard.prefix(4) == [.escape, .control, .alt, .tab])
@@ -271,6 +294,19 @@ struct ScrollTests {
         #expect(abs(acc.remainder + 0.3) < 1e-9)
         acc.reset()
         #expect(acc.remainder == 0)
+    }
+
+    @Test(arguments: [
+        CGFloat.nan, .infinity, -.infinity, .greatestFiniteMagnitude, -.greatestFiniteMagnitude,
+        CGFloat(Int.max), CGFloat(Int.min),
+    ])
+    func `invalid scroll distances preserve fractional progress`(_ distance: CGFloat) {
+        var accumulator = ScrollAccumulator()
+        #expect(accumulator.add(0.4) == 0)
+        #expect(accumulator.add(distance) == 0)
+        #expect(accumulator.remainder == 0.4)
+        #expect(accumulator.add(0.6) == 1)
+        #expect(accumulator.remainder == 0)
     }
 
     @Test func `momentum decays`() {
@@ -299,6 +335,23 @@ struct ScrollTests {
         #expect(steps < 600) // stops within ten seconds
     }
 
+    @Test(arguments: [CGFloat.nan, .infinity, -.infinity])
+    func `nonfinite fling velocities remain inactive`(_ velocity: CGFloat) {
+        var momentum = ScrollMomentum(velocity: velocity)
+        #expect(!momentum.isActive)
+        #expect(momentum.step(0.016) == 0)
+    }
+
+    @Test func `invalid frame intervals preserve the fling and tiny intervals retain distance`() {
+        var momentum = ScrollMomentum(velocity: 100)
+        for interval in [Double.nan, .infinity, -.infinity, -1, 0] {
+            #expect(momentum.step(interval) == 0)
+            #expect(momentum.velocity == 100)
+        }
+        var smallStep = ScrollMomentum(velocity: 100)
+        #expect(abs(smallStep.step(1e-18) - 1e-16) < 1e-28)
+    }
+
     @Test func `slow flings do not move`() {
         var m = ScrollMomentum(velocity: 1)
         #expect(!m.isActive)
@@ -319,6 +372,58 @@ struct ScrollTests {
 }
 
 struct GeometryAndSelectionTests {
+    @Test(arguments: [("e\u{301}", 1), ("👩‍💻", 2), ("🇻🇳", 2), ("中", 2), ("⌚\u{FE0E}", 1)])
+    func `composition hit ranges use rendered grapheme boundaries`(_ prefix: String, _ width: Int) {
+        let scalars = Array((prefix + "X").unicodeScalars)
+        for column: CGFloat in [0, 0.25, CGFloat(width) - 0.25] {
+            let hit = TerminalGeometry.compositionRange(in: scalars, atColumn: column)
+            #expect(hit.columns == 0 ..< width)
+            #expect(hit.utf16 == 0 ..< prefix.utf16.count)
+        }
+        let suffix = TerminalGeometry.compositionRange(in: scalars, atColumn: CGFloat(width))
+        #expect(suffix.utf16 == prefix.utf16.count ..< prefix.utf16.count + 1)
+        for column: CGFloat in [-1, -.infinity, .nan] {
+            #expect(TerminalGeometry.compositionRange(in: scalars, atColumn: column).utf16 == 0 ..< 0)
+        }
+        for column: CGFloat in [CGFloat(width + 1), .infinity] {
+            let hit = TerminalGeometry.compositionRange(in: scalars, atColumn: column)
+            #expect(hit.utf16.isEmpty && hit.utf16.lowerBound == prefix.utf16.count + 1)
+        }
+        #expect(TerminalGeometry.compositionRange(in: [], atColumn: 0).utf16.isEmpty)
+    }
+
+    @Test(arguments: [
+        ("e\u{301}X", [0, 0, 1, 2]),
+        ("👩‍💻X", [0, 0, 0, 0, 0, 2, 3]),
+        ("🇻🇳X", [0, 0, 0, 0, 2, 3]),
+        ("中X", [0, 2, 3]),
+        ("❤\u{FE0F}X", [0, 0, 2, 3]),
+        ("⌚\u{FE0E}X", [0, 0, 1, 2]),
+        ("가X", [0, 0, 2, 3]),
+    ])
+    func `composition positions use terminal columns`(_ text: String, _ expected: [Int]) {
+        let scalars = Array(text.unicodeScalars)
+        for (offset, column) in expected.enumerated() {
+            #expect(TerminalGeometry.compositionColumn(in: scalars, atUTF16Offset: offset) == column)
+        }
+        #expect(TerminalGeometry.compositionColumn(in: scalars, atUTF16Offset: .min) == 0)
+        #expect(TerminalGeometry.compositionColumn(in: scalars, atUTF16Offset: .max) == expected.last)
+        #expect(TerminalGeometry.compositionColumn(in: [], atUTF16Offset: .max) == 0)
+        // A range ending inside a cluster encloses the entire rendered glyph.
+        #expect(TerminalGeometry.compositionColumn(in: scalars, atUTF16Offset: 1, roundUp: true) == expected[expected.count - 2])
+    }
+
+    @Test func `extreme geometry keeps cell coordinates bounded`() {
+        let geometry = GridGeometry(
+            scale: 2,
+            padding: CGPoint(x: CGFloat.infinity, y: CGFloat.infinity),
+            cellSize: CGSize(width: 16, height: 32),
+        )
+        #expect(geometry.cell(at: .zero) == (-Int(UInt16.max), -Int(UInt16.max)))
+        let noPadding = GridGeometry(scale: 2, padding: .zero, cellSize: CGSize(width: 16, height: 32))
+        #expect(noPadding.cell(at: CGPoint(x: CGFloat.infinity, y: CGFloat.nan)) == (Int(UInt16.max), 0))
+    }
+
     let geometry = GridGeometry(scale: 3, padding: CGPoint(x: 24, y: 24), cellSize: CGSize(width: 24, height: 48))
 
     @Test func `cells from points`() {

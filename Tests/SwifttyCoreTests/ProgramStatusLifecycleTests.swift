@@ -1,5 +1,6 @@
 @testable import SwifttyCore
 import Testing
+import TestSupport
 
 /// OSC 7501 across prompts, resets and exits, in stream order.
 struct ProgramStatusLifecycleTests {
@@ -107,7 +108,7 @@ struct ProgramStatusLifecycleTests {
         vt.state.resetPreservingProgramStatus()
         #expect(vt.state.programStatus.snapshot == before)
         #expect(vt.state.takeProgramStatusChange() == nil)
-        #expect(vt.lines.allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty })
+        #expect(TestFixture(vt.lines.allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty }) == TestFixture(true))
     }
 
     @Test func `replacing status adopts records and keeps revisions monotonic`() {
@@ -136,5 +137,64 @@ struct ProgramStatusLifecycleTests {
         var vt = VT(20, 5)
         vt.state.replaceProgramStatus(with: ProgramStatusSnapshot(records: [ProgramStatusRecord(id: "", state: .working)], revision: 1))
         #expect(vt.state.programStatus.records.isEmpty)
+    }
+
+    @Test func `imported status keeps the newest record per id before applying capacity`() {
+        var vt = vt()
+        let older = ProgramStatusRecord(id: "a", state: .working, revision: 1)
+        let other = ProgramStatusRecord(id: "b", state: .blocked, revision: 2)
+        let newer = ProgramStatusRecord(id: "a", state: .done, revision: 3)
+        let records = [older, other] + Array(repeating: newer, count: ProgramStatusStore.capacity + 1)
+        vt.state.replaceProgramStatus(with: ProgramStatusSnapshot(records: records, revision: 3))
+        let imported = vt.state.takeProgramStatusChange()
+        let recordsMatch = imported?.records == [other, newer]
+        #expect(recordsMatch)
+        #expect(imported?["a"] == newer)
+        vt.state.replaceProgramStatus(with: ProgramStatusSnapshot(records: records, revision: 3))
+        #expect(vt.state.takeProgramStatusChange() == nil)
+        vt.feed(status("state=error:id=a"))
+        #expect(vt.state.programStatus.records.map(\.id) == ["b", "a"])
+        #expect(vt.state.programStatus.snapshot["a"]?.state == .error)
+        let canonical = vt.state.programStatus.snapshot
+        _ = vt.state.takeProgramStatusChange()
+        vt.state.replaceProgramStatus(with: canonical)
+        #expect(vt.state.takeProgramStatusChange() == nil)
+    }
+
+    @Test(arguments: [0, 255, 256, 257, 300])
+    func `imported status bounds distinct ids in update order`(_ count: Int) {
+        var vt = vt()
+        let latest = (0 ..< count).map { ProgramStatusRecord(id: "r\($0)", state: .done, revision: UInt64($0)) }
+        let records = latest.flatMap { record in
+            [ProgramStatusRecord(id: record.id, state: .working, revision: 1000), record]
+        }
+        vt.state.replaceProgramStatus(with: ProgramStatusSnapshot(records: records, revision: 1000))
+        let expected = Array(latest.suffix(ProgramStatusStore.capacity))
+        let recordsMatch = vt.state.programStatus.records == expected
+        #expect(recordsMatch)
+        #expect(vt.state.takeProgramStatusChange()?.revision == 1000)
+    }
+
+    @Test(arguments: ["report", "clear", "exit", "replace"])
+    func `maximum imported revisions still allow status changes`(_ action: String) {
+        var vt = vt()
+        let record = ProgramStatusRecord(id: "a", state: .working, revision: .max)
+        vt.state.replaceProgramStatus(with: ProgramStatusSnapshot(records: [record], revision: .max))
+        #expect(vt.state.takeProgramStatusChange()?.revision == .max)
+        switch action {
+        case "report": vt.feed(status("state=done:id=a"))
+        case "clear": vt.feed(status("state=clear:id=a"))
+        case "exit": vt.state.programExited()
+        default: vt.state.replaceProgramStatus(with: .empty)
+        }
+        let change = vt.state.takeProgramStatusChange()
+        #expect(change?.revision == .max)
+        if action == "report" {
+            #expect(change?["a"]?.state == .done)
+            #expect(change?["a"]?.revision == .max)
+        } else {
+            #expect(change?.records.isEmpty == true)
+        }
+        #expect(vt.state.takeProgramStatusChange() == nil)
     }
 }

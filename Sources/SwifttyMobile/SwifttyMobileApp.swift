@@ -17,10 +17,6 @@
             }
             var configuration = Configuration.load(from: documents.appendingPathComponent("config"))
             configuration.themeDirectories.insert(documents.appendingPathComponent("themes"), at: 0)
-            // Relative shader paths are relative to Documents.
-            if let shader = configuration.customShader, !shader.hasPrefix("/") {
-                configuration.customShader = documents.appendingPathComponent(shader).path
-            }
             return configuration
         }
 

@@ -18,14 +18,33 @@ struct Options: Sendable {
     var only: Set<String>?
     var repeats = 1
 
-    static func parse() -> Options {
+    static let names: Set<String> = [
+        "ascii", "utf8", "utf8-cjk", "utf8-latin", "compiler-log", "cat-source", "csi-heavy", "osc-heavy", "scroll",
+        "redraw", "scroll-frames", "resize", "latency",
+    ]
+
+    static func parse(_ input: ArraySlice<String>, generating: Bool = false) -> Options {
         var options = Options()
-        var arguments = CommandLine.arguments.dropFirst()
+        var arguments = input
+        func value(for option: String) -> String {
+            guard let value = arguments.popFirst(), !value.isEmpty else { argumentError("missing value for \(option)") }
+            return value
+        }
         while let arg = arguments.popFirst() {
             switch arg {
-            case "--mb": options.megabytes = Int(arguments.popFirst() ?? "") ?? options.megabytes
-            case "--repeat": options.repeats = max(1, Int(arguments.popFirst() ?? "") ?? 1)
-            case "--only": options.only = Set((arguments.popFirst() ?? "").split(separator: ",").map(String.init))
+            case "--mb":
+                let raw = value(for: arg)
+                guard let n = Int(raw), (1 ... (Int.max >> 20)).contains(n) else { argumentError("invalid megabyte count: \(raw)") }
+                options.megabytes = n
+            case "--repeat" where !generating:
+                let raw = value(for: arg)
+                guard let n = Int(raw), n > 0 else { argumentError("invalid repeat count: \(raw)") }
+                options.repeats = n
+            case "--only" where !generating:
+                let raw = value(for: arg)
+                let names = Set(raw.split(separator: ",", omittingEmptySubsequences: false).map(String.init))
+                guard names.isSubset(of: Self.names) else { argumentError("unknown benchmark in --only: \(raw)") }
+                options.only = names
             case "--help", "-h":
                 print("""
                 usage: swiftty-bench [--mb N] [--repeat N] [--only name,name]
@@ -33,15 +52,17 @@ struct Options: Sendable {
                        swiftty-bench gen <name> [--mb N]
                 """)
                 exit(0)
-            default: break
+            default: argumentError("unknown option \(arg)")
             }
         }
         return options
     }
 }
 
-let options = Options.parse()
-let streamBytes = options.megabytes << 20
+func argumentError(_ message: String) -> Never {
+    FileHandle.standardError.write(Data("swiftty-bench: \(message)\n".utf8))
+    exit(2)
+}
 
 // Subcommands run before any benchmark globals (e.g. the Metal device)
 // are initialized, so their startup cost stays comparable.
@@ -50,6 +71,8 @@ case "stream": runStreamFile(Array(CommandLine.arguments.dropFirst(2)))
 case "gen": runGenerate(Array(CommandLine.arguments.dropFirst(2)))
 default: break
 }
+let options = Options.parse(CommandLine.arguments.dropFirst())
+let streamBytes = options.megabytes << 20
 
 // MARK: Measurement
 
@@ -223,16 +246,21 @@ func scrollChunk() -> [UInt8] {
 
 // MARK: Stream benchmark
 
-func runStream(_ name: String, _ input: [UInt8], columns: Int = 200, rows: Int = 60) {
+func runStream(_ name: String, _ makeInput: @autoclosure () -> [UInt8], columns: Int = 200, rows: Int = 60) {
     guard selected(name) else { return }
+    let input = makeInput()
     var state = TerminalState(columns: columns, rows: rows)
     var parser = Parser()
     let chunk = 64 * 1024 // PTY read size
 
-    // Warm up: populate scrollback so the measured run is steady state.
+    // Warm up parsing and the per-read drains as well as scrollback, so
+    // their first-use metadata allocations stay outside the measured loop.
     input.withUnsafeBufferPointer { buf in
         parser.consume(UnsafeBufferPointer(rebasing: buf[0 ..< min(buf.count, 16 << 20)]), into: &state)
     }
+    _ = state.takeDamage()
+    state.output.removeAll(keepingCapacity: true)
+    _ = state.takeEvents()
 
     let start = Usage.now()
     alloc_counter_start()
@@ -252,7 +280,7 @@ func runStream(_ name: String, _ input: [UInt8], columns: Int = 200, rows: Int =
     }
     let allocations = alloc_counter_stop()
     let end = Usage.now()
-    let mb = Double(input.count * options.repeats) / 1_048_576
+    let mb = Double(input.count) * Double(options.repeats) / 1_048_576
     row(name, [
         ("MB", fmt(mb, 0)),
         ("MB/s", fmt(mb / (end.wall - start.wall))),
@@ -265,6 +293,15 @@ func runStream(_ name: String, _ input: [UInt8], columns: Int = 200, rows: Int =
 // MARK: Frame benchmarks
 
 let device = MTLCreateSystemDefaultDevice()
+
+/// Waiting also returns after GPU errors; only successful frames are samples.
+func waitForFrame(_ command: MTLCommandBuffer, benchmark: String) {
+    command.waitUntilCompleted()
+    guard command.status == .completed else {
+        row(benchmark, [("error", command.error?.localizedDescription ?? "GPU command status \(command.status.rawValue)")])
+        exit(1)
+    }
+}
 
 func offscreenTarget(_ renderer: MetalRenderer, columns: Int, rows: Int) -> MTLTexture? {
     let w = Int(renderer.cellSize.width) * columns + 16, h = Int(renderer.cellSize.height) * rows + 16
@@ -301,7 +338,7 @@ func runRedraw() {
         let snapshot = session.snapshot()
         let t1 = DispatchTime.now().uptimeNanoseconds
         if let renderer, let target {
-            renderer.render(snapshot, to: target).waitUntilCompleted()
+            waitForFrame(renderer.render(snapshot, to: target), benchmark: "redraw")
         }
         let t2 = DispatchTime.now().uptimeNanoseconds
         core.append(Double(t1 - t0) / 1e6)
@@ -314,7 +351,7 @@ func runRedraw() {
         ("grid", "\(columns)x\(rows)"),
         ("parse+snap_p50_ms", fmt(percentile(core, 0.5), 3)),
         ("parse+snap_p95_ms", fmt(percentile(core, 0.95), 3)),
-        ("render_p95_ms", renderer == nil ? "n/a" : fmt(percentile(gpu, 0.95), 3)),
+        ("render_p95_ms", renderer == nil || target == nil ? "n/a" : fmt(percentile(gpu, 0.95), 3)),
         ("MB/s", fmt(Double(bytes) / 1_048_576 / (end.wall - start.wall))),
         ("cpu_s", fmt(end.cpu - start.cpu, 3)),
     ])
@@ -338,13 +375,14 @@ func runScrollFrames() {
         session.feed(Array(s.utf8))
         let snapshot = session.snapshot()
         if let renderer, let target {
-            renderer.render(snapshot, to: target).waitUntilCompleted()
+            waitForFrame(renderer.render(snapshot, to: target), benchmark: "scroll-frames")
         }
         frameTimes.append(Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6)
     }
     let end = Usage.now()
     row("scroll-frames", [
         ("lines", "\(lines)"),
+        ("rendered", renderer != nil && target != nil ? "true" : "false"),
         ("lines/s", fmt(Double(lines) / (end.wall - start.wall), 0)),
         ("frame_p50_ms", fmt(percentile(frameTimes, 0.5), 3)),
         ("frame_p95_ms", fmt(percentile(frameTimes, 0.95), 3)),
@@ -388,7 +426,7 @@ func runLatency() {
         try session.start(SessionConfiguration(command: ["/bin/sh", "-c", "stty raw -echo; exec cat"]))
     } catch {
         row("latency", [("error", "\(error)")])
-        return
+        exit(1)
     }
     usleep(300_000)
     _ = session.snapshot()
@@ -399,15 +437,22 @@ func runLatency() {
         let ch = letters[i % letters.count]
         let t0 = DispatchTime.now().uptimeNanoseconds
         session.send(.text(String(ch)))
+        let deadline = DispatchTime.now() + 1
+        let expected = ch.unicodeScalars.first!.value
         var seen = false
         while !seen {
-            guard updated.wait(timeout: .now() + 1) == .success else { break }
+            guard updated.wait(timeout: deadline) == .success else { break }
             let snapshot = session.snapshot()
-            seen = snapshot.cursor.x == (i % 80) + 1 || snapshot.cursor.x == 0
+            // The last column leaves the cursor in pending-wrap state.
+            // Only the character's cell proves that its echo was parsed.
+            seen = snapshot.cells(row: i / 80)[i % 80].glyph == expected
         }
-        if seen {
-            samples.append(Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6)
+        guard seen else {
+            session.stop()
+            row("latency", [("error", "timed out waiting for echo \(i + 1)/400"), ("samples", "\(samples.count)")])
+            exit(1)
         }
+        samples.append(Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6)
         if i % 80 ==
             79 {
             session.send(.text("\r\n")); usleep(20000); _ = session.snapshot(); while updated.wait(timeout: .now()) == .success {}
@@ -432,20 +477,33 @@ func runStreamFile(_ arguments: [String]) -> Never {
     var columns = 120, rows = 80, scrollbackBytes = 10000
     var it = arguments.makeIterator()
     while let arg = it.next() {
-        let value = arg.split(separator: "=", maxSplits: 1).dropFirst().first.map(String.init) ?? it.next() ?? ""
-        switch arg.split(separator: "=").first.map(String.init) ?? arg {
+        if arg == "--help" || arg == "-h" {
+            _ = Options.parse([arg])
+        }
+        let parts = arg.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+        let option = String(parts[0])
+        guard ["--data", "--terminal-cols", "--terminal-rows", "--scrollback-bytes"].contains(option) else {
+            argumentError("unknown option \(arg)")
+        }
+        guard let value = parts.count == 2 ? String(parts[1]) : it.next(), !value.isEmpty else {
+            argumentError("missing value for \(option)")
+        }
+        switch option {
         case "--data": path = value
-        case "--terminal-cols": columns = Int(value) ?? columns
-        case "--terminal-rows": rows = Int(value) ?? rows
-        case "--scrollback-bytes": scrollbackBytes = Int(value) ?? scrollbackBytes
+        case "--terminal-cols", "--terminal-rows":
+            guard let n = Int(value), (1 ... Int(UInt16.max)).contains(n) else { argumentError("invalid \(option): \(value)") }
+            if option == "--terminal-cols" {
+                columns = n
+            } else {
+                rows = n
+            }
         default:
-            FileHandle.standardError.write(Data("unknown option \(arg)\n".utf8))
-            exit(2)
+            guard let n = Int(value), n >= 0 else { argumentError("invalid \(option): \(value)") }
+            scrollbackBytes = n
         }
     }
     guard let path else {
-        FileHandle.standardError.write(Data("usage: swiftty-bench stream --data <file> [--terminal-cols N] [--terminal-rows N]\n".utf8))
-        exit(2)
+        argumentError("stream requires --data <file>")
     }
     let fd = open(path, O_RDONLY)
     guard fd >= 0 else { perror(path); exit(1) }
@@ -454,7 +512,17 @@ func runStreamFile(_ arguments: [String]) -> Never {
     let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: 64 * 1024, alignment: 16)
     while true {
         let n = read(fd, buffer.baseAddress, buffer.count)
-        guard n > 0 else { break }
+        if n < 0 {
+            if errno == EINTR {
+                continue
+            }
+            perror(path)
+            close(fd)
+            exit(1)
+        }
+        if n == 0 {
+            break
+        }
         let bytes = UnsafeBufferPointer(start: buffer.baseAddress!.assumingMemoryBound(to: UInt8.self), count: n)
         parser.consume(Span(_unsafeElements: bytes), into: &state)
         // What the session does per read: drain replies, events and damage.
@@ -469,6 +537,9 @@ func runStreamFile(_ arguments: [String]) -> Never {
 /// Writes a benchmark corpus to stdout so other terminals can consume the
 /// exact same bytes: `swiftty-bench gen <name> [--mb N]`.
 func runGenerate(_ arguments: [String]) -> Never {
+    if let first = arguments.first, first == "--help" || first == "-h" {
+        _ = Options.parse(arguments.prefix(1), generating: true)
+    }
     let generators: [String: () -> [UInt8]] = [
         "ascii": asciiChunk, "utf8": utf8Chunk, "compiler-log": compilerLogChunk, "cat-source": sourceChunk,
         "csi-heavy": csiChunk, "osc-heavy": oscChunk, "scroll": scrollChunk,
@@ -480,12 +551,16 @@ func runGenerate(_ arguments: [String]) -> Never {
             .write(Data("usage: swiftty-bench gen <\(generators.keys.sorted().joined(separator: "|"))> [--mb N]\n".utf8))
         exit(2)
     }
+    let options = Options.parse(arguments.dropFirst(), generating: true)
     let bytes = stream(options.megabytes << 20, chunk: generate)
     bytes.withUnsafeBytes { raw in
         var offset = 0
         while offset < raw.count {
             let n = write(1, raw.baseAddress! + offset, raw.count - offset)
-            guard n > 0 else { exit(1) }
+            if n < 0, errno == EINTR {
+                continue
+            }
+            guard n > 0 else { perror("stdout"); exit(1) }
             offset += n
         }
     }

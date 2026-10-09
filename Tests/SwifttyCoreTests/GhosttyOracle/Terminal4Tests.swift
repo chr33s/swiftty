@@ -1,3 +1,5 @@
+import TestSupport
+
 // Ghostty oracle: tests ported from upstream ghostty src/terminal/Terminal.zig
 // (the `test "Terminal: ..."` blocks at line >= 14035). Each test drives
 // swiftty only through bytes and checks screen text, cursor, cell attributes
@@ -125,7 +127,7 @@ struct GhosttyTerminal4Tests {
         #expect(s == "")
         for x in 0 ..< 5 {
             let bg = vt.cell(x, 0).attributes.background
-            #expect(bg == t4Red, "x=\(x)")
+            #expect(bg == t4Red, Comment(rawValue: escapedTestText("x=\(x)")))
         }
     }
 
@@ -140,7 +142,7 @@ struct GhosttyTerminal4Tests {
         vt.feed("X")
         vt.state.resize(columns: 10, rows: 5)
         let s = t4Plain(vt)
-        #expect(s == "X\n123")
+        #expect(TestFixture(s) == TestFixture("X\n123"))
     }
 
     @Test func `eraseLine complete protected attributes respected with iso`() {
@@ -200,7 +202,7 @@ struct GhosttyTerminal4Tests {
         var vt = VT(5, 5)
         vt.feed("    A\(CSI)1b")
         let s = t4Plain(vt)
-        #expect(s == "    A\nA")
+        #expect(TestFixture(s) == TestFixture("    A\nA"))
     }
 
     @Test func `printRepeat no previous character`() {
@@ -232,15 +234,15 @@ struct GhosttyTerminal4Tests {
             vt.feed("\(CSI)1;1H\(CSI)\(attr)m")
             vt.feed("lqqqkmqqqj")
             let s = t4Plain(vt)
-            #expect(s == "┌───┐\n└───┘", "attr=\(attr)")
+            #expect(TestFixture(s) == TestFixture("┌───┐\n└───┘"), Comment(rawValue: escapedTestText("attr=\(attr)")))
             let pending = vt.state.cursor.pendingWrap
-            #expect(pending, "attr=\(attr)")
+            #expect(pending, Comment(rawValue: escapedTestText("attr=\(attr)")))
             let pen = vt.state.cursor.pen
             for y in 0 ..< 2 {
                 for x in 0 ..< 5 {
                     var a = vt.cell(x, y).attributes
                     a.flags.subtract(.structural)
-                    #expect(a == pen, "attr=\(attr) x=\(x) y=\(y)")
+                    #expect(a == pen, Comment(rawValue: escapedTestText("attr=\(attr) x=\(x) y=\(y)")))
                 }
             }
         }
@@ -250,10 +252,10 @@ struct GhosttyTerminal4Tests {
         #expect(first == 0x2518) // '┘'
     }
 
-    @Test func `printSlice charset matches scalar printing`() {
+    @Test func `printSlice charset matches scalar printing`() throws {
         var bytes: [Unicode.Scalar] = []
         for v in 0x10 ..< 0x100 where v >= 0x20 && !(0x7F ... 0x9F).contains(v) {
-            bytes.append(Unicode.Scalar(UInt32(v))!)
+            try bytes.append(#require(Unicode.Scalar(UInt32(v))))
         }
         let mixed: [Unicode.Scalar] = [0x100, 0x71, 0x301, 0x78, 0x4E00, 0x23, 0xFE0F, 0x1F600, 0x6A]
             .map { Unicode.Scalar(UInt32($0))! }
@@ -272,7 +274,7 @@ struct GhosttyTerminal4Tests {
                     view.append(contentsOf: cps)
                     batched.feed(String(view))
                     let a = scalar.lines, b = batched.lines
-                    #expect(a == b, "set=\(set) grapheme=\(grapheme)")
+                    #expect(a == b, Comment(rawValue: escapedTestText("set=\(set) grapheme=\(grapheme)")))
                     let ca = scalar.cursor, cb = batched.cursor
                     #expect(ca.x == cb.x && ca.y == cb.y)
                     let pa = scalar.state.cursor.pendingWrap, pb = batched.state.cursor.pendingWrap
@@ -297,7 +299,7 @@ struct GhosttyTerminal4Tests {
         var vt = VT(5, 2)
         vt.feed("abcdefghijkl")
         let s = t4Plain(vt)
-        #expect(s == "fghij\nkl")
+        #expect(TestFixture(s) == TestFixture("fghij\nkl"))
         let x = vt.cursor.x
         #expect(x == 2)
         let pending = vt.state.cursor.pendingWrap
@@ -374,8 +376,8 @@ struct GhosttyTerminal4Tests {
             let c1 = t1.cursor, c2 = t2.cursor
             let p1 = t1.state.cursor.pendingWrap, p2 = t2.state.cursor.pendingWrap
             let l1 = t1.lines, l2 = t2.lines
-            #expect(c1.x == c2.x && c1.y == c2.y && p1 == p2, "op \(op) \(cols)x\(rows)")
-            #expect(l1 == l2, "op \(op) \(cols)x\(rows)")
+            #expect(c1.x == c2.x && c1.y == c2.y && p1 == p2, Comment(rawValue: escapedTestText("op \(op) \(cols)x\(rows)")))
+            #expect(l1 == l2, Comment(rawValue: escapedTestText("op \(op) \(cols)x\(rows)")))
             if c1.x != c2.x || c1.y != c2.y || p1 != p2 || l1 != l2 {
                 return
             }
@@ -423,7 +425,7 @@ struct GhosttyTerminal4Tests {
         for (sgr, expected) in [("4", "0;4"), ("4:2", "0;4:2"), ("4:3", "0;4:3"), ("4:4", "0;4:4"), ("4:5", "0;4:5")] {
             vt.feed("\(CSI)\(sgr)m")
             r = decrqssSGR(&vt)
-            #expect(r == rpss(expected), "SGR \(sgr)")
+            #expect(r == rpss(expected), Comment(rawValue: escapedTestText("SGR \(sgr)")))
         }
 
         vt.feed("\(CSI)0m")
@@ -439,17 +441,17 @@ struct GhosttyTerminal4Tests {
         var vt = VT(5, 5)
         vt.feed(Self.abcRows + "\(CSI)2;2H\(CSI)0J")
         let s = t4Plain(vt)
-        #expect(s == "ABC\nD")
+        #expect(TestFixture(s) == TestFixture("ABC\nD"))
     }
 
     @Test func `eraseDisplay erase below preserves SGR bg`() {
         var vt = VT(5, 5)
         vt.feed(Self.abcRows + "\(CSI)2;2H\(CSI)48;2;255;0;0m\(CSI)0J")
         let s = t4Plain(vt)
-        #expect(s == "ABC\nD")
+        #expect(TestFixture(s) == TestFixture("ABC\nD"))
         for x in 1 ..< 5 {
             let bg = vt.cell(x, 1).attributes.background
-            #expect(bg == t4Red, "x=\(x)")
+            #expect(bg == t4Red, Comment(rawValue: escapedTestText("x=\(x)")))
         }
     }
 
@@ -457,52 +459,52 @@ struct GhosttyTerminal4Tests {
         var vt = VT(5, 5)
         vt.feed("AB橋C\r\nDE橋F\r\nGH橋I\(CSI)2;4H\(CSI)0J")
         let s = t4Plain(vt)
-        #expect(s == "AB橋C\nDE")
+        #expect(TestFixture(s) == TestFixture("AB橋C\nDE"))
     }
 
     @Test func `eraseDisplay below protected attributes respected with iso`() {
         var vt = VT(5, 5)
         vt.feed("\(ESC)V" + Self.abcRows + "\(CSI)2;2H\(CSI)0J")
         let s = t4Plain(vt)
-        #expect(s == "ABC\nDEF\nGHI")
+        #expect(TestFixture(s) == TestFixture("ABC\nDEF\nGHI"))
     }
 
     @Test func `eraseDisplay below protected attributes ignored with dec most recent`() {
         var vt = VT(5, 5)
         vt.feed("\(ESC)V" + Self.abcRows + "\(CSI)1\"q\(CSI)0\"q\(CSI)2;2H\(CSI)0J")
         let s = t4Plain(vt)
-        #expect(s == "ABC\nD")
+        #expect(TestFixture(s) == TestFixture("ABC\nD"))
     }
 
     @Test func `eraseDisplay below protected attributes ignored with dec set`() {
         var vt = VT(5, 5)
         vt.feed("\(CSI)1\"q" + Self.abcRows + "\(CSI)2;2H\(CSI)0J")
         let s = t4Plain(vt)
-        #expect(s == "ABC\nD")
+        #expect(TestFixture(s) == TestFixture("ABC\nD"))
     }
 
     @Test func `eraseDisplay below protected attributes respected with force`() {
         var vt = VT(5, 5)
         vt.feed("\(CSI)1\"q" + Self.abcRows + "\(CSI)2;2H\(CSI)?0J")
         let s = t4Plain(vt)
-        #expect(s == "ABC\nDEF\nGHI")
+        #expect(TestFixture(s) == TestFixture("ABC\nDEF\nGHI"))
     }
 
     @Test func `eraseDisplay simple erase above`() {
         var vt = VT(5, 5)
         vt.feed(Self.abcRows + "\(CSI)2;2H\(CSI)1J")
         let s = t4Plain(vt)
-        #expect(s == "\n  F\nGHI")
+        #expect(TestFixture(s) == TestFixture("\n  F\nGHI"))
     }
 
     @Test func `eraseDisplay erase above preserves SGR bg`() {
         var vt = VT(5, 5)
         vt.feed(Self.abcRows + "\(CSI)2;2H\(CSI)48;2;255;0;0m\(CSI)1J")
         let s = t4Plain(vt)
-        #expect(s == "\n  F\nGHI")
+        #expect(TestFixture(s) == TestFixture("\n  F\nGHI"))
         for x in 0 ..< 2 {
             let bg = vt.cell(x, 1).attributes.background
-            #expect(bg == t4Red, "x=\(x)")
+            #expect(bg == t4Red, Comment(rawValue: escapedTestText("x=\(x)")))
         }
     }
 
@@ -510,49 +512,49 @@ struct GhosttyTerminal4Tests {
         var vt = VT(5, 5)
         vt.feed("AB橋C\r\nDE橋F\r\nGH橋I\(CSI)2;3H\(CSI)1J")
         let s = t4Plain(vt)
-        #expect(s == "\n    F\nGH橋I")
+        #expect(TestFixture(s) == TestFixture("\n    F\nGH橋I"))
     }
 
     @Test func `eraseDisplay above protected attributes respected with iso`() {
         var vt = VT(5, 5)
         vt.feed("\(ESC)V" + Self.abcRows + "\(CSI)2;2H\(CSI)1J")
         let s = t4Plain(vt)
-        #expect(s == "ABC\nDEF\nGHI")
+        #expect(TestFixture(s) == TestFixture("ABC\nDEF\nGHI"))
     }
 
     @Test func `eraseDisplay above protected attributes ignored with dec most recent`() {
         var vt = VT(5, 5)
         vt.feed("\(ESC)V" + Self.abcRows + "\(CSI)1\"q\(CSI)0\"q\(CSI)2;2H\(CSI)1J")
         let s = t4Plain(vt)
-        #expect(s == "\n  F\nGHI")
+        #expect(TestFixture(s) == TestFixture("\n  F\nGHI"))
     }
 
     @Test func `eraseDisplay above protected attributes ignored with dec set`() {
         var vt = VT(5, 5)
         vt.feed("\(CSI)1\"q" + Self.abcRows + "\(CSI)2;2H\(CSI)1J")
         let s = t4Plain(vt)
-        #expect(s == "\n  F\nGHI")
+        #expect(TestFixture(s) == TestFixture("\n  F\nGHI"))
     }
 
     @Test func `eraseDisplay above protected attributes respected with force`() {
         var vt = VT(5, 5)
         vt.feed("\(CSI)1\"q" + Self.abcRows + "\(CSI)2;2H\(CSI)?1J")
         let s = t4Plain(vt)
-        #expect(s == "ABC\nDEF\nGHI")
+        #expect(TestFixture(s) == TestFixture("ABC\nDEF\nGHI"))
     }
 
     @Test func `eraseDisplay protected complete`() {
         var vt = VT(10, 5)
         vt.feed("A\r\n123456789\(CSI)2;6H\(CSI)1\"qX\(CSI)2;4H\(CSI)?2J")
         let s = t4Plain(vt)
-        #expect(s == "\n     X")
+        #expect(TestFixture(s) == TestFixture("\n     X"))
     }
 
     @Test func `eraseDisplay protected below`() {
         var vt = VT(10, 5)
         vt.feed("A\r\n123456789\(CSI)2;6H\(CSI)1\"qX\(CSI)2;4H\(CSI)?0J")
         let s = t4Plain(vt)
-        #expect(s == "A\n123  X")
+        #expect(TestFixture(s) == TestFixture("A\n123  X"))
     }
 
     @Test func `eraseDisplay scroll complete`() {
@@ -566,7 +568,7 @@ struct GhosttyTerminal4Tests {
         var vt = VT(10, 3)
         vt.feed("A\r\n123456789\(CSI)2;6H\(CSI)1\"qX\(CSI)2;8H\(CSI)?1J")
         let s = t4Plain(vt)
-        #expect(s == "\n     X  9")
+        #expect(TestFixture(s) == TestFixture("\n     X  9"))
     }
 
     @Test func `eraseDisplay complete preserves cursor`() {
@@ -622,10 +624,10 @@ struct GhosttyTerminal4Tests {
         _ = vt.takeOutput()
         vt.feed("\(CSI)?6$p")
         let r = vt.takeOutput()
-        #expect(r == "\(CSI)?6;2$y")
+        #expect(TestFixture(r) == TestFixture("\(CSI)?6;2$y"))
     }
 
-    // https://github.com/mitchellh/ghostty/issues/1607
+    /// https://github.com/mitchellh/ghostty/issues/1607
     @Test func `fullReset clears alt screen kitty keyboard state`() {
         var vt = VT(10, 10)
         vt.feed("\(CSI)?1049h\(CSI)>31u\(CSI)?1049l")
@@ -634,12 +636,12 @@ struct GhosttyTerminal4Tests {
         _ = vt.takeOutput()
         vt.feed("\(CSI)?u")
         let r = vt.takeOutput()
-        #expect(r == "\(CSI)?0u")
+        #expect(TestFixture(r) == TestFixture("\(CSI)?0u"))
     }
 
     // MARK: resize
 
-    // https://github.com/mitchellh/ghostty/issues/272
+    /// https://github.com/mitchellh/ghostty/issues/272
     @Test func `resize less cols with wide char then print`() {
         var vt = VT(3, 3)
         vt.feed("x😀")
@@ -657,7 +659,7 @@ struct GhosttyTerminal4Tests {
         #expect(!cell.isSpacer)
     }
 
-    // https://github.com/mitchellh/ghostty/issues/723
+    /// https://github.com/mitchellh/ghostty/issues/723
     @Test func `resize with left and right margin set`() {
         var vt = VT(70, 23)
         vt.feed("\(CSI)?69h0\(CSI)?40h")
@@ -667,7 +669,7 @@ struct GhosttyTerminal4Tests {
         // Crash/integrity test upstream: no further assertions.
     }
 
-    // https://github.com/mitchellh/ghostty/issues/1343
+    /// https://github.com/mitchellh/ghostty/issues/1343
     @Test func `resize with wraparound off`() {
         var vt = VT(4, 2)
         vt.feed("\(CSI)?7l0123")
@@ -681,7 +683,7 @@ struct GhosttyTerminal4Tests {
         vt.feed("\(CSI)?7h0123")
         vt.state.resize(columns: 2, rows: 2)
         let s = t4Plain(vt)
-        #expect(s == "01\n23")
+        #expect(TestFixture(s) == TestFixture("01\n23"))
     }
 
     @Test func `resize with high unique style per cell`() {
@@ -711,7 +713,7 @@ struct GhosttyTerminal4Tests {
         var g = vt.cell(c.x, c.y).glyph
         #expect(g == 0x42)
         var s = t4Plain(vt)
-        #expect(s == "1A\n2B")
+        #expect(TestFixture(s) == TestFixture("1A\n2B"))
 
         vt.feed("\(ESC)7")
         vt.state.resize(columns: 5, rows: 3)
@@ -730,7 +732,7 @@ struct GhosttyTerminal4Tests {
         let g = vt.cell(c.x, c.y).glyph
         #expect(g == 0x42)
         var s = t4Plain(vt)
-        #expect(s == "1A\n2B")
+        #expect(TestFixture(s) == TestFixture("1A\n2B"))
 
         vt.feed("\(ESC)7")
         vt.state.resize(columns: 5, rows: 3)
@@ -751,7 +753,7 @@ struct GhosttyTerminal4Tests {
         vt.state.resize(columns: 6, rows: 5)
         vt.feed("\(ESC)8X")
         let s = t4Plain(vt)
-        #expect(s == "abc\nAAA|X")
+        #expect(TestFixture(s) == TestFixture("abc\nAAA|X"))
     }
 
     @Test func `resize pending wrap live and saved cursors`() {
@@ -776,10 +778,10 @@ struct GhosttyTerminal4Tests {
                     vt.feed("\(ESC)8")
                 }
                 let pending = vt.state.cursor.pendingWrap
-                #expect(pending == c.pendingWrap, "\(c.text) cols=\(c.cols) restore=\(restore)")
+                #expect(pending == c.pendingWrap, Comment(rawValue: escapedTestText("\(c.text) cols=\(c.cols) restore=\(restore)")))
                 vt.feed("X")
                 let s = t4Plain(vt)
-                #expect(s == c.expected, "\(c.text) cols=\(c.cols) restore=\(restore)")
+                #expect(s == c.expected, Comment(rawValue: escapedTestText("\(c.text) cols=\(c.cols) restore=\(restore)")))
             }
         }
     }
@@ -795,7 +797,7 @@ struct GhosttyTerminal4Tests {
         _ = vt.takeOutput()
         vt.feed("\(CSI)?3$p")
         let r = vt.takeOutput()
-        #expect(r == "\(CSI)?3;2$y")
+        #expect(TestFixture(r) == TestFixture("\(CSI)?3;2$y"))
     }
 
     @Test func `DECCOLM unset`() {
@@ -833,13 +835,13 @@ struct GhosttyTerminal4Tests {
         _ = vt.takeOutput()
         vt.feed("\(CSI)?69$p")
         var r = vt.takeOutput()
-        #expect(r == "\(CSI)?69;1$y")
+        #expect(TestFixture(r) == TestFixture("\(CSI)?69;1$y"))
         vt.feed("\(ESC)P$qr\(ESC)\\")
         r = vt.takeOutput()
-        #expect(r == "\(ESC)P1$r1;5r\(ESC)\\")
+        #expect(TestFixture(r) == TestFixture("\(ESC)P1$r1;5r\(ESC)\\"))
         vt.feed("\(ESC)P$qs\(ESC)\\")
         r = vt.takeOutput()
-        #expect(r == "\(ESC)P1$r1;80s\(ESC)\\")
+        #expect(TestFixture(r) == TestFixture("\(ESC)P1$r1;80s\(ESC)\\"))
     }
 
     // MARK: alternate screen modes
@@ -977,7 +979,7 @@ struct GhosttyTerminal4Tests {
         vt.feed("\(CSI)2;1H\(CSI)10L")
         for y in 1 ..< 5 {
             let wrapped = vt.state.grid.isWrapped(y)
-            #expect(!wrapped, "y=\(y)")
+            #expect(!wrapped, Comment(rawValue: escapedTestText("y=\(y)")))
         }
     }
 
@@ -987,7 +989,7 @@ struct GhosttyTerminal4Tests {
         vt.feed("\(CSI)2;1H\(CSI)10M")
         for y in 1 ..< 5 {
             let wrapped = vt.state.grid.isWrapped(y)
-            #expect(!wrapped, "y=\(y)")
+            #expect(!wrapped, Comment(rawValue: escapedTestText("y=\(y)")))
         }
     }
 

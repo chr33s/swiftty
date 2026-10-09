@@ -1,3 +1,4 @@
+import Foundation
 import Metal
 
 /// A user post-processing pass (Ghostty's `custom-shader`, in Metal rather
@@ -46,7 +47,7 @@ final class PostProcess {
     """
 
     let pipeline: MTLRenderPipelineState
-    /// The shader reads `time`, so frames change without new output.
+    /// The shader may read `time`, so frames can change without new output.
     let usesTime: Bool
     private var texture: MTLTexture?
 
@@ -57,7 +58,40 @@ final class PostProcess {
         d.fragmentFunction = library.makeFunction(name: "post_fragment")
         d.colorAttachments[0].pixelFormat = .bgra8Unorm
         pipeline = try device.makeRenderPipelineState(descriptor: d)
-        usesTime = source.contains(".time")
+        // The compiler splices continued lines before recognizing comments
+        // or identifiers, so a continuation can split `time` or extend a comment.
+        let joined = source.replacingOccurrences(
+            of: #"\\[ \t\x0B\x0C]*(?:\r\n|\n|\r)"#, with: "", options: .regularExpression,
+        )
+        // Comments are whitespace in Metal, including between a member
+        // access operator and its identifier. Ignore commented-out accesses.
+        let code = joined.replacingOccurrences(
+            of: #"(?s)/\*.*?\*/|//[^\r\n]*"#, with: " ", options: .regularExpression,
+        )
+        // Macros, token pasting, and includes can hide a time access from
+        // this scan. Keep those shaders moving rather than freezing them.
+        let directTime = code.range(of: #"(?:\.|->)\s*time\b|(?m)^\s*#"#, options: .regularExpression) != nil
+        // Copies, function arguments and addresses of the uniforms can hide
+        // a time read. Only direct resolution/pad reads are known to be static.
+        let declarations = try NSRegularExpression(pattern: #"\bPostUniforms\s*(?:const\s*)?[&*]\s*([A-Za-z_]\w*)"#)
+        let range = NSRange(code.startIndex..., in: code)
+        let names = declarations.matches(in: code, range: range).compactMap { match in
+            Range(match.range(at: 1), in: code).map { String(code[$0]) }
+        }
+        let reads = declarations.stringByReplacingMatches(in: code, range: range, withTemplate: "")
+        // References and addresses can expose time through a resolution/pad
+        // alias, even without a cast. Conservatively animate opaque memory
+        // access after removing the ordinary uniform parameter declarations.
+        // Binary bitwise AND does not take an address or create a reference.
+        let memorySyntax = #"\b(?:reinterpret_cast|const_cast)\s*<|\b(?:constant|device|thread|threadgroup)\b[^;{}=]*[&*]"#
+            + #"|(?:^|[({=,;?:!~]|\breturn)\s*&\s*[A-Za-z_(]"#
+        let indirectMemory = reads.range(of: memorySyntax, options: .regularExpression) != nil
+        let opaqueUniforms = names.isEmpty || names.contains { name in
+            let identifier = NSRegularExpression.escapedPattern(for: name)
+            let pattern = "\\b" + identifier + #"\b(?!\s*\.\s*(?:resolution|pad)\b)|&\s*\(*\s*"# + identifier + #"\b"#
+            return reads.range(of: pattern, options: .regularExpression) != nil
+        }
+        usesTime = directTime || indirectMemory || opaqueUniforms
     }
 
     /// An offscreen texture the size of `target`, reused across frames.

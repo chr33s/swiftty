@@ -118,25 +118,24 @@ public enum InputEncoder {
             }
             return encodeKey(event, modes: modes, into: &out)
         case let .paste(s):
-            if modes.contains(.bracketedPaste) {
+            let bracketed = modes.contains(.bracketedPaste)
+            if bracketed {
                 out.append(contentsOf: "\u{1B}[200~".utf8)
-                // Strip ESC so the paste cannot terminate the bracket early.
-                for b in s.utf8 where b != 0x1B {
+            }
+            var previous: UInt8 = 0
+            for byte in s.utf8 {
+                let b = sanitizedPasteByte(byte)
+                if !bracketed, b == 0x0A {
+                    if previous != 0x0D {
+                        out.append(0x0D)
+                    }
+                } else {
                     out.append(b)
                 }
+                previous = b
+            }
+            if bracketed {
                 out.append(contentsOf: "\u{1B}[201~".utf8)
-            } else {
-                var previous: UInt8 = 0
-                for b in s.utf8 {
-                    if b == 0x0A {
-                        if previous != 0x0D {
-                            out.append(0x0D)
-                        }
-                    } else {
-                        out.append(b)
-                    }
-                    previous = b
-                }
             }
         case let .mouse(event):
             return encodeMouse(event, modes: modes, into: &out)
@@ -145,6 +144,18 @@ public enum InputEncoder {
             out.append(contentsOf: focused ? "\u{1B}[I".utf8 : "\u{1B}[O".utf8)
         }
         return true
+    }
+
+    /// Match xterm's paste filtering: controls that edit, signal, or escape
+    /// the paste become spaces. Bracketing alone does not neutralize them.
+    private static func sanitizedPasteByte(_ byte: UInt8) -> UInt8 {
+        switch byte {
+        case 0x00, 0x03, 0x04, 0x05, 0x08, 0x0F, 0x11, 0x12,
+             0x13, 0x15, 0x16, 0x17, 0x1A, 0x1B, 0x1C, 0x7F:
+            0x20
+        default:
+            byte
+        }
     }
 
     // MARK: Keys
@@ -228,7 +239,10 @@ public enum InputEncoder {
     /// associated text). Returns false when the event produces nothing.
     static func encodeKittyKey(_ event: KeyEvent, flags: UInt8, modes: Modes, into out: inout [UInt8]) -> Bool {
         let allKeys = flags & 8 != 0, eventTypes = flags & 2 != 0
-        if event.action == .release, !eventTypes {
+        let plainControl = event.key == .enter || event.key == .tab || event.key == .backspace
+        // These three keys require all-key reporting for releases, even
+        // when modifiers cause their presses to use CSI encodings.
+        if event.action == .release, !eventTypes || (plainControl && !allKeys) {
             return false
         }
         var mods = event.modifiers
@@ -240,8 +254,9 @@ public enum InputEncoder {
         // Event types are reported only when the application asked (flag 2).
         let event2 = !eventTypes ? 1 : event.action == .repeat ? 2 : event.action == .release ? 3 : 1
 
-        // Functional keys keep their legacy final byte, gaining modifier and
-        // event fields only when needed.
+        // Functional keys use canonical CSI forms, gaining modifier and
+        // event fields only when needed. Application cursor mode and SS3
+        // encodings apply only outside the active kitty protocol.
         let legacy: (number: Int, final: UInt8)? = switch event.key {
         case .up: (1, 0x41)
         case .down: (1, 0x42)
@@ -266,7 +281,8 @@ public enum InputEncoder {
         }
         if let legacy {
             if bits == 0, event2 == 1 {
-                return encodeKey(KeyEvent(event.key), modes: modes, into: &out)
+                appendCSI(out: &out, legacy.final == 0x7E ? "\(legacy.number)" : "", legacy.final)
+                return true
             }
             let params = "\(legacy.number);\(1 + bits)" + (event2 != 1 ? ":\(event2)" : "")
             appendCSI(out: &out, params, legacy.final)
@@ -281,14 +297,18 @@ public enum InputEncoder {
         case .tab: code = 9
         case .backspace: code = 127
         case let .character(scalar):
-            code = String(scalar).lowercased().unicodeScalars.first?.value ?? scalar.value
-            producesText = bits & ~1 == 0 // nothing but (possibly) shift
+            // The frontend supplies the layout's unshifted scalar. Unicode
+            // lowercasing can change that key or expand it into several scalars.
+            code = (0x41 ... 0x5A).contains(scalar.value) ? scalar.value + 0x20 : scalar.value
+            // Text bypasses CSI only for printable keys and text without
+            // controls. Otherwise report the key through the protocol.
+            producesText = bits & ~1 == 0 && Self.isKeyTextScalar(scalar)
+                && (event.text?.unicodeScalars.allSatisfy(Self.isKeyTextScalar) ?? true)
         default:
             return false
         }
-        let plainControl = event.key == .enter || event.key == .tab || event.key == .backspace
         // Without "all keys", text and unmodified Enter/Tab/Backspace stay legacy
-        // (and their releases are not reported).
+        // (and text releases are not reported).
         if !allKeys, producesText || (plainControl && bits == 0) {
             guard event.action != .release else { return false }
             if producesText, let text = event.text, !text.isEmpty {
@@ -298,10 +318,14 @@ public enum InputEncoder {
             return encodeKey(KeyEvent(event.key, modifiers: mods), modes: modes, into: &out)
         }
         var params = "\(code)"
-        if flags & 4 != 0 {
+        if flags & 4 != 0, case let .character(scalar) = event.key, Self.isKeyTextScalar(scalar) {
             // Alternate keys: `code:shifted:base`, each part only when it adds information.
-            let shifted = mods.contains(.shift) ? event.shiftedKey.map(\.value).flatMap { $0 != code ? $0 : nil } : nil
-            let base = event.baseLayoutKey.map(\.value).flatMap { $0 != code ? $0 : nil }
+            let shifted = mods.contains(.shift) ? event.shiftedKey.flatMap {
+                Self.isKeyTextScalar($0) && $0.value != code ? $0.value : nil
+            } : nil
+            let base = event.baseLayoutKey.flatMap {
+                Self.isKeyTextScalar($0) && $0.value != code ? $0.value : nil
+            }
             if let shifted {
                 params += ":\(shifted)"
             }
@@ -313,7 +337,7 @@ public enum InputEncoder {
             params += ";\(1 + bits)" + (event2 != 1 ? ":\(event2)" : "")
         }
         if flags & 16 != 0, allKeys, event.action != .release, let text = event.text, !text.isEmpty,
-           text.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7F }) {
+           text.unicodeScalars.allSatisfy(Self.isKeyTextScalar) {
             if bits == 0, event2 == 1 {
                 params += ";1"
             }
@@ -321,6 +345,11 @@ public enum InputEncoder {
         }
         appendCSI(out: &out, params, 0x75)
         return true
+    }
+
+    /// Kitty key text excludes C0, DEL and C1 control scalars.
+    private static func isKeyTextScalar(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.value >= 0x20 && (scalar.value < 0x7F || scalar.value > 0x9F)
     }
 
     /// Control-key mapping for printable keys (xterm/VT220 table).
@@ -388,7 +417,11 @@ public enum InputEncoder {
         let isWheel = [.wheelUp, .wheelDown, .wheelLeft, .wheelRight].contains(event.button)
 
         switch event.action {
-        case .press: break
+        case .press:
+            // X10 only reports the three ordinary mouse buttons.
+            if tracking.contains(.mouseX10), isWheel || event.button == .none {
+                return false
+            }
         case .release:
             guard !tracking.contains(.mouseX10), !isWheel else { return false }
         case .motion:
@@ -427,16 +460,17 @@ public enum InputEncoder {
             }
         }
 
-        let x = max(0, event.column) + 1, y = max(0, event.row) + 1
+        let x = max(0, min(event.column, Int.max - 1)) + 1
+        let y = max(0, min(event.row, Int.max - 1)) + 1
         if sgr {
             appendCSI(out: &out, "<\(code);\(x);\(y)", event.action == .release ? 0x6D : 0x4D)
         } else if modes.contains(.mouseUTF8) {
             out.append(contentsOf: [0x1B, 0x5B, 0x4D])
-            for v in [code + 32, x + 32, y + 32] {
-                appendUTF8(UInt32(min(v, 2047)), &out)
+            for v in [code + 32, min(x, 2015) + 32, min(y, 2015) + 32] {
+                appendUTF8(UInt32(v), &out)
             }
         } else {
-            guard x + 32 <= 255, y + 32 <= 255 else { return false }
+            guard x <= 223, y <= 223 else { return false }
             out.append(contentsOf: [0x1B, 0x5B, 0x4D, UInt8(code + 32), UInt8(x + 32), UInt8(y + 32)])
         }
         return true

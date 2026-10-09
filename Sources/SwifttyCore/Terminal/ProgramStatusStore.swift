@@ -6,10 +6,16 @@ public struct ProgramStatusStore: Sendable {
 
     /// Least recently updated first.
     public private(set) var records: [ProgramStatusRecord] = []
-    /// Incremented by every change; unchanged by ignored commands.
+    /// Incremented by every change, saturating at `UInt64.max`;
+    /// unchanged by ignored commands. At the limit, compare snapshot
+    /// records or use change notifications to observe further updates.
     public private(set) var revision: UInt64 = 0
 
     public init() {}
+
+    private var nextRevision: UInt64 {
+        revision == .max ? .max : revision + 1
+    }
 
     public var snapshot: ProgramStatusSnapshot {
         ProgramStatusSnapshot(records: records, revision: revision)
@@ -30,7 +36,7 @@ public struct ProgramStatusStore: Sendable {
     /// record becomes the newest.
     @discardableResult
     mutating func replace(_ record: ProgramStatusRecord) -> Bool {
-        revision += 1
+        revision = nextRevision
         if let i = records.firstIndex(where: { $0.id == record.id }) {
             records.remove(at: i)
         } else if records.count >= Self.capacity {
@@ -40,14 +46,24 @@ public struct ProgramStatusStore: Sendable {
         return true
     }
 
-    /// Adopts `snapshot`'s records (the newest `capacity`) and at least its
-    /// revision; returns whether anything changed.
+    /// Adopts the newest record per id from `snapshot`, keeping the newest
+    /// `capacity` distinct ids and at least its revision; returns whether
+    /// anything changed.
     @discardableResult
     mutating func replaceAll(with snapshot: ProgramStatusSnapshot) -> Bool {
-        let adopted = Array(snapshot.records.suffix(Self.capacity))
+        var seen: Set<String> = []
+        var adopted: [ProgramStatusRecord] = []
+        adopted.reserveCapacity(min(snapshot.records.count, Self.capacity))
+        for record in snapshot.records.reversed() where seen.insert(record.id).inserted {
+            adopted.append(record)
+            if adopted.count == Self.capacity {
+                break
+            }
+        }
+        adopted.reverse()
         guard adopted != records || snapshot.revision > revision else { return false }
         records = adopted
-        revision = max(revision + 1, snapshot.revision)
+        revision = max(nextRevision, snapshot.revision)
         return true
     }
 
@@ -67,7 +83,7 @@ public struct ProgramStatusStore: Sendable {
         let before = records.count
         records.removeAll(where: matches)
         guard records.count != before else { return false }
-        revision += 1
+        revision = nextRevision
         return true
     }
 }

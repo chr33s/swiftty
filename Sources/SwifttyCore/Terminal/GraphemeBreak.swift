@@ -80,7 +80,9 @@ enum GraphemeBreak {
         var raw: UInt8 = 0
 
         init() {}
-        init(raw: UInt8) { self.raw = raw }
+        init(raw: UInt8) {
+            self.raw = raw
+        }
 
         static let count = 5
 
@@ -123,7 +125,7 @@ enum GraphemeBreak {
 
         init() {
             precondition(GraphemeBreakTables.stage2.utf8CodeUnitCount == GraphemeBreakTables.stage2Count)
-            precondition(GraphemeBreakTables.shift == 8)
+            precondition((5 ... 8).contains(GraphemeBreakTables.shift))
             stage1 = .allocate(capacity: GraphemeBreakTables.stage1.count)
             _ = stage1.initialize(from: GraphemeBreakTables.stage1)
             stage2 = GraphemeBreakTables.stage2.utf8Start
@@ -139,7 +141,9 @@ enum GraphemeBreak {
                         let result = GraphemeBreak.compute(Property(rawValue: UInt8(g1))!, Property(rawValue: UInt8(g2))!, &state)
                         precondition(Int(state.raw) < State.count)
                         breaks[(s * n + g1) * n + g2] = (result ? 1 : 0) | state.raw << 1
-                        if !result { joinMask[g1] |= 1 << UInt32(g2) }
+                        if !result {
+                            joinMask[g1] |= 1 << UInt32(g2)
+                        }
                     }
                 }
             }
@@ -149,7 +153,8 @@ enum GraphemeBreak {
         func props(_ cp: UInt32) -> UInt8 {
             // Out-of-range values: Ghostty treats them as Other, zero in grapheme.
             guard cp < 0x110000 else { return GraphemeBreak.zeroInGraphemeBit }
-            return stage2[Int(stage1[Int(cp >> 8)]) << 8 | Int(cp & 0xFF)]
+            return stage2[Int(stage1[Int(cp >> GraphemeBreakTables.shift)]) << GraphemeBreakTables.shift
+                | Int(cp & UInt32((1 << GraphemeBreakTables.shift) - 1))]
         }
     }
 
@@ -205,7 +210,9 @@ enum GraphemeBreak {
     static func mayJoin(previous: UInt32, _ cp: UInt32) -> Bool {
         // Below U+0300 every scalar is Other or Extended_Pictographic
         // (U+00A9, U+00AE), and no pair of those joins.
-        if previous < 0x300, cp < 0x300 { return false }
+        if previous < 0x300, cp < 0x300 {
+            return false
+        }
         let t = tables
         let g1 = Int(t.props(previous) & 0x1F), g2 = t.props(cp) & 0x1F
         return t.joinMask[g1] >> UInt32(g2) & 1 != 0
@@ -221,27 +228,43 @@ enum GraphemeBreak {
         // Reset base when gb1/gb2 aren't expected in the sequence.
         switch state.base {
         case .regionalIndicator:
-            if gb1 != .regionalIndicator || gb2 != .regionalIndicator { state.base = .default }
+            if gb1 != .regionalIndicator || gb2 != .regionalIndicator {
+                state.base = .default
+            }
         case .extendedPictographic:
-            if !gb1.continuesEmoji { state.base = .default }
-            if !gb2.continuesEmoji { state.base = .default }
+            if !gb1.continuesEmoji {
+                state.base = .default
+            }
+            if !gb2.continuesEmoji {
+                state.base = .default
+            }
         case .default:
             break
         }
 
         // GB6: L x (L | V | LV | LVT)
-        if gb1 == .l, gb2 == .l || gb2 == .v || gb2 == .lv || gb2 == .lvt { return false }
+        if gb1 == .l, gb2 == .l || gb2 == .v || gb2 == .lv || gb2 == .lvt {
+            return false
+        }
         // GB7: (LV | V) x (V | T)
-        if gb1 == .lv || gb1 == .v, gb2 == .v || gb2 == .t { return false }
+        if gb1 == .lv || gb1 == .v, gb2 == .v || gb2 == .t {
+            return false
+        }
         // GB8: (LVT | T) x T
-        if gb1 == .lvt || gb1 == .t, gb2 == .t { return false }
+        if gb1 == .lvt || gb1 == .t, gb2 == .t {
+            return false
+        }
 
         // GB9 (Extend | ZWJ) is handled last: it can also start GB9c / GB11.
 
         // GB9a: x SpacingMark
-        if gb2 == .spacingMark { return false }
+        if gb2 == .spacingMark {
+            return false
+        }
         // GB9b: Prepend x
-        if gb1 == .prepend { return false }
+        if gb1 == .prepend {
+            return false
+        }
 
         // GB9c: InCB=Linker InCB=Extend* x InCB=Consonant
         if afterLinker, gb2 == .indicConjunctBreakConsonant {
@@ -282,7 +305,9 @@ enum GraphemeBreak {
         }
 
         // GB9: x (Extend | ZWJ)
-        if gb2.isExtend || gb2 == .zwj { return false }
+        if gb2.isExtend || gb2 == .zwj {
+            return false
+        }
 
         // GB999
         return true
@@ -304,7 +329,9 @@ enum GraphemeBreak {
         }
         // A scalar that contributes width makes the cluster at least 2 wide
         // (the first scalar is already at least 1).
-        if !isZeroInGrapheme(cp) { return .wide }
+        if !isZeroInGrapheme(cp) {
+            return .wide
+        }
         return .noChange
     }
 
@@ -312,20 +339,25 @@ enum GraphemeBreak {
     /// cluster in `cps`. Values above U+10FFFF stand alone: width 1 when
     /// first, and they terminate a cluster otherwise.
     static func graphemeWidth<C: RandomAccessCollection>(_ cps: C) -> (length: Int, width: Int)
-        where C.Element == UInt32
-    {
+        where C.Element == UInt32 {
         var it = cps.makeIterator()
         guard let first = it.next() else { return (0, 0) }
-        if first > 0x10FFFF { return (1, 1) }
+        if first > 0x10FFFF {
+            return (1, 1)
+        }
 
         var length = 1
         var width = Int(UnicodeWidth.table.lookup(first))
         var prev = first
         var state = State()
         while let cp = it.next() {
-            if cp > 0x10FFFF { break }
+            if cp > 0x10FFFF {
+                break
+            }
             let before = state
-            if isBreak(prev, cp, &state) { break }
+            if isBreak(prev, cp, &state) {
+                break
+            }
             switch widthEffect(previous: prev, cp) {
             case .ignore:
                 state = before

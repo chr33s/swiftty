@@ -201,3 +201,5 @@ enum GraphemeBreakTables {
 
     static let stage2Count = 28672
 }
+
+// swiftlint:enable all

@@ -1,392 +1,272 @@
-# Spec: Swift 6.4 Terminal Core with libghostty Parity on Apple Platforms
+# Swiftty specification
 
-## 1. Goal
+## Goal and scope
 
-Implement a **Swift 6.4 terminal core for Apple platforms** (`SwifttyCore`) that reaches feature parity with `libghostty` for everything an Apple frontend needs, plus first-party frontends for **macOS** (AppKit) and **iOS/iPadOS** (UIKit).
+Build a small Swift 6.4 terminal core with libghostty behavioral parity for Apple
+frontends. Prioritize native Swift APIs, Apple Silicon performance, borrowed
+storage and direct Darwin/CoreText/Metal integration. Measure improvements;
+a small C helper is acceptable when justified.
 
-The implementation should prioritize:
+| Platform               | Core       | Local PTY   | Frontend             |
+| ---------------------- | ---------- | ----------- | -------------------- |
+| macOS                  | required   | required    | AppKit, required     |
+| iOS/iPadOS             | required   | unavailable | UIKit, required      |
+| Mac Catalyst, visionOS | must build | unavailable | UIKit reuse optional |
 
-- small codebase;
-- native Swift APIs;
-- Apple Silicon performance;
-- zero-copy / low-allocation hot paths;
-- direct Darwin, CoreText, and Metal integration;
-- behavioral compatibility with Ghostty.
+Scope includes session lifecycle, parsing, terminal state/history, input encoding,
+resize, Unicode/graphemes, snapshots, fonts, rendering and frontend features.
+The embedder owns external transports, connections, authentication and window/tab/
+split management. Linux, Windows, GTK, OpenGL, WebAssembly, plugin APIs and a
+stable core C ABI are excluded; Shell supplies its own libghostty embedder API.
+Sixel is excluded. Kitty graphics is future work; until separately specified,
+ignore APC strings safely. Future graphics support should use bounded image
+storage and cover transmission, placement, deletion, z-order and placeholders.
 
-This is **not** a line-by-line Zig port.
+Implementation and verification status belong in [README.md](README.md).
 
-### Status
-
-Milestones 1–4 (§11, §12) are implemented: the macOS core and app; the iOS/iPadOS frontend (`SwifttyMobile`); the protocol parity items; and configuration, themes, keybindings and accessibility on both platforms. `README.md` records what was verified and how.
-
----
-
-## 2. Scope
-
-### Platforms
-
-| Platform | Core | Local process (PTY) | Frontend |
-|---|---|---|---|
-| macOS | required | required | AppKit, required |
-| iOS / iPadOS | required | not available (sandbox) | UIKit, required |
-| Mac Catalyst, visionOS | must build | not available | may reuse the UIKit frontend; not required |
-
-### In scope
-
-- terminal session lifecycle;
-- PTY/process management (macOS);
-- a host-supplied byte stream for platforms without a PTY (`receive` / `onWrite`); as with libghostty, the embedder owns the connection;
-- VT parser;
-- terminal grid/state;
-- scrollback;
-- keyboard/input encoding;
-- resize handling;
-- Unicode width / grapheme behavior;
-- renderer-facing snapshot/damage model;
-- CoreText-backed font lookup;
-- the Metal renderer, shared across platforms;
-- frontend features libghostty's embedder layer provides: configuration, keybinding actions, selection, search, hyperlinks, accessibility (§12).
-
-### Out of scope
-
-- Linux, Windows, GTK, OpenGL, WebAssembly;
-- stable external C ABI (the libghostty embedder API is provided by the separate Shell project);
-- generic cross-platform abstractions beyond Apple platforms;
-- plugin APIs;
-- Sixel (Ghostty does not support it);
-- SSH, mosh, or any other network client: libghostty has none, and remote sessions are the embedding app's concern.
-
-### Future (out of this spec)
-
-- **Kitty graphics protocol.** Deferred to a later spec. Until then APC
-  strings are ignored safely, and nothing here should be designed around
-  image support. When it is taken up, it is expected to cover transmission
-  (direct, chunked; file and shared-memory media on macOS), placement,
-  deletion, z-ordering and Unicode placeholders, with images in a bounded
-  side table rendered as textured quads.
-
----
-
-## 3. Architecture
+## Architecture and ownership
 
 ```text
-AppKit frontend (macOS)        UIKit frontend (iOS/iPadOS)
-      |                               |
-      +---------------+---------------+
-                      v
-               TerminalSession ─ one serial queue owns all terminal state
-                      |
-      +-- Transport: PTYProcess (macOS) | host-supplied bytes
-      +-- Parser
-      +-- TerminalState
-      |    +-- Grid, Scrollback, Modes, Graphemes
-      |    +-- Selection, Search, Hyperlinks, Semantic prompts
-      +-- InputEncoder
-      +-- UnicodeWidth / GraphemeBreak
-      +-- RenderSnapshot
-                      |
-                      v
-       MetalRenderer + CoreTextFontManager + BoxDrawing
+AppKit / UIKit frontend
+          ↓
+TerminalSession — one serial queue owns parser and terminal state
+  ├─ PTYProcess (macOS) or embedder-supplied byte stream
+  ├─ Parser → TerminalState (grid, history, modes, graphemes, status)
+  ├─ InputEncoder
+  └─ immutable RenderSnapshot → MetalRenderer + CoreTextFontManager
 ```
 
-Primary API:
+Keep targets coarse: `SwifttyCore`, `Swiftty`, `SwifttyMobile`. Within the core,
+use `Session`, `Process`, `Terminal`, `Input`, `Unicode`, `Font`, `Renderer` and
+`Config` directories. Frontends share everything below view hosting. Isolate
+platform code with conditional compilation; avoid a portability layer or
+internal C-shaped APIs.
 
-```swift
-final class TerminalSession {
-    func start(_ configuration: SessionConfiguration) throws   // macOS PTY
-    func receive(_ bytes: [UInt8])                             // host-supplied transport
-    var onWrite: (([UInt8]) -> Void)?
-    func resize(columns: Int, rows: Int)
-    func send(_ input: TerminalInput)
-    func snapshot() -> RenderSnapshot
-    func stop()
-}
-```
+`TerminalSession` provides `start(_:)`, `receive(_:)`, `onWrite`,
+`resize(columns:rows:)`, `send(_:)`, `snapshot()` and `stop()`.
+PTY I/O uses Darwin `openpty`, `termios`, `ioctl`, `posix_spawn`, dispatch-source
+reads and descriptor writes; always reap children, including after stop.
+External transports deliver output through `receive`, forward encoded input and
+replies, and propagate resize.
 
-Do not expose C-shaped APIs internally. Platform-specific code lives behind `#if os(...)` in the few files that need it (PTY, view hosting); do not build a portability layer.
+I/O enters the existing session queue; UI runs on the main actor. Renderer access
+stays on the main thread/render callback.
+Use immutable snapshots and coarse synchronization; avoid actors or locks in
+parser/grid loops and cross-thread terminal-state mutation.
 
----
+## Memory, parsing and Unicode
 
-## 4. Module layout
+- Common parser and cell-update paths must avoid heap allocation, input-to-`String`
+  conversion, repeated `Data` copies, unnecessary ARC and uncontrolled copy-on-write.
+  Prefer borrowed `Span`, unique non-copyable ownership, small `InlineArray` storage
+  and reusable contiguous buffers.
+- Store `BitwiseCopyable` cells in contiguous row-major storage: no cell objects,
+  row dictionaries or allocation during ordinary mutation. Reuse resize storage
+  where practical. Additional cell metadata belongs in side tables keyed by ID.
+- Parse borrowed bytes in batches with a non-copyable state machine, SIMD printable
+  scanning and inline UTF-8 decoding optimized for Apple Silicon. Safely ignore
+  unsupported or malformed sequences according to terminal rules.
+- Use scalars, generated width/grapheme tables and explicit cell semantics rather
+  than `Character` storage. Preserve wide cells and grapheme behavior through
+  wrap, scroll and resize/reflow.
+
+## Rendering and fonts
+
+Snapshots contain only renderer data and damage. Rebuild damaged rows, retain GPU
+buffers and avoid whole-grid copies per frame. Retain damage across missing
+drawables and retry a skipped final presentation. Share one Metal renderer across
+platforms, with shaders in `.metal` files.
+Draw only when needed; suspend frame driving and blink timers for detached,
+hidden, fully transparent or empty views and occluded macOS windows. Retain pending
+output through fades and opacity pulses; draw while visible and resume animation
+on restoration. UIKit also stops momentum while invisible and suspends rendering
+and momentum in the background.
+Blinking and animated post-processing are the only independent animation sources.
+
+Use CoreText for primary/bold/italic/bold-italic faces, fallback fonts, emoji and
+OpenType shaping. Support family per style, point size, features, variations,
+synthetic-style controls and cell-size adjustments; default iOS sizing follows
+Dynamic Type. Draw box/block/Braille/sextant/Powerline glyphs procedurally.
+Render underline styles/colors, blinking text, minimum contrast, opacity/blur and
+custom Metal post-processing shaders.
+
+## Frontend milestones
+
+| Milestone     | Required behavior                                                                                                                                                                                                                                                                                      |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1: macOS      | Shell PTY, typing/IME, colors, cursor, reflow, history, alternate screen, mouse, selection/copy, search, clipboard, common prompts and TUIs                                                                                                                                                            |
+| 2: iOS/iPadOS | Metal `UIView`, `UITextInput` for keyboard/dictation/IME, hardware key press/release, Esc/Ctrl/Alt/Tab/arrows/symbol accessory bar, touch selection/handles/edit menu, momentum scrolling, touch/pointer mouse reporting, multitasking resize/keyboard avoidance, lifecycle pausing, local demo source |
+| 3: protocols  | Semantic prompt marks/jumps/output selection/redraw/click-to-move, underline colors/styles, blinking text, title/SGR stacks, pointer shapes, color-scheme and resize reports, alternate-key encoding and hyperlinks                                                                                    |
+| 4: embedding  | Ghostty-style supported configuration/themes, keybinding actions, font/render options, find controls and VoiceOver on both frontends                                                                                                                                                                   |
+
+Milestones require behavioral tests and the performance gates below. Network
+clients and frontend window management remain embedder responsibilities.
+
+### Terminal protocols
+
+| Family               | Required support                                                                                                                                                                                         |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C0                   | BEL, BS, HT, LF, VT, FF, CR, SO, SI, CAN, SUB                                                                                                                                                            |
+| ESC                  | DECSC/DECRC, IND, NEL, HTS, RI, RIS, DECKPAM/DECKPNM, G0/G1 designation including DEC Special Graphics, DECALN                                                                                           |
+| CSI movement/editing | CUU/CUD/CUF/CUB/CNL/CPL/CHA/CUP/HVP/VPA/VPR/HPA/HPR/CHT/CBT; ED/EL/ECH/ICH/DCH/IL/DL/SU/SD/REP                                                                                                           |
+| CSI state            | TBC, DECSTBM, DECSLRM, SGR (16/256/truecolor, colon subparameters, underline styles and SGR 58/59), SCOSC/SCORC, SM/RM, DECSET/DECRST/DECRQM, DECSCUSR, DECSTR                                           |
+| Reports/stacks       | DSR 5/6, DA1/DA2, XTVERSION, XTWINOPS 14/16/18/22/23, XTPUSHSGR/XTPOPSGR (`# {`, `# }`, `# p`, `# q`), color scheme (`? 996 n`)                                                                          |
+| Modes                | DEC 1, 3 (with 40), 5, 6, 7, 9, 12, 25, 45, 47, 69, 1000, 1002, 1003, 1004, 1005, 1006, 1007, 1045, 1047, 1048, 1049, 2004, 2026, 2027, 2031, 2048; ANSI 4, 20                                           |
+| Input                | Kitty keyboard query/push/pop/set and flags 1/2/4/8/16; X10/normal/any-motion, legacy/UTF-8/SGR mouse; bracketed paste and focus reports                                                                 |
+| OSC                  | 0/2 title, 7 cwd, 8 links, 52 clipboard writes, 133 prompts, 21 colors, 22 pointer, 4/10/11/12 set/query and 104/110/111/112 reset, 9 and `777;notify` notifications, `9;4` progress, opt-in 7501 status |
+| DCS                  | Streamed tmux control mode (`1000 p`), XTGETTCAP (`+ q`), DECRQSS (`$ q`)                                                                                                                                |
+
+Unknown sequences and other DCS/APC/PM/SOS strings must be ignored safely.
+OSC 52 accepts padded/unpadded Base64 and an empty clipboard clear; invalid
+characters, whitespace or malformed explicit padding reject the entire write.
+Clipboard reads are refused. Paste replaces editing, signal and escape controls
+with spaces. Unbracketed LF/CRLF becomes one CR; bracketed paste preserves line
+endings and frames empty input. Unsupported upstream protocols/API cases are
+tracked separately in [todo.tests.md](todo.tests.md).
+
+## OSC 7501 program status
+
+The core owns protocol validation, state, lifecycle and support replies.
+Embedders own badges, notifications, acknowledgment, permission UX, aggregation
+and pane-specific transport routing. Keep status distinct from OSC 9;4 progress;
+never persist it into a newly created process or interpret it as approval.
+
+### Framing and fields
 
 ```text
-Sources/
-├── SwifttyCore/
-│   ├── Session/      TerminalSession, SessionConfiguration
-│   ├── Process/      PTYProcess, FileDescriptor (macOS only)
-│   ├── Terminal/     Parser, TerminalState(+Control, +OSC, +Grapheme), Grid, Cell,
-│   │                 Scrollback, Modes, Damage, Graphemes, GraphemeBreak, Selection, Dump
-│   ├── Input/        InputEncoder
-│   ├── Unicode/      Width, ScalarInfo, Tables (generated)
-│   ├── Font/         CoreTextFontManager
-│   ├── Renderer/     RenderSnapshot, MetalRenderer, Shaping, BoxDrawing, Shaders.metal
-│   └── Config/       configuration file, themes, keybindings (new)
-├── Swiftty/          AppKit frontend (macOS)
-└── SwifttyMobile/    UIKit frontend (iOS/iPadOS) (new)
+ESC ] 7501 ; ? ST
+ESC ] 7501 ; key=value:key=value... ST
 ```
 
-Keep targets coarse. Frontends share everything below the view layer.
-
----
-
-## 5. Core implementation rules
-
-### Memory
-
-Hot-path code must avoid:
-
-- `String` conversion of terminal input;
-- per-byte allocation;
-- per-cell heap allocation;
-- repeated `Data` copies;
-- unnecessary ARC traffic;
-- uncontrolled copy-on-write.
-
-Prefer:
-
-- `Span<UInt8>`;
-- non-copyable types where ownership is unique;
-- `InlineArray` for fixed small storage;
-- uniquely-owned contiguous storage;
-- explicit borrowing;
-- preallocated buffers.
-
-### Terminal grid
-
-Use a contiguous row-major cell buffer of `BitwiseCopyable` cells:
-
-- no class per cell;
-- no dictionary per row;
-- no allocation during normal cell mutation;
-- resize reuses storage where practical.
-
-New per-cell data (such as underline color) goes into side tables keyed by id, as graphemes and hyperlinks do, so the cell does not grow.
-
-### Strings / Unicode
-
-Do not use `Character` as the terminal's storage unit. Use Unicode scalars, explicit width tables, explicit grapheme handling, and generated tables. Terminal cell semantics take precedence over Swift string semantics.
-
----
-
-## 6. Parser
-
-The parser is a state machine operating directly on borrowed bytes:
-
-```swift
-struct Parser: ~Copyable {
-    mutating func consume(_ bytes: borrowing Span<UInt8>, into terminal: inout TerminalState)
-}
-```
-
-Requirements:
-
-- zero allocation for common ASCII/UTF-8 input;
-- no intermediate `String`;
-- process buffers in batches;
-- SIMD scanning of printable runs;
-- optimize for Apple Silicon ARM64.
-
-Unsupported sequences must fail safely and be ignored according to terminal rules.
-
----
-
-## 7. I/O
-
-### macOS: PTY
-
-Implement directly against Darwin: `openpty`, `termios`, `ioctl`, `posix_spawn`, `DispatchSource` reads, direct file-descriptor writes. Children are always reaped, including when the session is stopped.
-
-### iOS/iPadOS: host-supplied
-
-There is no local process. As with libghostty, the core does not open connections: the embedding app delivers program output with `receive`, takes replies and encoded input from `onWrite`, and forwards `resize` to whatever is on the other end (an SSH channel, mosh, an in-process interpreter). Connection setup, authentication, reconnection and background policy belong to the app.
-
-Ownership model for both:
-
-```text
-transport read -> single terminal queue (Parser, TerminalState, damage) -> immutable render snapshot
-```
-
-The terminal state has one mutation owner. Do not use one actor per subsystem.
-
----
-
-## 8. Concurrency
-
-- UI: main actor;
-- terminal parser/state: one serial queue per session;
-- renderer: main thread or the view's render callback;
-- I/O: dispatch sources (PTY) or the host's own queue, hopping onto the session queue through `receive`.
-
-Rules:
-
-- no cross-thread mutation of `TerminalState`;
-- no fine-grained actor hops in parser/grid loops;
-- render state passes as immutable snapshots;
-- synchronization points stay coarse.
-
----
-
-## 9. Rendering
-
-The core outputs a compact snapshot containing only the data the renderer needs; the renderer rebuilds only damaged rows, retains GPU buffers, and never copies the whole grid per frame. A frame skipped for lack of a drawable must not lose damage.
-
-One `MetalRenderer` serves every platform (`MTKView` / `CAMetalLayer`). Shader code stays in `.metal` files.
-
-Rendering parity work (§12): underline styles and colors, blinking text, minimum contrast, background opacity/blur, custom post-processing shaders.
-
----
-
-## 10. Fonts
-
-Use CoreText directly:
-
-```swift
-final class CoreTextFontManager {
-    func resolve(_ descriptor: FontDescriptor) -> ResolvedFont
-}
-```
-
-Done: primary/bold/italic/bold-italic faces, fallback fonts, emoji, shaping with OpenType features, procedural box drawing, block elements, Braille, sextants and Powerline glyphs.
-
-Remaining: font configuration (family per style, size, features, variations), synthetic bold/italic control, cell width/height adjustment, and Dynamic Type-aware default sizing on iOS.
-
----
-
-## 11. Milestone 1 (complete)
-
-macOS core and app: launching a shell, typing, UTF-8, colors, cursor movement, resizing with reflow, scrollback, alternate screen, `vim`, `less`, `tmux`, common prompts, mouse reporting, selection and copy, IME, search, OSC 52.
-
----
-
-## 12. Parity milestones
-
-### Milestone 2 — iOS/iPadOS frontend
-
-- `UIView` hosting the Metal renderer, adopting `UITextInput` for the software keyboard, dictation and IME marked text;
-- hardware keyboard through `pressesBegan`/`pressesEnded` (key up/down for the Kitty protocol);
-- an input accessory bar: Esc, Ctrl, Alt, Tab, arrows, and common symbols;
-- touch selection (long-press, drag handles), `UIEditMenuInteraction` for copy/paste;
-- scrolling with momentum, and mouse reporting from touch and from the iPad pointer (`UIPointerInteraction`, scroll wheel);
-- resize for Split View, Slide Over and Stage Manager; keyboard-avoidance;
-- scene lifecycle: pause rendering in the background;
-- the view takes a session the app has connected; the reference app ships only a local demo source (an in-process echo/replay), not a network client.
-
-### Milestone 3 — terminal protocol parity
-
-- OSC 133 semantic prompts: prompt marks per row, jump to previous/next prompt, select command output, prompt-aware resize, click-to-move-cursor;
-- underline styles (curly, dotted, dashed) drawn, and underline color (SGR 58/59);
-- blinking text (SGR 5) with the cursor's blink phase;
-- title stack (`CSI 22 t` / `CSI 23 t`), XTPUSHSGR/XTPOPSGR (`CSI # {` / `CSI # }`);
-- OSC 22 pointer shape, OSC 21 Kitty color protocol;
-- color-scheme reporting (DEC mode 2031, `CSI ? 996 n`);
-- in-band resize notifications (DEC mode 2048);
-- Kitty keyboard flag 4 (report alternate keys);
-- hyperlinks in the frontends: hover detection, underline, open with the system handler.
-
-### Milestone 4 — embedder features
-
-- configuration file and themes compatible with Ghostty's syntax for the options these frontends support;
-- keybinding actions (copy, paste, font size, scroll, prompt jumps, search, clear screen, reset);
-- accessibility: VoiceOver text exposure and navigation on both platforms;
-- window/tab/split management stays in each frontend, not the core.
-
-Each milestone is done when its features have tests in the existing layers (§15) and do not break the performance gates (§13).
-
----
-
-## 13. Performance requirements
-
-### Hard requirements
-
-| Metric | Requirement |
-|---|---:|
-| parser-loop heap allocations | 0 for common input |
-| cell update allocations | 0 |
-| typing latency | no measurable regression |
-| terminal correctness tests | 100% for supported features |
-| scroll performance | no regression from milestone 1 |
-| RSS | <= 15% above milestone 1 for text-only sessions |
-| frame pacing | no dropped frames at the display rate for ordinary use |
-| iOS energy | no rendering while idle or backgrounded |
-
-### Target
-
-Parser throughput stays at or above 95% of upstream Ghostty on the comparison corpus (`Scripts/compare-ghostty.sh`) for every input except wide-character-heavy ones, which must reach 90%.
-
----
-
-## 14. Benchmarks
-
-Maintain microbenchmarks for: 100 MB ASCII and UTF-8 streams, compiler logs, `cat` of large files, full-screen redraw, scrolling, resize stress, OSC-heavy and CSI-heavy input.
-
-Measure MB/s, CPU time, allocations, peak RSS, frame time, and p95 input-to-render latency, on Apple Silicon Release builds. Frame time is also measured on an iPad.
-
----
-
-## 15. Testing
-
-### Parser tests
-
-Golden tests for CSI, OSC, DCS, APC, SGR, cursor movement, erase, modes, UTF-8, and malformed input.
-
-### Terminal-state tests
-
-Wrapping, scrolling, resize/reflow, alternate screen, graphemes, wide characters, cursor behavior, semantic prompts.
-
-### Oracle tests
-
-Port Ghostty's `Terminal.zig` tests (and its OSC tests as those features land) and drive them through escape sequences.
-
-### Integration tests
-
-On macOS, launch real applications through the PTY: shell, `vim`, `less`, `tmux`, `top`. On iOS, replay recorded sessions of the same applications through `receive` and check the resulting screens.
-
-### Frontend tests
-
-Input-handling tests for both frontends (key translation, IME commit, selection gestures) that do not require a window server where possible.
-
----
-
-## 16. Non-goals for optimization
-
-Do not optimize early for Intel Macs, generic CPU architectures, external ABI stability, maximal abstraction, or zero dependencies at all costs.
-
-Optimize for:
-
-1. Apple Silicon;
-2. the macOS and iOS/iPadOS frontends;
-3. measurable terminal latency and throughput;
-4. battery use on iOS.
-
----
-
-## 17. Definition of done
-
-Parity is reached when:
-
-- the macOS and iPadOS apps run daily shell work (`vim`, `tmux`, shells, common TUIs) correctly;
-- every milestone in §12 is complete with tests;
-- supported behavior matches Ghostty's ported tests;
-- parser and cell hot paths allocate effectively zero memory;
-- input/render latency is indistinguishable from Ghostty on macOS;
-- the Swift core remains materially smaller and simpler than a mechanical Zig port.
-
----
-
-## 18. Design principle
-
-```text
-Apple-native simplicity
-    over
-cross-platform architectural parity
-```
-
-and:
-
-```text
-measured performance
-    over
-language-style purity
-```
-
-A tiny C helper for one kernel is acceptable. The goal is a small, Swift-native terminal core for Apple platforms, not 100% Swift purity.
+Accept BEL or ST across arbitrary input chunk boundaries. Use a dedicated
+bounded capture path and apply only complete, validated commands. An over-limit
+report must be discarded in full, without applying a truncated prefix.
+
+| Limit                                        |                       Bytes/count |
+| -------------------------------------------- | --------------------------------: |
+| Whole sequence, including framing/terminator |                        4096 bytes |
+| Key                                          |                          16 bytes |
+| ID / segment / depth                         | 128 bytes / 32 bytes / 8 segments |
+| `app`                                        |                          32 bytes |
+| `title`, encoded / decoded                   |                   256 / 192 bytes |
+| `msg`, encoded / decoded                     |                 2732 / 2048 bytes |
+
+- `state` is required and case-sensitive: `idle`, `working`, `done`, `blocked`,
+  `error` or `clear`. Missing/unknown state rejects the report; `clear` is a
+  mutation, never a retained state.
+- Omitted `id` addresses the root (`""` in the API). Non-root IDs are slash-separated
+  nonempty `[A-Za-z0-9_.+-]` segments. Invalid IDs reject the whole report,
+  including clears; they must never fall back to root.
+- `progress` is decimal 0–100 for `working`/`blocked`; invalid values are absent.
+  `kind` applies only to `blocked`: `permission`, `question` or `auth`;
+  unknown values are absent. `app` uses the segment character set.
+- `title`/`msg` are standard-alphabet Base64, padded or unpadded, decoding to
+  bounded valid UTF-8. Empty values are absent. Reject invalid decoded text,
+  C0/DEL/C1 controls and field-limit violations before any mutation.
+- Keys use lowercase ASCII letters; value bytes use `[A-Za-z0-9_.,+/=-]`.
+  Unknown keys and individually malformed pairs may be ignored; applicable
+  repeated keys use the last value, subject to whole-report validation.
+
+Decoded text remains untrusted. Never execute it or interpret it as markup.
+Other format characters survive decoding; trusted UI must strip or isolate
+bidirectional controls (U+200E/F, U+202A–202E, U+2066–2069).
+
+### Store and lifecycle
+
+The authoritative `ProgramStatusStore` lives in `TerminalState`, independent of
+rendering-surface lifetime. Apply commands and lifecycle operations in session
+stream order. Keep one record per ID, including root, ordered least recently
+updated first. Reports replace the whole record: omitted fields disappear.
+A child does not require a stored parent; `app(for:)` resolves its nearest
+ancestor's app, then root.
+
+Root clear removes all records. Child clear removes its exact ID and descendants
+whose prefix is followed by `/`: clearing `build` removes `build/test`, never
+`builder` or `other/build`. Bound storage at 256 records and evict the least
+recently updated on insertion; updating an ID moves it to newest.
+Observable mutations increment the store revision; invalid/no-op commands do not.
+Revisions saturate at `UInt64.max`; consumers must then compare records or use
+change notifications.
+
+| Event                                        | Required effect                                                                                                                                                                  |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Genuine new prompt (OSC 133 A or equivalent) | Remove `idle`, `working`, `blocked`; retain `done`/`error`. Continuation/redraw markers are not command boundaries.                                                              |
+| RIS/full reset                               | Clear all records before publishing reset completion. Soft reset preserves them.                                                                                                 |
+| Process/session exit                         | Remove transient records; retain existing `done`/`error`, never infer either from the exit code. PTY sessions do this automatically; external transports call `programExited()`. |
+| Disable consumption                          | Ignore reports/queries, send no support reply and clear retained records.                                                                                                        |
+| Capture reconstruction                       | Explicit `resetForCapture()` preserves records; `continueStream(from:)` restores parser/status state in order. Ordinary RIS still clears status.                                 |
+
+### Consumer and reply contract
+
+`ProgramStatusState` and `ProgramStatusBlockedKind` are typed enums.
+`ProgramStatusRecord` exposes immutable `id`, `state`, optional `kind`/`progress`/
+`app`/`title`/`message`, and `revision`. `ProgramStatusSnapshot` contains immutable
+ordered `records` and `revision`; both are `Sendable` and `Equatable`.
+
+Enable consumption explicitly with `SessionConfiguration.programStatusEnabled`
+or `setProgramStatusEnabled(_:)`. Newly attached consumers can immediately read
+`TerminalSession.programStatusSnapshot`; `onProgramStatusChange` publishes after
+mutation, including status-only updates without cell damage. Copy parser scratch
+storage before publication. UI dispatch belongs to the embedder. Presentation
+notifications may coalesce, but mutations must not be skipped or reordered.
+
+An enabled support query receives `OSC 7501 ; ?` with its matching BEL/ST
+terminator; ordinary reports generate no reply. Deliver generated bytes through
+`onTerminalReply: (@Sendable ([UInt8]) -> Void)?`, distinguishable from keyboard/
+paste input. Without that callback, transport delivery falls back to `onWrite`;
+a PTY sends replies directly to its child. Embedders requiring provenance must
+install the callback and route replies to the originating terminal/pane, including
+tmux control-mode topologies. Replies and snapshots must work without a surface.
+
+### Required coverage
+
+Cover states/kinds/fields, Unicode, all split boundaries, multiple sequences,
+repeated/unknown/malformed pairs, invalid/missing state, ID grammar/depth/length,
+each limit boundary including whole sequence ±1, progress edges, Base64/UTF-8/
+control rejection and disabled consumption. Verify replacement, root/child clear,
+prefix collisions, ordering, capacity/eviction and revisions. Exercise prompt/
+reset/exit/reconstruction in stream order, surface-independent publication and
+BEL/ST reply provenance. Existing OSC 9;4, OSC 133, reset and response tests
+must continue passing. The embedder must consume status without parsing OSC itself.
+
+## Performance and acceptance
+
+| Metric                                            | Requirement                             |
+| ------------------------------------------------- | --------------------------------------- |
+| Common parser-loop / cell-update heap allocations | 0 / 0                                   |
+| Typing latency                                    | no measurable regression                |
+| Supported-feature correctness tests               | 100% pass                               |
+| Scroll performance                                | no regression from milestone 1          |
+| Text-only RSS                                     | ≤15% above milestone 1                  |
+| Ordinary-use frame pacing                         | no dropped frames at display rate       |
+| UIKit energy behavior                             | no rendering while idle or backgrounded |
+
+Parser throughput must reach ≥95% of upstream Ghostty for every comparison input,
+or ≥90% for wide-character-heavy inputs (`Scripts/compare-ghostty.sh`). Maintain
+100 MB ASCII/UTF-8, compiler-log, source-file, full-redraw, scroll, resize-stress,
+OSC-heavy and CSI-heavy benchmarks. Measure throughput, CPU time, allocations,
+peak RSS, frame time and p95 input-to-render latency on Apple Silicon Release
+builds; also measure frame time on a physical iPad. Prioritize measurable latency,
+throughput and iOS battery behavior over generic architecture or Swift purity.
+
+Tests must cover:
+
+- Parser/state golden cases: CSI/OSC/DCS/APC/SGR, malformed input, cursor/erase/modes,
+  UTF-8, history, reflow, alternate screens, wide cells, graphemes and semantic prompts.
+- Ghostty oracle cases driven through terminal sequences.
+- Real macOS PTY sessions (`sh`, `vim`, `less`, `tmux`, `top`) and recorded iOS
+  replays through `receive`.
+- Frontend key/IME/selection behavior.
+
+Use window-independent tests where possible and hosted tests for UIKit behavior.
+
+Parity is complete only when:
+
+- All milestones pass their tests and performance gates.
+- Both apps support daily shell/TUI work, with supported behavior matching Ghostty.
+- Hot paths allocate effectively zero.
+- macOS input/render latency is indistinguishable from Ghostty.
+- The Swift core remains materially smaller and simpler than a mechanical port.
+
+Automated and offscreen results alone do not establish the interactive acceptance
+requirements.

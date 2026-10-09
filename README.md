@@ -1,85 +1,88 @@
 # swiftty
 
-A small Swift 6.4 terminal core (`SwifttyCore`) with libghostty-level
-features, plus frontends for macOS (`swiftty`, AppKit) and iOS/iPadOS
-(`SwifttyMobile`, UIKit), implementing [spec.md](spec.md).
+Swift 6.4 terminal core and frontends for macOS (AppKit) and iOS/iPadOS
+(UIKit). `SwifttyCore` and `SwifttyMobile` also build for Mac Catalyst and
+visionOS. [spec.md](spec.md) defines scope, protocols and acceptance requirements.
+[Shell](https://github.com/chr33s/shell) embeds the core through its libghostty API.
 
-`SwifttyCore` builds for macOS, iOS, Mac Catalyst and visionOS. On macOS a
-session can own a child process on a PTY; everywhere, a session can instead
-use an external transport (`receive` program output, take replies and
-encoded input from `onWrite`) — SSH channels, in-process shells, tmux panes.
-[Shell](https://github.com/chr33s/shell) embeds it behind the libghostty
-embedder API.
+## Build and test
 
-```text
-swiftty (AppKit)          SwifttyMobile (UIKit)
-      |                          |
-      +------------+-------------+
-                   |
-TerminalSession ─ one serial queue owns all terminal state
-      ├─ PTYProcess        openpty + posix_spawn, DispatchSource I/O
-      ├─ Parser            VT500 state machine, SIMD ASCII scan, inline UTF-8
-      ├─ TerminalState     Grid, Scrollback, Modes, cursor, damage, prompt marks
-      ├─ InputEncoder      xterm keys, mouse (X10/normal/SGR/UTF-8), paste, focus
-      ├─ UnicodeWidth      generated two-stage width table
-      ├─ RenderSnapshot    pooled, damage-driven, Span-based
-      └─ Configuration     Ghostty-syntax config, themes, keybindings
-      |
-MetalRenderer + CoreTextFontManager (shaders in Renderer/Shaders.metal)
-```
-
-## Usage
-
-Tooling is pinned in `mise.toml`: Swift 6.4.0, swiftformat, swiftlint, tmux,
-and, for the Ghostty comparison, Zig 0.16.0 and hyperfine.
+Requires Xcode 27 and the tools pinned in `mise.toml`:
 
 ```sh
 mise install
-mise run test      # unit + PTY integration tests (sh, vim, less, tmux, top)
-mise run app       # launch the terminal
-mise run bench     # release-build microbenchmarks (100 MB streams)
-mise run lint      # swiftlint; `mise run format` applies swiftformat
-mise run unicode   # regenerate Unicode/Tables.swift from EastAsianWidth.txt
-mise run compare <ghostty-src> <corpus-dir>  # hyperfine vs upstream ghostty-bench
+mise run test       # unit tests and real PTY sessions: sh, vim, less, tmux, top
+mise run app        # launch the macOS terminal
+mise run bench      # Release microbenchmarks
+mise run lint
+mise run format
+mise run compare <ghostty-src> <corpus-dir>
 ```
 
-`SDKROOT` is set by `mise.toml` because swift.org toolchains need Xcode's macOS
-SDK to link.
-
-The iOS frontend builds with Xcode (the package's AppKit app keeps the
-`swiftty-Package` scheme macOS-only):
+The package sets `SDKROOT` for swift.org toolchains. Build the UIKit frontend
+with Xcode; the package's AppKit executable scheme is macOS-only:
 
 ```sh
 xcodebuild -scheme SwifttyMobile -destination 'generic/platform=iOS Simulator' build
+xcodebuild -scheme SwifttyMobile -configuration Release -destination 'generic/platform=macOS,variant=Mac Catalyst' CODE_SIGNING_ALLOWED=NO build
+xcodebuild -scheme SwifttyMobile -configuration Release -destination 'generic/platform=visionOS' CODE_SIGNING_ALLOWED=NO build
 ```
 
-`Tests/SwifttyMobileTests/Fixtures` holds recorded `sh`, `vim`, `less`,
-`tmux` and `top` sessions that the replay tests feed through `receive` (the
-iOS path, with no PTY) on macOS and the simulator. Re-record them with
+Hosted mobile tests need XcodeGen and Python 3:
+
+```sh
+Scripts/test-ios-simulator.sh <simulator-udid>
+Scripts/test-ipad-frame-time.sh <device-udid> <development-team>
+```
+
+Both scripts retain results in a temporary workspace and print its path. Physical
+tests use existing signing profiles. Simulator GPU timings are indicative only.
+Recorded `sh`, `vim`, `less`, `tmux` and `top` sessions live in
+`Tests/SwifttyMobileTests/Fixtures`; regenerate with
 `SWIFTTY_RECORD=1 swift test --filter SessionRecorder`.
 
-### Configuration
+## Embedding
 
-Settings use Ghostty's syntax (`key = value`, `#` comments, repeatable keys,
-an empty value restores the default, `config-file` includes). macOS reads
-`$XDG_CONFIG_HOME/swiftty/config` (default `~/.config/swiftty/config`;
-Settings… opens it, Shift-Cmd-, reloads it); iOS reads `Documents/config`.
-Unknown keys are reported and ignored, so a Ghostty file can be shared.
+On macOS, `TerminalSession.start(_:)` can launch a PTY child. External
+transports feed program output through `receive(_:)`, send encoded input from
+`onWrite`, and forward resize events to the remote program. Connection setup,
+authentication and reconnection belong to the embedding app.
+
+`TerminalUIView(session:configuration:fontSize:)` hosts a session. An iOS app
+target can use `SwifttyMobileAppDelegate` and `SwifttyMobileSceneDelegate` for
+the reference demo. No Xcode app project or network client is included.
+visionOS omits accessory views, input clicks, haptics and screen-coordinate
+keyboard avoidance.
+
+OSC 7501 is opt-in through `SessionConfiguration.programStatusEnabled` or
+`setProgramStatusEnabled(_:)`. Read `programStatusSnapshot`, subscribe through
+`onProgramStatusChange`, and route `onTerminalReply` to the originating transport.
+External transports call `programExited()` when the program or connection ends.
+The [program-status contract](spec.md#osc-7501-program-status) specifies validation,
+lifecycle and reply provenance.
+
+## Configuration
+
+Ghostty-style `key = value` files support whole-line `#` comments, repeatable
+keys, empty-value resets and `config-file` includes. Unknown keys are reported
+and ignored. macOS reads `$XDG_CONFIG_HOME/swiftty/config` (default
+`~/.config/swiftty/config`); Settings opens it and Shift-Cmd-, reloads it.
+iOS reads `Documents/config`.
 
 ```text
-font-family = JetBrains Mono        # also -bold, -italic, -bold-italic
+font-family = JetBrains Mono
 font-size = 14
-font-feature = calt                 # font-variation = wght=500
+font-feature = calt
+font-variation = wght=500
 font-synthetic-style = no-bold
-adjust-cell-height = 10%            # or points: adjust-cell-width = 1
+adjust-cell-height = 10%
 theme = light:Swiftty Light,dark:Swiftty Dark
-background = #1e1e2e                # foreground, cursor-color, cursor-text,
-palette = 1=#f38ba8                 # selection-foreground/-background
+background = #1e1e2e
+palette = 1=#f38ba8
 background-opacity = 0.9
 background-blur = true
 minimum-contrast = 3
-custom-shader = ~/.config/swiftty/crt.metal
-cursor-style = bar                  # block, underline, block_hollow
+cursor-style = bar
 cursor-style-blink = false
 cursor-click-to-move = true
 copy-on-select = true
@@ -92,240 +95,181 @@ keybind = super+shift+k=clear_screen
 keybind = ctrl+shift+arrow_up=jump_to_prompt:-1
 ```
 
-Themes are Ghostty theme files looked up in `~/.config/swiftty/themes`,
-`~/.config/ghostty/themes`, then the built-ins (`Swiftty Dark`,
-`Swiftty Light`). Keybinding actions: `copy_to_clipboard`,
-`paste_from_clipboard`, `increase_font_size:N`, `decrease_font_size:N`,
-`reset_font_size`, `select_all`, `scroll_to_top`, `scroll_to_bottom`,
-`scroll_page_up`, `scroll_page_down`, `scroll_page_lines:N`,
-`jump_to_prompt:N`, `start_search`, `search_selection`,
-`navigate_search:next|previous`, `end_search`, `clear_screen`, `reset`,
-`text:…`, `csi:…`, `esc:…`, `ignore`, and `unbind`.
+Style-specific font families use `-bold`, `-italic` and `-bold-italic` suffixes.
+Cell adjustments accept points or percentages. Foreground, cursor and selection
+colors can be configured separately. Themes are searched in
+`~/.config/swiftty/themes`, `~/.config/ghostty/themes`, then the built-in
+`Swiftty Dark` and `Swiftty Light` themes.
 
-Custom shaders are Metal, not GLSL: the file defines
-`float4 postprocess(float2 position, texture2d<float> source, constant PostUniforms &u)`,
-with `u.resolution` and `u.time` (see `Renderer/PostProcess.swift`).
+Includes load in declaration order and override earlier settings; nested includes
+join the end of the queue. Each file loads once. `config-file =` clears pending
+includes. Relative paths resolve against the declaring file; `?path` permits a
+missing include, while `"?path"` names a literal leading question mark.
+`palette =` clears indexed overrides and restores theme colors.
 
-## Layout
+`command` uses shell expansion, including quotes, variables and globs; `shell:`
+selects it explicitly. `direct:` splits arguments on spaces without expansion
+or quote processing. Programmatic `SessionConfiguration(command: [...])` passes
+arguments directly. `working-directory` accepts a path, `home` or `inherit`.
+Desktop launches default to the account shell and home directory; command-line
+launches inherit the directory and prefer a nonempty `SHELL`.
 
-| Spec module | File(s) |
-|---|---|
-| Session | `Session/TerminalSession.swift`, `Session/SessionConfiguration.swift` |
-| Process | `Process/PTYProcess.swift`, `Process/FileDescriptor.swift` (`~Copyable`) |
-| Terminal | `Terminal/{Parser,TerminalState,TerminalState+Control,TerminalState+OSC,TerminalState+Grapheme,Grid,Cell,Scrollback,Modes,Damage}.swift` |
-| Shell integration | `Terminal/TerminalState+Shell.swift` (OSC 133, title/SGR stacks, reports, OSC 21/22, underline colors), `Terminal/Links.swift` |
-| Program status | `Terminal/{ProgramStatus,ProgramStatusStore,TerminalState+ProgramStatus}.swift` (OSC 7501, [spec.osc7501.md](spec.osc7501.md)) |
-| Graphemes | `Terminal/{Graphemes,GraphemeBreak,GraphemeBreakTables}.swift` (tables generated by `Scripts/gen-grapheme-tables.swift`) |
-| Selection, search, dump | `Terminal/Selection.swift`, `Terminal/Dump.swift` |
-| Input | `Input/InputEncoder.swift` |
-| Unicode | `Unicode/Width.swift`, `Unicode/ScalarInfo.swift`, `Unicode/Tables.swift` (generated by `Scripts/gen-unicode-tables.swift`) |
-| Font | `Font/CoreTextFontManager.swift` |
-| Renderer | `Renderer/{RenderSnapshot,MetalRenderer,Shaping,BoxDrawing,PostProcess,AccessibilityText}.swift`, `Renderer/Shaders.metal` |
-| Config | `Config/{Configuration,Themes,Keybindings}.swift` |
-| macOS app | `Sources/Swiftty/{AppDelegate,TerminalView}.swift` and `TerminalView+{Mouse,Actions,TextInput,Accessibility}.swift` |
-| iOS/iPadOS | `Sources/SwifttyMobile/` (`TerminalUIView` and its `+Keyboard`, `+Touch`, `+Search`, `+Accessibility` extensions, `AccessoryBar`, `InputModel`, `Behavior`, `DemoSource`, `SwifttyMobileApp`) |
+Keybinding actions include clipboard operations, font sizing, selection, scrolling,
+prompt jumps, search, clear/reset, `text:…`, `csi:…`, `esc:…`, `ignore` and `unbind`;
+their names and parameters are defined in
+[Keybindings.swift](Sources/SwifttyCore/Config/Keybindings.swift).
 
-`Sources/CAllocCounter` is a ~40-line C helper, used only by the tests and the
-benchmark. It hooks libmalloc's `malloc_logger` to count heap allocations made
-by the calling thread.
+Custom shaders use Metal and define
+`float4 postprocess(float2 position, texture2d<float> source, constant PostUniforms &u)`.
+See [PostProcess.swift](Sources/SwifttyCore/Renderer/PostProcess.swift) for uniforms.
+`position` uses pixel coordinates; normalize it for a `coord::normalized` sampler.
+Shaders accessing `u.time` animate continuously. Memory aliases and preprocessor
+directives enable animation conservatively; other shaders draw on demand.
+Relative shader paths resolve against the declaring configuration file.
 
-## Design notes
+## Generated Unicode data
 
-- **Cells**: 16-byte `BitwiseCopyable` structs in fixed-width row-major rows,
-  allocated in contiguous 64-row chunks. Logical rows map through a row
-  index, so scrolling rotates indices and moves no cells. Each row tracks an
-  *extent*: cells past it are known to be blank, so clears only touch written
-  cells.
-- **Graphemes**: combining marks and ZWJ sequences go into a side table. The
-  cell stores an id, and the table is compacted (double-buffered) once
-  garbage builds up.
-- **Scrollback**: the screen and its history share one row pool. Scrolling
-  the full primary screen moves the top row's index into a history ring
-  instead of copying it, as Ghostty's page list does. Once the ring is full
-  (10 MB default, Ghostty's `scrollback-limit`), the oldest row is recycled
-  as the new bottom row. Steady-state scrolling therefore neither allocates
-  nor copies. Resizing reflows wrapped lines, wide characters and the cursor
-  across the screen and scrollback.
-- **Parser**: `consume(_: borrowing Span<UInt8>, into: inout TerminalState)`.
-  - Printable ASCII runs are found 16 bytes at a time with `SIMD16<UInt8>`
-    and written in bulk.
-  - Mixed UTF-8 runs are decoded inline into a scratch buffer and written in
-    one call. Cells past a row's extent are stored as whole 16-byte vectors
-    without wide-character checks.
-  - Everything else goes through the VT500 state machine.
-  - CSI parameters live in an `InlineArray<24, UInt16>`.
-- **Concurrency**: one serial `DispatchQueue` per session owns the parser and
-  state. PTY reads arrive on that queue and are parsed in place from a
-  preallocated 64 KiB buffer, with a 1 MiB budget per event so snapshots can
-  interleave. The UI touches state only through `send`, `resize` and
-  `snapshot`.
-- **Snapshots**: a pool of up to three storages. Each one accumulates the
-  damage it missed and copies only those rows. A storage is reused only when
-  no live snapshot references it, so snapshots are immutable. Synchronized
-  output (mode 2026) holds frames for up to 1 s, then redraws even if the
-  application never ends the update.
-- **Renderer**: a persistent per-row instance buffer, where only dirty rows
-  and the old and new cursor rows are rebuilt. It uses three instanced draws
-  (backgrounds, glyphs, decorations). The atlas is CoreText-rasterized, with
-  fallback fonts and Apple Color Emoji for color glyphs. Underline styles
-  are drawn in the decoration shader, blinking text is a uniform (no
-  rebuild), and an optional post-processing pass runs a user shader. It can
-  render to a view or offscreen; offscreen is used by tests and the
-  benchmark.
-- **Underline colors** live in the six spare bits of the foreground color's
-  tag byte as an id into a per-terminal table (63 colors), so cells stay 16
-  bytes. Prompt marks are one byte per physical row beside the wrap flags.
+```sh
+mise run unicode [EastAsianWidth.txt]
+mise run graphemes <ucd-dir>
+```
 
-### Supported sequences
+The width generator needs matching `PropList.txt`,
+`extracted/DerivedGeneralCategory.txt` and `emoji/emoji-data.txt`; without a path,
+it downloads companion files from the same release. Grapheme data must match the
+Ghostty comparison build. Both commands stage replacements and reject truncated
+inputs missing their final `# EOF` or `#EOF` marker.
 
-- **C0 controls**: BEL, BS, HT, LF, VT, FF, CR, SO, SI, CAN, SUB.
-- **ESC**:
-  - DECSC/DECRC, IND, NEL, HTS, RI, RIS, DECKPAM/DECKPNM
-  - G0/G1 designation, including DEC Special Graphics
-  - DECALN
-- **CSI**:
-  - Cursor movement: CUU, CUD, CUF, CUB, CNL, CPL, CHA, CUP, HVP, VPA, VPR,
-    HPA, HPR, CHT, CBT
-  - Editing: ED, EL, ECH, ICH, DCH, IL, DL, SU, SD, REP
-  - Tabs, margins and attributes: TBC, DECSTBM, DECSLRM, SGR (16, 256 and truecolor;
-    colon sub-params; underline styles)
-  - Cursor save/restore: SCOSC/SCORC
-  - Modes: SM/RM, DECSET/DECRST, DECRQM
-  - Reports: DSR 5/6, `CSI ? 996 n` (color scheme), DA1, DA2, XTVERSION,
-    XTWINOPS 14/16/18
-  - Stacks: XTWINOPS 22/23 (title), XTPUSHSGR/XTPOPSGR (`CSI # {`/`}`, `# p`/`q`)
-  - Other: DECSCUSR, DECSTR, SGR 58/59 underline color
-  - Kitty keyboard protocol: query/push/pop/set (`CSI ? u`, `> u`, `< u`,
-    `= u`); flags 1, 2, 4, 8 and 16 change key encoding
-- **DEC modes**: 1, 3 (with 40), 5, 6, 7, 9, 12, 25, 45, 47, 69, 1000,
-  1002, 1003, 1004, 1005, 1006, 1007, 1045, 1047, 1048, 1049, 2004, 2026,
-  2027, 2031, 2048. **ANSI modes**: 4 (IRM), 20 (LNM).
-- **OSC**:
-  - 0/2 title, 7 cwd, 8 hyperlinks, 52 clipboard write (reads are refused)
-  - 133 semantic prompts, 22 pointer shape, 21 kitty color protocol
-  - 4, 10, 11, 12 color set/query; 104, 110, 111, 112 reset
-  - 9 and 777;notify notifications, 9;4 progress
-  - 7501 program status (opt-in: `SessionConfiguration.programStatusEnabled`);
-    records via `TerminalSession.programStatusSnapshot` /
-    `onProgramStatusChange`, the support reply via `onTerminalReply`
-- **DCS**: tmux control mode (`DCS 1000 p`, streamed to the host),
-  XTGETTCAP (`DCS + q`), DECRQSS (`DCS $ q`).
-- **Ignored safely**: other DCS, APC, PM, SOS strings and unknown sequences.
+## Measured results
 
-## Results
+These are Release measurements on Apple Silicon. Parser throughput, physical iPad
+frame time and the centered onscreen comparison were measured on 2026-10-10.
+Earlier probes are identified below.
 
-### Against Ghostty
+### Swiftty vs Ghostty
 
-Upstream Ghostty `main` (`5dc28bb`, Zig 0.16.0, ReleaseFast) was run with
-`ghostty-bench +terminal-stream`. Swiftty was run with
-`swiftty-bench stream`, which does the same work: input is read in 64 KiB
-chunks into a 120×80 terminal with Ghostty's default benchmark scrollback
-(10,000 bytes). Both read identical 100 MB files and were timed with
-`hyperfine` (20 runs, median, Apple Silicon). Reproduce with:
-`Scripts/compare-ghostty.sh <ghostty-src> <corpus-dir>`.
+Parser and terminal-state throughput on an Apple M5 Max (18 CPU cores): Ghostty
+`5dc28bb`, Zig 0.16.0 ReleaseFast, versus Swift 6.4 Release. Each binary read the
+same generated 100 MiB files in 64 KiB chunks at 120×80 with 10,000 bytes of
+history. Medians include startup and file I/O: two warmups and 20 serial,
+alternating measured runs per binary. Swiftty was faster on all 14 inputs by median.
 
-The `ghostty-*` inputs come from Ghostty's own `ghostty-gen`. The others
-come from `swiftty-bench gen`.
+Lower times are better. Relative throughput is `Ghostty time / Swiftty time`;
+100% means equal speed. This benchmark measures parsing and state updates;
+the onscreen comparison below measures a separate frontend endpoint.
 
-| Input | Ghostty | swiftty | swiftty speed vs Ghostty |
-|---|---:|---:|---:|
-| ghostty-ascii | 65 ms | 61 ms | **107%** |
-| ghostty-styled | 102 ms | 107 ms | 95% |
-| ghostty-utf8 | 675 ms | 418 ms | **161%** |
-| ghostty-osc | 3980 ms | 749 ms | **531%** |
-| ascii | 94 ms | 101 ms | 93% |
-| cat-source | 132 ms | 139 ms | 95% |
-| compiler-log | 135 ms | 123 ms | **110%** |
-| csi-heavy | 464 ms | 286 ms | **162%** |
-| osc-heavy | 1094 ms | 263 ms | **416%** |
-| scroll | 401 ms | 318 ms | **126%** |
-| utf8 (mixed scripts) | 327 ms | 307 ms | **107%** |
-| utf8-latin | 124 ms | 128 ms | 97% |
-| utf8-cjk | 97 ms | 121 ms | 80% |
-| startup (empty input) | 4.9 ms | 2.5 ms | |
+| Input                |   Ghostty |   Swiftty | Relative throughput |
+| -------------------- | --------: | --------: | ------------------: |
+| ascii                |   99.0 ms |   93.8 ms |              105.6% |
+| cat-source           |  122.0 ms |  114.4 ms |              106.6% |
+| compiler-log         |  140.9 ms |  125.1 ms |              112.7% |
+| csi-heavy            |  477.5 ms |  357.4 ms |              133.6% |
+| ghostty-ascii        |   68.6 ms |   61.0 ms |              112.5% |
+| ghostty-osc          | 4104.0 ms | 1092.8 ms |              375.6% |
+| ghostty-styled       |  409.1 ms |  211.9 ms |              193.1% |
+| ghostty-utf8         |  687.9 ms |  536.7 ms |              128.2% |
+| osc-heavy            | 1111.7 ms |  541.4 ms |              205.3% |
+| scroll               |  406.4 ms |  303.9 ms |              133.7% |
+| unicode-joins        |  348.2 ms |  258.6 ms |              134.7% |
+| utf8 (mixed scripts) |  333.1 ms |  332.3 ms |              100.2% |
+| utf8-latin           |  129.2 ms |  122.5 ms |              105.4% |
+| utf8-cjk             |  100.6 ms |   92.4 ms |              108.9% |
 
-- **Spec targets**: 12 of 13 inputs meet the ≥90% target, and 10 of 13
-  meet ≥95%.
-- **CJK, the one miss**: wide characters cost two 16-byte cells each, while
-  Ghostty packs a cell into 8 bytes. Closing that gap needs a smaller cell
-  (glyph and width packed, attributes in a shared style table). That
-  redesign is deferred.
+Wide-cell batching cut CJK time by 17.7% versus the frozen previous build. CJK
+throughput relative to Ghostty has a 95% paired bootstrap interval of 108.1–110.0%.
+Other inputs changed by −1.0% to +1.9% in time. Larger eight-scalar UTF-8 decode
+batches were slower and were discarded. Mixed UTF-8 has little margin over Ghostty.
+The corpus combines nine Swiftty inputs, four Ghostty inputs (styled: seed 42,
+style rate 0.3; UTF-8: seed 42) and a combining/ZWJ/flag fixture.
 
-### Internal benchmarks
+To compare the same workloads, build Ghostty's benchmark and use generated `.bin`
+inputs (`swiftty-bench gen <name>` or `ghostty-gen +<name>`):
 
-Release build on Apple Silicon (18 cores), `mise run bench`. The 200×60
-streams are fed in 64 KiB chunks with the scrollback at its 10 MB limit:
+```sh
+# In the Ghostty checkout:
+zig build -Demit-bench -Doptimize=ReleaseFast -Demit-macos-app=false
+# In this repository (also builds swiftty-bench in Release):
+RUNS=20 mise run compare <ghostty-src> <corpus-dir>
+```
 
-| Workload | MB/s | Allocations in measured loop |
-|---|---:|---:|
-| ASCII 100 MB | 1051 | 1 (one-time Swift metadata instantiation) |
-| UTF-8 mixed 100 MB (CJK, emoji, combining marks) | 343 | 6 (grapheme table growth) |
-| UTF-8 CJK / Latin | 912 / 866 | 0 |
-| Compiler log (SGR-heavy) | 847 | 0 |
-| `cat` of source files | 795 | 0 |
-| CSI-heavy | 336 | 0 |
-| OSC-heavy (title/cwd every line) | 370 | ~1 per changed title per read batch |
-| Scroll (short lines) | 333 | 0 |
+### Memory and rendering
 
-| Interactive metric | Result |
-|---|---|
-| Keystroke → PTY echo → parse → snapshot | p50 0.045 ms, p95 0.062 ms |
-| 200×60 full redraw (parse + snapshot) | p95 0.050 ms |
-| 200×60 full redraw (Metal, offscreen, GPU complete) | p95 1.01 ms |
-| Scroll 20 lines/frame at 120×40, incl. render | p95 0.27 ms |
-| Resize with full 10 MB scrollback (reflow) | p95 2.2 ms |
+Against milestone 1 (`67c8dfa`), the current Release build passed all 18
+text-only RSS cases: nine inputs at 120×80 with 10,000-byte and 10 MiB
+histories, two warmup pairs and six alternating measured pairs. Median RSS
+changes ranged from −30.7% to +0.74%.
+Offscreen scrolling at 120×40, 20 lines/frame, improved p95 from 0.640 to
+0.508 ms across 20 measured pairs after four warmups (paired change −0.129 ms,
+95% interval −0.171 to −0.119 ms). Both builds used Swift 6.4; the display was
+locked during this offscreen comparison.
 
-Peak RSS figures in the benchmark output include the 100 MB input buffers.
+Borrowed grapheme-cache lookups reduced warmed full-redraw allocations to 11
+per frame, matching plain text. Median offscreen frame time fell by 17.7% for
+combining marks, 12.8% for ZWJ emoji and 10.0% for long clusters.
+Parser/grid allocation tests require zero steady-state allocations for common
+ASCII, UTF-8, CSI and cell updates. OSC metadata and table growth can allocate.
 
-`FrameTimeTests` (in the mobile tests, so it runs on iOS too) times a full
-120×40 redraw per frame, rendered offscreen and waited for: p95 6.5 ms on
-this Mac and 10.1 ms on the iPad Pro 13-inch (M5) simulator. No physical
-iPad was available; simulator GPU timings are only indicative.
+A physical iPad Pro (12.9-inch, 5th generation), iPadOS 27.0.1, measured the
+current core's 120×40 offscreen full redraw at p50 1.580 ms and p95 2.930 ms
+(20 warmups, 220 frames). Dense search highlights measured p95 3.030 ms
+(five warmups, 35 frames). GPU completion was awaited; both tests passed.
 
-The allocation tests (`AllocationTests`) assert exactly zero heap
-allocations in steady state for ASCII, UTF-8 and CSI parsing and for grid
-cell updates.
+### Onscreen probes
 
-## Status against the spec
+The current Swiftty AppKit view in a Release probe was compared with Ghostty
+1.3.1 (15212) on the same M5 Max display. Both used Menlo 13, an 80×24 PTY,
+blinking disabled and the same raw-PTY response script.
 
-**Done**
-- Milestone 1 (§11): the macOS core and app. Every component in §2–§10, the
-  §14 benchmarks and the §15 test layers; the integration tests run a real
-  `sh`, `vim`, `less`, `tmux` and `top` through the PTY.
-- Milestone 2: the iOS/iPadOS frontend (`SwifttyMobile`): `UITextInput`
-  keyboard, dictation and IME, hardware keys with releases, the accessory bar,
-  touch and pointer selection with an edit menu, momentum scrolling, mouse
-  reporting, multitasking resize, keyboard avoidance, background pausing, and
-  an in-process demo shell. It builds for the iOS Simulator; its tests,
-  including replays of recorded `sh`, `vim`, `less`, `tmux` and `top`
-  sessions, run on macOS and the simulator. The macOS app's key handling has
-  its own tests (`SwifttyAppTests`).
-- Milestone 3: OSC 133 prompts (marks, prompt jumps, command-output
-  selection, prompt clearing on resize with `redraw=1`, click-to-move), drawn
-  underline styles and colors, blinking text, title and SGR stacks, OSC 21
-  and 22, modes 2031 and 2048, kitty keyboard flag 4, and hyperlinks
-  (Cmd-hover and Cmd-click on macOS, tap and pointer hover on iPad; bare URLs
-  are detected too).
-- Milestone 4: Ghostty-syntax configuration with themes, keybinding actions
-  (menu shortcuts follow them on macOS, key commands on iPad), find bars,
-  VoiceOver on both platforms, font options, minimum contrast, background
-  opacity and blur, and Metal post-processing shaders.
+Three serial alternating pairs posted synthetic keys to trigger alternating
+black/white backgrounds. The same independent ScreenCaptureKit observer detected
+these changes through a 32×32 crop at the display center, requesting 120 capture
+frames/s. Each run used 20 warmups and 100 measured responses; all 720 were
+observed. Ranges span runs; lower times are better.
 
-**Not applicable in this repository**
-- The Ghostty comparison is the parser-throughput table above; the remaining
-  regression budgets are measured against milestone 1 (`mise run bench`).
-- Ghostty's test vectors are not vendored as data. Its `Terminal.zig` tests
-  are ported by hand into `Tests/SwifttyCoreTests/GhosttyOracle`, driven
-  through escape sequences; the other golden tests are written from xterm/VT
-  behavior.
+| Terminal      |              p50 |              p95 |
+| ------------- | ---------------: | ---------------: |
+| Swiftty       | 16.683–16.983 ms | 23.461–24.919 ms |
+| Ghostty 1.3.1 | 18.574–21.319 ms | 24.665–25.661 ms |
 
-**Not verified interactively**
-- Pointer hover and shapes, link clicks, the find bars, VoiceOver, blur and
-  custom shaders were exercised through their logic and tests, and the macOS
-  rendering path through offscreen renders, but not driven by hand in either
-  app. No Xcode app project is included: an iOS app target references
-  `SwifttyMobileAppDelegate` and `SwifttyMobileSceneDelegate`.
+Median paired p95 difference was −0.742 ms (Swiftty minus Ghostty). This
+measures synthetic key-to-captured-pixel delivery, including capture overhead.
+Physical-keyboard, glyph-typing and photon-level latency have not been measured.
 
-**Out of scope (§2)**
-- The Kitty graphics protocol (future), Sixel, and any network client: as
-  with libghostty, remote sessions are the embedding app's job.
+AppKit now uses two drawables. Matched foreground scrolling probes without
+Instruments used 900 updates at 60 Hz and 1,800 at 120 Hz per queue. Compared
+with the default three drawables, 120 Hz draw-to-presentation p95 fell from
+40.7 to 32.3 ms; presentation-interval p95 stayed at 8.33 ms, with two-refresh
+intervals falling from eight to two. Neither run had presentation gaps over
+100 ms; earlier multi-second profiled stalls did not recur.
+
+Earlier physical iPad probes at 169×57 presented all 220 measured updates from
+a confirmed 120 Hz source after 20 warmups: presentation-interval p95 8.338 ms,
+synthetic output-to-presentation p95 24.748–24.797 ms. A 60 Hz probe measured
+latency p95 25.961 ms and presentation-interval p95 25.014 ms. All timestamps
+were positive. With blinking disabled, the probes observed zero draws during
+eight idle seconds and two background seconds with incoming output.
+
+## Verification status
+
+The full macOS Debug/Release baseline passed 1,156 tests. Added keypad-mode coverage
+and 86 AppKit checks pass in both configurations. The hosted simulator
+passed 171 mobile tests. The current physical iPad build passed 169 correctness
+tests and two separate frame-time tests. Release builds passed for visionOS and
+Mac Catalyst.
+
+Coverage includes Unicode batching, recorded sessions, shader classification,
+visibility/opacity recovery, animation suspension, momentum cancellation and
+accessibility. Native probes verified
+drawable recovery and draw suspension/restoration on both platforms.
+UI automation passed shell typing and Find navigation, highlighting, query/terminal
+focus and accessory-bar restoration, including narrow windows and resizing.
+
+Physical keyboard, Find, VoiceOver, link navigation and browser-return redraw
+checks passed on both devices; macOS also passed interactive `vim`/`less`, resizing
+and scrolling. User checks passed blur and corrected static/animated shaders on
+both devices. Scripted and hands-on USB shell checks with `vim`, `less`, `tmux`
+and `top` passed on the physical iPad. The user reported typing and scrolling
+equally responsive alongside Ghostty in the two-drawable Mac build.
+Battery consumption has not been measured.
+[todo.tests.md](todo.tests.md) records completed behavior checks and deferred
+checks requiring additional protocols or APIs.

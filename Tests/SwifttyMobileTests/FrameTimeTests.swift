@@ -9,6 +9,35 @@ import Testing
 @Suite(.serialized) struct FrameTimeTests {
     static let device = MTLCreateSystemDefaultDevice()
 
+    @Test(.enabled(if: device != nil)) func `dense search highlights fit a 60 Hz frame`() throws {
+        let renderer = try MetalRenderer(device: #require(Self.device), fontManager: CoreTextFontManager(), font: FontDescriptor())
+        let columns = 120, rows = 40
+        let session = TerminalSession(columns: columns, rows: rows)
+        session.feed(Array(("\u{1B}[?25l" + String(repeating: "a", count: columns * rows)).utf8))
+        session.mutate { $0.search("a") }
+        let snapshot = session.snapshot()
+        #expect(snapshot.searchMatches.count == columns * rows)
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: Int(renderer.cellSize.width) * columns + 16,
+            height: Int(renderer.cellSize.height) * rows + 16, mipmapped: false,
+        )
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .private
+        let texture = try #require(renderer.device.makeTexture(descriptor: descriptor))
+        var times: [Double] = []
+        for _ in 0 ..< 40 {
+            let start = DispatchTime.now().uptimeNanoseconds
+            let command = renderer.render(snapshot, to: texture)
+            command.waitUntilCompleted()
+            try #require(command.status == .completed, "\(String(describing: command.error).debugDescription)")
+            times.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
+        }
+        times = Array(times.dropFirst(5)).sorted()
+        let p95 = times[times.count * 95 / 100]
+        print("search-highlight p95_ms=\(String(format: "%.3f", p95))")
+        #expect(p95 < 16.7)
+    }
+
     @Test(.enabled(if: device != nil)) func `full redraws fit a 60 Hz frame`() throws {
         let device = try #require(Self.device)
         let renderer = try MetalRenderer(device: device, fontManager: CoreTextFontManager(), font: FontDescriptor(size: 13, scale: 2))
@@ -29,7 +58,9 @@ import Testing
             }
             session.feed(Array(line.utf8))
             let start = DispatchTime.now().uptimeNanoseconds
-            renderer.render(session.snapshot(), to: texture).waitUntilCompleted()
+            let command = renderer.render(session.snapshot(), to: texture)
+            command.waitUntilCompleted()
+            try #require(command.status == .completed, "\(String(describing: command.error).debugDescription)")
             times.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
         }
         times = Array(times.dropFirst(20)).sorted() // warm-up: atlas fill

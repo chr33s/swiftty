@@ -2,6 +2,7 @@ import Foundation
 @testable import SwifttyCore
 import Synchronization
 import Testing
+import TestSupport
 
 /// OSC 7501 through `TerminalSession` with no view attached: support
 /// replies, snapshots and change notifications.
@@ -38,7 +39,7 @@ struct ProgramStatusSessionTests {
         let (session, r) = session(enabled: true)
         session.feed(Array("\u{1B}]7501;?\u{1B}\\".utf8))
         session.feed(Array("\u{1B}]7501;?\u{07}".utf8))
-        #expect(replies(r) == ["\u{1B}]7501;?\u{1B}\\", "\u{1B}]7501;?\u{07}"])
+        #expect(TestFixture(replies(r)) == TestFixture(["\u{1B}]7501;?\u{1B}\\", "\u{1B}]7501;?\u{07}"]))
         // Terminal-reply provenance: nothing went out as input.
         #expect(r.writes.withLock { $0.isEmpty })
     }
@@ -62,7 +63,7 @@ struct ProgramStatusSessionTests {
         let (session, r) = session(enabled: true)
         session.onTerminalReply = nil
         session.feed(Array("\u{1B}]7501;?\u{07}".utf8))
-        #expect(r.writes.withLock { $0 } == [Array("\u{1B}]7501;?\u{07}".utf8)])
+        #expect(TestFixture(r.writes.withLock { $0 }) == TestFixture([Array("\u{1B}]7501;?\u{07}".utf8)]))
     }
 
     @Test func `snapshots publish without cell damage`() {
@@ -115,6 +116,20 @@ struct ProgramStatusSessionTests {
     }
 
     #if os(macOS)
+        @Test func `stopping a PTY drops transient status and publishes it`() throws {
+            let (session, r) = session(enabled: true)
+            try session.start(SessionConfiguration(command: ["/bin/sleep", "30"]))
+            defer { session.stop() }
+            session.feed(Array("\u{1B}]7501;state=working:id=a\u{07}\u{1B}]7501;state=done:id=b\u{07}".utf8))
+            session.stop()
+            #expect(!session.isRunning)
+            #expect(session.programStatusSnapshot.records.map(\.id) == ["b"])
+            #expect(r.changes.withLock { $0.last?.records.map(\.id) } == ["b"])
+            let changes = r.changes.withLock { $0.count }
+            session.stop()
+            #expect(r.changes.withLock { $0.count } == changes)
+        }
+
         @Test func `PTY child exit drops transient status`() async throws {
             var configuration = SessionConfiguration(command: [
                 "/bin/sh", "-c", #"printf '\033]7501;state=working:id=a\033\\\033]7501;state=done:id=b\033\\'"#,
@@ -146,6 +161,6 @@ struct ProgramStatusSessionTests {
         #expect(replies(r).isEmpty)
         session.mutate { $0.answersProgramStatusWhileDiscarding = true }
         session.feed(Array("\u{1B}[c\u{1B}]7501;?\u{07}\u{1B}[5n".utf8))
-        #expect(replies(r) == ["\u{1B}]7501;?\u{07}"])
+        #expect(TestFixture(replies(r)) == TestFixture(["\u{1B}]7501;?\u{07}"]))
     }
 }

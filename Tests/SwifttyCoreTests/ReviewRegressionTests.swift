@@ -2,8 +2,93 @@ import Foundation
 @testable import SwifttyCore
 import Synchronization
 import Testing
+import TestSupport
 
 struct ReviewRegressionTests {
+    @Test func `external transport exit discards incomplete stream state`() {
+        let prefixes = ["\u{1B}]2;pending", "\u{1B}[12;", "\u{1B}P$q", "\u{1B}P$qm\u{1B}", "\u{1B}_pending"].map { Array($0.utf8) }
+            + [[0xF0, 0x9F]]
+        for prefix in prefixes {
+            let session = TerminalSession(columns: 10, rows: 2)
+            let replies = Mutex<[[UInt8]]>([])
+            session.onWrite = { bytes in replies.withLock { $0.append(bytes) } }
+            session.receive(Array("old".utf8) + prefix)
+            session.programExited()
+            session.receive(Array("ok".utf8))
+            #expect(TestFixture(session.snapshot().text) == TestFixture(["oldok", ""]))
+            #expect(replies.withLock { $0.isEmpty })
+        }
+    }
+
+    @Test func `external transport exit ends control mode once`() {
+        let session = TerminalSession(columns: 10, rows: 2)
+        let events = Mutex<[TerminalEvent]>([])
+        session.onEvent = { event in events.withLock { $0.append(event) } }
+        session.receive(Array("old\u{1B}P1000p%begin\n".utf8))
+        session.programExited()
+        session.programExited()
+        session.receive(Array("ok".utf8))
+        #expect(TestFixture(session.snapshot().text) == TestFixture(["oldok", ""]))
+        #expect(!session.withState { $0.isControlMode })
+        #expect(events.withLock { $0 } == [.controlModeStarted, .controlModeEnded])
+    }
+
+    @Test func `session reset ends control mode before accepting new text`() {
+        let session = TerminalSession(columns: 10, rows: 2)
+        let events = Mutex<[TerminalEvent]>([])
+        session.onEvent = { event in events.withLock { $0.append(event) } }
+        session.feed(Array("\u{1B}P1000p%begin\n".utf8))
+        session.reset()
+        session.receive(Array("ok".utf8))
+        let snapshot = session.snapshot()
+        #expect(TestFixture(snapshot.text) == TestFixture(["ok", ""]))
+        #expect(!session.withState { $0.isControlMode })
+        #expect(events.withLock { $0 } == [.controlModeStarted, .controlModeEnded])
+    }
+
+    @Test func `session reset abandons incomplete parser sequences`() {
+        for sequence in ["\u{1B}]2;pending", "\u{1B}[12;", "\u{1B}P$q", "\u{1B}P$qm\u{1B}", "\u{1B}_pending"] {
+            let session = TerminalSession(columns: 10, rows: 2)
+            session.feed(Array(sequence.utf8))
+            session.reset()
+            session.receive(Array("ok".utf8))
+            #expect(TestFixture(session.snapshot().text) == TestFixture(["ok", ""]))
+        }
+        let session = TerminalSession(columns: 10, rows: 2)
+        session.feed([0xF0, 0x9F])
+        session.reset()
+        session.feed(Array("ok".utf8))
+        #expect(TestFixture(session.snapshot().text) == TestFixture(["ok", ""]))
+    }
+
+    @Test func `full reset clears both saved cursors while soft reset clears the active one`() {
+        for reset in ["\u{1B}c", "\u{1B}[!p"] {
+            var vt = VT(10, 6)
+            vt.feed("\u{1B}[2;5r\u{1B}[?6h\u{1B}7")
+            vt.feed("\u{1B}[?47h\u{1B}7" + reset)
+            if reset == "\u{1B}c" {
+                vt.feed("\u{1B}[?47h")
+            }
+            vt.feed("\u{1B}8")
+            #expect(!vt.state.modes.contains(.origin))
+            vt.feed("\u{1B}[?47l\u{1B}8")
+            #expect(TestFixture(vt.state.modes.contains(.origin)) == TestFixture(reset == "\u{1B}[!p"))
+        }
+    }
+
+    @Test func `resetting the cursor color schedules a redraw`() {
+        let session = TerminalSession(columns: 10, rows: 2)
+        let updates = Mutex(0)
+        session.onUpdate = { updates.withLock { $0 += 1 } }
+        let original = session.snapshot().palette.cursor
+        session.feed(Array("\u{1B}]12;#123456\u{7}".utf8))
+        #expect(session.snapshot().palette.cursor == 0x123456)
+        let before = updates.withLock { $0 }
+        session.feed(Array("\u{1B}]112\u{7}".utf8))
+        #expect(updates.withLock { $0 } == before + 1)
+        #expect(session.snapshot().palette.cursor == original)
+    }
+
     @Test func `cursor changes schedule updates`() {
         let session = TerminalSession(columns: 10, rows: 6)
         let updates = Mutex(0)
@@ -46,13 +131,13 @@ struct ReviewRegressionTests {
             (.release, 3, "\u{1B}[97;9:3u"),
         ] {
             var bytes: [UInt8] = []
-            #expect(InputEncoder.encode(
+            #expect(TestFixture(InputEncoder.encode(
                 .key(KeyEvent(.character("a"), modifiers: .command, action: action)),
                 modes: .initial,
                 keyboardFlags: flags,
                 into: &bytes,
-            ))
-            #expect(String(decoding: bytes, as: UTF8.self) == expected)
+            )) == TestFixture(true))
+            #expect(TestFixture(String(decoding: bytes, as: UTF8.self)) == TestFixture(expected))
         }
     }
 

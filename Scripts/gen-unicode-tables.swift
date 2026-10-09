@@ -6,41 +6,175 @@
 // Wide/Fullwidth and emoji-presentation scalars; one otherwise.
 //
 // Usage: swift Scripts/gen-unicode-tables.swift [EastAsianWidth.txt]
+// Local inputs also require PropList.txt, extracted/DerivedGeneralCategory.txt
+// and emoji/emoji-data.txt beside EastAsianWidth.txt in the same UCD tree.
 import Foundation
 
+guard CommandLine.arguments.count <= 2 else {
+    FileHandle.standardError.write(Data("usage: gen-unicode-tables.swift [EastAsianWidth.txt]\n".utf8))
+    exit(2)
+}
 let source = CommandLine.arguments.count > 1
     ? URL(fileURLWithPath: CommandLine.arguments[1])
     : URL(string: "https://www.unicode.org/Public/UCD/latest/ucd/EastAsianWidth.txt")!
-let text = try String(contentsOf: source, encoding: .utf8)
+func fail(_ message: String, line: Int? = nil, file: URL? = nil) -> Never {
+    let input = file ?? source
+    let location = input.isFileURL ? input.path : input.absoluteString
+    let suffix = line.map { ":\($0)" } ?? ""
+    FileHandle.standardError.write(Data("\(location)\(suffix): \(message)\n".utf8))
+    exit(1)
+}
+
+let text: String
+do {
+    text = try String(contentsOf: source, encoding: .utf8)
+} catch {
+    fail("cannot read input: \(error.localizedDescription)")
+}
+
+func codePoint(_ token: String) -> Int? {
+    guard !token.isEmpty, token.utf8.count <= 6,
+          token.utf8.allSatisfy({ (48 ... 57).contains($0) || (65 ... 70).contains($0) || (97 ... 102).contains($0) }),
+          let value = Int(token, radix: 16), value <= 0x10FFFF else { return nil }
+    return value
+}
+
+func requireEOF(_ text: String, file: URL? = nil) {
+    let last = text.split(whereSeparator: \.isNewline).last {
+        !$0.trimmingCharacters(in: .whitespaces).isEmpty
+    }?.trimmingCharacters(in: .whitespaces)
+    guard last == "# EOF" || last == "#EOF" else {
+        fail("missing final EOF marker (input may be truncated)", file: file)
+    }
+}
 
 var version = "unknown"
 var wide = [Bool](repeating: false, count: 0x110000)
-for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+var widthAssigned = [Bool](repeating: false, count: 0x110000)
+var records = 0
+let properties: Set<String> = ["A", "F", "H", "N", "Na", "W"]
+for (index, line) in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).enumerated() {
+    let number = index + 1
     if line.hasPrefix("# EastAsianWidth-") {
-        version = line.dropFirst(17).components(separatedBy: ".txt")[0]
+        let header = line.trimmingCharacters(in: .whitespaces)
+        guard header.hasSuffix(".txt") else { fail("invalid version header", line: number) }
+        let candidate = String(header.dropFirst(17).dropLast(4))
+        let components = candidate.split(separator: ".", omittingEmptySubsequences: false)
+        guard components.count == 3,
+              components.allSatisfy({ !$0.isEmpty && $0.utf8.allSatisfy { (48 ... 57).contains($0) } }) else {
+            fail("invalid version header", line: number)
+        }
+        guard version == "unknown" || version == candidate else { fail("conflicting version headers", line: number) }
+        version = candidate
     }
-    let body = line.prefix { $0 != "#" }
-    let fields = body.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
-    guard fields.count == 2, fields[1] == "W" || fields[1] == "F" else { continue }
-    let bounds = fields[0].split(separator: ".").filter { !$0.isEmpty }.map { UInt32($0, radix: 16)! }
-    for cp in bounds[0]...bounds.last! { wide[Int(cp)] = true }
+    let body = line.prefix { $0 != "#" }.trimmingCharacters(in: .whitespaces)
+    guard !body.isEmpty else { continue }
+    let fields = body.split(separator: ";", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+    guard fields.count == 2, properties.contains(fields[1]) else { fail("invalid East_Asian_Width record", line: number) }
+    let bounds = fields[0].components(separatedBy: "..")
+    guard (1 ... 2).contains(bounds.count), let first = codePoint(bounds[0]),
+          let last = codePoint(bounds[bounds.count - 1]), first <= last else {
+        fail("invalid code point or range", line: number)
+    }
+    records += 1
+    let isWide = fields[1] == "W" || fields[1] == "F"
+    for cp in first ... last {
+        guard !widthAssigned[cp] else { fail("overlapping East_Asian_Width ranges", line: number) }
+        widthAssigned[cp] = true
+        wide[cp] = isWide
+    }
+}
+guard records > 0 else { fail("input contains no East_Asian_Width records") }
+guard version != "unknown" else { fail("missing version header") }
+requireEOF(text)
+
+/// Read all width properties from the release declared by EastAsianWidth,
+/// rather than mixing that release with the host Swift runtime's Unicode data.
+func parseProperties(_ path: String, exclusive: Bool = false, _ body: (ClosedRange<Int>, String, Int, URL) -> Void) {
+    let input = source.isFileURL
+        ? source.deletingLastPathComponent().appendingPathComponent(path)
+        : URL(string: "https://www.unicode.org/Public/\(version)/ucd/\(path)")!
+    let text: String
+    do {
+        text = try String(contentsOf: input, encoding: .utf8)
+    } catch {
+        fail("cannot read input: \(error.localizedDescription)", file: input)
+    }
+    let emoji = path.hasPrefix("emoji/")
+    let name = input.deletingPathExtension().lastPathComponent
+    let prefix = emoji ? "# Version:" : "# \(name)-"
+    var release: String?
+    var records = 0
+    var assigned = exclusive ? [Bool](repeating: false, count: 0x110000) : []
+    for (index, line) in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).enumerated() {
+        let number = index + 1
+        let header = line.trimmingCharacters(in: .whitespaces)
+        if header.hasPrefix(prefix) {
+            let candidate: String
+            if emoji {
+                candidate = String(header.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+            } else {
+                guard header.hasSuffix(".txt") else { fail("invalid version header", line: number, file: input) }
+                candidate = String(header.dropFirst(prefix.count).dropLast(4))
+            }
+            let parts = candidate.split(separator: ".", omittingEmptySubsequences: false)
+            guard (parts.count == 3 || (emoji && parts.count == 2)),
+                  parts.allSatisfy({ !$0.isEmpty && $0.utf8.allSatisfy { (48 ... 57).contains($0) } }) else {
+                fail("invalid version header", line: number, file: input)
+            }
+            let normalized = parts.count == 2 ? candidate + ".0" : candidate
+            guard release == nil || release == normalized else { fail("conflicting version headers", line: number, file: input) }
+            release = normalized
+        }
+        let content = line.prefix { $0 != "#" }.trimmingCharacters(in: .whitespaces)
+        guard !content.isEmpty else { continue }
+        let fields = content.split(separator: ";", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard fields.count == 2, !fields[1].isEmpty else { fail("invalid property record", line: number, file: input) }
+        let bounds = fields[0].components(separatedBy: "..")
+        guard (1 ... 2).contains(bounds.count), let first = codePoint(bounds[0]),
+              let last = codePoint(bounds[bounds.count - 1]), first <= last else {
+            fail("invalid code point or range", line: number, file: input)
+        }
+        if exclusive {
+            for cp in first ... last {
+                guard !assigned[cp] else { fail("overlapping property ranges", line: number, file: input) }
+                assigned[cp] = true
+            }
+        }
+        body(first ... last, fields[1], number, input)
+        records += 1
+    }
+    guard records > 0 else { fail("input contains no property records", file: input) }
+    guard let release else { fail("missing version header", file: input) }
+    guard release == version else { fail("Unicode version \(release) does not match \(version)", file: input) }
+    requireEOF(text, file: input)
 }
 
-// Prepended_Concatenation_Mark (PropList.txt): format characters that
-// display, so wcwidth (and Ghostty) gives them one column.
-let prependedConcatenationMarks: Set<UInt32> = Set(Array(0x0600...0x0605) + [0x06DD, 0x070F, 0x0890, 0x0891, 0x08E2, 0x110BD, 0x110CD])
+// Prepended concatenation marks display despite their Cf category.
+var prependedConcatenationMarks = Set<Int>()
+parseProperties("PropList.txt") { range, property, _, _ in
+    if property == "Prepended_Concatenation_Mark" { prependedConcatenationMarks.formUnion(range) }
+}
+guard !prependedConcatenationMarks.isEmpty else { fail("input contains no Prepended_Concatenation_Mark records") }
 
 var zero = [Bool](repeating: false, count: 0x110000)
-for cp in 0..<0x110000 {
-    guard let scalar = Unicode.Scalar(UInt32(cp)) else { continue }
-    let props = scalar.properties
-    switch props.generalCategory {
-    case .nonspacingMark, .enclosingMark: zero[cp] = true
-    case .format: zero[cp] = cp != 0x00AD && !prependedConcatenationMarks.contains(UInt32(cp))
+let categories: Set<String> = ["Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Mc", "Me", "Nd", "Nl", "No", "Pc", "Pd", "Ps", "Pe", "Pi", "Pf", "Po", "Sm", "Sc", "Sk", "So", "Zs", "Zl", "Zp", "Cc", "Cf", "Cs", "Co", "Cn"]
+parseProperties("extracted/DerivedGeneralCategory.txt", exclusive: true) { range, category, number, input in
+    guard categories.contains(category) else { fail("unknown general category \(category)", line: number, file: input) }
+    switch category {
+    case "Mn", "Me": for cp in range { zero[cp] = true }
+    case "Cf": for cp in range { zero[cp] = cp != 0x00AD && !prependedConcatenationMarks.contains(cp) }
     default: break
     }
-    if (0x1160...0x11FF).contains(cp) || (0xD7B0...0xD7FF).contains(cp) { zero[cp] = true }
-    if props.isEmojiPresentation { wide[cp] = true }
+}
+for cp in 0x1160...0x11FF { zero[cp] = true }
+for cp in 0xD7B0...0xD7FF { zero[cp] = true }
+let emojiProperties: Set<String> = ["Emoji", "Emoji_Presentation", "Emoji_Modifier", "Emoji_Modifier_Base", "Emoji_Component", "Extended_Pictographic"]
+parseProperties("emoji/emoji-data.txt") { range, property, number, input in
+    guard emojiProperties.contains(property) else { fail("unknown emoji property \(property)", line: number, file: input) }
+    if property == "Emoji_Presentation" { for cp in range { wide[cp] = true } }
+}
+for cp in 0..<0x110000 {
     if zero[cp] { wide[cp] = false }
 }
 
@@ -92,7 +226,8 @@ for block in 0 ..< 0x1100 {
     }
 }
 
-print("// Generated by Scripts/gen-unicode-tables.swift from EastAsianWidth-\(version). Do not edit.")
+print("// Generated by Scripts/gen-unicode-tables.swift from UCD \(version) (EastAsianWidth,")
+print("// DerivedGeneralCategory, PropList and emoji-data). Do not edit.")
 print("// swiftlint:disable all")
 print("")
 print("enum UnicodeTables {")

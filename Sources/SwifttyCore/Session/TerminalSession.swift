@@ -13,36 +13,76 @@ import Dispatch
 /// delivered on that queue and parsed in place from a preallocated buffer;
 /// the UI and renderer interact only through `send`, `resize` and
 /// `snapshot`. Do not call these from `queue` itself.
+/// Callback properties can be replaced from any thread. Each invocation
+/// retains its current handler and runs outside the callback-storage lock.
+/// Read-only properties and `withState` may be used within callbacks.
 public final class TerminalSession: @unchecked Sendable {
     public let queue = DispatchQueue(label: "swiftty.terminal", qos: .userInteractive)
+    private let queueKey = DispatchSpecificKey<Bool>()
+    private let callbacks = SessionCallbacks()
 
-    /// Called on `queue` when new content is ready; coalesced until the next
-    /// `snapshot()`. Typically schedules a redraw.
-    public var onUpdate: (@Sendable () -> Void)?
+    /// Called on `queue` when new content is ready; coalesced for each handler
+    /// until the next `snapshot()`. A replacement receives the next pending
+    /// update even if the previous handler has not taken a snapshot.
+    /// Typically schedules a redraw.
+    public var onUpdate: (@Sendable () -> Void)? {
+        get { callbacks.onUpdate }
+        set { callbacks.onUpdate = newValue }
+    }
+
     /// Called on `queue` for titles, bells, clipboard writes and exit.
-    public var onEvent: (@Sendable (TerminalEvent) -> Void)?
+    public var onEvent: (@Sendable (TerminalEvent) -> Void)? {
+        get { callbacks.onEvent }
+        set { callbacks.onEvent = newValue }
+    }
+
     /// Called on `queue` with bytes for the application when no PTY is
     /// attached: replies to queries and encoded keyboard/mouse input.
-    public var onWrite: (@Sendable ([UInt8]) -> Void)?
+    public var onWrite: (@Sendable ([UInt8]) -> Void)? {
+        get { callbacks.onWrite }
+        set { callbacks.onWrite = newValue }
+    }
+
     /// Called on `queue`, when no PTY is attached, with replies the
     /// terminal generated itself (query answers such as DA, DSR, OSC 7501),
     /// so the host can route them apart from user input (e.g. to the tmux
     /// pane that asked). When nil, replies go to `onWrite`.
-    public var onTerminalReply: (@Sendable ([UInt8]) -> Void)?
+    public var onTerminalReply: (@Sendable ([UInt8]) -> Void)? {
+        get { callbacks.onTerminalReply }
+        set { callbacks.onTerminalReply = newValue }
+    }
+
     /// Called on `queue` after OSC 7501 program status changed (reports,
     /// prompt start, reset, exit), once per batch, before `onUpdate`. Fires
     /// whether or not any cell changed.
-    public var onProgramStatusChange: (@Sendable (ProgramStatusSnapshot) -> Void)?
+    public var onProgramStatusChange: (@Sendable (ProgramStatusSnapshot) -> Void)? {
+        get { callbacks.onProgramStatusChange }
+        set { callbacks.onProgramStatusChange = newValue }
+    }
+
     /// Called on `queue` after each batch of changes (parsed output, resize,
     /// `mutate`), before `onUpdate`, with read access to the state. Use it to
     /// mirror values the host reads often (modes, scroll position).
-    public var onStateChange: (@Sendable (borrowing TerminalState) -> Void)?
-    /// Called on `queue` with each chunk of program output before it is
-    /// parsed (recording sessions for replay). Costs nothing when nil.
-    public var onProgramOutput: (@Sendable ([UInt8]) -> Void)?
+    public var onStateChange: (@Sendable (borrowing TerminalState) -> Void)? {
+        get { callbacks.onStateChange }
+        set { callbacks.onStateChange = newValue }
+    }
+
+    /// Called on `queue` with each nonempty chunk of program output before
+    /// parsing: PTY reads, external `receive` calls and synchronous `feed`s.
+    /// Useful for recording sessions for replay; bytes are copied only when
+    /// an observer is installed.
+    public var onProgramOutput: (@Sendable ([UInt8]) -> Void)? {
+        get { callbacks.onProgramOutput }
+        set { callbacks.onProgramOutput = newValue }
+    }
+
     /// Called on `queue` with tmux control-mode lines (between
     /// `.controlModeStarted` and `.controlModeEnded`), in arrival order.
-    public var onControlModeData: (@Sendable ([UInt8]) -> Void)?
+    public var onControlModeData: (@Sendable ([UInt8]) -> Void)? {
+        get { callbacks.onControlModeData }
+        set { callbacks.onControlModeData = newValue }
+    }
 
     // Owned by `queue`.
     private var state: TerminalState
@@ -53,14 +93,16 @@ public final class TerminalSession: @unchecked Sendable {
         private var readSource: DispatchSourceRead?
         private var writeSource: DispatchSourceWrite?
         private var exitSource: DispatchSourceProcess?
-        private var pendingWrite: [UInt8] = []
+        // Advancing a slice avoids moving the remaining paste on every partial write.
+        private var pendingWrite: ArraySlice<UInt8> = []
         private var writeSourceActive = false
     #endif
     private var encodeBuffer: [UInt8] = []
     private let readBuffer: UnsafeMutableRawBufferPointer
-    private var updateScheduled = false
+    private var scheduledUpdateRevision: UInt64?
     private var drawnCursor: CursorState?
     private var synchronizedSince: UInt64 = 0
+    private var synchronizedGeneration: UInt64 = 0
     private var synchronizedTimeoutScheduled = false
     private var cellPixelSize = (width: 0, height: 0)
 
@@ -71,6 +113,7 @@ public final class TerminalSession: @unchecked Sendable {
     static let synchronizedTimeout: UInt64 = 1_000_000_000
 
     public init(columns: Int = 80, rows: Int = 24, configuration: SessionConfiguration = SessionConfiguration()) {
+        queue.setSpecific(key: queueKey, value: true)
         state = TerminalState(
             columns: columns, rows: rows,
             scrollbackLimitBytes: configuration.scrollbackLimitBytes,
@@ -103,17 +146,22 @@ public final class TerminalSession: @unchecked Sendable {
                 precondition(process == nil, "session already started")
                 let process = try PTYProcess.spawn(
                     configuration, columns: state.columns, rows: state.rows, cellPixelSize: cellPixelSize,
+                    retainingSlaveForDrain: true,
                 )
                 self.process = process
                 let fd = process.master.rawValue
 
                 let read = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
                 read.setEventHandler { [weak self] in self?.readAvailable() }
+                // Cancellation is asynchronous. Both descriptor sources must
+                // finish canceling before the PTY's owning descriptor closes.
+                read.setCancelHandler { withExtendedLifetime(process) {} }
                 read.resume()
                 readSource = read
 
                 let write = DispatchSource.makeWriteSource(fileDescriptor: fd, queue: queue)
                 write.setEventHandler { [weak self] in self?.flushPendingWrite() }
+                write.setCancelHandler { withExtendedLifetime(process) {} }
                 writeSource = write // resumed only while output is pending
 
                 let exit = DispatchSource.makeProcessSource(identifier: process.pid, eventMask: .exit, queue: queue)
@@ -129,6 +177,7 @@ public final class TerminalSession: @unchecked Sendable {
                 process.hangUp()
                 Self.reap(process.pid)
                 teardown()
+                finishProgram()
             }
         }
 
@@ -138,20 +187,30 @@ public final class TerminalSession: @unchecked Sendable {
             let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .global(qos: .utility))
             // The handler retains the source until it cancels itself.
             source.setEventHandler { [source] in
-                var status: Int32 = 0
-                waitpid(pid, &status, WNOHANG)
+                _ = waitForChild(pid, options: 0)
                 source.cancel()
             }
             source.resume()
             // Already exited (the source may never fire for a zombie).
-            var status: Int32 = 0
-            if waitpid(pid, &status, WNOHANG) == pid {
+            if waitForChild(pid, options: WNOHANG).result == pid {
                 source.cancel()
             }
         }
 
+        private static func waitForChild(_ pid: pid_t, options: Int32) -> (result: pid_t, status: Int32) {
+            var status: Int32 = 0
+            var result: pid_t
+            repeat {
+                result = waitpid(pid, &status, options)
+            } while result < 0 && errno == EINTR
+            return (result, status)
+        }
+
         public var isRunning: Bool {
-            queue.sync { process != nil }
+            if DispatchQueue.getSpecific(key: queueKey) == true {
+                return process != nil
+            }
+            return queue.sync { process != nil }
         }
     #endif
 
@@ -164,13 +223,27 @@ public final class TerminalSession: @unchecked Sendable {
         }
     }
 
+    /// Produces output using the state at the time it is parsed. The body
+    /// runs on `queue`, ordered with input, resizing and other output. This
+    /// lets an in-process transport format output for the current dimensions
+    /// without a resize interleaving between formatting and parsing.
+    /// Empty output does not publish an update.
+    public func receive(_ makeOutput: @escaping @Sendable (borrowing TerminalState) -> [UInt8]) {
+        queue.async { [self] in
+            let bytes = makeOutput(state)
+            guard !bytes.isEmpty else { return }
+            bytes.withUnsafeBufferPointer { parse($0) }
+            publish()
+        }
+    }
+
     // MARK: Input / resize / output
 
     public func resize(columns: Int, rows: Int) {
         queue.async { [self] in
             state.resize(columns: columns, rows: rows)
             #if os(macOS)
-                process?.resize(columns: columns, rows: rows, cellPixelSize: cellPixelSize)
+                process?.resize(columns: state.columns, rows: state.rows, cellPixelSize: cellPixelSize)
             #endif
             publish()
         }
@@ -179,11 +252,15 @@ public final class TerminalSession: @unchecked Sendable {
     /// Cell size in pixels, reported to the PTY and via XTWINOPS.
     public func setCellPixelSize(width: Int, height: Int) {
         queue.async { [self] in
-            cellPixelSize = (width, height)
+            let previous = state.cellPixelSize
             state.cellPixelSize = (width, height)
+            cellPixelSize = state.cellPixelSize
             #if os(macOS)
                 process?.resize(columns: state.columns, rows: state.rows, cellPixelSize: cellPixelSize)
             #endif
+            if previous.width != cellPixelSize.width || previous.height != cellPixelSize.height {
+                publish()
+            }
         }
     }
 
@@ -215,7 +292,7 @@ public final class TerminalSession: @unchecked Sendable {
     /// Current OSC 7501 records; with `onProgramStatusChange`, all a
     /// newly attached consumer needs.
     public var programStatusSnapshot: ProgramStatusSnapshot {
-        queue.sync { state.programStatus.snapshot }
+        withState { $0.programStatus.snapshot }
     }
 
     /// Continues an external output stream previously parsed by `source`.
@@ -223,11 +300,17 @@ public final class TerminalSession: @unchecked Sendable {
     /// all output already queued there. Applied here in order with `receive`.
     /// Stop feeding `source` before calling; call from outside both queues.
     public func continueStream(from source: TerminalSession) {
-        let (continuation, status, phase) = source.queue.sync {
-            (source.parser.continuation, source.state.programStatus.snapshot, source.state.semanticState)
+        let (continuation, controlString, status, phase) = source.queue.sync {
+            (
+                source.parser.continuation,
+                source.state.controlStringContinuation,
+                source.state.programStatus.snapshot,
+                source.state.semanticState,
+            )
         }
         queue.async { [self] in
             parser.restore(continuation)
+            state.restoreControlString(controlString)
             state.replaceProgramStatus(with: status)
             state.semanticState = phase
             publish()
@@ -244,6 +327,16 @@ public final class TerminalSession: @unchecked Sendable {
         }
     }
 
+    /// Resets the terminal and abandons any incomplete control sequence
+    /// or UTF-8 character, ordered with output and input already queued.
+    public func reset() {
+        queue.async { [self] in
+            parser = Parser()
+            state.reset()
+            publish()
+        }
+    }
+
     /// Turns OSC 7501 consumption on or off, ordered with `receive`.
     /// Turning it off clears the records.
     public func setProgramStatusEnabled(_ enabled: Bool) {
@@ -254,24 +347,29 @@ public final class TerminalSession: @unchecked Sendable {
     }
 
     /// For external transports: the program exited or the connection
-    /// closed. Drops transient program status (see
+    /// closed. Abandons incomplete parser sequences and drops transient program status (see
     /// `TerminalState.programExited()`), ordered with `receive`. PTY
     /// sessions do this themselves when the child exits.
     public func programExited() {
         queue.async { [self] in
-            state.programExited()
-            publish()
+            finishProgram()
         }
+    }
+
+    private func finishProgram() {
+        parser = Parser()
+        state.programExited()
+        publish()
     }
 
     /// Current modes (for frontends deciding how to route mouse/scroll).
     public var modes: Modes {
-        queue.sync { state.modes }
+        withState { $0.modes }
     }
 
     /// Negotiated kitty keyboard flags for hardware-key routing.
     public var keyboardFlags: UInt8 {
-        queue.sync { state.keyboardFlags }
+        withState { $0.keyboardFlags }
     }
 
     private var currentCursor: CursorState {
@@ -288,7 +386,7 @@ public final class TerminalSession: @unchecked Sendable {
     ///   scrolled back (see `RenderSnapshot.overscanRows`).
     public func snapshot(overscan: Int = 0) -> RenderSnapshot {
         queue.sync {
-            updateScheduled = false
+            scheduledUpdateRevision = nil
             if state.modes.contains(.synchronizedOutput),
                DispatchTime.now().uptimeNanoseconds - synchronizedSince < Self.synchronizedTimeout,
                let held = builder.repeatLast() {
@@ -317,6 +415,7 @@ public final class TerminalSession: @unchecked Sendable {
     public func mutate<R>(_ body: (inout TerminalState) throws -> R) rethrows -> R {
         try queue.sync {
             let result = try body(&state)
+            state.markSearchDirty()
             publish()
             return result
         }
@@ -326,24 +425,28 @@ public final class TerminalSession: @unchecked Sendable {
     public func mutateAsync(_ body: @escaping @Sendable (inout TerminalState) -> Void) {
         queue.async { [self] in
             body(&state)
+            state.markSearchDirty()
             publish()
         }
     }
 
-    /// Read-only access to the terminal state on its queue.
+    /// Read-only access to the terminal state on its queue. May also be
+    /// called directly from a session callback already running on `queue`.
     public func withState<R>(_ body: (borrowing TerminalState) throws -> R) rethrows -> R {
-        try queue.sync { try body(state) }
+        if DispatchQueue.getSpecific(key: queueKey) == true {
+            return try body(state)
+        }
+        return try queue.sync { try body(state) }
     }
 
     // MARK: Queue-owned internals
 
     private func parse(_ buffer: UnsafeBufferPointer<UInt8>) {
-        let span = Span(_unsafeElements: buffer)
-        let wasSynchronized = state.modes.contains(.synchronizedOutput)
-        parser.consume(span, into: &state)
-        if !wasSynchronized, state.modes.contains(.synchronizedOutput) {
-            synchronizedSince = DispatchTime.now().uptimeNanoseconds
+        if !buffer.isEmpty {
+            onProgramOutput?(Array(buffer))
         }
+        let span = Span(_unsafeElements: buffer)
+        parser.consume(span, into: &state)
     }
 
     #if os(macOS)
@@ -354,7 +457,6 @@ public final class TerminalSession: @unchecked Sendable {
                 let n = process.master.read(into: readBuffer)
                 if n > 0 {
                     let chunk = UnsafeBufferPointer(start: readBuffer.baseAddress!.assumingMemoryBound(to: UInt8.self), count: n)
-                    onProgramOutput?(Array(chunk))
                     parse(chunk)
                     budget -= n
                     continue
@@ -376,6 +478,11 @@ public final class TerminalSession: @unchecked Sendable {
 
     /// Flushes replies and events, then notifies the frontend once.
     private func publish() {
+        if synchronizedGeneration != state.synchronizedOutputGeneration {
+            synchronizedGeneration = state.synchronizedOutputGeneration
+            synchronizedSince = DispatchTime.now().uptimeNanoseconds
+        }
+        state.refreshSearchIfNeeded()
         onStateChange?(state)
         if !state.output.isEmpty {
             writeReply(state.output)
@@ -384,24 +491,33 @@ public final class TerminalSession: @unchecked Sendable {
         if let status = state.takeProgramStatusChange() {
             onProgramStatusChange?(status)
         }
+        let ends = state.controlModeEndOffsets
         let events = state.takeEvents()
-        // Start event, then data, then end event: a stream that opens and
-        // closes within one batch still arrives in order.
-        let ended = events.last == .controlModeEnded
-        if let onEvent {
-            for event in events where !(ended && event == .controlModeEnded) {
-                onEvent(event)
-            }
-        }
-        if !state.controlModeData.isEmpty {
-            let data = state.controlModeData
+        let data = state.controlModeData
+        if !data.isEmpty {
             state.controlModeData.removeAll(keepingCapacity: true)
-            onControlModeData?(data)
         }
-        if ended {
-            onEvent?(.controlModeEnded)
+        // Flush each stream's bytes before its end event, even when other
+        // events or another stream follow within the same parser batch.
+        var start = 0
+        var endIndex = 0
+        for event in events {
+            if event == .controlModeEnded {
+                let end = endIndex < ends.count ? min(data.count, max(start, ends[endIndex])) : data.count
+                if start < end {
+                    onControlModeData?(start == 0 && end == data.count ? data : Array(data[start ..< end]))
+                }
+                start = end
+                endIndex += 1
+            }
+            onEvent?(event)
         }
-        guard !state.damage.isEmpty || drawnCursor != currentCursor, !updateScheduled else { return }
+        if start < data.count {
+            onControlModeData?(start == 0 ? data : Array(data[start...]))
+        }
+        guard !state.damage.isEmpty || drawnCursor != currentCursor else { return }
+        let update = callbacks.updateHandler
+        guard let handler = update.handler, scheduledUpdateRevision != update.revision else { return }
         if state.modes.contains(.synchronizedOutput),
            DispatchTime.now().uptimeNanoseconds - synchronizedSince < Self.synchronizedTimeout {
             // Publish when the timeout lapses even if no more output arrives.
@@ -414,8 +530,8 @@ public final class TerminalSession: @unchecked Sendable {
             }
             return
         }
-        updateScheduled = true
-        onUpdate?()
+        scheduledUpdateRevision = update.revision
+        handler()
     }
 
     /// Terminal-generated replies: to the PTY, else `onTerminalReply`,
@@ -458,6 +574,7 @@ public final class TerminalSession: @unchecked Sendable {
             let written = pendingWrite.withUnsafeBytes { process.master.writeAvailable($0) } ?? pendingWrite.count
             pendingWrite.removeFirst(written)
             if pendingWrite.isEmpty {
+                pendingWrite = [] // Release the consumed slice's backing storage.
                 setWriteSourceActive(false)
             }
         }
@@ -474,13 +591,17 @@ public final class TerminalSession: @unchecked Sendable {
 
         private func childExited() {
             guard let process else { return }
-            readAvailable() // drain anything written just before exit
-            var status: Int32 = 0
-            waitpid(process.pid, &status, WNOHANG)
-            let code = (status & 0x7F) == 0 ? (status >> 8) & 0xFF : 128 + (status & 0x7F)
+            readAvailable() // exit can wait for the controlling terminal to drain
+            // Darwin posts NOTE_EXIT before the child becomes waitable.
+            // Wait for that final transition instead of decoding an untouched
+            // zero status from WNOHANG as a successful exit.
+            let waited = Self.waitForChild(process.pid, options: 0)
+            readAvailable() // the retained slave preserves output through exit
+            let status = waited.status
+            let code: Int32 = waited.result == process.pid
+                ? ((status & 0x7F) == 0 ? (status >> 8) & 0xFF : 128 + (status & 0x7F)) : -1
             teardown()
-            state.programExited()
-            publish()
+            finishProgram()
             onEvent?(.exited(code))
         }
 

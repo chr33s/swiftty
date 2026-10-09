@@ -2,6 +2,7 @@ import Foundation
 import SwifttyCore
 @testable import SwifttyMobile
 import Testing
+import TestSupport
 
 struct ActionDispatchTests {
     @Test func `viewport deltas`() {
@@ -169,7 +170,12 @@ struct ConfigurationUseTests {
         #expect(config.palette(for: .light) != config.palette(for: .dark))
         #expect(config.backgroundOpacity < 1 && config.backgroundBlur > 0)
         #expect(config.cursorStyleBlink == false)
-        let trigger = try #require(KeyTranslator.identity(usage: 0x09, modifiers: [.control, .shift], base: "f", characters: "\u{6}"))
+        let trigger = try #require(TestFixture(KeyTranslator.identity(
+            usage: 0x09,
+            modifiers: [.control, .shift],
+            base: "f",
+            characters: "\u{6}",
+        )).value)
         #expect(config.keybindings.action(for: trigger) == .startSearch)
     }
 }

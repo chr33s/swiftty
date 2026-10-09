@@ -14,6 +14,10 @@ public enum ColorScheme: Sendable, Equatable {
 extension TerminalState {
     // MARK: Semantic prompts
 
+    enum PromptRedraw {
+        case none, all, lastRow
+    }
+
     /// `OSC 133 ; A|B|C|D [; options]` (FinalTerm, as extended by kitty and
     /// Ghostty). Parsed in place: shells send several per prompt.
     mutating func semanticPrompt(_ rest: UnsafeBufferPointer<UInt8>) {
@@ -43,7 +47,11 @@ extension TerminalState {
                 programStatusPromptStarted()
             }
             if let redraw = option("redraw") {
-                promptRedraws = !(redraw.count == 1 && redraw[0] == 0x30)
+                if redraw.count == 1, redraw[0] == 0x30 || redraw[0] == 0x31 {
+                    promptRedraw = redraw[0] == 0x31 ? .all : .none
+                } else if redraw.elementsEqual("last".utf8) {
+                    promptRedraw = .lastRow
+                }
             }
             if grid.mark(cursor.y) != .prompt {
                 grid.setMark(cursor.y, continuation ? .promptContinuation : .prompt)
@@ -57,35 +65,55 @@ extension TerminalState {
         case 0x43: // C
             semanticState = .output
             clearInputLine()
-            if grid.mark(cursor.y) == .none {
+            // At column zero the output replaces this row's prompt; after
+            // a prompt prefix, keep its mark because both share the row.
+            if cursor.x == 0 || grid.mark(cursor.y) == .none {
                 grid.setMark(cursor.y, .output)
             }
         case 0x44: // D [; exit status]
             semanticState = .none
             clearInputLine()
-            var code: Int?
-            var i = 2
-            while i < rest.count, (0x30 ... 0x39).contains(rest[i]), (code ?? 0) < 100_000 {
-                code = (code ?? 0) * 10 + Int(rest[i] - 0x30)
-                i += 1
-            }
-            lastExitCode = code
+            lastExitCode = Self.semanticExitCode(rest)
             commandFinished = true
         default:
             break
         }
     }
 
+    /// The first option of D is a complete signed 32-bit decimal field.
+    private static func semanticExitCode(_ rest: UnsafeBufferPointer<UInt8>) -> Int? {
+        guard rest.count > 2 else { return nil }
+        var i = 2
+        let negative = rest[i] == 0x2D
+        if negative || rest[i] == 0x2B {
+            i += 1
+        }
+        let digitsStart = i
+        let limit = negative ? -Int64(Int32.min) : Int64(Int32.max)
+        var value: Int64 = 0
+        while i < rest.count, rest[i] != 0x3B {
+            guard (0x30 ... 0x39).contains(rest[i]) else { return nil }
+            let digit = Int64(rest[i] - 0x30)
+            guard value <= (limit - digit) / 10 else { return nil }
+            value = value * 10 + digit
+            i += 1
+        }
+        guard i > digitsStart else { return nil }
+        return Int(negative ? -value : value)
+    }
+
     /// Flags the first row of the cursor's logical line and records the
     /// cursor's offset in that line: the command line starts there.
     private mutating func markInputLine() {
         clearInputLine()
-        var top = cursor.y
-        while top > 0, grid.isWrapped(top - 1) {
-            top -= 1
+        let top = cursorLogicalLineStart
+        let index = top - firstAbsoluteRow
+        if index < grid.historyCount {
+            grid.setHistoryInputLine(index, true)
+        } else {
+            grid.setInputLine(index - grid.historyCount, true)
         }
-        grid.setInputLine(top, true)
-        inputOffset = (cursor.y - top) * columns + cursor.x
+        inputOffset = (screenAbsoluteRow(cursor.y) - top) * columns + cursor.x + (cursor.pendingWrap ? 1 : 0)
     }
 
     private mutating func clearInputLine() {
@@ -94,6 +122,11 @@ extension TerminalState {
         inputOffset = nil
         for y in 0 ..< rows where grid.isInputLine(y) {
             grid.setInputLine(y, false)
+            return
+        }
+        for i in (0 ..< grid.historyCount).reversed() where grid.isHistoryInputLine(i) {
+            grid.setHistoryInputLine(i, false)
+            return
         }
     }
 
@@ -102,21 +135,76 @@ extension TerminalState {
     public var inputStart: TerminalPoint? {
         guard semanticState == .input, !isAlternateScreen, let offset = inputOffset else { return nil }
         // The first row of the cursor's logical line must carry the flag.
-        var top = cursor.y
-        while top > 0, grid.isWrapped(top - 1) {
+        let top = cursorLogicalLineStart
+        let index = top - firstAbsoluteRow
+        let marked = index < grid.historyCount ? grid.isHistoryInputLine(index) : grid.isInputLine(index - grid.historyCount)
+        guard marked else { return nil }
+        return TerminalPoint(row: top + offset / columns, column: offset % columns)
+    }
+
+    private var cursorLogicalLineStart: Int {
+        var top = screenAbsoluteRow(cursor.y)
+        while top > firstAbsoluteRow, line(absoluteRow: top - 1)?.wrapped == true {
             top -= 1
         }
-        guard grid.isInputLine(top) else { return nil }
-        return TerminalPoint(row: screenAbsoluteRow(top) + offset / columns, column: offset % columns)
+        return top
+    }
+
+    /// Track the input boundary as an insertion position, including one
+    /// just past a row's right edge that has not wrapped yet. During
+    /// reflow, `grid` is primary even when the alternate screen is active.
+    func inputReflowMark() -> Cursor? {
+        guard semanticState == .input, let offset = inputOffset, let top = primaryInputLineRow() else { return nil }
+        var mark = Cursor()
+        mark.x = offset % columns
+        mark.y = top + offset / columns
+        if mark.x == 0, offset > 0 {
+            mark.x = columns - 1
+            mark.y -= 1
+            mark.pendingWrap = true
+        }
+        return mark
+    }
+
+    /// The rebuilt grid's absolute rows match the reflow output's row
+    /// indices, including rows evicted while appending its history.
+    mutating func updateInputOffsetAfterReflow(row: Int, column: Int, pending: Bool, columns: Int) {
+        guard let relativeTop = primaryInputLineRow() else {
+            inputOffset = nil
+            return
+        }
+        let top = grid.historyEvicted + grid.historyCount + relativeTop
+        guard row >= top else {
+            inputOffset = nil
+            return
+        }
+        inputOffset = (row - top) * columns + column + (pending ? 1 : 0)
+    }
+
+    /// Finds the primary grid's input-line flag without consulting the
+    /// active screen or cursor. History rows have negative screen indices.
+    private func primaryInputLineRow() -> Int? {
+        for i in 0 ..< grid.historyCount where grid.isHistoryInputLine(i) {
+            return i - grid.historyCount
+        }
+        for y in 0 ..< grid.rows where grid.isInputLine(y) {
+            return y
+        }
+        return nil
     }
 
     /// Absolute row of screen row `y`, whatever the viewport shows.
+    /// Out-of-range coordinates saturate at the integer limits.
     public func screenAbsoluteRow(_ y: Int) -> Int {
-        isAlternateScreen ? y : grid.historyEvicted + grid.historyCount + y
+        guard !isAlternateScreen else { return y }
+        let top = grid.historyEvicted + grid.historyCount
+        let (row, overflow) = top.addingReportingOverflow(y)
+        return overflow ? (y < 0 ? .min : .max) : row
     }
 
     /// Semantic mark of absolute row `row`, or nil once it has left history.
     public func mark(absoluteRow row: Int) -> RowMark? {
+        guard row >= firstAbsoluteRow else { return nil }
         let index = row - firstAbsoluteRow
         guard index >= 0, index < addressableRows else { return nil }
         let history = isAlternateScreen ? 0 : grid.historyCount
@@ -130,21 +218,20 @@ extension TerminalState {
 
     /// Scrolls so the `delta`-th prompt above (negative) or below (positive)
     /// the top visible row becomes the top row. Returns false when there is
-    /// no such prompt.
+    /// no such prompt that can move the viewport.
     @discardableResult
     public mutating func jumpToPrompt(_ delta: Int) -> Bool {
         guard !isAlternateScreen, delta != 0 else { return false }
         let top = absoluteRow(viewportRow: 0)
         let prompts = promptRows()
         let candidates = delta < 0 ? prompts.filter { $0 < top }.reversed() : prompts.filter { $0 > top }
-        let steps = abs(delta)
-        guard candidates.count >= steps else { return false }
-        let target = Array(candidates)[steps - 1]
+        let steps = delta.magnitude
+        guard UInt(candidates.count) >= steps else { return false }
+        let target = Array(candidates)[Int(steps) - 1]
         let before = viewportOffset
         scrollViewport(toTopRow: target - firstAbsoluteRow)
-        if viewportOffset != before {
-            damage.setFull()
-        }
+        guard viewportOffset != before else { return false }
+        damage.setFull()
         return true
     }
 
@@ -195,9 +282,13 @@ extension TerminalState {
     /// to `p` while a command line is being edited (OSC 133 ; B), or nil
     /// when `p` is outside it. Arrows move by character, so wide characters
     /// and clusters count once; a point past the text goes to its end.
+    /// Negative columns are outside the command; columns beyond a row's
+    /// right edge target that row's end.
     public func promptCursorMoves(to p: TerminalPoint) -> Int? {
-        guard semanticState == .input, !isAlternateScreen, let start = inputStart else { return nil }
+        guard p.column >= 0, semanticState == .input, !isAlternateScreen, let start = inputStart else { return nil }
+        let p = TerminalPoint(row: p.row, column: min(p.column, columns))
         let cursorRow = screenAbsoluteRow(cursor.y)
+        let cursorPoint = TerminalPoint(row: cursorRow, column: cursor.x + (cursor.pendingWrap ? 1 : 0))
         // The edited line runs from the input start through the cursor's
         // row and any rows it wraps into.
         var lastRow = cursorRow
@@ -210,7 +301,7 @@ extension TerminalState {
             (q.row - start.row) * columns + q.column
         }
         // End of the typed text: just past the last non-blank cell.
-        var end = linear(TerminalPoint(row: cursorRow, column: cursor.x))
+        var end = linear(cursorPoint)
         for row in start.row ... lastRow {
             guard let (cells, _) = line(absoluteRow: row) else { continue }
             if let x = cells.lastIndex(where: { !$0.isBlank }) {
@@ -218,7 +309,7 @@ extension TerminalState {
             }
         }
         let target = min(linear(p), end)
-        let from = linear(TerminalPoint(row: cursorRow, column: cursor.x))
+        let from = linear(cursorPoint)
         guard target != from else { return 0 }
         // Count characters between the two positions.
         var moves = 0
@@ -239,12 +330,13 @@ extension TerminalState {
     /// clear the prompt being shown so the old copy is not reflowed into
     /// garbage (Ghostty's behavior with `redraw=1`).
     mutating func clearPromptForResize() {
-        guard !isAlternateScreen, promptRedraws, semanticState == .prompt || semanticState == .input else { return }
+        guard !isAlternateScreen, promptRedraw == .all, semanticState == .prompt || semanticState == .input else { return }
         var y = cursor.y
         while y >= 0, grid.mark(y) != .prompt {
             y -= 1
         }
         guard y >= 0 else { return }
+        invalidateSelection(rows: y ..< rows, from: 0, to: columns)
         grid.clear(rows: y ..< rows, with: .blank)
         grid.setMark(y, .prompt)
         cursor.x = 0
@@ -252,6 +344,17 @@ extension TerminalState {
         cursor.pendingWrap = false
         inputOffset = nil
         damage.setFull()
+    }
+
+    /// `redraw=last` clears only the cursor's row at the new width, leaving
+    /// earlier prompt lines and the reflowed cursor position intact.
+    mutating func clearLastPromptRowAfterResize() {
+        guard !isAlternateScreen, promptRedraw == .lastRow, semanticState == .prompt || semanticState == .input else { return }
+        clearInputLine()
+        invalidateSelection(rows: cursor.y ..< cursor.y + 1, from: 0, to: columns)
+        let mark = grid.mark(cursor.y)
+        grid.clear(rows: cursor.y ..< cursor.y + 1, with: .blank)
+        grid.setMark(cursor.y, mark)
     }
 
     // MARK: Title and SGR stacks
@@ -312,7 +415,7 @@ extension TerminalState {
     /// In-band resize notification (mode 2048):
     /// `CSI 48 ; rows ; columns ; height px ; width px t`.
     mutating func reportSize() {
-        reply("\u{1B}[48;\(rows);\(columns);\(rows * cellPixelSize.height);\(columns * cellPixelSize.width)t")
+        reply("\u{1B}[48;\(rows);\(columns);\(textAreaPixelSize.height);\(textAreaPixelSize.width)t")
     }
 
     // MARK: OSC 22 / OSC 21
@@ -400,13 +503,16 @@ extension TerminalState {
     /// RIS: shell-integration and stack state.
     mutating func resetShellState() {
         semanticState = .none
-        promptRedraws = false
+        promptRedraw = .none
         inputOffset = nil
         hasSemanticPrompts = false
         lastExitCode = nil
         titleStack = []
         penStack = []
         underlineColors = []
-        pointerShape = ""
+        if !pointerShape.isEmpty {
+            pointerShape = ""
+            events.append(.pointerShape(""))
+        }
     }
 }

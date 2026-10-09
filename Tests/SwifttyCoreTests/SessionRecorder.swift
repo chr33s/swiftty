@@ -2,6 +2,7 @@ import Foundation
 @testable import SwifttyCore
 import Synchronization
 import Testing
+import TestSupport
 
 /// Records real applications for the replay tests (`Tests/SwifttyMobileTests/Fixtures`),
 /// which check that the same bytes produce the same screen through
@@ -32,7 +33,7 @@ struct SessionRecorder {
             while Date() < deadline, !screen().contains(text) {
                 usleep(20000)
             }
-            #expect(screen().contains(text), "waiting for \(text)")
+            #expect(screen().contains(text), Comment(rawValue: escapedTestText("waiting for \(text)")))
         }
 
         func type(_ s: String) {

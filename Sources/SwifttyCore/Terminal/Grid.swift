@@ -52,15 +52,16 @@ public struct Grid: ~Copyable {
     /// - Parameters:
     ///   - historyLimitBytes: cell memory for scrollback (Ghostty's
     ///     `scrollback-limit`); 0 disables history.
-    ///   - maxHistoryRows: upper bound on history rows regardless of size.
+    ///   - maxHistoryRows: upper bound on history rows regardless of size;
+    ///     nonpositive values disable history.
     public init(columns: Int, rows: Int, historyLimitBytes: Int = 0, maxHistoryRows: Int = 100_000) {
         let columns = max(1, columns), rows = max(1, rows)
         self.columns = columns
         self.rows = rows
         self.historyLimitBytes = historyLimitBytes
-        self.maxHistoryRows = maxHistoryRows
+        self.maxHistoryRows = max(0, maxHistoryRows)
         let rowBytes = columns * MemoryLayout<Cell>.stride
-        let historyRows = historyLimitBytes > 0 ? max(1, min(maxHistoryRows, historyLimitBytes / rowBytes)) : 0
+        let historyRows = historyLimitBytes > 0 ? min(self.maxHistoryRows, max(1, historyLimitBytes / rowBytes)) : 0
         history = Scrollback(capacity: historyRows)
         capacity = rows + historyRows
         chunks = .allocate(capacity: (capacity + Self.chunkRows - 1) >> Self.chunkShift)
@@ -104,7 +105,8 @@ public struct Grid: ~Copyable {
             let count = min(Self.chunkRows, capacity - first)
             precondition(count > 0, "row pool exhausted")
             let chunk = UnsafeMutablePointer<Cell>.allocate(capacity: Self.chunkRows * columns)
-            chunk.initialize(repeating: .blank, count: Self.chunkRows * columns)
+            // Rows beyond the capacity never enter the free list. Leave their pages untouched.
+            chunk.initialize(repeating: .blank, count: count * columns)
             chunks[chunkCount] = chunk
             chunkCount += 1
             for id in stride(from: first + count - 1, through: first, by: -1) {
@@ -180,6 +182,12 @@ public struct Grid: ~Copyable {
         marks[Int(rowMap[y])]
     }
 
+    /// Merging rows keeps the first semantic role and any input-line flag.
+    static func mergingMarkBits(_ first: UInt8, _ second: UInt8) -> UInt8 {
+        let role = first & ~inputLineBit
+        return (role == 0 ? second & ~inputLineBit : role) | ((first | second) & inputLineBit)
+    }
+
     func historyMarkBits(_ index: Int) -> UInt8 {
         marks[Int(history.id(index))]
     }
@@ -221,6 +229,15 @@ public struct Grid: ~Copyable {
 
     public func historyMark(_ index: Int) -> RowMark {
         RowMark(rawValue: marks[Int(history.id(index))] & ~Self.inputLineBit) ?? .none
+    }
+
+    func isHistoryInputLine(_ index: Int) -> Bool {
+        marks[Int(history.id(index))] & Self.inputLineBit != 0
+    }
+
+    func setHistoryInputLine(_ index: Int, _ value: Bool) {
+        let p = Int(history.id(index))
+        marks[p] = value ? marks[p] | Self.inputLineBit : marks[p] & ~Self.inputLineBit
     }
 
     func historyMutableCells(_ index: Int) -> UnsafeMutableBufferPointer<Cell> {
@@ -385,27 +402,29 @@ public struct Grid: ~Copyable {
             columns: newColumns, rows: newRows,
             historyLimitBytes: historyLimitBytes, maxHistoryRows: maxHistoryRows,
         )
+        // A wide character whose tail is cut off becomes blank on both
+        // screen and history rows. Omit its lead before copying the row.
+        func retainedCount(_ row: UnsafeMutablePointer<Cell>, extent: Int) -> Int {
+            let count = min(extent, newColumns)
+            return count > 0 && row[count - 1].width == 2 ? count - 1 : count
+        }
         for i in 0 ..< history.count {
             let id = history.id(i)
+            let source = physical(id)
             fresh.appendHistory(
-                UnsafeBufferPointer(start: physical(id), count: min(Int(extents[Int(id)]), newColumns)),
+                UnsafeBufferPointer(start: source, count: retainedCount(source, extent: Int(extents[Int(id)]))),
                 wrapped: newColumns == columns && wrapped[Int(id)],
                 marks: marks[Int(id)],
             )
         }
         for y in 0 ..< min(rows, newRows) {
+            let source = row(y)
             fresh.setRow(
                 y,
-                UnsafeBufferPointer(start: row(y), count: min(extent(y), newColumns)),
+                UnsafeBufferPointer(start: source, count: retainedCount(source, extent: extent(y))),
                 wrapped: newColumns == columns && isWrapped(y),
                 marks: markBits(y),
             )
-        }
-        if newColumns < columns {
-            // A wide character whose tail was cut off becomes blank.
-            for y in 0 ..< min(rows, newRows) where fresh.row(y)[newColumns - 1].width == 2 {
-                fresh.row(y)[newColumns - 1] = .blank
-            }
         }
         self = fresh
     }
@@ -427,7 +446,26 @@ public struct Grid: ~Copyable {
             // Cell's size is 15 bytes; widen to a full 16-byte pattern.
             var pattern = SIMD4<UInt32>()
             withUnsafeMutableBytes(of: &pattern) { $0.storeBytes(of: cell, as: Cell.self) }
-            withUnsafeBytes(of: &pattern) { memset_pattern16(p, $0.baseAddress!, count * 16) }
+            // Direct stores avoid the pattern-fill call for short rows.
+            // Larger clears retain the library's bulk implementation.
+            if count <= 128 {
+                let raw = UnsafeMutableRawPointer(p)
+                let grouped = count & ~3
+                var i = 0
+                while i < grouped {
+                    raw.storeBytes(of: pattern, toByteOffset: i &* 16, as: SIMD4<UInt32>.self)
+                    raw.storeBytes(of: pattern, toByteOffset: (i &+ 1) &* 16, as: SIMD4<UInt32>.self)
+                    raw.storeBytes(of: pattern, toByteOffset: (i &+ 2) &* 16, as: SIMD4<UInt32>.self)
+                    raw.storeBytes(of: pattern, toByteOffset: (i &+ 3) &* 16, as: SIMD4<UInt32>.self)
+                    i &+= 4
+                }
+                while i < count {
+                    raw.storeBytes(of: pattern, toByteOffset: i &* 16, as: SIMD4<UInt32>.self)
+                    i &+= 1
+                }
+            } else {
+                withUnsafeBytes(of: &pattern) { memset_pattern16(p, $0.baseAddress!, count * 16) }
+            }
         } else {
             p.update(repeating: cell, count: count)
         }

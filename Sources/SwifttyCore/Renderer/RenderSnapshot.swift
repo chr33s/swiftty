@@ -45,6 +45,9 @@ public struct HighlightSpan: Sendable, Equatable {
     }
 }
 
+/// Stable identity of the builder that produced a snapshot.
+final class SnapshotSource: Sendable {}
+
 /// Immutable view of the screen for the renderer.
 ///
 /// Backed by pooled storage that is refilled only for damaged rows, so
@@ -52,6 +55,7 @@ public struct HighlightSpan: Sendable, Equatable {
 /// never mutated while any snapshot referencing it is alive.
 public struct RenderSnapshot: @unchecked Sendable {
     let storage: SnapshotStorage
+    let source: SnapshotSource
     // Base pointers into `storage`, valid while `storage` is retained. Kept
     // here (rather than read through the class) so span accessors do not
     // borrow the class reference; Swift 6.4's optimizer miscompiles that.
@@ -67,9 +71,13 @@ public struct RenderSnapshot: @unchecked Sendable {
     public let overscanRows: Int
     public let cursor: CursorState
     public let selection: HighlightSpan?
+    /// Visible search matches, ordered by both start and end position.
     public let searchMatches: [HighlightSpan]
     /// Index into `searchMatches` of the selected match, if visible.
     public let selectedSearchMatch: Int?
+    /// Total matches and selected index across the screen and scrollback.
+    public let searchMatchCount: Int
+    public let searchSelectedIndex: Int?
     /// Rows that changed since the previous snapshot returned by the session.
     public internal(set) var damage: DamageRegion
     public let palette: Palette
@@ -78,16 +86,19 @@ public struct RenderSnapshot: @unchecked Sendable {
     public let modes: Modes
     public let viewportOffset: Int
     public let scrollbackCount: Int
-    /// Monotonic counter; equal sequences mean identical content.
+    /// Monotonic counter within one session; equal sequences from that
+    /// session mean identical content.
     public let sequence: UInt64
 
     init(
-        storage: SnapshotStorage, columns: Int, rowCount: Int, overscanRows: Int, cursor: CursorState,
+        storage: SnapshotStorage, source: SnapshotSource, columns: Int, rowCount: Int, overscanRows: Int, cursor: CursorState,
         selection: HighlightSpan?, searchMatches: [HighlightSpan], selectedSearchMatch: Int?,
+        searchMatchCount: Int, searchSelectedIndex: Int?,
         damage: DamageRegion, palette: Palette, underlineColors: [TerminalColor] = [], modes: Modes,
         viewportOffset: Int, scrollbackCount: Int, sequence: UInt64,
     ) {
         self.storage = storage
+        self.source = source
         rowBase = storage.rowRecords
         cellBase = storage.cells
         graphemeScalarBase = storage.graphemeScalars
@@ -99,6 +110,8 @@ public struct RenderSnapshot: @unchecked Sendable {
         self.selection = selection
         self.searchMatches = searchMatches
         self.selectedSearchMatch = selectedSearchMatch
+        self.searchMatchCount = searchMatchCount
+        self.searchSelectedIndex = searchSelectedIndex
         self.damage = damage
         self.palette = palette
         self.underlineColors = underlineColors
@@ -210,9 +223,9 @@ final class SnapshotStorage: @unchecked Sendable {
     }
 
     /// Copies damaged rows from `state`; everything when graphemes are
-    /// involved since their side table is rebuilt from scratch.
+    /// involved in a changed frame since their side table is rebuilt from scratch.
     func fill(from state: borrowing TerminalState, damage: DamageRegion) {
-        var full = pending.isFull || hasGraphemes
+        var full = pending.isFull || (hasGraphemes && !pending.isEmpty)
         if !full {
             for y in 0 ..< rows where pending.contains(row: y) && Self.row(y, of: state).cells.contains(where: \.isGrapheme) {
                 full = true
@@ -256,7 +269,7 @@ final class SnapshotStorage: @unchecked Sendable {
         return state.line(absoluteRow: state.absoluteRow(viewportRow: y)) ?? (UnsafeBufferPointer(start: nil, count: 0), false)
     }
 
-    private func appendGrapheme(_ scalars: UnsafeBufferPointer<UInt32>) -> UInt32 {
+    private func appendGrapheme(_ scalars: borrowing Span<UInt32>) -> UInt32 {
         if scalarCount + scalars.count > scalarCapacity {
             let grown = UnsafeMutablePointer<UInt32>.allocate(capacity: max(scalarCapacity * 2, scalarCount + scalars.count))
             grown.update(from: graphemeScalars, count: scalarCount)
@@ -271,7 +284,9 @@ final class SnapshotStorage: @unchecked Sendable {
             graphemeEntries = grown
             entryCapacity *= 2
         }
-        (graphemeScalars + scalarCount).update(from: scalars.baseAddress!, count: scalars.count)
+        scalars.withUnsafeBufferPointer { buffer in
+            (graphemeScalars + scalarCount).update(from: buffer.baseAddress!, count: buffer.count)
+        }
         graphemeEntries[entryCount] = UInt64(scalarCount) << 32 | UInt64(scalars.count)
         scalarCount += scalars.count
         entryCount += 1
@@ -281,6 +296,7 @@ final class SnapshotStorage: @unchecked Sendable {
 
 /// Produces snapshots from terminal state using a small storage pool.
 struct SnapshotBuilder {
+    private let source = SnapshotSource()
     private var pool: [SnapshotStorage] = []
     private var sequence: UInt64 = 0
     private(set) var last: RenderSnapshot?
@@ -290,6 +306,7 @@ struct SnapshotBuilder {
     }
 
     mutating func build(from state: inout TerminalState, overscan: Int = 0) -> RenderSnapshot {
+        state.refreshSearchIfNeeded()
         var damage = state.takeDamage()
         if state.viewportOffset > 0, !damage.isEmpty {
             damage.setFull()
@@ -322,7 +339,30 @@ struct SnapshotBuilder {
         var selectedMatch: Int?
         if !state.searchMatches.isEmpty {
             let top = state.absoluteRow(viewportRow: 0), bottom = top + rowCount - 1
-            for (i, m) in state.searchMatches.enumerated() where m.end.row >= top && m.start.row <= bottom {
+            // Match starts and ends are monotonic. Skip history outside the
+            // viewport without walking every result on each redraw.
+            var first = 0, upper = state.searchMatches.count
+            while first < upper {
+                let middle = first + (upper - first) / 2
+                if state.searchMatches[middle].end.row < top {
+                    first = middle + 1
+                } else {
+                    upper = middle
+                }
+            }
+            var end = first
+            upper = state.searchMatches.count
+            while end < upper {
+                let middle = end + (upper - end) / 2
+                if state.searchMatches[middle].start.row <= bottom {
+                    end = middle + 1
+                } else {
+                    upper = middle
+                }
+            }
+            matches.reserveCapacity(end - first)
+            for i in first ..< end {
+                let m = state.searchMatches[i]
                 if i == state.searchSelected {
                     selectedMatch = matches.count
                 }
@@ -331,6 +371,7 @@ struct SnapshotBuilder {
         }
         let snapshot = RenderSnapshot(
             storage: storage,
+            source: source,
             columns: state.columns,
             rowCount: rowCount,
             overscanRows: extra,
@@ -344,6 +385,8 @@ struct SnapshotBuilder {
             selection: selection,
             searchMatches: matches,
             selectedSearchMatch: selectedMatch,
+            searchMatchCount: state.searchMatches.count,
+            searchSelectedIndex: state.searchSelected,
             damage: damage,
             palette: state.palette,
             underlineColors: state.underlineColors,

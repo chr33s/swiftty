@@ -22,6 +22,8 @@ public enum KeyAction: Hashable, Sendable {
     case reset
     /// Sends text to the application (`text:` takes Zig-style escapes).
     case text(String)
+    /// Text escape sequences can also produce bytes outside UTF-8.
+    case textBytes([UInt8])
     case csi(String)
     case esc(String)
     /// Swallows the key.
@@ -29,10 +31,12 @@ public enum KeyAction: Hashable, Sendable {
 
     /// Parses `name[:parameter]`.
     init?(parsing spec: Substring) {
-        let parts = spec.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-        let name = parts[0], parameter = parts.count > 1 ? String(parts[1]) : nil
+        let parts = spec.unicodeScalars.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        let name = String(parts[0]), parameter = parts.count > 1 ? String(parts[1]) : nil
         func number(_ fallback: Double) -> Double? {
-            parameter.map { Double($0) } ?? fallback
+            guard let parameter else { return fallback }
+            guard let value = Double(parameter), value.isFinite else { return nil }
+            return value
         }
         switch name {
         case "copy_to_clipboard": self = .copyToClipboard
@@ -58,7 +62,13 @@ public enum KeyAction: Hashable, Sendable {
         case "end_search": self = .endSearch
         case "clear_screen": self = .clearScreen
         case "reset": self = .reset
-        case "text": guard let parameter else { return nil }; self = .text(Self.unescape(parameter))
+        case "text":
+            guard let parameter, let bytes = Self.unescape(parameter) else { return nil }
+            if let text = String(validating: bytes, as: UTF8.self) {
+                self = .text(text)
+            } else {
+                self = .textBytes(bytes)
+            }
         case "csi": guard let parameter else { return nil }; self = .csi(parameter)
         case "esc": guard let parameter else { return nil }; self = .esc(parameter)
         case "ignore": self = .ignore
@@ -70,32 +80,50 @@ public enum KeyAction: Hashable, Sendable {
     public var bytes: [UInt8]? {
         switch self {
         case let .text(s): Array(s.utf8)
+        case let .textBytes(bytes): bytes
         case let .csi(s): [0x1B, 0x5B] + Array(s.utf8)
         case let .esc(s): [0x1B] + Array(s.utf8)
         default: nil
         }
     }
 
-    /// `\n`, `\r`, `\t`, `\\`, `\e` and `\x..` escapes.
-    static func unescape(_ s: String) -> String {
-        var out = String.UnicodeScalarView()
+    /// Zig string escapes, plus the existing `\e` shorthand for ESC.
+    static func unescape(_ s: String) -> [UInt8]? {
+        var out: [UInt8] = []
         var it = s.unicodeScalars.makeIterator()
         while let c = it.next() {
-            guard c == "\\", let e = it.next() else { out.append(c); continue }
+            guard c == "\\" else { out.append(contentsOf: String(c).utf8); continue }
+            guard let e = it.next() else { return nil }
             switch e {
-            case "n": out.append("\n")
-            case "r": out.append("\r")
-            case "t": out.append("\t")
-            case "e": out.append("\u{1B}")
+            case "n": out.append(0x0A)
+            case "r": out.append(0x0D)
+            case "t": out.append(0x09)
+            case "e": out.append(0x1B)
+            case "\\", "\"", "'": out.append(UInt8(e.value))
             case "x":
-                if let a = it.next(), let b = it.next(), let v = UInt32(String([Character(a), Character(b)]), radix: 16),
-                   let scalar = Unicode.Scalar(v) {
-                    out.append(scalar)
+                guard let a = it.next(), let b = it.next(),
+                      let high = UInt8(String(a), radix: 16), let low = UInt8(String(b), radix: 16) else { return nil }
+                out.append(high * 16 + low)
+            case "u":
+                guard it.next() == "{" else { return nil }
+                var value: UInt32 = 0, digits = 0
+                var closed = false
+                while let digit = it.next() {
+                    if digit == "}" {
+                        closed = true
+                        break
+                    }
+                    guard let n = UInt32(String(digit), radix: 16) else { return nil }
+                    value = value * 16 + n
+                    guard value <= 0x10FFFF else { return nil }
+                    digits += 1
                 }
-            default: out.append(e)
+                guard closed, digits > 0, let scalar = Unicode.Scalar(value) else { return nil }
+                out.append(contentsOf: String(scalar).utf8)
+            default: return nil
             }
         }
-        return String(out)
+        return out
     }
 }
 
@@ -119,7 +147,8 @@ public struct KeyTrigger: Hashable, Sendable {
     init?(parsing spec: Substring) {
         var mods: KeyModifiers = []
         var keyName: Substring?
-        for part in spec.split(separator: "+", omittingEmptySubsequences: false) {
+        for scalars in spec.unicodeScalars.split(separator: "+", omittingEmptySubsequences: false) {
+            let part = Substring(String(scalars))
             switch part.lowercased() {
             case "shift": mods.insert(.shift)
             case "ctrl", "control": mods.insert(.control)
@@ -157,7 +186,9 @@ public struct KeyTrigger: Hashable, Sendable {
         if lower.hasPrefix("f"), let n = Int(lower.dropFirst()), (1 ... 12).contains(n) {
             return .function(n)
         }
-        let scalars = lower.unicodeScalars
+        // Lowercasing can expand a single scalar (e.g. İ) into several.
+        // KeyTrigger.init normalizes only mappings representable by one key.
+        let scalars = name.unicodeScalars
         return scalars.count == 1 ? .character(scalars.first!) : nil
     }
 }
@@ -165,6 +196,16 @@ public struct KeyTrigger: Hashable, Sendable {
 /// Trigger → action table, parsed from `keybind` lines.
 public struct Keybindings: Sendable, Equatable {
     public private(set) var bindings: [KeyTrigger: KeyAction]
+    private var unconsumed: Set<KeyTrigger> = []
+    private var performable: Set<KeyTrigger> = []
+    private var allSurfaces: Set<KeyTrigger> = []
+
+    public struct Binding: Sendable {
+        public let action: KeyAction
+        public let consumesInput: Bool
+        public let requiresPerformable: Bool
+        public let appliesToAll: Bool
+    }
 
     public init(_ bindings: [KeyTrigger: KeyAction] = [:]) {
         self.bindings = bindings
@@ -196,25 +237,35 @@ public struct Keybindings: Sendable, Equatable {
     public mutating func apply(_ value: String) -> String? {
         if value == "clear" {
             bindings = [:]
+            unconsumed = []
+            performable = []
+            allSurfaces = []
             return nil
         }
         // The separator is the first "=" that is not itself the trigger's
         // key (`super+=`); actions may contain "=" (`text:A=1`).
         var separator: String.Index?
-        var i = value.startIndex
-        while i < value.endIndex {
-            if value[i] == "=", i != value.startIndex, value[value.index(before: i)] != "+" {
+        let input = value.unicodeScalars
+        var i = input.startIndex
+        while i < input.endIndex {
+            if input[i] == "=", i != input.startIndex, input[input.index(before: i)] != "+" {
                 separator = i
                 break
             }
-            i = value.index(after: i)
+            i = input.index(after: i)
         }
         guard let eq = separator else { return "expected trigger=action" }
-        var trigger = value[..<eq]
-        let action = value[value.index(after: eq)...]
-        // Prefixes that change scope; all bindings here are surface-local.
-        for prefix in ["all:", "performable:", "unconsumed:"] where trigger.hasPrefix(prefix) {
-            trigger = trigger.dropFirst(prefix.count)
+        var trigger = Substring(String(input[..<eq]))
+        let action = Substring(String(input[input.index(after: eq)...]))
+        var consumesInput = true, all = false, requiresPerformable = false
+        while let colon = trigger.unicodeScalars.firstIndex(of: ":") {
+            switch trigger[..<colon] {
+            case "all": all = true
+            case "performable": requiresPerformable = true
+            case "unconsumed": consumesInput = false
+            default: return "unsupported binding prefix \(trigger[..<colon])"
+            }
+            trigger = trigger[trigger.unicodeScalars.index(after: colon)...]
         }
         if trigger.hasPrefix("global:") || trigger.contains(">") {
             return "global bindings and sequences are not supported"
@@ -222,10 +273,28 @@ public struct Keybindings: Sendable, Equatable {
         guard let parsed = KeyTrigger(parsing: trigger) else { return "unknown trigger \(trigger)" }
         if action == "unbind" {
             bindings[parsed] = nil
+            unconsumed.remove(parsed)
+            performable.remove(parsed)
+            allSurfaces.remove(parsed)
             return nil
         }
         guard let parsedAction = KeyAction(parsing: action) else { return "unknown action \(action)" }
         bindings[parsed] = parsedAction
+        if all {
+            allSurfaces.insert(parsed)
+        } else {
+            allSurfaces.remove(parsed)
+        }
+        if requiresPerformable, !all {
+            performable.insert(parsed)
+        } else {
+            performable.remove(parsed)
+        }
+        if consumesInput || all {
+            unconsumed.remove(parsed)
+        } else {
+            unconsumed.insert(parsed)
+        }
         return nil
     }
 
@@ -235,13 +304,26 @@ public struct Keybindings: Sendable, Equatable {
     }
 
     public func action(for event: KeyEvent) -> KeyAction? {
-        if let action = bindings[KeyTrigger(event.key, modifiers: event.modifiers)] {
-            return action
+        binding(for: event)?.action
+    }
+
+    public func binding(for trigger: KeyTrigger) -> Binding? {
+        bindings[trigger].map {
+            Binding(
+                action: $0, consumesInput: !unconsumed.contains(trigger),
+                requiresPerformable: performable.contains(trigger), appliesToAll: allSurfaces.contains(trigger),
+            )
+        }
+    }
+
+    public func binding(for event: KeyEvent) -> Binding? {
+        if let binding = binding(for: KeyTrigger(event.key, modifiers: event.modifiers)) {
+            return binding
         }
         // Shifted punctuation arrives as its shifted character (`+` for
         // shift+`=`), so a binding written without shift still matches.
         if event.modifiers.contains(.shift), case let .character(c) = event.key, !c.properties.isAlphabetic {
-            return bindings[KeyTrigger(event.key, modifiers: event.modifiers.subtracting(.shift))]
+            return binding(for: KeyTrigger(event.key, modifiers: event.modifiers.subtracting(.shift)))
         }
         return nil
     }
@@ -249,9 +331,13 @@ public struct Keybindings: Sendable, Equatable {
     /// A trigger bound to `action`, for showing it as a menu shortcut:
     /// the one with the fewest modifiers, ties broken deterministically.
     public func trigger(for action: KeyAction) -> KeyTrigger? {
-        bindings.filter { $0.value == action }.keys.min { a, b in
+        bindings.filter { $0.value == action && !performable.contains($0.key) }.keys.min { a, b in
             let ma = a.modifiers.rawValue.nonzeroBitCount, mb = b.modifiers.rawValue.nonzeroBitCount
-            return ma != mb ? ma < mb : String(describing: a.key) < String(describing: b.key)
+            if ma != mb {
+                return ma < mb
+            }
+            let ka = String(describing: a.key), kb = String(describing: b.key)
+            return ka != kb ? ka < kb : a.modifiers.rawValue < b.modifiers.rawValue
         }
     }
 }

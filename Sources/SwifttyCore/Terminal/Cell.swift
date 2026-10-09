@@ -143,7 +143,7 @@ public struct Cell: Hashable, Sendable, BitwiseCopyable {
     }
 
     @inlinable public var isSpacer: Bool {
-        !attributes.flags.isDisjoint(with: [.spacerTail, .spacerHead])
+        attributes.flags.contains(.spacerTail) || attributes.flags.contains(.spacerHead)
     }
 }
 

@@ -80,7 +80,7 @@ extension TerminalState {
             guard let semi = s.firstIndex(of: ";") else { return }
             let payload = s[s.index(after: semi)...]
             // Clipboard reads ("?") are refused: they would leak data to the app.
-            if payload != "?", let decoded = Data(base64Encoded: String(payload)) {
+            if payload != "?", let decoded = Self.decodeClipboardPayload(payload) {
                 events.append(.clipboard(String(decoding: decoded, as: UTF8.self)))
             }
         case 104:
@@ -96,9 +96,24 @@ extension TerminalState {
             damage.setFull()
         case 110: palette.foreground = defaultPalette.foreground; damage.setFull()
         case 111: palette.background = defaultPalette.background; damage.setFull()
-        case 112: palette.cursor = defaultPalette.cursor
+        case 112: palette.cursor = defaultPalette.cursor; damage.setFull()
         default: break // 1 (icon title) and others are ignored
         }
+    }
+
+    private static func decodeClipboardPayload(_ payload: Substring) -> Data? {
+        let remainder = payload.utf8.count % 4
+        if let start = payload.firstIndex(of: "=") {
+            // Foundation accepts excess padding, even an all-padding value.
+            // Explicit padding must finish a complete four-byte quantum.
+            let padding = payload[start...]
+            guard remainder == 0, padding == "=" || padding == "==" else { return nil }
+            return Data(base64Encoded: String(payload))
+        }
+        guard remainder != 1 else { return nil }
+        // OSC 52 has no error reply; tolerate an otherwise valid unpadded tail.
+        let padding = remainder == 0 ? "" : String(repeating: "=", count: 4 - remainder)
+        return Data(base64Encoded: String(payload) + padding)
     }
 
     static func formatColor(_ rgb: UInt32) -> String {
@@ -112,15 +127,17 @@ extension TerminalState {
 
     /// Parses `rgb:R/G/B` (1–4 hex digits each) or `#RRGGBB`.
     static func parseColor(_ spec: Substring) -> UInt32? {
-        if spec.hasPrefix("#"), spec.count == 7, let v = UInt32(spec.dropFirst(), radix: 16) {
+        if spec.hasPrefix("#"), spec.count == 7, spec.dropFirst().allSatisfy(\.isHexDigit),
+           let v = UInt32(spec.dropFirst(), radix: 16) {
             return v
         }
         guard spec.hasPrefix("rgb:") else { return nil }
-        let parts = spec.dropFirst(4).split(separator: "/")
+        let parts = spec.dropFirst(4).split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count == 3 else { return nil }
         var rgb: UInt32 = 0
         for part in parts {
-            guard (1 ... 4).contains(part.count), let v = UInt32(part, radix: 16) else { return nil }
+            guard (1 ... 4).contains(part.count), part.allSatisfy(\.isHexDigit),
+                  let v = UInt32(part, radix: 16) else { return nil }
             let maxValue = (UInt32(1) << (4 * UInt32(part.count))) - 1
             rgb = rgb << 8 | (v * 255 + maxValue / 2) / maxValue
         }
@@ -174,6 +191,7 @@ extension TerminalState {
     /// Absolute rows were renumbered (history cleared, reflow): recorded
     /// rows no longer apply, so only a scan can free a slot.
     mutating func forgetHyperlinkRows() {
+        hyperlinkReclaimAfter = nil
         for i in hyperlinkLastRow.indices {
             hyperlinkLastRow[i] = .max
         }
@@ -191,6 +209,7 @@ extension TerminalState {
     mutating func penLinkWillChange(to id: UInt8) {
         let old = Int(cursor.pen.link)
         guard old != Int(id) else { return }
+        hyperlinkReclaimAfter = nil
         // A saved cursor still holding the link may write with it again.
         let held = savedPrimary.pen.link == UInt8(clamping: old) || savedAlternate.pen.link == UInt8(clamping: old)
         if old != 0, old <= hyperlinkLastRow.count {
@@ -203,6 +222,7 @@ extension TerminalState {
     /// Marks `id` live: no row bound applies and no free list holds it.
     mutating func holdHyperlink(_ id: UInt8) {
         guard id != 0, Int(id) <= hyperlinkLastRow.count else { return }
+        hyperlinkReclaimAfter = nil
         hyperlinkLastRow[Int(id) - 1] = .max
         freeHyperlinkSlots.removeAll { $0 == Int(id) - 1 }
     }
@@ -212,11 +232,21 @@ extension TerminalState {
     /// history), rate-limited while it keeps finding nothing.
     private mutating func reclaimHyperlinkSlot() -> Int? {
         let first = firstAbsoluteRow
+        if !isAlternateScreen, let retry = hyperlinkReclaimAfter, first < retry {
+            return nil
+        }
         let saved = (Int(savedPrimary.pen.link) - 1, Int(savedAlternate.pen.link) - 1)
-        if !isAlternateScreen, let slot = hyperlinkLastRow.indices.first(where: {
-            hyperlinkLastRow[$0] < first && $0 + 1 != Int(cursor.pen.link) && $0 != saved.0 && $0 != saved.1
-        }) {
-            return slot
+        if !isAlternateScreen {
+            for slot in hyperlinkLastRow.indices where hyperlinkLastRow[slot] < first
+                && slot + 1 != Int(cursor.pen.link) && slot != saved.0 && slot != saved.1 {
+                // A primary row bound says nothing about retained alternate
+                // cells after the same link was reopened on primary.
+                if inactiveScreenUsesHyperlink(UInt8(slot + 1)) {
+                    hyperlinkLastRow[slot] = .max
+                } else {
+                    return slot
+                }
+            }
         }
         if let slot = freeHyperlinkSlots.popLast() {
             return slot
@@ -225,6 +255,13 @@ extension TerminalState {
         // genuinely live: a scan cannot help.
         let current = Int(cursor.pen.link) - 1
         guard hyperlinkLastRow.indices.contains(where: { $0 != current && hyperlinkLastRow[$0] == .max }) else {
+            if !isAlternateScreen {
+                var earliest = Int.max
+                for slot in hyperlinkLastRow.indices where slot != current && slot != saved.0 && slot != saved.1 {
+                    earliest = min(earliest, hyperlinkLastRow[slot])
+                }
+                hyperlinkReclaimAfter = earliest == .max ? .max : earliest + 1
+            }
             return nil
         }
         if hyperlinkScanCooldown > 0 {
@@ -260,6 +297,20 @@ extension TerminalState {
             return nil
         }
         return freeHyperlinkSlots.popLast()
+    }
+
+    private func inactiveScreenUsesHyperlink(_ id: UInt8) -> Bool {
+        for y in 0 ..< inactiveGrid.rows {
+            let cells = inactiveGrid.cells(row: y)
+            for x in 0 ..< inactiveGrid.extent(y) where cells[x].attributes.link == id {
+                return true
+            }
+        }
+        for index in 0 ..< inactiveGrid.historyCount
+            where inactiveGrid.historyLine(index).cells.contains(where: { $0.attributes.link == id }) {
+            return true
+        }
+        return false
     }
 
     /// Target of hyperlink `id` (from `CellAttributes.link`).

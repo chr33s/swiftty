@@ -1,3 +1,5 @@
+import TestSupport
+
 // Oracle tests ported from upstream Ghostty `src/terminal/Terminal.zig`
 // (the `test "..."` blocks before line 7739). Each test drives swiftty only
 // through bytes, mapping Ghostty's Terminal API calls onto the escape
@@ -17,6 +19,9 @@
 //   `TerminalState.scrollViewport(toTopRow:)` / `scrollViewportToBottom()`.
 // - `t.resize` uses `TerminalState.resize(columns:rows:)`.
 // - Dirty-tracking assertions inside ported tests are dropped.
+//   GraphemeBreakTests covers invalid selectors and incremental ZWJ damage.
+//   A retained valid selector with mode 2027 off damages its changed cell;
+//   this intentionally differs from Ghostty's ignored-VS16 damage assertion.
 //
 // Skipped (no byte-level equivalent):
 // - "Terminal forwards optional scrollback limits": PageList limit internals.
@@ -36,9 +41,6 @@
 // - "Terminal: input with basic wraparound dirty": dirty tracking only.
 // - "Terminal: input glitch text": page grapheme capacity growth.
 // - "Terminal: print wide char with 1-column width": dirty tracking only.
-// - "Terminal: ignored VS16 doesn't mark dirty": dirty tracking only.
-// - "Terminal: invalid VS16 doesn't mark dirty": dirty tracking only.
-// - "Terminal: multicodepoint grapheme marks dirty on every codepoint": dirty tracking (end state covered by "mode 2027").
 // - "Terminal: VS16 widening when the spacer tail grows the page": page hyperlink map capacity.
 // - "Terminal: print Devanagari grapheme should be wide on next page": page boundary internals.
 // - "Terminal: print kitty unicode placeholder": kitty graphics.
@@ -53,15 +55,21 @@ private enum Wide: Equatable { case narrow, wide, spacerTail, spacerHead }
 
 private func wideOf(_ vt: borrowing VT, _ x: Int, _ y: Int) -> Wide {
     let c = vt.cell(x, y)
-    if c.flags.contains(.spacerHead) { return .spacerHead }
-    if c.flags.contains(.spacerTail) || c.width == 0 { return .spacerTail }
+    if c.flags.contains(.spacerHead) {
+        return .spacerHead
+    }
+    if c.flags.contains(.spacerTail) || c.width == 0 {
+        return .spacerTail
+    }
     return c.width == 2 ? .wide : .narrow
 }
 
 /// Ghostty's `cell.content.codepoint`: the base codepoint (0 when empty).
 private func codepoint(_ vt: borrowing VT, _ x: Int, _ y: Int) -> UInt32 {
     let c = vt.cell(x, y)
-    if c.isGrapheme { return vt.state.scalars(of: c).first?.value ?? 0 }
+    if c.isGrapheme {
+        return vt.state.scalars(of: c).first?.value ?? 0
+    }
     return c.isSpacer ? 0 : c.glyph
 }
 
@@ -119,7 +127,11 @@ private func expectPlain(
     let actual = plain(vt)
     #expect(
         Array(actual.unicodeScalars) == Array(expected.unicodeScalars),
-        "plainString \(actual.debugDescription) [\(hex(actual))] != \(expected.debugDescription) [\(hex(expected))]",
+        Comment(
+            rawValue: escapedTestText(
+                "plainString \(actual.debugDescription) [\(hex(actual))] != \(expected.debugDescription) [\(hex(expected))]",
+            ),
+        ),
         sourceLocation: sourceLocation,
     )
 }
@@ -163,7 +175,7 @@ struct GhosttyTerminal1Tests {
         var vt = VT(5, 1)
         vt.feed("\(ESC)]7;file:///tmp\(ESC)\\")
         vt.feed("\(ESC)]7;file:///tmp\(ESC)\\")
-        #expect(String(decoding: vt.state.directoryBytes, as: UTF8.self) == "file:///tmp")
+        #expect(TestFixture(String(decoding: vt.state.directoryBytes, as: UTF8.self)) == TestFixture("file:///tmp"))
     }
 
     @Test("Terminal: setTitle accepts its current value")
@@ -406,7 +418,7 @@ struct GhosttyTerminal1Tests {
     }
 
     @Test("Terminal: graphemeWidth parity")
-    func graphemeWidthParity() {
+    func graphemeWidthParity() throws {
         // Expected cursor advance = sum of unicode.graphemeWidth over clusters.
         let cases: [([UInt32], Int)] = [
             ([0x2764, 0xFE0F], 2),
@@ -426,11 +438,11 @@ struct GhosttyTerminal1Tests {
             vt.feed(graphemeOn)
             var str = String.UnicodeScalarView()
             for cp in cps {
-                str.append(Unicode.Scalar(cp)!)
+                try str.append(#require(Unicode.Scalar(cp)))
             }
             vt.feed(String(str))
-            #expect(vt.cursor.y == 0, "\(cps.map { String($0, radix: 16) })")
-            #expect(vt.cursor.x == expected, "\(cps.map { String($0, radix: 16) })")
+            #expect(vt.cursor.y == 0, Comment(rawValue: escapedTestText("\(cps.map { String($0, radix: 16) })")))
+            #expect(vt.cursor.x == expected, Comment(rawValue: escapedTestText("\(cps.map { String($0, radix: 16) })")))
         }
     }
 

@@ -12,6 +12,15 @@ public enum UnicodeWidth {
         return Int(table.lookup(scalar))
     }
 
+    /// Scalar count and column width of the first printable grapheme.
+    /// Uses the terminal's Unicode segmentation and emoji width rules.
+    /// An empty collection returns `(0, 0)`; standalone combining and format
+    /// characters can have width zero. Callers must filter control characters.
+    public static func graphemeWidth<C: RandomAccessCollection>(_ scalars: C) -> (length: Int, width: Int)
+        where C.Element == UInt32 {
+        GraphemeBreak.graphemeWidth(scalars)
+    }
+
     @usableFromInline static let table = WidthTable()
 
     /// ZERO WIDTH JOINER: glues the next scalar onto the current cluster.

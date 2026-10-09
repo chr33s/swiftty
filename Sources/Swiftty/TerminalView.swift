@@ -1,5 +1,6 @@
 import AppKit
 import MetalKit
+import QuartzCore
 import SwifttyCore
 
 /// An MTKView hosting one terminal session.
@@ -9,12 +10,19 @@ import SwifttyCore
 /// input, key-binding actions and accessibility live in extensions.
 @MainActor
 final class TerminalView: MTKView, MTKViewDelegate {
+    private static let surfaces = NSHashTable<TerminalView>.weakObjects()
     let session: TerminalSession
     let renderer: MetalRenderer
     private(set) var config: Configuration
-    var fontSize: CGFloat
+    /// Manual zoom, or nil to follow the configured point size.
+    private var explicitFontSize: CGFloat?
+    var fontSize: CGFloat {
+        explicitFontSize ?? CGFloat(Configuration.boundedFontSize(config.fontSize))
+    }
+
     var lastModes: Modes = .initial
-    var scrollAccumulator: CGFloat = 0
+    var scrollAccumulator = ScrollAccumulator()
+    var horizontalScrollAccumulator = ScrollAccumulator()
     var gridSize = (columns: 0, rows: 0)
     /// The last drawn frame: the cursor for the IME candidate window, the
     /// text for accessibility.
@@ -25,19 +33,27 @@ final class TerminalView: MTKView, MTKViewDelegate {
     enum SelectionUnit { case cell, word, line }
     var selectionUnit = SelectionUnit.cell
     /// Span the gesture started on (one cell, word or line).
-    var selectionOrigin: (start: TerminalPoint, end: TerminalPoint)?
+    var selectionOrigin: (start: TerminalPoint, end: TerminalPoint, generation: UInt64)?
     var selectionDragged = false
+    /// Later drag/release reports belong to the terminal only when it
+    /// received this gesture's initial press.
+    var reportsLeftMouseGesture = false
     var hasSelection = false
+    var pasteboard = NSPasteboard.general
     /// Where the last click landed, for "Select Command Output".
-    var lastClick: TerminalPoint?
+    var lastClick: (point: TerminalPoint, generation: UInt64)?
 
     /// Links and the pointer.
     var hoveredLink: TerminalLink?
+    var hoverEvent: NSEvent?
+    var hoverModifiers: NSEvent.ModifierFlags = []
+    var hoverCell: (column: Int, row: Int)?
     /// The pointer the application asked for (OSC 22).
     var applicationCursor = NSCursor.iBeam
 
     /// IME composition.
     var markedText = ""
+    var markedSelection = NSRange(location: NSNotFound, length: 0)
     /// The key event being interpreted, for commands the input system does not handle.
     var interpretingEvent: NSEvent?
     var heldKeys: [UInt16: KeyEvent] = [:]
@@ -46,9 +62,16 @@ final class TerminalView: MTKView, MTKViewDelegate {
     private var blinkTimer: Timer?
     private var blinkOn = true
     private var cursorBlinks = false
+    private var isStopped = false
+    private var submittedFrame: UInt64 = 0
+    private var retryScheduled = false
+    private var visibilityObservers: [NSKeyValueObservation] = []
 
     var searchBar: SearchBar?
     var accessibilityThrottle = NotificationThrottle(interval: 0.5)
+    private var lastAccessibilityValue: String?
+    private var lastAccessibilityRanges: [NSRange]?
+    private var pendingAccessibilityNotifications: Set<NSAccessibility.Notification> = []
     /// Screen text for VoiceOver, rebuilt once per snapshot.
     var accessibilityCache = AccessibilityTextCache()
 
@@ -57,12 +80,12 @@ final class TerminalView: MTKView, MTKViewDelegate {
 
     init(configuration: Configuration) throws {
         config = configuration
-        fontSize = CGFloat(configuration.fontSize)
         colorScheme = Self.scheme(of: NSApp.effectiveAppearance)
         session = TerminalSession(configuration: configuration.sessionConfiguration(scheme: colorScheme))
         guard let device = MTLCreateSystemDefaultDevice() else { throw RendererError.setup("no Metal device") }
         renderer = try MetalRenderer(device: device, fontManager: CoreTextFontManager(), font: configuration.fontDescriptor(scale: 2))
         super.init(frame: .zero, device: device)
+        (layer as? CAMetalLayer)?.maximumDrawableCount = 2
         colorPixelFormat = .bgra8Unorm
         framebufferOnly = true
         isPaused = true
@@ -78,6 +101,7 @@ final class TerminalView: MTKView, MTKViewDelegate {
         session.onEvent = { [weak self] event in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.handle(event) } }
         }
+        Self.surfaces.add(self)
     }
 
     @available(*, unavailable) required init(coder: NSCoder) {
@@ -87,19 +111,27 @@ final class TerminalView: MTKView, MTKViewDelegate {
     func start() throws {
         updateGrid()
         try session.start(config.sessionConfiguration(scheme: colorScheme))
+        isStopped = false
+        Self.surfaces.add(self)
         session.mutate { $0.setColorScheme(colorScheme) }
+        updateFrameDriving()
     }
 
     func stop() {
-        blinkTimer?.invalidate()
+        Self.surfaces.remove(self)
+        isStopped = true
+        resetBlink()
+        isPaused = true
+        enableSetNeedsDisplay = true
         session.stop()
     }
 
     func preferredSize(columns: Int, rows: Int) -> NSSize {
         let scale = renderer.font.descriptor.scale
+        let maximum = (window?.screen ?? NSScreen.main)?.visibleFrame.size ?? NSSize(width: 1024, height: 768)
         return NSSize(
-            width: (CGFloat(columns) * renderer.cellSize.width + 2 * renderer.options.paddingX) / scale,
-            height: (CGFloat(rows) * renderer.cellSize.height + 2 * renderer.options.paddingY) / scale,
+            width: min(maximum.width, (CGFloat(columns) * renderer.cellSize.width + 2 * renderer.options.paddingX) / scale),
+            height: min(maximum.height, (CGFloat(rows) * renderer.cellSize.height + 2 * renderer.options.paddingY) / scale),
         )
     }
 
@@ -127,7 +159,6 @@ final class TerminalView: MTKView, MTKViewDelegate {
         let paletteChanged = configuration.palette(for: colorScheme) != config.palette(for: colorScheme)
         config = configuration
         if fontChanged {
-            fontSize = CGFloat(configuration.fontSize)
             applyFont()
         }
         applyRenderOptions(scale: window?.backingScaleFactor ?? 2)
@@ -137,6 +168,9 @@ final class TerminalView: MTKView, MTKViewDelegate {
             session.mutate { $0.setDefaultPalette(palette) }
         }
         updateGrid()
+        if hoverEvent != nil {
+            refreshHover()
+        }
         needsDisplay = true
     }
 
@@ -149,6 +183,7 @@ final class TerminalView: MTKView, MTKViewDelegate {
     static func merge(configured: RenderOptions, current: RenderOptions) -> RenderOptions {
         var options = configured
         options.preedit = current.preedit
+        options.preeditSelection = current.preeditSelection
         options.hoveredLink = current.hoveredLink
         options.underlinedSpan = current.underlinedSpan
         options.textBlinkVisible = current.textBlinkVisible
@@ -187,6 +222,73 @@ final class TerminalView: MTKView, MTKViewDelegate {
 
     // MARK: Layout
 
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if window !== newWindow {
+            clearHover()
+        }
+        if let window, window !== newWindow, window.firstResponder === self {
+            _ = resignFirstResponder()
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        observeVisibility()
+        let center = NotificationCenter.default
+        center.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil)
+        center.removeObserver(self, name: NSWindow.didResignKeyNotification, object: nil)
+        center.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+        center.removeObserver(self, name: NSWindow.didChangeScreenNotification, object: nil)
+        updateFrameDriving()
+        guard let window else { return }
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+            center.addObserver(self, selector: #selector(windowKeyChanged(_:)), name: name, object: window)
+        }
+        for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didChangeScreenNotification] {
+            center.addObserver(self, selector: #selector(windowVisibilityChanged), name: name, object: window)
+        }
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        observeVisibility()
+        windowVisibilityChanged()
+    }
+
+    @objc private func windowVisibilityChanged() {
+        updateFrameDriving()
+        if isSurfaceVisible {
+            needsDisplay = true
+        }
+    }
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        updateFrameDriving()
+    }
+
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        updateFrameDriving()
+        needsDisplay = true
+    }
+
+    @objc private func windowKeyChanged(_ notification: Notification) {
+        if notification.name == NSWindow.didResignKeyNotification {
+            clearHover()
+        }
+        // A window keeps its first responder when another window becomes key.
+        if window?.firstResponder === self {
+            if notification.name == NSWindow.didBecomeKeyNotification {
+                session.send(.focus(true))
+            } else {
+                _ = resignFirstResponder()
+            }
+        }
+        needsDisplay = true
+    }
+
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         applyRenderOptions(scale: window?.backingScaleFactor ?? 2)
@@ -197,6 +299,7 @@ final class TerminalView: MTKView, MTKViewDelegate {
         super.setFrameSize(newSize)
         updateGrid()
         searchBar?.position(in: bounds)
+        updateFrameDriving()
     }
 
     func applyFont() {
@@ -206,11 +309,18 @@ final class TerminalView: MTKView, MTKViewDelegate {
         needsDisplay = true
     }
 
+    func setFontSize(_ size: CGFloat?) {
+        explicitFontSize = size.map { CGFloat(Configuration.boundedFontSize(Double($0))) }
+        applyFont()
+    }
+
     func updateGrid() {
         let scale = window?.backingScaleFactor ?? renderer.font.descriptor.scale
         let pixels = CGSize(width: bounds.width * scale, height: bounds.height * scale)
         let size = renderer.gridSize(for: pixels)
-        session.setCellPixelSize(width: Int(renderer.cellSize.width), height: Int(renderer.cellSize.height))
+        session.setCellPixelSize(
+            width: TerminalGeometry.pixelExtent(renderer.cellSize.width), height: TerminalGeometry.pixelExtent(renderer.cellSize.height),
+        )
         guard size != gridSize else { return }
         gridSize = size
         session.resize(columns: size.columns, rows: size.rows)
@@ -230,33 +340,182 @@ final class TerminalView: MTKView, MTKViewDelegate {
 
     // MARK: Drawing
 
+    override var needsDisplay: Bool {
+        get { super.needsDisplay }
+        set {
+            if !newValue {
+                super.needsDisplay = newValue
+                return
+            }
+            switch surfaceVisibility {
+            case .hidden: break
+            case .awaitingOpacity: retryDraw(frame: submittedFrame)
+            case .visible: super.needsDisplay = true
+            }
+        }
+    }
+
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
         let snapshot = session.snapshot()
+        if let event = hoverEvent,
+           !snapshot.damage.isEmpty || lastSnapshot?.viewportOffset != snapshot.viewportOffset
+           || (hoverCell.map { $0 != cell(for: event) } ?? true) {
+            refreshHover()
+        }
         lastModes = snapshot.modes
         lastSnapshot = snapshot
+        if hasSelection, snapshot.selection == nil {
+            hasSelection = false
+            selectionOrigin = nil
+        }
         cursorBlinks = config.cursorStyleBlink ?? snapshot.cursor.isBlinking
         renderer.options.isFocused = window?.isKeyWindow == true && window?.firstResponder === self
         renderer.options.cursorVisible = blinkOn || !cursorBlinks || !renderer.options.isFocused
         renderer.options.textBlinkVisible = blinkOn
-        renderer.draw(snapshot, in: self)
-        updateBlinkTimer()
+        if isSurfaceVisible, let drawable = currentDrawable, currentRenderPassDescriptor != nil {
+            submittedFrame &+= 1
+            let frame = submittedFrame
+            drawable.addPresentedHandler { [weak self] drawable in
+                guard drawable.presentedTime == 0 else { return }
+                DispatchQueue.main.async { self?.retryDraw(frame: frame) }
+            }
+            renderer.draw(snapshot, in: self)
+        } else {
+            retryDraw(frame: submittedFrame)
+        }
+        updateFrameDriving()
+        postAccessibilityChange()
+    }
+
+    private var isSurfaceVisible: Bool {
+        surfaceVisibility == .visible
+    }
+
+    private enum SurfaceVisibility { case hidden, awaitingOpacity, visible }
+
+    private var surfaceVisibility: SurfaceVisibility {
+        guard let window, window.isVisible, window.occlusionState.contains(.visible), window.alphaValue > 0,
+              !isHiddenOrHasHiddenAncestor, bounds.width > 0, bounds.height > 0 else { return .hidden }
+        var awaitingOpacity = false
+        var ancestor: NSView? = self
+        while let view = ancestor {
+            if view.alphaValue <= 0 {
+                guard let layer = view.layer, hasOpacityAnimation(layer) else { return .hidden }
+                if (layer.presentation()?.opacity ?? 0) <= 0 {
+                    guard hasOpacityAnimation(layer, awaitingPresentation: true) else { return .hidden }
+                    awaitingOpacity = true
+                }
+            }
+            ancestor = view.superview
+        }
+        return awaitingOpacity ? .awaitingOpacity : .visible
+    }
+
+    private func hasOpacityAnimation(_ layer: CALayer, awaitingPresentation: Bool = false) -> Bool {
+        layer.animationKeys()?.contains { key in
+            guard let animation = layer.animation(forKey: key) else { return false }
+            if awaitingPresentation {
+                var speed = animation.speed
+                var ancestor: CALayer? = layer
+                while let current = ancestor {
+                    speed *= current.speed
+                    ancestor = current.superlayer
+                }
+                guard speed != 0 else { return false }
+                // Retained animations still run; stop polling only after their active time ends.
+                // Core Animation resolves a zero begin time when it commits the animation.
+                if !animation.isRemovedOnCompletion, animation.beginTime != 0 {
+                    let time = (layer.convertTime(CACurrentMediaTime(), from: nil) - animation.beginTime)
+                        * Double(animation.speed) + animation.timeOffset
+                    let cycles = animation.repeatCount > 0 ? Double(animation.repeatCount) : 1
+                    let duration = animation.repeatDuration > 0 ? animation.repeatDuration
+                        : animation.duration * (animation.autoreverses ? 2 : 1) * cycles
+                    if speed > 0 ? time >= duration : time <= 0 {
+                        return false
+                    }
+                }
+            }
+            return Self.animatesOpacity(animation)
+        } ?? false
+    }
+
+    private static func animatesOpacity(_ animation: CAAnimation) -> Bool {
+        if let property = animation as? CAPropertyAnimation {
+            return property.keyPath == "opacity"
+        }
+        return (animation as? CAAnimationGroup)?.animations?.contains(where: animatesOpacity) ?? false
+    }
+
+    private func observeVisibility() {
+        visibilityObservers.removeAll()
+        // Opacity composites the existing frame; redraw only when transparency ends.
+        let refresh: @Sendable (Bool) -> Void = { [weak self] becameVisible in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.updateFrameDriving()
+                if becameVisible, self.isSurfaceVisible {
+                    self.needsDisplay = true
+                }
+            }
+        }
+        var ancestor: NSView? = self
+        while let view = ancestor {
+            visibilityObservers.append(view.observe(\.alphaValue, options: [.old, .new]) { _, change in
+                refresh(change.oldValue == 0 && (change.newValue ?? 0) > 0)
+            })
+            ancestor = view.superview
+        }
+        if let window {
+            visibilityObservers.append(window.observe(\.alphaValue, options: [.old, .new]) { _, change in
+                refresh(change.oldValue == 0 && (change.newValue ?? 0) > 0)
+            })
+        }
+    }
+
+    private func updateFrameDriving() {
+        let rate = window?.screen?.maximumFramesPerSecond ?? 60
+        if preferredFramesPerSecond != rate {
+            preferredFramesPerSecond = rate
+        }
         // A shader that animates needs frames without new output.
-        let animating = renderer.isAnimating
+        let animating = renderer.isAnimating && !isStopped && isSurfaceVisible
         if animating == isPaused {
             isPaused = !animating
             enableSetNeedsDisplay = !animating
         }
-        postAccessibilityChange()
+        updateBlinkTimer()
+    }
+
+    private func retryDraw(frame: UInt64) {
+        guard !retryScheduled, !isStopped, !renderer.isAnimating || isPaused,
+              submittedFrame == frame, surfaceVisibility != .hidden else { return }
+        retryScheduled = true
+        let delay = 1 / Double(max(1, preferredFramesPerSecond))
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            retryScheduled = false
+            guard !isStopped, !renderer.isAnimating || isPaused, submittedFrame == frame,
+                  surfaceVisibility != .hidden else { return }
+            if isSurfaceVisible {
+                updateFrameDriving()
+                needsDisplay = true
+            } else {
+                retryDraw(frame: frame)
+            }
+        }
     }
 
     private func updateBlinkTimer() {
-        let needed = (cursorBlinks && renderer.options.isFocused) || renderer.hasBlinkingText
+        let needed = !isStopped && isSurfaceVisible && ((cursorBlinks && renderer.options.isFocused) || renderer.hasBlinkingText)
         if needed, blinkTimer == nil {
-            blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+            blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] timer in
+                guard let self else { timer.invalidate(); return }
+                let identity = ObjectIdentifier(timer)
                 MainActor.assumeIsolated {
-                    guard let self else { return }
+                    guard self.blinkTimer.map(ObjectIdentifier.init) == identity else { return }
+                    guard self.isSurfaceVisible else { self.updateFrameDriving(); return }
                     self.blinkOn.toggle()
                     self.needsDisplay = true
                 }
@@ -286,9 +545,41 @@ final class TerminalView: MTKView, MTKViewDelegate {
     /// never missed.
     private func postAccessibilityChange() {
         guard NSWorkspace.shared.isVoiceOverEnabled else { return }
+        requestAccessibilityNotifications(accessibilityChanges()) { [weak self] notification in
+            guard let self else { return }
+            NSAccessibility.post(element: self, notification: notification)
+        }
+    }
+
+    /// Only text or selection changes need an accessibility notification.
+    func accessibilityChanges() -> [NSAccessibility.Notification] {
+        let value = accessibilityText?.string ?? ""
+        let ranges = accessibilitySelectedTextRanges()?.map(\.rangeValue) ?? []
+        var changes: [NSAccessibility.Notification] = []
+        if value != lastAccessibilityValue {
+            changes.append(.valueChanged)
+        }
+        if ranges != lastAccessibilityRanges {
+            changes.append(.selectedTextChanged)
+        }
+        lastAccessibilityValue = value
+        lastAccessibilityRanges = ranges
+        return changes
+    }
+
+    /// Coalesces each kind of change until the next permitted post.
+    func requestAccessibilityNotifications(
+        _ changes: [NSAccessibility.Notification], post: @escaping @MainActor (NSAccessibility.Notification) -> Void,
+    ) {
+        guard !changes.isEmpty else { return }
+        pendingAccessibilityNotifications.formUnion(changes)
         requestAccessibilityPost { [weak self] in
             guard let self else { return }
-            NSAccessibility.post(element: self, notification: .valueChanged)
+            let pending = self.pendingAccessibilityNotifications
+            self.pendingAccessibilityNotifications.removeAll(keepingCapacity: true)
+            for notification in [NSAccessibility.Notification.valueChanged, .selectedTextChanged] where pending.contains(notification) {
+                post(notification)
+            }
         }
     }
 
@@ -321,12 +612,22 @@ final class TerminalView: MTKView, MTKViewDelegate {
     }
 
     override func becomeFirstResponder() -> Bool {
-        session.send(.focus(true))
+        clearHover()
+        if window == nil || window?.isKeyWindow == true {
+            session.send(.focus(true))
+        }
         needsDisplay = true
         return true
     }
 
     override func resignFirstResponder() -> Bool {
+        clearHover()
+        // Key-up may go to the next responder after focus moves away.
+        for var key in heldKeys.values {
+            key.action = .release
+            session.send(.key(key))
+        }
+        heldKeys.removeAll()
         session.send(.focus(false))
         needsDisplay = true
         return true
@@ -334,10 +635,16 @@ final class TerminalView: MTKView, MTKViewDelegate {
 
     /// Key bindings run before the menu's key equivalents.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard window?.firstResponder === self, !hasMarkedText(), let action = binding(for: event) else {
+        guard window?.firstResponder === self, !hasMarkedText(), let binding = binding(for: event) else {
             return super.performKeyEquivalent(with: event)
         }
-        perform(action)
+        let performed = performBinding(binding)
+        if binding.requiresPerformable, !performed {
+            return false
+        }
+        if !binding.consumesInput {
+            handleTerminalInput(event)
+        }
         return true
     }
 
@@ -346,10 +653,16 @@ final class TerminalView: MTKView, MTKViewDelegate {
         if config.mouseHideWhileTyping {
             NSCursor.setHiddenUntilMouseMoves(true)
         }
-        if !hasMarkedText(), let action = binding(for: event) {
-            perform(action)
-            return
+        if !hasMarkedText(), let binding = binding(for: event) {
+            let performed = performBinding(binding)
+            if binding.consumesInput, !binding.requiresPerformable || performed {
+                return
+            }
         }
+        handleTerminalInput(event)
+    }
+
+    private func handleTerminalInput(_ event: NSEvent) {
         clearSelection()
         // While composing, every key belongs to the input method.
         if !hasMarkedText(), sendKey(event) {
@@ -367,8 +680,17 @@ final class TerminalView: MTKView, MTKViewDelegate {
         }
     }
 
-    private func binding(for event: NSEvent) -> KeyAction? {
-        Self.trigger(for: event).flatMap { config.keybindings.action(for: $0) }
+    private func binding(for event: NSEvent) -> Keybindings.Binding? {
+        Self.trigger(for: event).flatMap { config.keybindings.binding(for: $0) }
+    }
+
+    private func performBinding(_ binding: Keybindings.Binding) -> Bool {
+        guard binding.appliesToAll else { return perform(binding.action) }
+        let surfaces = Self.surfaces.allObjects
+        for surface in surfaces {
+            surface.perform(binding.action)
+        }
+        return !surfaces.isEmpty
     }
 
     /// The key and modifiers a binding is matched against.
@@ -382,7 +704,7 @@ final class TerminalView: MTKView, MTKViewDelegate {
     /// combinations); returns false for text, which goes through the
     /// input method.
     func sendKey(_ event: NSEvent) -> Bool {
-        let flags = !event.modifierFlags.intersection([.command, .control]).isEmpty ? session.keyboardFlags : 0
+        let flags = !event.modifierFlags.isDisjoint(with: [.command, .control]) ? session.keyboardFlags : 0
         guard let key = Self.terminalKey(for: event, keyboardFlags: flags) else { return false }
         sendHardwareKey(key, event: event)
         return true
@@ -456,9 +778,15 @@ final class TerminalView: MTKView, MTKViewDelegate {
         return Dictionary(uniqueKeysWithValues: keys)
     }()
 
+    private static let hiddenPointerCursor = NSCursor(
+        image: NSImage(size: NSSize(width: 1, height: 1), flipped: false) { _ in true },
+        hotSpot: .zero,
+    )
+
     static func cursor(named name: String) -> NSCursor {
         switch name {
-        case "default", "": .arrow
+        case "default": .arrow
+        case "none": hiddenPointerCursor
         case "pointer": .pointingHand
         case "crosshair", "cell": .crosshair
         case "not-allowed", "no-drop": .operationNotAllowed

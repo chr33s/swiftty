@@ -24,7 +24,7 @@ struct BoxDrawingTests {
     @Test func `solid and dashed lines`() {
         let mid = Self.h / 2
         #expect(runs(draw(0x2500)[mid]) == 1)
-        #expect(draw(0x2500)[mid].allSatisfy { $0 }) // spans the whole cell
+        #expect(!draw(0x2500)[mid].contains(false)) // spans the whole cell
         #expect(runs(draw(0x2504)[mid]) == 3)
         #expect(runs(draw(0x2508)[mid]) == 4)
         #expect(runs(draw(0x254C)[mid]) == 2)

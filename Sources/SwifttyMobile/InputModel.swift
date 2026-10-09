@@ -160,10 +160,12 @@ struct HardwareTextInput {
             self.pending = nil
             return nil
         }
-        guard InputEncoder.isKittyKeyboardActive(keyboardFlags) else { return nil }
         let committed = pending
+        // Every matching commit consumes the initial press, including text
+        // sent before an application enables kitty keyboard reporting.
         pending.event.action = .repeat
         self.pending = pending
+        guard InputEncoder.isKittyKeyboardActive(keyboardFlags) else { return nil }
         return committed
     }
 }
@@ -279,25 +281,8 @@ public enum AccessoryKey: Hashable, Sendable {
 
 // MARK: - Scrolling
 
-/// Turns fractional scroll distances into whole lines, carrying the rest.
-public struct ScrollAccumulator: Sendable {
-    public private(set) var remainder: CGFloat = 0
-
-    public init() {}
-
-    /// Adds `lines` (positive scrolls back into history) and returns the
-    /// whole lines to scroll now.
-    public mutating func add(_ lines: CGFloat) -> Int {
-        remainder += lines
-        let whole = Int(remainder)
-        remainder -= CGFloat(whole)
-        return whole
-    }
-
-    public mutating func reset() {
-        remainder = 0
-    }
-}
+/// Shared with the macOS frontend; retained here for source compatibility.
+public typealias ScrollAccumulator = SwifttyCore.ScrollAccumulator
 
 /// Exponentially decaying fling, matching `UIScrollView`'s normal
 /// deceleration rate.
@@ -310,8 +295,9 @@ public struct ScrollMomentum: Sendable {
     /// Lines per second; positive scrolls back into history.
     public private(set) var velocity: CGFloat = 0
 
+    /// Nonfinite velocities and speeds below the minimum start at rest.
     public init(velocity: CGFloat = 0) {
-        self.velocity = abs(velocity) < Self.minimumVelocity ? 0 : velocity
+        self.velocity = velocity.isFinite && abs(velocity) >= Self.minimumVelocity ? velocity : 0
     }
 
     public var isActive: Bool {
@@ -319,12 +305,13 @@ public struct ScrollMomentum: Sendable {
     }
 
     /// Advances by `dt` seconds and returns the distance travelled, in lines.
+    /// Invalid or nonpositive intervals leave velocity unchanged.
     public mutating func step(_ dt: CFTimeInterval) -> CGFloat {
-        guard isActive, dt > 0 else { return 0 }
+        guard isActive, dt.isFinite, dt > 0 else { return 0 }
         // v(t) = v0·r^(1000t), so the distance is v0·(r^(1000dt) − 1) / (1000·ln r).
         let k = 1000 * log(Self.decelerationRate)
         let decay = exp(k * CGFloat(dt))
-        let distance = velocity * (decay - 1) / k
+        let distance = velocity * expm1(k * CGFloat(dt)) / k
         velocity *= decay
         if abs(velocity) < Self.minimumVelocity {
             velocity = 0
@@ -378,7 +365,7 @@ public struct GridGeometry: Equatable, Sendable {
     public func cell(at point: CGPoint) -> (column: Int, row: Int) {
         let x = (point.x * scale - padding.x) / cellSize.width
         let y = (point.y * scale - padding.y) / cellSize.height
-        return (Int(x.rounded(.down)), Int(y.rounded(.down)))
+        return (TerminalGeometry.cellIndex(x), TerminalGeometry.cellIndex(y))
     }
 
     /// Rect of a cell in view points.

@@ -9,30 +9,24 @@
             true
         }
 
-        override var inputAccessoryView: UIView? {
-            accessoryBar
-        }
+        #if !os(visionOS)
+            override var inputAccessoryView: UIView? {
+                isSearchVisible ? nil : accessoryBar
+            }
+        #endif
 
         @discardableResult
         override func becomeFirstResponder() -> Bool {
             guard super.becomeFirstResponder() else { return false }
-            session.send(.focus(true))
-            renderer.options.isFocused = true
-            updateBlinkTimer()
-            setNeedsDisplay()
+            updateFocus()
             return true
         }
 
         @discardableResult
         override func resignFirstResponder() -> Bool {
             guard super.resignFirstResponder() else { return false }
-            session.send(.focus(false))
-            renderer.options.isFocused = false
-            stopKeyRepeat()
-            hardwareTextInput.cancel()
-            stopBlinking()
-            updateBlinkTimer()
-            setNeedsDisplay()
+            releaseHardwareKeys()
+            updateFocus()
             return true
         }
 
@@ -78,26 +72,36 @@
 
         /// Returns true when the press was handled here.
         private func keyDown(_ key: UIKey) -> Bool {
-            hardwareTextInput.cancel()
-            let usage = key.keyCode.rawValue
-            let mods = Self.modifiers(key.modifierFlags).union(sticky.active)
-            let base = key.charactersIgnoringModifiers
+            keyDown(
+                usage: key.keyCode.rawValue, modifiers: Self.modifiers(key.modifierFlags),
+                base: key.charactersIgnoringModifiers, characters: key.characters,
+            )
+        }
+
+        func keyDown(usage: Int, modifiers: KeyModifiers, base: String, characters: String) -> Bool {
+            if !KeyTranslator.isModifier(usage) {
+                stopKeyRepeat()
+                hardwareTextInput.cancel()
+            }
+            let mods = modifiers.union(sticky.active)
             // While composing, every key belongs to the input method.
             guard markedText.isEmpty else {
                 return false
             }
-            if let identity = KeyTranslator.identity(usage: usage, modifiers: mods, base: base, characters: key.characters),
-               let action = configuration.keybindings.action(for: identity) {
-                _ = consumeSticky()
-                handledPresses.insert(usage)
-                perform(action)
-                return true
+            if let identity = KeyTranslator.identity(usage: usage, modifiers: mods, base: base, characters: characters),
+               let binding = configuration.keybindings.binding(for: identity) {
+                let performed = performBinding(binding)
+                if binding.consumesInput, !binding.requiresPerformable || performed {
+                    _ = consumeSticky()
+                    handledPresses.insert(usage)
+                    return true
+                }
             }
             guard let event = KeyTranslator.keyEvent(
-                usage: usage, modifiers: mods, charactersIgnoringModifiers: base, characters: key.characters,
+                usage: usage, modifiers: mods, charactersIgnoringModifiers: base, characters: characters,
                 keyboardFlags: session.keyboardFlags,
             ) else {
-                if let identity = KeyTranslator.identity(usage: usage, modifiers: mods, base: base, characters: key.characters) {
+                if let identity = KeyTranslator.identity(usage: usage, modifiers: mods, base: base, characters: characters) {
                     hardwareTextInput.begin(usage: usage, event: identity)
                 }
                 return false
@@ -110,7 +114,7 @@
             release.action = .release
             heldKeys[usage] = release
             handledPresses.insert(usage)
-            startKeyRepeat(event)
+            startKeyRepeat(event, usage: usage)
             return true
         }
 
@@ -125,7 +129,9 @@
                     session.send(.key(release))
                 }
                 if handledPresses.remove(usage) != nil {
-                    stopKeyRepeat()
+                    if keyRepeatUsage == usage {
+                        stopKeyRepeat()
+                    }
                 } else {
                     forwarded.insert(press)
                 }
@@ -136,15 +142,17 @@
         /// UIKit does not repeat presses it does not deliver to the text
         /// system, so keys sent directly (arrows, Ctrl combinations) repeat
         /// here.
-        private func startKeyRepeat(_ event: KeyEvent) {
+        private func startKeyRepeat(_ event: KeyEvent, usage: Int) {
             stopKeyRepeat()
+            keyRepeatUsage = usage
             var repeated = event
             repeated.action = .repeat
             let sent = repeated
             keyRepeat = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    self?.keyRepeat = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { _ in
-                        MainActor.assumeIsolated { self?.session.send(.key(sent)) }
+                    self?.keyRepeat = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] timer in
+                        guard let self else { timer.invalidate(); return }
+                        MainActor.assumeIsolated { self.session.send(.key(sent)) }
                     }
                 }
             }
@@ -153,6 +161,20 @@
         internal func stopKeyRepeat() {
             keyRepeat?.invalidate()
             keyRepeat = nil
+            keyRepeatUsage = nil
+        }
+
+        /// Focus changes may prevent UIKit from delivering the key-up.
+        /// Release each press once and abandon pending hardware commits.
+        internal func releaseHardwareKeys() {
+            stopKeyRepeat()
+            loadedAccessoryBar?.stopRepeating()
+            hardwareTextInput.cancel()
+            for release in heldKeys.values {
+                session.send(.key(release))
+            }
+            heldKeys.removeAll()
+            handledPresses.removeAll()
         }
 
         // MARK: Key bindings
@@ -164,32 +186,40 @@
                 return cached
             }
             var commands: [UIKeyCommand] = []
-            var actions: [KeyAction] = []
+            var commandBindings: [String: Keybindings.Binding] = [:]
             let bindings = configuration.keybindings.bindings.sorted {
                 ActionDispatch.title(for: $0.value) < ActionDispatch.title(for: $1.value)
             }
             for (trigger, action) in bindings {
+                // Key commands consume the press. Unconsumed bindings need
+                // pressesBegan so the terminal receives the original key too.
+                guard let binding = configuration.keybindings.binding(for: trigger),
+                      binding.consumesInput, !binding.requiresPerformable else { continue }
                 // Plain keys stay with the terminal; they are matched in pressesBegan.
                 guard !trigger.modifiers.isDisjoint(with: [.command, .control, .alt]) || Self.isNonText(trigger.key),
                       let input = Self.keyCommandInput(trigger.key) else { continue }
                 // Only the preferred trigger is titled, so the HUD lists each action once.
                 let title = configuration.keybindings.trigger(for: action) == trigger ? ActionDispatch.title(for: action) : ""
+                let identifier = UUID().uuidString
                 let command = UIKeyCommand(
                     title: title, action: #selector(performKeyCommand(_:)), input: input,
-                    modifierFlags: Self.flags(trigger.modifiers), propertyList: actions.count,
+                    modifierFlags: Self.flags(trigger.modifiers), propertyList: identifier,
                 )
                 command.wantsPriorityOverSystemBehavior = true
                 commands.append(command)
-                actions.append(action)
+                commandBindings[identifier] = binding
             }
-            keyCommandActions = actions
+            keyCommandBindings = commandBindings
             keyCommandCache = commands
             return commands
         }
 
         @objc internal func performKeyCommand(_ command: UIKeyCommand) {
-            guard let index = command.propertyList as? Int, keyCommandActions.indices.contains(index) else { return }
-            perform(keyCommandActions[index])
+            guard let identifier = command.propertyList as? String, let binding = keyCommandBindings[identifier] else { return }
+            stopKeyRepeat()
+            hardwareTextInput.cancel()
+            _ = consumeSticky()
+            _ = performBinding(binding)
         }
 
         private static func isNonText(_ key: Key) -> Bool {
@@ -252,40 +282,52 @@
         }
 
         /// Runs a key-binding action.
-        func perform(_ action: KeyAction) {
+        @discardableResult
+        func perform(_ action: KeyAction) -> Bool {
             if ActionDispatch.viewportDelta(for: action, rows: 0, history: 0) != nil {
-                session.mutate { state in
+                stopMomentum()
+                return session.mutate { state in
+                    let before = state.viewportOffset
                     let history = state.addressableRows - state.rows
                     if let delta = ActionDispatch.viewportDelta(for: action, rows: state.rows, history: history) {
                         state.scrollViewport(by: delta)
                     }
+                    return state.viewportOffset != before
                 }
-                return
             }
             switch action {
-            case .copyToClipboard: copy(nil)
-            case .pasteFromClipboard: paste(nil)
+            case .copyToClipboard: return copySelection()
+            case .pasteFromClipboard: return pasteClipboard()
             case let .increaseFontSize(n): setFontSize(fontSize + CGFloat(n))
             case let .decreaseFontSize(n): setFontSize(fontSize - CGFloat(n))
             case .resetFontSize: setFontSize(nil)
             case .selectAll: selectAll(nil)
-            case let .jumpToPrompt(n): session.mutate { _ = $0.jumpToPrompt(n) }
+            case let .jumpToPrompt(n):
+                stopMomentum()
+                return session.mutate { $0.jumpToPrompt(n) }
             case .startSearch: showSearch(text: nil)
-            case .searchSelection: showSearch(text: session.withState { $0.selectionText })
-            case let .navigateSearch(next): navigateSearch(next: next)
-            case .endSearch: hideSearch()
+            case .searchSelection:
+                guard let text = session.withState({ $0.selectionText }), !text.isEmpty else { return false }
+                showSearch(text: text)
+            case let .navigateSearch(next): return navigateSearch(next: next)
+            case .endSearch:
+                guard isSearchVisible else { return false }
+                hideSearch()
             case .clearScreen:
+                stopMomentum()
                 clearSelection()
                 session.mutate { $0.clearScreenKeepingCursorLine() }
             case .reset:
+                stopMomentum()
                 clearSelection()
-                session.mutate { $0.reset() }
-            case .text, .csi, .esc:
+                session.reset()
+            case .text, .textBytes, .csi, .esc:
                 if let bytes = action.bytes {
                     send([.bytes(bytes)])
                 }
             case .ignore, .scrollToTop, .scrollToBottom, .scrollPageUp, .scrollPageDown, .scrollPageLines: break
             }
+            return true
         }
 
         // MARK: Accessory bar
@@ -312,6 +354,7 @@
 
         internal func send(_ inputs: [TerminalInput]) {
             guard !inputs.isEmpty else { return }
+            stopKeyRepeat()
             noteInput()
             for input in inputs {
                 session.send(input)
@@ -322,25 +365,36 @@
 
         override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
             switch action {
-            case #selector(copy(_:)): hasSelection
-            case #selector(paste(_:)): UIPasteboard.general.hasStrings
+            case #selector(copy(_:)): hasSelection && session.withState { $0.selection != nil }
+            case #selector(paste(_:)): pasteboard.hasStrings
             case #selector(selectAll(_:)), #selector(performKeyCommand(_:)): true
             default: false
             }
         }
 
         override func copy(_ sender: Any?) {
-            guard let text = session.withState({ $0.selectionText }), !text.isEmpty else { return }
-            UIPasteboard.general.string = text
+            _ = copySelection()
+        }
+
+        private func copySelection() -> Bool {
+            guard let text = session.withState({ $0.selectionText }), !text.isEmpty else { return false }
+            pasteboard.string = text
+            return true
         }
 
         override func paste(_ sender: Any?) {
-            guard let text = UIPasteboard.general.string else { return }
+            _ = pasteClipboard()
+        }
+
+        private func pasteClipboard() -> Bool {
+            guard let text = pasteboard.string else { return false }
             clearSelection()
             send([.paste(text)])
+            return true
         }
 
         override func selectAll(_ sender: Any?) {
+            stopMomentum()
             session.mutate { $0.selectAll() }
             hasSelection = true
         }
@@ -383,15 +437,45 @@
         }
     }
 
+    final class TerminalTextSelectionRect: UITextSelectionRect {
+        private let bounds: CGRect
+
+        init(_ bounds: CGRect) {
+            self.bounds = bounds
+            super.init()
+        }
+
+        override var rect: CGRect {
+            bounds
+        }
+
+        override var writingDirection: NSWritingDirection {
+            .leftToRight
+        }
+
+        override var containsStart: Bool {
+            true
+        }
+
+        override var containsEnd: Bool {
+            true
+        }
+
+        override var isVertical: Bool {
+            false
+        }
+    }
+
     extension TerminalUIView: UITextInput {
         public var hasText: Bool {
             true // so the keyboard's delete key always reaches deleteBackward
         }
 
         public func insertText(_ text: String) {
-            clearSelection()
             let committed = hardwareTextInput.commit(text, keyboardFlags: session.keyboardFlags)
             setPreedit("", selection: NSRange(location: 0, length: 0))
+            guard !text.isEmpty else { return }
+            clearSelection()
             let modifiers = consumeSticky()
             if let committed {
                 send([.key(committed.event)])
@@ -405,6 +489,21 @@
 
         public func deleteBackward() {
             clearSelection()
+            if !markedText.isEmpty {
+                let start = min(documentLength, max(0, markedSelection.location))
+                let length = min(documentLength - start, max(0, markedSelection.length))
+                if length > 0 {
+                    replace(TerminalTextRange(NSRange(location: start, length: length)), withText: "")
+                } else if start > 0 {
+                    let scalars = renderer.options.preedit
+                    let previous = TerminalGeometry.compositionPosition(in: scalars, atUTF16Offset: start - 1)
+                    let end = TerminalGeometry.compositionPosition(in: scalars, atUTF16Offset: start, roundUp: true)
+                    replace(TerminalTextRange(NSRange(
+                        location: previous.utf16Offset, length: end.utf16Offset - previous.utf16Offset,
+                    )), withText: "")
+                }
+                return
+            }
             send([.key(KeyEvent(.backspace, modifiers: consumeSticky()))])
         }
 
@@ -425,6 +524,8 @@
         }
 
         public func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+            stopKeyRepeat()
+            stopMomentum()
             hardwareTextInput.cancel()
             setPreedit(markedText ?? "", selection: selectedRange)
         }
@@ -435,10 +536,14 @@
         }
 
         private func setPreedit(_ text: String, selection: NSRange) {
-            markedSelection = selection
-            guard text != markedText else { return }
+            let length = text.utf16.count
+            let start = min(length, max(0, selection.location))
+            markedSelection = NSRange(location: start, length: min(length - start, max(0, selection.length)))
+            let renderedSelection = text.isEmpty ? nil : markedSelection
+            guard text != markedText || renderer.options.preeditSelection != renderedSelection else { return }
             markedText = text
             renderer.options.preedit = Array(text.unicodeScalars)
+            renderer.options.preeditSelection = renderedSelection
             setNeedsDisplay()
         }
 
@@ -446,7 +551,12 @@
 
         public var selectedTextRange: UITextRange? {
             get { TerminalTextRange(markedText.isEmpty ? NSRange(location: 0, length: 0) : markedSelection) }
-            set { markedSelection = (newValue as? TerminalTextRange)?.range ?? markedSelection }
+            set {
+                guard let range = (newValue as? TerminalTextRange)?.range, isDocumentRange(range) else { return }
+                markedSelection = range
+                renderer.options.preeditSelection = markedText.isEmpty ? nil : range
+                setNeedsDisplay()
+            }
         }
 
         private var documentLength: Int {
@@ -459,12 +569,43 @@
 
         public func text(in range: UITextRange) -> String? {
             guard let range = (range as? TerminalTextRange)?.range,
-                  let r = Range(range, in: markedText) else { return nil }
+                  let r = compositionRange(range) else { return nil }
             return String(markedText[r])
         }
 
+        private func compositionRange(_ range: NSRange) -> Range<String.Index>? {
+            guard isDocumentRange(range), let bounds = Range(range, in: markedText),
+                  bounds.lowerBound.samePosition(in: markedText.unicodeScalars) != nil,
+                  bounds.upperBound.samePosition(in: markedText.unicodeScalars) != nil else { return nil }
+            return bounds
+        }
+
+        private func isDocumentRange(_ range: NSRange) -> Bool {
+            range.location >= 0 && range.location <= documentLength && range.length >= 0
+                && range.length <= documentLength - range.location
+        }
+
         public func replace(_ range: UITextRange, withText text: String) {
-            insertText(text)
+            guard let range = (range as? TerminalTextRange)?.range,
+                  let substring = compositionRange(range) else { return }
+            guard !markedText.isEmpty else {
+                insertText(text)
+                return
+            }
+            let start = min(documentLength, max(0, markedSelection.location))
+            let length = min(documentLength - start, max(0, markedSelection.length))
+            let inserted = text.utf16.count
+            let selection = if start >= range.location + range.length {
+                NSRange(location: start - range.length + inserted, length: length)
+            } else if start + length <= range.location {
+                NSRange(location: start, length: length)
+            } else {
+                NSRange(location: range.location + inserted, length: 0)
+            }
+            var composition = markedText
+            composition.replaceSubrange(substring, with: text)
+            hardwareTextInput.cancel()
+            setPreedit(composition, selection: selection)
         }
 
         public var beginningOfDocument: UITextPosition {
@@ -476,20 +617,27 @@
         }
 
         public func textRange(from fromPosition: UITextPosition, to toPosition: UITextPosition) -> UITextRange? {
-            let a = offset(fromPosition), b = offset(toPosition)
-            return TerminalTextRange(NSRange(location: min(a, b), length: abs(b - a)))
+            guard let a = (fromPosition as? TerminalTextPosition)?.offset,
+                  let b = (toPosition as? TerminalTextPosition)?.offset,
+                  (0 ... documentLength).contains(a), (0 ... documentLength).contains(b) else { return nil }
+            return TerminalTextRange(NSRange(location: min(a, b), length: max(a, b) - min(a, b)))
         }
 
         public func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
-            let target = self.offset(position) + offset
-            return (0 ... documentLength).contains(target) ? TerminalTextPosition(target) : nil
+            guard let start = (position as? TerminalTextPosition)?.offset,
+                  (0 ... documentLength).contains(start) else { return nil }
+            let (target, overflow) = start.addingReportingOverflow(offset)
+            guard !overflow, (0 ... documentLength).contains(target) else { return nil }
+            return TerminalTextPosition(target)
         }
 
         public func position(from position: UITextPosition, in direction: UITextLayoutDirection, offset: Int) -> UITextPosition? {
             switch direction {
-            case .left: self.position(from: position, offset: -offset)
-            case .right: self.position(from: position, offset: offset)
-            default: nil
+            case .left:
+                guard offset != .min else { return nil }
+                return self.position(from: position, offset: -offset)
+            case .right: return self.position(from: position, offset: offset)
+            default: return nil
             }
         }
 
@@ -507,7 +655,8 @@
         }
 
         public func position(within range: UITextRange, farthestIn direction: UITextLayoutDirection) -> UITextPosition? {
-            switch direction {
+            guard let bounds = (range as? TerminalTextRange)?.range, isDocumentRange(bounds) else { return nil }
+            return switch direction {
             case .left, .up: range.start
             default: range.end
             }
@@ -535,29 +684,56 @@
 
         public func firstRect(for range: UITextRange) -> CGRect {
             let cell = cursorRect
-            let columns = max(1, (range as? TerminalTextRange)?.range.length ?? 1)
-            return CGRect(x: cell.minX, y: cell.minY, width: cell.width * CGFloat(columns), height: cell.height)
+            guard let range = (range as? TerminalTextRange)?.range else { return cell }
+            let (end, overflow) = range.location.addingReportingOverflow(max(0, range.length))
+            let startColumn = TerminalGeometry.compositionColumn(in: renderer.options.preedit, atUTF16Offset: range.location)
+            let endColumn = TerminalGeometry.compositionColumn(
+                in: renderer.options.preedit, atUTF16Offset: overflow ? .max : end, roundUp: range.length > 0,
+            )
+            return CGRect(
+                x: cell.minX + CGFloat(startColumn) * cell.width, y: cell.minY,
+                width: cell.width * CGFloat(max(1, endColumn - startColumn)), height: cell.height,
+            )
         }
 
         public func caretRect(for position: UITextPosition) -> CGRect {
             let cell = cursorRect
-            return CGRect(x: cell.minX + CGFloat(offset(position)) * cell.width, y: cell.minY, width: 2, height: cell.height)
+            let column = TerminalGeometry.compositionColumn(in: renderer.options.preedit, atUTF16Offset: offset(position))
+            return CGRect(x: cell.minX + CGFloat(column) * cell.width, y: cell.minY, width: 2, height: cell.height)
         }
 
         public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
-            []
+            guard let bounds = (range as? TerminalTextRange)?.range,
+                  isDocumentRange(bounds), bounds.length > 0 else { return [] }
+            return [TerminalTextSelectionRect(firstRect(for: range))]
         }
 
         public func closestPosition(to point: CGPoint) -> UITextPosition? {
-            endOfDocument
+            guard let column = compositionColumn(at: point) else { return nil }
+            let hit = TerminalGeometry.compositionRange(in: renderer.options.preedit, atColumn: column)
+            let midpoint = (CGFloat(hit.columns.lowerBound) + CGFloat(hit.columns.upperBound)) / 2
+            return TerminalTextPosition(column < midpoint ? hit.utf16.lowerBound : hit.utf16.upperBound)
         }
 
         public func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? {
-            range.end
+            guard let bounds = (range as? TerminalTextRange)?.range, isDocumentRange(bounds),
+                  let position = closestPosition(to: point) as? TerminalTextPosition else { return nil }
+            return TerminalTextPosition(min(bounds.location + bounds.length, max(bounds.location, position.offset)))
         }
 
         public func characterRange(at point: CGPoint) -> UITextRange? {
-            nil
+            guard let column = compositionColumn(at: point),
+                  point.y >= cursorRect.minY, point.y < cursorRect.maxY else { return nil }
+            let hit = TerminalGeometry.compositionRange(in: renderer.options.preedit, atColumn: column)
+            guard !hit.utf16.isEmpty else { return nil }
+            return TerminalTextRange(NSRange(location: hit.utf16.lowerBound, length: hit.utf16.count))
+        }
+
+        private func compositionColumn(at point: CGPoint) -> CGFloat? {
+            let cell = cursorRect
+            guard point.x.isFinite, point.y.isFinite, cell.minX.isFinite,
+                  cell.width.isFinite, cell.width > 0 else { return nil }
+            return (point.x - cell.minX) / cell.width
         }
     }
 #endif

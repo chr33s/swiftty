@@ -9,6 +9,7 @@ public struct ColorSet: Sendable, Equatable {
     public var cursorText: UInt32?
     public var selectionForeground: UInt32?
     public var selectionBackground: UInt32?
+    /// Indexed color overrides (0...255); other indices are ignored on application.
     public var palette: [Int: UInt32] = [:]
 
     public init() {}
@@ -22,7 +23,7 @@ public struct ColorSet: Sendable, Equatable {
         p.cursorText = cursorText ?? p.cursorText
         p.selectionForeground = selectionForeground ?? p.selectionForeground
         p.selectionBackground = selectionBackground ?? p.selectionBackground
-        for (i, rgb) in palette {
+        for (i, rgb) in palette where (0 ..< 256).contains(i) {
             p.colors[i] = rgb
         }
         return p
@@ -46,6 +47,10 @@ public struct ColorSet: Sendable, Equatable {
             }
             return .some(nil)
         case "palette":
+            if value.isEmpty {
+                palette = [:]
+                return .some(nil)
+            }
             guard let eq = value.firstIndex(of: "="), let i = Int(value[..<eq].trimmingCharacters(in: .whitespaces)),
                   (0 ..< 256).contains(i),
                   let rgb = Configuration.parseColor(value[value.index(after: eq)...].trimmingCharacters(in: .whitespaces))
@@ -63,18 +68,76 @@ public struct ThemeSelection: Sendable, Equatable {
     public var light: String
     public var dark: String
 
-    init(parsing value: String) {
-        var light = value, dark = value
-        for part in value.split(separator: ",") {
-            let trimmed = part.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("light:") {
-                light = String(trimmed.dropFirst(6))
-            } else if trimmed.hasPrefix("dark:") {
-                dark = String(trimmed.dropFirst(5))
+    init?(parsing value: String) {
+        let value = value.trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty else { return nil }
+        guard value.unicodeScalars.contains(where: { ",:=".unicodeScalars.contains($0) }) else {
+            light = value
+            dark = value
+            return
+        }
+        guard let fields = Self.fields(value) else { return nil }
+        var light: String?, dark: String?
+        for field in fields {
+            let scalars = field.unicodeScalars
+            guard let colon = scalars.firstIndex(of: ":") else { return nil }
+            let key = String(scalars[..<colon]).trimmingCharacters(in: .whitespaces)
+            var name = String(scalars[scalars.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            if name.hasPrefix("\""), name.hasSuffix("\""), name.unicodeScalars.count >= 2 {
+                guard let decoded = Self.quotedName(name) else { return nil }
+                name = decoded
+            }
+            switch key {
+            case "light": light = name
+            case "dark": dark = name
+            default: return nil
             }
         }
+        guard let light, let dark else { return nil }
         self.light = light
         self.dark = dark
+    }
+
+    private static func quotedName(_ value: String) -> String? {
+        let content = String(value.unicodeScalars.dropFirst().dropLast())
+        var escaped = false
+        for scalar in content.unicodeScalars {
+            if escaped {
+                escaped = false
+            } else if scalar == "\\" {
+                escaped = true
+            } else if scalar == "\"" {
+                return nil
+            }
+        }
+        guard let bytes = KeyAction.unescape(content) else { return nil }
+        return String(validating: bytes, as: UTF8.self)
+    }
+
+    /// Commas inside double quotes belong to the theme name.
+    private static func fields(_ value: String) -> [String]? {
+        var fields: [String] = [], field = ""
+        var quoted = false, escaped = false
+        for scalar in value.unicodeScalars {
+            if escaped {
+                escaped = false
+            } else if scalar == "\\" {
+                escaped = true
+            } else if scalar == "\"" {
+                quoted.toggle()
+            } else if scalar == ",", !quoted {
+                guard KeyAction.unescape(field) != nil else { return nil }
+                fields.append(field)
+                field = ""
+                continue
+            }
+            field.unicodeScalars.append(scalar)
+        }
+        guard !quoted, !escaped, KeyAction.unescape(field) != nil else { return nil }
+        if !field.isEmpty {
+            fields.append(field)
+        }
+        return fields
     }
 
     public func name(for scheme: ColorScheme) -> String {
@@ -90,7 +153,15 @@ public struct ThemeSelection: Sendable, Equatable {
 /// reported in `diagnostics` and otherwise ignored, so a Ghostty config
 /// file can be shared.
 public struct Configuration: Sendable, Equatable {
-    // Fonts.
+    /// Fonts.
+    /// Supported point sizes for configuration and interactive zoom.
+    public static let fontSizeRange: ClosedRange<Double> = 1 ... 200
+    /// Bounds a programmatic point size; NaN uses the default 13 pt.
+    public static func boundedFontSize(_ size: Double) -> Double {
+        guard !size.isNaN else { return Configuration().fontSize }
+        return min(max(size, fontSizeRange.lowerBound), fontSizeRange.upperBound)
+    }
+
     public var fontFamily = "Menlo"
     public var fontFamilyBold: String?
     public var fontFamilyItalic: String?
@@ -100,6 +171,7 @@ public struct Configuration: Sendable, Equatable {
     public var fontVariations: [String: Double] = [:]
     public var fontSyntheticBold = true
     public var fontSyntheticItalic = true
+    public var fontSyntheticBoldItalic = true
     /// Cell adjustments: a fraction (from `10%`) or points (from `2`).
     public var adjustCellWidth = CellAdjustment()
     public var adjustCellHeight = CellAdjustment()
@@ -124,8 +196,9 @@ public struct Configuration: Sendable, Equatable {
     public var mouseHideWhileTyping = false
     public var linkURL = true
 
-    // Session and window.
+    /// Session and window.
     public var scrollbackLimit = 10_000_000
+    /// Ghostty command syntax: shell expansion by default, or `direct:` arguments.
     public var command: String?
     public var workingDirectory: String?
     public var windowPaddingX: Double = 4
@@ -166,64 +239,124 @@ public struct Configuration: Sendable, Equatable {
     /// Loads `url` (and its includes). A missing file yields the defaults.
     public static func load(from url: URL = defaultURL) -> Configuration {
         var config = Configuration()
-        if FileManager.default.fileExists(atPath: url.path) {
-            config.include(url, optional: false, depth: 0)
-        }
+        var includes = Includes()
+        includes.files.append((url, true))
+        config.loadIncludes(&includes)
         return config
     }
 
     /// Parses configuration text; relative includes resolve against `directory`.
     public static func parse(_ text: String, directory: URL? = nil) -> Configuration {
         var config = Configuration()
-        config.apply(text, name: "config", directory: directory, depth: 0)
+        config.apply(text, directory: directory)
         return config
     }
 
-    private mutating func include(_ url: URL, optional: Bool, depth: Int) {
-        guard depth < 10 else {
-            diagnostics.append("\(url.path): includes nested too deeply")
-            return
+    /// A queue shared by all files in one load. Clearing it drops only
+    /// pending includes; already applied settings remain in the configuration.
+    private struct Includes {
+        var files: [(url: URL, optional: Bool)] = []
+        var next = 0
+
+        mutating func pop() -> (url: URL, optional: Bool)? {
+            guard next < files.count else { return nil }
+            defer { next += 1 }
+            return files[next]
         }
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
-            if !optional {
+
+        mutating func clear() {
+            files.removeAll(keepingCapacity: true)
+            next = 0
+        }
+    }
+
+    private mutating func loadIncludes(_ includes: inout Includes) {
+        var loaded: Set<URL> = []
+        while let file = includes.pop() {
+            let canonicalURL = file.url.standardizedFileURL.resolvingSymlinksInPath()
+            guard loaded.insert(canonicalURL).inserted else {
+                diagnostics.append("\(file.url.path): include cycle")
+                continue
+            }
+            include(file.url, optional: file.optional, includes: &includes)
+        }
+    }
+
+    private mutating func include(_ url: URL, optional: Bool, includes: inout Includes) {
+        let text: String
+        do {
+            text = try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            let missing = (error as? CocoaError).map { $0.code == .fileReadNoSuchFile || $0.code == .fileNoSuchFile } ?? false
+            if !optional || !missing {
                 diagnostics.append("\(url.path): cannot read")
             }
             return
         }
-        apply(text, name: url.path, directory: url.deletingLastPathComponent(), depth: depth)
+        apply(text, name: url.path, directory: url.deletingLastPathComponent(), includes: &includes)
     }
 
     /// Applies `text` on top of the current values.
     public mutating func apply(_ text: String, name: String = "config", directory: URL? = nil) {
-        apply(text, name: name, directory: directory, depth: 0)
+        var includes = Includes()
+        apply(text, name: name, directory: directory, includes: &includes)
+        loadIncludes(&includes)
     }
 
-    private mutating func apply(_ text: String, name: String, directory: URL?, depth: Int) {
-        for (i, raw) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+    private mutating func apply(_ text: String, name: String, directory: URL?, includes: inout Includes) {
+        for (i, raw) in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).enumerated() {
             let line = raw.trimmingCharacters(in: .whitespaces)
-            guard !line.isEmpty, !line.hasPrefix("#") else { continue }
-            guard let eq = line.firstIndex(of: "=") else {
+            let scalars = line.unicodeScalars
+            guard !line.isEmpty, scalars.first != "#" else { continue }
+            guard let eq = scalars.firstIndex(of: "=") else {
                 diagnostics.append("\(name):\(i + 1): expected key = value")
                 continue
             }
-            let key = line[..<eq].trimmingCharacters(in: .whitespaces)
-            var value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
-            if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
-                value = String(value.dropFirst().dropLast())
+            let key = String(scalars[..<eq]).trimmingCharacters(in: .whitespaces)
+            let rawValue = String(scalars[scalars.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
+            var value: String = if key == "font-feature", rawValue.hasPrefix("\""),
+                                   let closingQuote = rawValue.dropFirst().firstIndex(of: "\""),
+                                   closingQuote != rawValue.index(before: rawValue.endIndex) {
+                // CSS feature lists quote each tag rather than the whole value.
+                rawValue
+            } else {
+                Self.unquote(rawValue)
             }
             if key == "config-file" {
-                let optional = value.hasPrefix("?")
-                let path = ((optional ? String(value.dropFirst()) : value) as NSString).expandingTildeInPath
-                let url = path.hasPrefix("/") || directory == nil
-                    ? URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-                    : directory!.appendingPathComponent(path)
-                include(url, optional: optional, depth: depth + 1)
+                if value.isEmpty {
+                    includes.clear()
+                    continue
+                }
+                let optional = !rawValue.hasPrefix("\"") && value.unicodeScalars.first == "?"
+                let path = optional ? String(value.unicodeScalars.dropFirst()) : value
+                let url = Self.fileURL(path, directory: directory)
+                includes.files.append((url, optional))
                 continue
+            }
+            if key == "custom-shader", !value.isEmpty, let directory {
+                value = Self.fileURL(value, directory: directory).path
             }
             if let error = set(key, value) {
                 diagnostics.append("\(name):\(i + 1): \(key): \(error)")
             }
         }
+    }
+
+    private static func fileURL(_ path: String, directory: URL?) -> URL {
+        let expanded = (path as NSString).expandingTildeInPath
+        if expanded.unicodeScalars.first != "/", let directory {
+            return directory.appendingPathComponent(expanded)
+        }
+        return URL(fileURLWithPath: expanded)
+    }
+
+    /// Quoted values use the same syntax in configuration and theme files.
+    static func unquote(_ value: String) -> String {
+        let scalars = value.unicodeScalars
+        if scalars.first == "\"", scalars.last == "\"", scalars.count >= 2 {
+            return String(scalars.dropFirst().dropLast())
+        }
+        return value
     }
 
     /// Sets one key; returns an error message when it cannot be used.
@@ -250,7 +383,13 @@ public struct Configuration: Sendable, Equatable {
             return setFont(key, value)
         }
         switch key {
-        case "theme": theme = value.isEmpty ? nil : ThemeSelection(parsing: value)
+        case "theme":
+            if value.isEmpty {
+                theme = nil
+            } else {
+                guard let selection = ThemeSelection(parsing: value) else { return invalid() }
+                theme = selection
+            }
         case "background-opacity":
             guard let v = value.isEmpty ? 1 : double(0 ... 1) else { return invalid() }
             backgroundOpacity = v
@@ -299,12 +438,21 @@ public struct Configuration: Sendable, Equatable {
             guard let v = value.isEmpty ? defaults.scrollbackLimit : Int(value), v >= 0 else { return invalid() }
             scrollbackLimit = v
         case "command": command = value.isEmpty ? nil : value
-        case "working-directory": workingDirectory = value.isEmpty ? nil : (value as NSString).expandingTildeInPath
+        case "working-directory":
+            guard !value.utf8.contains(0) else { return invalid() }
+            workingDirectory = value.isEmpty ? nil : (value as NSString).expandingTildeInPath
         case "window-padding-x", "window-padding-y":
             // Ghostty allows "left,right"; the larger side is used for both.
-            let parts = value.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
-            guard value.isEmpty || !parts.isEmpty else { return invalid() }
-            let v = parts.max() ?? (key == "window-padding-x" ? defaults.windowPaddingX : defaults.windowPaddingY)
+            let v: Double
+            if value.isEmpty {
+                v = key == "window-padding-x" ? defaults.windowPaddingX : defaults.windowPaddingY
+            } else {
+                let parts = value.split(separator: ",", omittingEmptySubsequences: false)
+                let numbers = parts.compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+                guard (1 ... 2).contains(parts.count), numbers.count == parts.count,
+                      numbers.allSatisfy({ $0.isFinite && $0 >= 0 }) else { return invalid() }
+                v = numbers.max()!
+            }
             if key == "window-padding-x" {
                 windowPaddingX = v
             } else {
@@ -337,7 +485,7 @@ public struct Configuration: Sendable, Equatable {
         case "font-family-italic": fontFamilyItalic = value.isEmpty ? nil : value
         case "font-family-bold-italic": fontFamilyBoldItalic = value.isEmpty ? nil : value
         case "font-size":
-            guard let v = value.isEmpty ? defaults.fontSize : double(1 ... 200) else { return invalid() }
+            guard let v = value.isEmpty ? defaults.fontSize : double(Self.fontSizeRange) else { return invalid() }
             fontSize = v
         case "font-feature":
             if value.isEmpty {
@@ -349,30 +497,38 @@ public struct Configuration: Sendable, Equatable {
             if value.isEmpty {
                 fontVariations = [:]
             } else {
-                guard let eq = value.firstIndex(of: "="), let v = Double(value[value.index(after: eq)...]) else { return invalid() }
-                fontVariations[String(value[..<eq])] = v
+                guard let eq = value.firstIndex(of: "=") else { return invalid() }
+                let whitespace = CharacterSet(charactersIn: " \t")
+                let tag = value[..<eq].trimmingCharacters(in: whitespace)
+                guard tag.utf8.count == 4, tag.utf8.allSatisfy({ (0x20 ... 0x7E).contains($0) }),
+                      let v = Double(value[value.index(after: eq)...].trimmingCharacters(in: whitespace)),
+                      v.isFinite else { return invalid() }
+                fontVariations[tag] = v
             }
         case "font-synthetic-style":
             switch value {
-            case "true", "": (fontSyntheticBold, fontSyntheticItalic) = (true, true)
-            case "false": (fontSyntheticBold, fontSyntheticItalic) = (false, false)
+            case "true", "": (fontSyntheticBold, fontSyntheticItalic, fontSyntheticBoldItalic) = (true, true, true)
+            case "false": (fontSyntheticBold, fontSyntheticItalic, fontSyntheticBoldItalic) = (false, false, false)
             default:
-                for part in value.split(separator: ",").map({ $0.trimmingCharacters(in: .whitespaces) }) {
+                var bold = fontSyntheticBold, italic = fontSyntheticItalic, boldItalic = fontSyntheticBoldItalic
+                for part in value.split(separator: ",", omittingEmptySubsequences: false).map({ $0.trimmingCharacters(in: .whitespaces) }) {
                     switch part {
-                    case "bold": fontSyntheticBold = true
-                    case "no-bold": fontSyntheticBold = false
-                    case "italic": fontSyntheticItalic = true
-                    case "no-italic": fontSyntheticItalic = false
-                    case "bold-italic", "no-bold-italic": break
+                    case "bold": bold = true
+                    case "no-bold": bold = false
+                    case "italic": italic = true
+                    case "no-italic": italic = false
+                    case "bold-italic": boldItalic = true
+                    case "no-bold-italic": boldItalic = false
                     default: return invalid()
                     }
                 }
+                (fontSyntheticBold, fontSyntheticItalic, fontSyntheticBoldItalic) = (bold, italic, boldItalic)
             }
         case "adjust-cell-width", "adjust-cell-height":
             var adjustment = CellAdjustment()
-            if value.hasSuffix("%"), let v = Double(value.dropLast()) {
+            if value.hasSuffix("%"), let v = Double(value.dropLast()), v.isFinite {
                 adjustment.fraction = v / 100
-            } else if let v = Double(value) {
+            } else if let v = Double(value), v.isFinite {
                 adjustment.points = v
             } else if !value.isEmpty {
                 return invalid()
@@ -407,7 +563,7 @@ public struct Configuration: Sendable, Equatable {
     }
 
     public func fontDescriptor(scale: CGFloat, size: Double? = nil) -> FontDescriptor {
-        var d = FontDescriptor(family: fontFamily, size: CGFloat(size ?? fontSize), scale: scale)
+        var d = FontDescriptor(family: fontFamily, size: CGFloat(Self.boundedFontSize(size ?? fontSize)), scale: scale)
         d.boldFamily = fontFamilyBold
         d.italicFamily = fontFamilyItalic
         d.boldItalicFamily = fontFamilyBoldItalic
@@ -415,6 +571,7 @@ public struct Configuration: Sendable, Equatable {
         d.variations = fontVariations
         d.synthesizeBold = fontSyntheticBold
         d.synthesizeItalic = fontSyntheticItalic
+        d.synthesizeBoldItalic = fontSyntheticBoldItalic
         d.cellWidthAdjust = CGFloat(adjustCellWidth.fraction)
         d.cellHeightAdjust = CGFloat(adjustCellHeight.fraction)
         d.cellWidthOffset = CGFloat(adjustCellWidth.points)
@@ -436,55 +593,94 @@ public struct Configuration: Sendable, Equatable {
     }
 
     public func sessionConfiguration(scheme: ColorScheme = .dark) -> SessionConfiguration {
-        var s = SessionConfiguration(workingDirectory: workingDirectory)
+        #if os(macOS)
+            let defaultsToHome = !SessionConfiguration.isCommandLineLaunch
+        #else
+            let defaultsToHome = false
+        #endif
+        var s = SessionConfiguration(workingDirectory: resolvedWorkingDirectory(defaultsToHome: defaultsToHome))
         if let command {
-            s.command = Self.arguments(command)
+            s.command = Self.commandArguments(command)
         }
         s.scrollbackLimitBytes = scrollbackLimit
         s.palette = palette(for: scheme)
         return s
     }
 
-    /// Splits a `command` value into arguments as a POSIX shell would:
+    func resolvedWorkingDirectory(defaultsToHome: Bool) -> String? {
+        switch workingDirectory {
+        case "home": NSHomeDirectory()
+        case "inherit": nil
+        case nil: defaultsToHome ? NSHomeDirectory() : nil
+        default: workingDirectory
+        }
+    }
+
+    private static func commandArguments(_ command: String) -> [String] {
+        let spaces = CharacterSet(charactersIn: " ")
+        var shell = command.trimmingCharacters(in: spaces)
+        let scalars = shell.unicodeScalars
+        if let colon = scalars.firstIndex(of: ":") {
+            let prefix = String(scalars[..<colon])
+            let value = String(scalars[scalars.index(after: colon)...]).trimmingCharacters(in: spaces)
+            switch prefix {
+            case "direct": return value.unicodeScalars.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
+            case "shell": shell = value
+            default: break
+            }
+        }
+        // Match Ghostty's macOS expansion wrapper: skip profile and rc files, and
+        // replace the intermediate shell with the configured login command.
+        return ["/bin/bash", "--noprofile", "--norc", "-c", "exec -l " + shell]
+    }
+
+    /// Splits a `command` value using shell quoting, without expansions:
     /// whitespace separates them, single quotes are literal, double quotes
-    /// allow `\"`, `\\` and `\$`, and a backslash escapes the next character.
+    /// allow `\"`, `\\` and `\$`, and a backslash escapes the next scalar.
+    /// Backslash-newline continuations are removed outside single quotes.
     public static func arguments(_ command: String) -> [String] {
         var args: [String] = []
         var current = ""
         var inArgument = false
-        var quote: Character?
-        var it = command.makeIterator()
+        var quote: Unicode.Scalar?
+        var it = command.unicodeScalars.makeIterator()
         while let c = it.next() {
             switch (quote, c) {
             case ("'", "'"), ("\"", "\""):
                 quote = nil
             case ("'", _):
-                current.append(c)
+                current.unicodeScalars.append(c)
             case ("\"", "\\"):
                 if let next = it.next() {
-                    if !"\"\\$`".contains(next) {
+                    if next == "\n" {
+                        continue
+                    }
+                    if !"\"\\$`".unicodeScalars.contains(next) {
                         current.append("\\")
                     }
-                    current.append(next)
+                    current.unicodeScalars.append(next)
                 }
             case ("\"", _):
-                current.append(c)
+                current.unicodeScalars.append(c)
             case (nil, "'"), (nil, "\""):
                 quote = c
                 inArgument = true
             case (nil, "\\"):
                 if let next = it.next() {
-                    current.append(next)
+                    if next == "\n" {
+                        continue
+                    }
+                    current.unicodeScalars.append(next)
                 }
                 inArgument = true
-            case (nil, _) where c.isWhitespace:
+            case (nil, _) where c.properties.isWhitespace:
                 if inArgument {
                     args.append(current)
                     current = ""
                     inArgument = false
                 }
             default:
-                current.append(c)
+                current.unicodeScalars.append(c)
                 inArgument = true
             }
         }
