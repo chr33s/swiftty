@@ -40,7 +40,7 @@ run = "Scripts/update-grapheme-tables.sh"
 
 [tasks.format]
 description = "Format sources"
-run = "swiftformat Sources Tests"
+run = "Scripts/format-swift.sh"
 
 [tasks.lint]
 description = "Lint sources"
@@ -50,3 +50,15 @@ run = "swiftlint lint --quiet Sources Tests"
 description = "Compare against upstream ghostty-bench: mise run compare <ghostty-src> <corpus-dir>"
 depends = ["release"]
 run = "Scripts/compare-ghostty.sh"
+
+[tasks.format-check]
+description = "Check Swift formatting and documentation"
+run = "Scripts/format-swift.sh check"
+
+[tasks.test-internal]
+description = "Run tests with storage and terminal invariant checks"
+run = "swift test -Xswiftc -DSWIFTTY_INTERNAL_CHECKS"
+
+[tasks.bench-storage]
+description = "Measure storage operation scaling"
+run = "swift run -c release swiftty-bench --only storage"

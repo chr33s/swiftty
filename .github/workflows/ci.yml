@@ -1,0 +1,53 @@
+name: Swift checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: [self-hosted, macOS, ARM64, swiftty]
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release, internal-checks]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify toolchain
+        run: |
+          swift --version | head -1 | rg 'Swift version 6\.4'
+          xcrun --sdk macosx --show-sdk-version | rg '^27\.'
+      - name: Test
+        shell: bash
+        run: |
+          case '${{ matrix.configuration }}' in
+            debug) swift test ;;
+            release) swift test -c release ;;
+            internal-checks) swift test -Xswiftc -DSWIFTTY_INTERNAL_CHECKS ;;
+          esac
+      - name: Build production products
+        if: matrix.configuration == 'release'
+        run: swift build -c release
+      - name: Check formatting and documentation
+        if: matrix.configuration == 'debug'
+        run: Scripts/format-swift.sh check
+  frontends:
+    runs-on: [self-hosted, macOS, ARM64, swiftty]
+    strategy:
+      fail-fast: false
+      matrix:
+        destination:
+          - 'generic/platform=iOS Simulator'
+          - 'generic/platform=macOS,variant=Mac Catalyst'
+          - 'generic/platform=visionOS Simulator'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build frontend
+        run: >-
+          xcodebuild -scheme SwifttyMobile -configuration Release
+          -destination '${{ matrix.destination }}'
+          CODE_SIGNING_ALLOWED=NO build

@@ -6,7 +6,7 @@ line_length:
   ignores_comments: true
 identifier_name:
   min_length: 1
-  excluded: [x, y, i, j, k, n, p, s, b, c, d, e, w, h, r, g, cp, fg, bg, lo, hi, x0, x1, id, vt]
+  excluded: [_unsafeRow, _unsafeCells, _checkInvariants, x, y, i, j, k, n, p, s, b, c, d, e, w, h, r, g, cp, fg, bg, lo, hi, x0, x1, id, vt]
 type_body_length: 1300
 file_length: 1500
 function_body_length: 120
@@ -18,6 +18,10 @@ nesting:
 type_name:
   min_length: 2
 disabled_rules:
+  # swift-format owns wrapping and permits inline semicolons.
+  - closure_parameter_position
+  - function_name_whitespace
+  - trailing_semicolon
   - trailing_comma
   - inclusive_language # master/slave are the POSIX PTY terms
   - optional_data_string_conversion # lossy UTF-8 decoding is intended

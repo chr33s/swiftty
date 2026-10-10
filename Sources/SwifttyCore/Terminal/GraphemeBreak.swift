@@ -18,360 +18,360 @@
 /// `Scripts/gen-grapheme-tables.swift`); per-scalar widths come from
 /// swiftty's `UnicodeWidth.table`.
 enum GraphemeBreak {
-    /// uucode `GraphemeBreakNoControl`. Ordinals match the generated table.
-    enum Property: UInt8, CaseIterable {
-        case other = 0
-        case prepend
-        case regionalIndicator
-        case spacingMark
-        case l, v, t, lv, lvt
-        case zwj
-        case zwnj
-        case extendedPictographic
-        case emojiModifierBase
-        case emojiModifier
-        /// Extend with InCB=Extend.
-        case indicConjunctBreakExtend
-        /// Extend with InCB=Linker (viramas).
-        case indicConjunctBreakLinkerExtend
-        /// Other with InCB=Linker (U+1CF5, U+1CF6, U+11A3A as of Unicode 18).
-        case indicConjunctBreakLinkerOther
-        case indicConjunctBreakConsonant
+  /// uucode `GraphemeBreakNoControl`. Ordinals match the generated table.
+  enum Property: UInt8, CaseIterable {
+    case other = 0
+    case prepend
+    case regionalIndicator
+    case spacingMark
+    case l, v, t, lv, lvt
+    case zwj
+    case zwnj
+    case extendedPictographic
+    case emojiModifierBase
+    case emojiModifier
+    /// Extend with InCB=Extend.
+    case indicConjunctBreakExtend
+    /// Extend with InCB=Linker (viramas).
+    case indicConjunctBreakLinkerExtend
+    /// Other with InCB=Linker (U+1CF5, U+1CF6, U+11A3A as of Unicode 18).
+    case indicConjunctBreakLinkerOther
+    case indicConjunctBreakConsonant
 
-        static let count = 18
+    static let count = 18
 
-        /// UAX #29 Extend minus Emoji_Modifier (see type doc).
-        @inline(__always) var isExtend: Bool {
-            self == .zwnj || self == .indicConjunctBreakExtend || self == .indicConjunctBreakLinkerExtend
-        }
-
-        @inline(__always) var isExtendedPictographic: Bool {
-            self == .extendedPictographic || self == .emojiModifierBase
-        }
-
-        @inline(__always) var isInCBExtend: Bool {
-            self == .indicConjunctBreakExtend || self == .zwj
-        }
-
-        @inline(__always) var isInCBLinker: Bool {
-            self == .indicConjunctBreakLinkerExtend || self == .indicConjunctBreakLinkerOther
-        }
-
-        /// Properties that may continue an emoji sequence (uucode keeps
-        /// `base == .extended_pictographic` across these).
-        @inline(__always) var continuesEmoji: Bool {
-            switch self {
-            case .indicConjunctBreakExtend, .indicConjunctBreakLinkerExtend, .zwnj, .zwj,
-                 .extendedPictographic, .emojiModifierBase, .emojiModifier:
-                true
-            default:
-                false
-            }
-        }
+    /// UAX #29 Extend minus Emoji_Modifier (see type doc).
+    @inline(__always)
+    var isExtend: Bool {
+      self == .zwnj || self == .indicConjunctBreakExtend
+        || self == .indicConjunctBreakLinkerExtend
     }
-
-    /// uucode `grapheme.BreakState`: bit 0 `after_linker`, bits 1-2 `base`
-    /// (0 default, 1 extended_pictographic, 2 regional_indicator). The raw
-    /// value is the precomputed table row (0...4; RI + after_linker can't
-    /// occur). `.init()` is Ghostty's `.default`.
-    struct State: Equatable, Hashable, Sendable {
-        enum Base: UInt8 { case `default` = 0, extendedPictographic = 1, regionalIndicator = 2 }
-
-        var raw: UInt8 = 0
-
-        init() {}
-        init(raw: UInt8) {
-            self.raw = raw
-        }
-
-        static let count = 5
-
-        var afterLinker: Bool {
-            get { raw & 1 != 0 }
-            set { raw = (raw & ~1) | (newValue ? 1 : 0) }
-        }
-
-        var base: Base {
-            get { Base(rawValue: raw >> 1)! }
-            set { raw = (raw & 1) | newValue.rawValue << 1 }
-        }
-    }
-
-    /// Ghostty `GraphemeWidthEffect`.
-    enum WidthEffect: Equatable, Sendable {
-        /// Do not append the scalar; restore the break state from before it.
-        case ignore
-        /// Append; cluster width unchanged.
-        case noChange
-        /// Append; cluster becomes two cells.
-        case wide
-        /// Append; cluster becomes one cell.
-        case narrow
-    }
-
-    // MARK: - Property lookup
-
-    private static let zeroInGraphemeBit: UInt8 = 0x20
-    private static let emojiVSBaseBit: UInt8 = 0x40
-
-    @usableFromInline
-    struct Tables: @unchecked Sendable {
-        let stage1: UnsafeMutableBufferPointer<UInt16>
-        let stage2: UnsafePointer<UInt8>
-        /// `[state][gb1][gb2]` -> bit 0 isBreak, bits 1... next state.
-        let breaks: UnsafeMutableBufferPointer<UInt8>
-        /// `joinMask[gb1] >> gb2 & 1`: some state makes `gb1 x gb2` a non-break.
-        let joinMask: UnsafeMutableBufferPointer<UInt32>
-
-        init() {
-            precondition(GraphemeBreakTables.stage2.utf8CodeUnitCount == GraphemeBreakTables.stage2Count)
-            precondition((5 ... 8).contains(GraphemeBreakTables.shift))
-            stage1 = .allocate(capacity: GraphemeBreakTables.stage1.count)
-            _ = stage1.initialize(from: GraphemeBreakTables.stage1)
-            stage2 = GraphemeBreakTables.stage2.utf8Start
-
-            let n = Property.count
-            breaks = .allocate(capacity: State.count * n * n)
-            joinMask = .allocate(capacity: n)
-            joinMask.initialize(repeating: 0)
-            for s in 0 ..< State.count {
-                for g1 in 0 ..< n {
-                    for g2 in 0 ..< n {
-                        var state = State(raw: UInt8(s))
-                        let result = GraphemeBreak.compute(Property(rawValue: UInt8(g1))!, Property(rawValue: UInt8(g2))!, &state)
-                        precondition(Int(state.raw) < State.count)
-                        breaks[(s * n + g1) * n + g2] = (result ? 1 : 0) | state.raw << 1
-                        if !result {
-                            joinMask[g1] |= 1 << UInt32(g2)
-                        }
-                    }
-                }
-            }
-        }
-
-        @inline(__always)
-        func props(_ cp: UInt32) -> UInt8 {
-            // Out-of-range values: Ghostty treats them as Other, zero in grapheme.
-            guard cp < 0x110000 else { return GraphemeBreak.zeroInGraphemeBit }
-            return stage2[Int(stage1[Int(cp >> GraphemeBreakTables.shift)]) << GraphemeBreakTables.shift
-                | Int(cp & UInt32((1 << GraphemeBreakTables.shift) - 1))]
-        }
-    }
-
-    @usableFromInline static let tables = Tables()
 
     @inline(__always)
-    static func property(_ cp: UInt32) -> Property {
-        Property(rawValue: tables.props(cp) & 0x1F).unsafelyUnwrapped
+    var isExtendedPictographic: Bool {
+      self == .extendedPictographic || self == .emojiModifierBase
     }
 
-    /// uucode `wcwidth_zero_in_grapheme`: the scalar does not contribute to
-    /// the width of a multi-scalar cluster. True when uucode's standalone
-    /// width is 0 (Cc, Cs, Zl, Zp, or Default_Ignorable_Code_Point except
-    /// U+00AD), or the scalar is an Emoji_Modifier, a nonspacing/enclosing
-    /// mark (Mn, Me), or has Grapheme_Cluster_Break V, T or Prepend.
-    /// Scalars above U+10FFFF report true (Ghostty props_uucode.zig).
     @inline(__always)
-    static func isZeroInGrapheme(_ cp: UInt32) -> Bool {
-        tables.props(cp) & zeroInGraphemeBit != 0
-    }
+    var isInCBExtend: Bool { self == .indicConjunctBreakExtend || self == .zwj }
 
-    /// Base scalar of a "text style"/"emoji style" pair in
-    /// emoji-variation-sequences.txt.
     @inline(__always)
-    static func isEmojiVSBase(_ cp: UInt32) -> Bool {
-        tables.props(cp) & emojiVSBaseBit != 0
+    var isInCBLinker: Bool {
+      self == .indicConjunctBreakLinkerExtend
+        || self == .indicConjunctBreakLinkerOther
     }
 
-    /// Extended_Pictographic (includes Emoji_Modifier_Base).
+    /// Properties that may continue an emoji sequence (uucode keeps
+    /// `base == .extended_pictographic` across these).
     @inline(__always)
-    static func isExtendedPictographic(_ cp: UInt32) -> Bool {
-        property(cp).isExtendedPictographic
+    var continuesEmoji: Bool {
+      switch self {
+      case .indicConjunctBreakExtend, .indicConjunctBreakLinkerExtend, .zwnj,
+        .zwj, .extendedPictographic, .emojiModifierBase, .emojiModifier:
+        true
+      default: false
+      }
+    }
+  }
+
+  /// uucode `grapheme.BreakState`: bit 0 `after_linker`, bits 1-2 `base`
+  /// (0 default, 1 extended_pictographic, 2 regional_indicator). The raw
+  /// value is the precomputed table row (0...4; RI + after_linker can't
+  /// occur). `.init()` is Ghostty's `.default`.
+  struct State: Equatable, Hashable, Sendable {
+    enum Base: UInt8 {
+      case `default` = 0
+      case extendedPictographic = 1
+      case regionalIndicator = 2
     }
 
-    // MARK: - Segmentation
+    var raw: UInt8 = 0
 
-    /// True if there is a grapheme boundary between `cp1` and `cp2` (Ghostty
-    /// `graphemeBreak`). Call sequentially, threading `state`. Control
-    /// characters, CR and LF must be filtered out by the caller.
+    init() {}
+    init(raw: UInt8) { self.raw = raw }
+
+    static let count = 5
+
+    var afterLinker: Bool {
+      get { raw & 1 != 0 }
+      set { raw = (raw & ~1) | (newValue ? 1 : 0) }
+    }
+
+    var base: Base {
+      get { Base(rawValue: raw >> 1)! }
+      set { raw = (raw & 1) | newValue.rawValue << 1 }
+    }
+  }
+
+  /// Ghostty `GraphemeWidthEffect`.
+  enum WidthEffect: Equatable, Sendable {
+    /// Do not append the scalar; restore the break state from before it.
+    case ignore
+    /// Append; cluster width unchanged.
+    case noChange
+    /// Append; cluster becomes two cells.
+    case wide
+    /// Append; cluster becomes one cell.
+    case narrow
+  }
+
+  // MARK: - Property lookup
+
+  private static let zeroInGraphemeBit: UInt8 = 0x20
+  private static let emojiVSBaseBit: UInt8 = 0x40
+
+  @usableFromInline
+  struct Tables: @unchecked Sendable {
+    let stage1: UnsafeMutableBufferPointer<UInt16>
+    let stage2: UnsafePointer<UInt8>
+    /// `[state][gb1][gb2]` -> bit 0 isBreak, bits 1... next state.
+    let breaks: UnsafeMutableBufferPointer<UInt8>
+    /// `joinMask[gb1] >> gb2 & 1`: some state makes `gb1 x gb2` a non-break.
+    let joinMask: UnsafeMutableBufferPointer<UInt32>
+
+    init() {
+      precondition(
+        GraphemeBreakTables.stage2.utf8CodeUnitCount
+          == GraphemeBreakTables.stage2Count
+      )
+      precondition((5 ... 8).contains(GraphemeBreakTables.shift))
+      stage1 = .allocate(capacity: GraphemeBreakTables.stage1.count)
+      _ = stage1.initialize(from: GraphemeBreakTables.stage1)
+      stage2 = GraphemeBreakTables.stage2.utf8Start
+
+      let n = Property.count
+      breaks = .allocate(capacity: State.count * n * n)
+      joinMask = .allocate(capacity: n)
+      joinMask.initialize(repeating: 0)
+      for s in 0 ..< State.count {
+        for g1 in 0 ..< n {
+          for g2 in 0 ..< n {
+            var state = State(raw: UInt8(s))
+            let result = GraphemeBreak.compute(
+              Property(rawValue: UInt8(g1))!,
+              Property(rawValue: UInt8(g2))!,
+              &state
+            )
+            precondition(Int(state.raw) < State.count)
+            breaks[(s * n + g1) * n + g2] = (result ? 1 : 0) | state.raw << 1
+            if !result { joinMask[g1] |= 1 << UInt32(g2) }
+          }
+        }
+      }
+    }
+
     @inline(__always)
-    static func isBreak(_ cp1: UInt32, _ cp2: UInt32, _ state: inout State) -> Bool {
-        let t = tables
-        let n = Property.count
-        let g1 = Int(t.props(cp1) & 0x1F), g2 = Int(t.props(cp2) & 0x1F)
-        let v = t.breaks[(Int(state.raw) * n + g1) * n + g2]
-        state.raw = v >> 1
-        return v & 1 != 0
+    func props(_ cp: UInt32) -> UInt8 {
+      // Out-of-range values: Ghostty treats them as Other, zero in grapheme.
+      guard cp < 0x110000 else { return GraphemeBreak.zeroInGraphemeBit }
+      return stage2[
+        Int(stage1[Int(cp >> GraphemeBreakTables.shift)])
+          << GraphemeBreakTables.shift
+          | Int(cp & UInt32((1 << GraphemeBreakTables.shift) - 1))
+      ]
+    }
+  }
+
+  @usableFromInline
+  static let tables = Tables()
+
+  @inline(__always)
+  static func property(_ cp: UInt32) -> Property {
+    Property(rawValue: tables.props(cp) & 0x1F).unsafelyUnwrapped
+  }
+
+  /// uucode `wcwidth_zero_in_grapheme`: the scalar does not contribute to
+  /// the width of a multi-scalar cluster. True when uucode's standalone
+  /// width is 0 (Cc, Cs, Zl, Zp, or Default_Ignorable_Code_Point except
+  /// U+00AD), or the scalar is an Emoji_Modifier, a nonspacing/enclosing
+  /// mark (Mn, Me), or has Grapheme_Cluster_Break V, T or Prepend.
+  /// Scalars above U+10FFFF report true (Ghostty props_uucode.zig).
+  @inline(__always)
+  static func isZeroInGrapheme(_ cp: UInt32) -> Bool {
+    tables.props(cp) & zeroInGraphemeBit != 0
+  }
+
+  /// Base scalar of a "text style"/"emoji style" pair in
+  /// emoji-variation-sequences.txt.
+  @inline(__always)
+  static func isEmojiVSBase(_ cp: UInt32) -> Bool {
+    tables.props(cp) & emojiVSBaseBit != 0
+  }
+
+  /// Extended_Pictographic (includes Emoji_Modifier_Base).
+  @inline(__always)
+  static func isExtendedPictographic(_ cp: UInt32) -> Bool {
+    property(cp).isExtendedPictographic
+  }
+
+  // MARK: - Segmentation
+
+  /// True if there is a grapheme boundary between `cp1` and `cp2` (Ghostty
+  /// `graphemeBreak`). Call sequentially, threading `state`. Control
+  /// characters, CR and LF must be filtered out by the caller.
+  @inline(__always)
+  static func isBreak(
+    _ cp1: UInt32,
+    _ cp2: UInt32,
+    _ state: inout State
+  ) -> Bool {
+    let t = tables
+    let n = Property.count
+    let g1 = Int(t.props(cp1) & 0x1F)
+    let g2 = Int(t.props(cp2) & 0x1F)
+    let v = t.breaks[(Int(state.raw) * n + g1) * n + g2]
+    state.raw = v >> 1
+    return v & 1 != 0
+  }
+
+  /// Cheap pre-filter for the print path: `false` means `isBreak(previous,
+  /// cp, &state)` is true for every state. `true` means "maybe joins".
+  @inline(__always)
+  static func mayJoin(previous: UInt32, _ cp: UInt32) -> Bool {
+    // Below U+0300 every scalar is Other or Extended_Pictographic
+    // (U+00A9, U+00AE), and no pair of those joins.
+    if previous < 0x300, cp < 0x300 { return false }
+    let t = tables
+    let g1 = Int(t.props(previous) & 0x1F)
+    let g2 = t.props(cp) & 0x1F
+    return t.joinMask[g1] >> UInt32(g2) & 1 != 0
+  }
+
+  /// uucode `computeGraphemeBreakNoControl`; used to build the
+  /// precomputed `[state][gb1][gb2]` table.
+  static func compute(
+    _ gb1: Property,
+    _ gb2: Property,
+    _ state: inout State
+  ) -> Bool {
+    // after_linker depends only on the input, not on the rules below.
+    let afterLinker =
+      gb1.isInCBLinker || (state.afterLinker && gb1.isInCBExtend)
+    state.afterLinker = afterLinker && gb2.isInCBExtend
+
+    // Reset base when gb1/gb2 aren't expected in the sequence.
+    switch state.base {
+    case .regionalIndicator:
+      if gb1 != .regionalIndicator || gb2 != .regionalIndicator {
+        state.base = .default
+      }
+    case .extendedPictographic:
+      if !gb1.continuesEmoji { state.base = .default }
+      if !gb2.continuesEmoji { state.base = .default }
+    case .default: break
     }
 
-    /// Cheap pre-filter for the print path: `false` means `isBreak(previous,
-    /// cp, &state)` is true for every state. `true` means "maybe joins".
-    @inline(__always)
-    static func mayJoin(previous: UInt32, _ cp: UInt32) -> Bool {
-        // Below U+0300 every scalar is Other or Extended_Pictographic
-        // (U+00A9, U+00AE), and no pair of those joins.
-        if previous < 0x300, cp < 0x300 {
-            return false
-        }
-        let t = tables
-        let g1 = Int(t.props(previous) & 0x1F), g2 = t.props(cp) & 0x1F
-        return t.joinMask[g1] >> UInt32(g2) & 1 != 0
+    // GB6: L x (L | V | LV | LVT)
+    if gb1 == .l, gb2 == .l || gb2 == .v || gb2 == .lv || gb2 == .lvt {
+      return false
+    }
+    // GB7: (LV | V) x (V | T)
+    if gb1 == .lv || gb1 == .v, gb2 == .v || gb2 == .t { return false }
+    // GB8: (LVT | T) x T
+    if gb1 == .lvt || gb1 == .t, gb2 == .t { return false }
+
+    // GB9 (Extend | ZWJ) is handled last: it can also start GB9c / GB11.
+
+    // GB9a: x SpacingMark
+    if gb2 == .spacingMark { return false }
+    // GB9b: Prepend x
+    if gb1 == .prepend { return false }
+
+    // GB9c: InCB=Linker InCB=Extend* x InCB=Consonant
+    if afterLinker, gb2 == .indicConjunctBreakConsonant {
+      state.base = .default
+      return false
     }
 
-    /// uucode `computeGraphemeBreakNoControl`; used to build the
-    /// precomputed `[state][gb1][gb2]` table.
-    static func compute(_ gb1: Property, _ gb2: Property, _ state: inout State) -> Bool {
-        // after_linker depends only on the input, not on the rules below.
-        let afterLinker = gb1.isInCBLinker || (state.afterLinker && gb1.isInCBExtend)
-        state.afterLinker = afterLinker && gb2.isInCBExtend
+    // GB11: emoji ZWJ sequences and emoji modifier sequences.
+    if gb1.isExtendedPictographic {
+      if gb2.isExtend || gb2 == .zwj {
+        state.base = .extendedPictographic
+        return false
+      }
+      if gb1 == .emojiModifierBase, gb2 == .emojiModifier {
+        state.base = .extendedPictographic
+        return false
+      }
+    } else if state.base == .extendedPictographic {
+      if gb1.isExtend || gb1 == .emojiModifier, gb2.isExtend || gb2 == .zwj {
+        return false
+      } else if gb1 == .zwj, gb2.isExtendedPictographic {
+        state.base = .default
+        return false
+      } else {
+        state.base = .default
+      }
+    }
 
-        // Reset base when gb1/gb2 aren't expected in the sequence.
-        switch state.base {
-        case .regionalIndicator:
-            if gb1 != .regionalIndicator || gb2 != .regionalIndicator {
-                state.base = .default
-            }
-        case .extendedPictographic:
-            if !gb1.continuesEmoji {
-                state.base = .default
-            }
-            if !gb2.continuesEmoji {
-                state.base = .default
-            }
-        case .default:
-            break
-        }
-
-        // GB6: L x (L | V | LV | LVT)
-        if gb1 == .l, gb2 == .l || gb2 == .v || gb2 == .lv || gb2 == .lvt {
-            return false
-        }
-        // GB7: (LV | V) x (V | T)
-        if gb1 == .lv || gb1 == .v, gb2 == .v || gb2 == .t {
-            return false
-        }
-        // GB8: (LVT | T) x T
-        if gb1 == .lvt || gb1 == .t, gb2 == .t {
-            return false
-        }
-
-        // GB9 (Extend | ZWJ) is handled last: it can also start GB9c / GB11.
-
-        // GB9a: x SpacingMark
-        if gb2 == .spacingMark {
-            return false
-        }
-        // GB9b: Prepend x
-        if gb1 == .prepend {
-            return false
-        }
-
-        // GB9c: InCB=Linker InCB=Extend* x InCB=Consonant
-        if afterLinker, gb2 == .indicConjunctBreakConsonant {
-            state.base = .default
-            return false
-        }
-
-        // GB11: emoji ZWJ sequences and emoji modifier sequences.
-        if gb1.isExtendedPictographic {
-            if gb2.isExtend || gb2 == .zwj {
-                state.base = .extendedPictographic
-                return false
-            }
-            if gb1 == .emojiModifierBase, gb2 == .emojiModifier {
-                state.base = .extendedPictographic
-                return false
-            }
-        } else if state.base == .extendedPictographic {
-            if gb1.isExtend || gb1 == .emojiModifier, gb2.isExtend || gb2 == .zwj {
-                return false
-            } else if gb1 == .zwj, gb2.isExtendedPictographic {
-                state.base = .default
-                return false
-            } else {
-                state.base = .default
-            }
-        }
-
-        // GB12/GB13: regional indicator pairs.
-        if gb1 == .regionalIndicator, gb2 == .regionalIndicator {
-            if state.base == .default {
-                state.base = .regionalIndicator
-                return false
-            } else {
-                state.base = .default
-                return true
-            }
-        }
-
-        // GB9: x (Extend | ZWJ)
-        if gb2.isExtend || gb2 == .zwj {
-            return false
-        }
-
-        // GB999
+    // GB12/GB13: regional indicator pairs.
+    if gb1 == .regionalIndicator, gb2 == .regionalIndicator {
+      if state.base == .default {
+        state.base = .regionalIndicator
+        return false
+      } else {
+        state.base = .default
         return true
+      }
     }
 
-    // MARK: - Width
+    // GB9: x (Extend | ZWJ)
+    if gb2.isExtend || gb2 == .zwj { return false }
 
-    /// Ghostty `graphemeWidthEffect`: the width effect of appending `cp`
-    /// after `previous` within a cluster. Assumes `isBreak` already said
-    /// there is no break. On `.ignore` callers must restore their break
-    /// state and keep `previous` unchanged.
-    @inline(__always)
-    static func widthEffect(previous: UInt32, _ cp: UInt32) -> WidthEffect {
-        // VS16/VS15 only apply after a valid emoji variation base;
-        // otherwise the selector is dropped entirely.
-        if cp == 0xFE0F || cp == 0xFE0E {
-            guard isEmojiVSBase(previous) else { return .ignore }
-            return cp == 0xFE0F ? .wide : .narrow
-        }
-        // A scalar that contributes width makes the cluster at least 2 wide
-        // (the first scalar is already at least 1).
-        if !isZeroInGrapheme(cp) {
-            return .wide
-        }
-        return .noChange
+    // GB999
+    return true
+  }
+
+  // MARK: - Width
+
+  /// Ghostty `graphemeWidthEffect`: the width effect of appending `cp`
+  /// after `previous` within a cluster. Assumes `isBreak` already said
+  /// there is no break. On `.ignore` callers must restore their break
+  /// state and keep `previous` unchanged.
+  @inline(__always)
+  static func widthEffect(previous: UInt32, _ cp: UInt32) -> WidthEffect {
+    // VS16/VS15 only apply after a valid emoji variation base;
+    // otherwise the selector is dropped entirely.
+    if cp == 0xFE0F || cp == 0xFE0E {
+      guard isEmojiVSBase(previous) else { return .ignore }
+      return cp == 0xFE0F ? .wide : .narrow
     }
+    // A scalar that contributes width makes the cluster at least 2 wide
+    // (the first scalar is already at least 1).
+    if !isZeroInGrapheme(cp) { return .wide }
+    return .noChange
+  }
 
-    /// Ghostty `unicode.graphemeWidth`: `(length, width)` of the first
-    /// cluster in `cps`. Values above U+10FFFF stand alone: width 1 when
-    /// first, and they terminate a cluster otherwise.
-    static func graphemeWidth<C: RandomAccessCollection>(_ cps: C) -> (length: Int, width: Int)
-        where C.Element == UInt32 {
-        var it = cps.makeIterator()
-        guard let first = it.next() else { return (0, 0) }
-        if first > 0x10FFFF {
-            return (1, 1)
-        }
+  /// Ghostty `unicode.graphemeWidth`: `(length, width)` of the first
+  /// cluster in `cps`. Values above U+10FFFF stand alone: width 1 when
+  /// first, and they terminate a cluster otherwise.
+  static func graphemeWidth<C: RandomAccessCollection>(
+    _ cps: C
+  ) -> (length: Int, width: Int) where C.Element == UInt32 {
+    var it = cps.makeIterator()
+    guard let first = it.next() else { return (0, 0) }
+    if first > 0x10FFFF { return (1, 1) }
 
-        var length = 1
-        var width = Int(UnicodeWidth.table.lookup(first))
-        var prev = first
-        var state = State()
-        while let cp = it.next() {
-            if cp > 0x10FFFF {
-                break
-            }
-            let before = state
-            if isBreak(prev, cp, &state) {
-                break
-            }
-            switch widthEffect(previous: prev, cp) {
-            case .ignore:
-                state = before
-            case .noChange:
-                prev = cp
-            case .wide:
-                width = 2
-                prev = cp
-            case .narrow:
-                width = 1
-                prev = cp
-            }
-            length += 1
-        }
-        return (length, width)
+    var length = 1
+    var width = Int(UnicodeWidth.table.lookup(first))
+    var prev = first
+    var state = State()
+    while let cp = it.next() {
+      if cp > 0x10FFFF { break }
+      let before = state
+      if isBreak(prev, cp, &state) { break }
+      switch widthEffect(previous: prev, cp) {
+      case .ignore: state = before
+      case .noChange: prev = cp
+      case .wide:
+        width = 2
+        prev = cp
+      case .narrow:
+        width = 1
+        prev = cp
+      }
+      length += 1
     }
+    return (length, width)
+  }
 }

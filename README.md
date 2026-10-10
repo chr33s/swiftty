@@ -16,6 +16,9 @@ mise run app        # launch the macOS terminal
 mise run bench      # Release microbenchmarks
 mise run lint
 mise run format
+mise run format-check
+mise run test-internal
+mise run bench-storage
 mise run compare <ghostty-src> <corpus-dir>
 ```
 
@@ -60,6 +63,41 @@ OSC 7501 is opt-in through `SessionConfiguration.programStatusEnabled` or
 External transports call `programExited()` when the program or connection ends.
 The [program-status contract](spec.md#osc-7501-program-status) specifies validation,
 lifecycle and reply provenance.
+
+## API and storage contracts
+
+The session, snapshot, input, configuration, and frontend APIs are the embedding
+surface. This pre-1.0 package provides source compatibility within patch releases;
+minor releases may change public APIs. Internal and `package` declarations have
+no compatibility guarantee. Physical row ids, pointer access, storage pools, and
+benchmark hooks are implementation details.
+
+`Grid.cells(row:)`, `Grid.historyCells(at:)`, `TerminalState.viewportCells(row:)`,
+and `TerminalState.scrollbackCells(at:)` return borrowed spans. End each borrow
+before mutating its owner. Grid writes require exclusive access;
+`withMutableCells(row:_:)` updates the row extent even when its closure throws.
+Indices and allocation sizes are checked before accessing memory. Nonpositive
+screen dimensions are clamped to one.
+
+Snapshot spans borrow the snapshot. Retaining a snapshot preserves its cells
+while later frames reuse other pool entries. Grapheme ids belong to the snapshot
+that produced the cell; passing a cell from another snapshot to
+`graphemeScalars(_:)` is invalid even when the numeric id happens to match.
+
+`SWIFTTY_INTERNAL_CHECKS` validates row ownership, ring bounds, blank extents,
+grapheme references, and wide-cell structure at completed parser batches and
+storage bounds after mutations. Checks and their scratch storage are absent
+from normal builds.
+`mise run test-internal` enables them. Storage benchmarks vary size and ring layout,
+exclude setup from timing, and report consumed results alongside nanoseconds per
+operation; run them in Release without internal checks.
+
+Swift formatting follows the pinned Swift Collections configuration: two-space
+indentation, 80-column wrapping, and unindented conditional-compilation bodies.
+`mise run format-check` also validates documentation comments. Generated Unicode
+tables retain their generator's layout. CI requires a self-hosted Apple Silicon
+runner labeled `swiftty`, with Swift 6.4, Xcode 27, all supported platform SDKs,
+Python 3, and the test tools from `mise.toml` on `PATH`.
 
 ## Configuration
 
