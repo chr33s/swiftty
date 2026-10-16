@@ -1,7 +1,7 @@
 # SSH identity, Keychain storage, and iCloud sync
 
 **Status:** Proposed; documentation only, not an implementation or test report.  
-**Version:** 0.1  
+**Version:** 0.2  
 **Date:** 2026-10-16  
 **Target:** `chr33s/swiftty`  
 **Reference implementation:** `chr33s/shell`  
@@ -37,7 +37,7 @@ Shell's offline queue and sync manager are useful references, but not drop-in co
 
 Full feature support targets iPhone, iPad, Mac Catalyst, and windowed visionOS, retaining the repository's 27.0 deployment minimums and Swift 6.4 toolchain. The existing native Mac application remains the local terminal/host; Mac users manage remote identities through the Catalyst client. [W6–W8]
 
-Required capabilities are Ed25519 generation; bounded OpenSSH Ed25519 private-key import, including supported encrypted keys; reusable identities; public-key copy/export; Keychain persistence; device-only or iCloud Keychain storage; profile/public-metadata sync; optional known-host sync; recovery UI; and migration of existing Swiftty keys.
+Required capabilities are Ed25519 generation; bounded unencrypted OpenSSH Ed25519 private-key import; reusable identities; public-key copy/export; Keychain persistence; device-only or iCloud Keychain storage; profile/public-metadata sync; optional known-host sync; recovery UI; and migration of existing Swiftty keys. If Swiftty later exposes a passphrase-protected app-owned key envelope or backup, its password KDF MUST be scrypt through the already-pinned Swift Crypto `CryptoExtras` product; bcrypt is not introduced.
 
 Passwords continue to use the existing prompt/session-memory behavior. Persistent password storage and saved import passphrases are not part of this change.
 
@@ -55,9 +55,9 @@ Add **Settings → SSH Keys** and a shortcut from the host editor. Each row disp
 
 **Generate:** enter a name, select storage, and confirm. Default to **This device only**. Generate and save before publishing the identity to the picker. Show the public key and explain that it must be authorized on the server; creating a key does not install it remotely.
 
-**Import:** use a user-selected file, or an explicit paste action where supported. Show the parsed algorithm and fingerprint before confirmation. For an encrypted key, request the passphrase through a secure field. Never inspect the clipboard automatically or interpret imported text as a command.
+**Import:** use a user-selected file, or an explicit paste action where supported. Show the parsed algorithm and fingerprint before confirmation. V1 accepts unencrypted OpenSSH Ed25519 private keys only. Encrypted OpenSSH private-key files receive an explicit unsupported-input error rather than introducing bcrypt compatibility. Never inspect the clipboard automatically or interpret imported text as a command.
 
-Imported keys are normalized into Keychain-protected private material. Explain that the original file passphrase is used for import only, not requested on every connection. Do not persist the passphrase or a decrypted temporary file.
+Imported keys are normalized into Keychain-protected private material. Keychain storage itself does not add an application passphrase or KDF layer. If a future export/backup format needs app-level passphrase protection, use the scrypt envelope defined in §6.3; do not persist the passphrase or a decrypted temporary file.
 
 ### 4.2 Hosts and login
 
@@ -114,13 +114,23 @@ Cancellation must prevent late authentication, generation, persistence, or profi
 
 ### 6.2 Import format and limits
 
-Adapt the relevant Shell parser/normalizer/decryption logic, with provenance and security review. Required v1 input is one `openssh-key-v1` Ed25519 identity, either unencrypted or bcrypt-encrypted with `aes128-ctr`/`aes256-ctr`, matching the reviewed Shell decryption surface. Other ciphers, KDFs, algorithms, certificates, and public-only files receive explicit unsupported-input errors. [S6]
+Adapt the relevant Shell parser/normalizer logic, with provenance and security review, but do not carry over its bcrypt decryption path. Required v1 input is one unencrypted `openssh-key-v1` Ed25519 identity. Encrypted OpenSSH keys, other algorithms, certificates, and public-only files receive explicit unsupported-input errors. [S6]
 
-Validate every length before allocation, key count, cipher/KDF pairing, check integers, deterministic padding, public/private consistency, and complete consumption of the input. Reject encrypted ciphers paired with a `none` KDF. Proposed limits: 64 KiB input, one key, 1 KiB comment, 1 KiB UTF-8 passphrase, 1 KiB KDF salt, and bcrypt rounds from 1 through 64. Do not trim or normalize passphrases. Report keys exceeding limits rather than silently weakening them.
+Validate every length before allocation, key count, check integers, deterministic padding, public/private consistency, and complete consumption of the input. Proposed limits: 64 KiB input, one key, and 1 KiB comment. Report keys exceeding limits rather than silently weakening them.
 
-Parsing/KDF work runs off the main actor with bounded concurrency. Cancellation discards its eventual result; a synchronous bounded cryptographic call may need to finish before cleanup, and must not be misrepresented as preemptively cancelled.
+Parsing runs off the main actor with bounded concurrency. Cancellation discards its eventual result and must prevent persistence or profile mutation.
 
-Shell's implementation imports Citadel and native crypto modules. It cannot be pasted into Swiftty unchanged. Select and pin a reviewed, minimal bcrypt/AES implementation behind the import adapter; do not add a second SSH client or depend on private Swift Crypto implementation symbols. Record licenses and dependency compatibility before encrypted import is enabled. Do not invent cryptographic primitives. [S6, W8]
+Shell's implementation imports Citadel and native crypto modules for encrypted OpenSSH compatibility. Swiftty does not need that dependency when there are no legacy encrypted keys to preserve. Do not add bcrypt, Citadel, a second SSH client, or private Swift Crypto implementation symbols for this feature. [S6, W8]
+
+### 6.3 Scrypt for app-owned passphrase protection
+
+Keychain storage remains the canonical persistence mechanism and requires no application password KDF. Scrypt applies only if Swiftty introduces a passphrase-protected portable envelope or backup that Swiftty itself owns.
+
+Use the already-pinned `swift-crypto` package's public `CryptoExtras` product and `KDF.Scrypt.deriveKey`. Do not implement scrypt locally. The envelope MUST be versioned and self-describing, and MUST store the random salt, scrypt parameters, authenticated-encryption nonce, ciphertext, and authentication tag. Derive only an encryption key from the passphrase; encrypt the canonical Ed25519 private payload with an authenticated cipher from Swift Crypto, such as AES-GCM. The plaintext private key and passphrase are never CloudKit fields.
+
+Parameters MUST be encoded with the envelope and validated against explicit lower/upper bounds before any expensive allocation. Choose release parameters from measurements on the slowest supported physical device, targeting interactive unlock without creating a denial-of-service vector. Do not silently lower stored work factors. Importing an app-owned envelope with unsupported or excessive parameters fails explicitly.
+
+This envelope is not an OpenSSH encrypted-private-key format. Swiftty MUST NOT label it as an encrypted `openssh-key-v1` file or claim interoperability with `ssh-keygen`. Encrypted OpenSSH import remains out of scope until a separate compatibility decision explicitly adds the format's required KDF.
 
 ## 7. Keychain contract
 
@@ -233,7 +243,7 @@ Proposed access group: `$(AppIdentifierPrefix)dev.chr33s.swiftty`, expanded from
 
 **P1 — Local identity foundation:** stable IDs, explicit creation/import, read-only resolution, migration, device-only Keychain tests. Ship no sync promises.
 
-**P2 — Key management UI and encrypted import:** identity picker, public export, deletion references, audited import dependencies and negative fixtures.
+**P2 — Key management UI and import:** identity picker, public export, deletion references, unencrypted OpenSSH import fixtures, and explicit rejection of encrypted OpenSSH keys. If an app-owned passphrase envelope is added, implement it with Swift Crypto `CryptoExtras` scrypt plus authenticated encryption.
 
 **P3 — iCloud Keychain:** signed access-group validation, immutable per-identity policy, two-device delivery and withdrawal tests.
 
@@ -251,7 +261,7 @@ All checks are pending. No builds, device tests, cloud provisioning, or implemen
 | KEY-02 | Two profiles share an identity; rename changes neither references nor fingerprint. |
 | KEY-03 | Missing/deleted/locked/corrupt items never generate a key or trigger password fallback, including public-key display and noninteractive access. |
 | KEY-04 | Unknown/changed host keys and pairing-code mismatches block credential offering; test the actual authenticated transport, not only the probe. |
-| KEY-05 | Encrypted import covers correct/wrong passphrase, bad padding/check integers, unsupported cipher/KDF, mismatched public/private material, oversized lengths, excessive KDF work, and cancellation. |
+| KEY-05 | Unencrypted OpenSSH import covers malformed/check-integer/padding failures, mismatched public/private material, oversized lengths, unsupported encrypted inputs, and cancellation. If an app-owned passphrase envelope is implemented, separately test correct/wrong passphrase, malformed authentication tag, scrypt parameter bounds, excessive work rejection, and cancellation. |
 | KEY-06 | Duplicate Keychain writes preserve the existing identity; same UUID with different bytes/public key fails closed. |
 | KEY-07 | Password login, ordinary SSH, SFTP, roaming bootstrap/reconnect, and attention access retain existing behavior and lifecycle limits. |
 | MIG-01 | Version-1 migration preserves host IDs and key fingerprints; shared labels remain shared; absent keys stay unresolved. |
@@ -274,7 +284,7 @@ All checks are pending. No builds, device tests, cloud provisioning, or implemen
 
 The design decisions are explicit: Ed25519 first; device-only default; opt-in metadata sync; per-identity secret sync; no silent fallback; no shared Shell vault; immutable key material/storage policy; foreground CloudKit; no automatic server authorization.
 
-Implementation must still verify the actual provisioned container/access groups and legacy accessibility, select and pin the import crypto dependency, measure proposed KDF bounds on supported hardware, and execute the acceptance matrix. These are release gates, not claims that the repository already satisfies them.
+Implementation must still verify the actual provisioned container/access groups and legacy accessibility, validate the public Swift Crypto `CryptoExtras` dependency if the optional app-owned scrypt envelope is implemented, measure its proposed scrypt bounds on supported hardware, and execute the acceptance matrix. These are release gates, not claims that the repository already satisfies them.
 
 ## References
 
