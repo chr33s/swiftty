@@ -800,21 +800,19 @@ public final class RoamingSession: @unchecked Sendable {
       pane: pane,
       { ScreenExporter.historyTop($0, from: current, moving: lines) },
       completion: { [weak self] resolved in
-        self?.queue
-          .async { [weak self] in
-            a.viewportMoveInFlight = false
-            guard let self, a === self.attachment, a.isCurrent else { return }
-            // Nil `resolved`: the pane is gone. Nil top: live output.
-            if let top = resolved, a.historyTop == current, top != current {
-              a.historyTop = top
-              self.contentChanged()
-            }
-            self.resolveViewportMove(for: a)
+        self?.queue.async { [weak self] in
+          a.viewportMoveInFlight = false
+          guard let self, a === self.attachment, a.isCurrent else { return }
+          // Nil `resolved`: the pane is gone. Nil top: live output.
+          if let top = resolved, a.historyTop == current, top != current {
+            a.historyTop = top
+            self.contentChanged()
           }
+          self.resolveViewportMove(for: a)
+        }
       }
     )
   }
-
 
   private func admit(_ input: ControlMessage.Input, from a: HostAttachment) {
     let sequence = input.sequence
