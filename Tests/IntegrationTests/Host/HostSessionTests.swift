@@ -285,8 +285,7 @@ struct HostSessionTests {
   }
 
   @Test
-  func `a burst of viewport requests moves by its whole distance`()
-    async throws
+  func `a burst of viewport requests moves by its whole distance`() async throws
   {
     try await withRegistry { registry in
       let grant = try await registry.create(

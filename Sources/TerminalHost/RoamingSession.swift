@@ -815,7 +815,6 @@ public final class RoamingSession: @unchecked Sendable {
     )
   }
 
-
   private func admit(_ input: ControlMessage.Input, from a: HostAttachment) {
     let sequence = input.sequence
     guard exitStatus == nil, !terminated else {
