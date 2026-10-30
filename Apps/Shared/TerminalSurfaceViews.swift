@@ -47,17 +47,24 @@ struct LiveTerminalSurface: View {
 
 // MARK: - Roaming
 
-/// Forwards scene phase changes to the controller. Its own modifier, so
+/// Forwards this window's scene phase to the controller, which combines
+/// it with any other window showing the same screen. Its own modifier, so
 /// reading the phase does not invalidate the surface view.
 private struct ScenePhaseForwarding: ViewModifier {
   let controller: RoamingTerminalController
   @Environment(\.scenePhase)
   private var scenePhase
+  @State
+  private var scene = UUID()
 
   func body(content: Content) -> some View {
-    content.onChange(of: scenePhase) { _, phase in
-      controller.scenePhaseChanged(phase)
-    }
+    // onAppear (not onChange's initial call) so a view that disappears
+    // and reappears with the same identity registers again.
+    content.onAppear { controller.scenePhaseChanged(scenePhase, scene: scene) }
+      .onChange(of: scenePhase) { _, phase in
+        controller.scenePhaseChanged(phase, scene: scene)
+      }
+      .onDisappear { controller.scenePhaseChanged(nil, scene: scene) }
   }
 }
 
@@ -327,10 +334,12 @@ struct ProblemCard: View {
 struct TerminalCanvas: View {
   let session: TerminalSession
   let capabilities: SurfaceCapabilities
+  #if canImport(UIKit)
   /// The terminal's background, translucent when the configuration's
   /// `background-opacity` is below 1.
   @State
   private var background: UIColorBox?
+  #endif
 
   var body: some View {
     #if canImport(UIKit)

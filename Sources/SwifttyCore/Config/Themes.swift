@@ -59,6 +59,19 @@ public enum Themes {
     """,
   ]
 
+  /// Built-in theme names and the files in `directories`, sorted.
+  public static func available(in directories: [URL]) -> [String] {
+    var names = Set(builtIn.keys)
+    for directory in directories {
+      let files =
+        (try? FileManager.default.contentsOfDirectory(
+          atPath: directory.path(percentEncoded: false)
+        )) ?? []
+      names.formUnion(files.filter { !$0.hasPrefix(".") })
+    }
+    return names.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+  }
+
   public static func colors(
     named name: String,
     searching directories: [URL]

@@ -4,6 +4,10 @@
 /// Each entry is `class | width << 5` (class: `GraphemeBreak.Property`,
 /// width 0...2). Built once from `UnicodeWidth.table` and
 /// `GraphemeBreak.tables` by combining distinct source-block slices.
+///
+/// Sendable: none: the buffers are written only in `init` and read-only
+/// afterwards. They are never deallocated: `shared` keeps them for the
+/// process lifetime.
 struct ScalarInfoTable: @unchecked Sendable {
   private let stage1: UnsafeMutablePointer<UInt16>
   private let stage2: UnsafeMutablePointer<UInt8>

@@ -6,7 +6,7 @@ import SwifttyCore
 import SwifttyMac
 
 /// A decoded, validated frame with its app-owned renderer snapshot.
-struct MuxPresentation: @unchecked Sendable {
+struct MuxPresentation: Sendable {
   let frame: PaneFrame
   let snapshot: RenderSnapshot
 }

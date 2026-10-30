@@ -31,6 +31,10 @@ public enum UnicodeWidth {
 /// Two-stage width lookup over the generated tables in `Tables.swift`.
 /// Stage 2 is a StaticString in constant data, so building this costs only
 /// the 4,352-entry stage-1 copy; a lookup is two loads.
+///
+/// Sendable: none: stage 1 is written only in `init` and stage 2 is constant
+/// data. Stage 1 is never deallocated: `UnicodeWidth.table` keeps it for the
+/// process lifetime.
 @usableFromInline
 struct WidthTable: @unchecked Sendable {
   private let stage1: UnsafeMutableBufferPointer<UInt16>

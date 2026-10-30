@@ -221,8 +221,33 @@ extension TerminalUIView {
 
   /// The configured bindings as key commands, so they show in the
   /// discoverability HUD (hold Cmd) and take priority over the system.
+  ///
+  /// Only while the terminal itself is first responder: a descendant text
+  /// field (Find) keeps its own editing shortcuts, and only search
+  /// navigation reaches the terminal from there (spec.apple.md A03).
   public override var keyCommands: [UIKeyCommand]? {
-    if let cached = keyCommandCache { return cached }
+    let all = keyCommandCache ?? buildKeyCommands()
+    guard !isFirstResponder else { return all }
+    if let cached = searchKeyCommandCache { return cached }
+    let search = all.filter {
+      guard let identifier = $0.propertyList as? String,
+        let binding = keyCommandBindings[identifier]
+      else { return false }
+      return Self.isSearchNavigation(binding.action)
+    }
+    searchKeyCommandCache = search
+    return search
+  }
+
+  /// Actions safe to run while focus is in the terminal's find field.
+  static func isSearchNavigation(_ action: KeyAction) -> Bool {
+    switch action {
+    case .navigateSearch, .endSearch: true
+    default: false
+    }
+  }
+
+  private func buildKeyCommands() -> [UIKeyCommand] {
     var commands: [UIKeyCommand] = []
     var commandBindings: [String: Keybindings.Binding] = [:]
     let bindings = configuration.keybindings.bindings.sorted {

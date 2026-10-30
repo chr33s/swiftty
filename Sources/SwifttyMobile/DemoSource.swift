@@ -3,7 +3,7 @@ import SwifttyCore
 
 /// Demo shell connected through `onWrite` and `receive`; apps supply remote
 /// transports.
-public final class DemoSource: @unchecked Sendable {
+public final class DemoSource: Sendable {
   public let session: TerminalSession
 
   public init(session: TerminalSession) { self.session = session }
@@ -34,6 +34,9 @@ public final class DemoSource: @unchecked Sendable {
 /// Each start owns its editor. Queued echoes retain the editor that accepted
 /// their input, and cannot change a fresh editor after a restart. Access is
 /// confined to the session queue by `receive`.
+///
+/// Sendable: `shell` is read and written only on the session queue; the
+/// editor lives as long as the `onWrite` handler and queued echoes retain it.
 private final class DemoEditor: @unchecked Sendable { var shell = DemoShell() }
 
 /// Byte-based demo editor with OSC 133 marks, cursor movement, and sample

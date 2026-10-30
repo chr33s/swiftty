@@ -135,6 +135,10 @@ public struct SSHBootstrapper: RemoteBootstrapper {
 }
 
 /// `TerminalByteChannel` over an interactive SSH shell channel.
+///
+/// Sendable: handler, backlog and exit state live in the `state` Mutex;
+/// `channel` is assigned once in `open` before the adapter is returned and
+/// is only read afterwards. The adapter retains the channel until it ends.
 public final class SSHShellByteChannel: TerminalByteChannel, @unchecked Sendable
 {
   private enum QueuedEvent {

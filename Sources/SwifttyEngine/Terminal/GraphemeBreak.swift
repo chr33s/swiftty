@@ -120,6 +120,9 @@ package enum GraphemeBreak {
   private static let zeroInGraphemeBit: UInt8 = 0x20
   private static let emojiVSBaseBit: UInt8 = 0x40
 
+  /// Sendable: none: the buffers are written only in `init` and read-only
+  /// afterwards; `stage2` is constant data. They are never deallocated:
+  /// `tables` keeps them for the process lifetime.
   @usableFromInline
   struct Tables: @unchecked Sendable {
     let stage1: UnsafeMutableBufferPointer<UInt16>

@@ -440,7 +440,7 @@ public protocol ScrollbackMaintenanceClock: AnyObject, Sendable {
 
 /// A dispatch-timer clock on a private queue.
 public final class DispatchScrollbackMaintenanceClock:
-  ScrollbackMaintenanceClock, @unchecked Sendable
+  ScrollbackMaintenanceClock, Sendable
 {
   private let queue = DispatchQueue(label: "swiftty.scrollback-maintenance")
   private let timer = Mutex<DispatchSourceTimer?>(nil)
@@ -751,13 +751,19 @@ public final class ScrollbackMaintenanceCoordinator: Sendable {
 
 /// Owner adapter: runs maintenance for one terminal state on its serial
 /// queue. `step` runs on that queue and returns nil after teardown.
+///
+/// Sendable: the non-Sendable `step`/`release` closures run only on the
+/// owner's `queue`; `registration` is behind a `Mutex`, so `cancel()` is
+/// safe from any thread (an owner's `deinit` runs wherever its last
+/// reference is dropped). Queued work holds the client weakly.
 public final class ScrollbackMaintenanceClient: ScrollbackMaintenanceOwner,
   @unchecked Sendable
 {
   private let queue: DispatchQueue
   private let step: (UInt64) -> ScrollbackMaintenanceResult?
   private let release: () -> Void
-  private var registration: ScrollbackMaintenanceCoordinator.Registration?
+  private let registration:
+    Mutex<ScrollbackMaintenanceCoordinator.Registration?>
 
   /// - Parameters:
   ///   - queue: The owner's serial queue, which owns the terminal state.
@@ -773,23 +779,26 @@ public final class ScrollbackMaintenanceClient: ScrollbackMaintenanceOwner,
     self.queue = queue
     self.step = step
     self.release = release
-    registration = coordinator.register(self)
+    registration = Mutex(nil)
+    let registered = coordinator.register(self)
+    registration.withLock { $0 = registered }
   }
 
   /// Call on the owner's queue after each batch of relevant activity.
   public func noteActivity(generation: UInt64) {
-    registration?.noteActivity(generation: generation)
+    registration.withLock { $0 }?.noteActivity(generation: generation)
   }
 
   /// Call on the owner's queue when a read promoted cold history.
   public func requestMaintenance(generation: UInt64) {
-    registration?.requestMaintenance(generation: generation)
+    registration.withLock { $0 }?.requestMaintenance(generation: generation)
   }
 
   /// Ends scheduling; queued steps become no-ops.
   public func cancel() {
-    registration?.cancel()
-    registration = nil
+    // Taken under the lock, cancelled outside it: the coordinator has its
+    // own lock.
+    registration.withLock { $0.take() }?.cancel()
   }
 
   public func performScrollbackMaintenance(

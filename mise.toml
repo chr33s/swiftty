@@ -1,6 +1,8 @@
 [tools]
-swift = "6.4.1"
-swiftformat = "0.64.1" # latest release with a standalone macOS CLI asset
+# Swift comes from Xcode, as on CI: swift.org toolchains bundle their own
+# Swift Testing runtime, which conflicts with Xcode 27.2's XCTest and
+# stops the native test host from discovering tests.
+swiftformat = "0.64.4" # latest release with a standalone macOS CLI asset
 swiftlint = "0.65.1"
 tmux = "3.7c" # integration tests; latest available tmux-builds release
 zig = "0.17.0" # builds upstream ghostty-bench for comparison

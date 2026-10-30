@@ -1,3 +1,9 @@
+/// Pooled cell, row and grapheme buffers behind `RenderSnapshot`.
+///
+/// Sendable: all fields and buffers are mutated only by the owning builder
+/// (on the session queue) or before first publication, and only while no
+/// snapshot references the storage; published storage is read-only. Buffers
+/// are owned by the instance and deallocated in `deinit`.
 final class SnapshotStorage: @unchecked Sendable {
   private(set) var columns = 0
   private(set) var rows = 0

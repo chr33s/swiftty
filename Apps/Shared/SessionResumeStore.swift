@@ -4,6 +4,10 @@ import SessionCore
 /// Non-secret workspace choices. Owned entries live separately from legacy UUID
 /// entries, whose account/endpoint cannot be inferred safely. The chooser lets
 /// users select an existing workspace again after fresh SSH authorization (§9).
+///
+/// Sendable: the stored `defaults` and `key` are immutable; every read/modify/
+/// write of the persisted dictionaries holds the process-wide `access` lock.
+/// The retained `UserDefaults` is itself thread-safe.
 public struct SessionResumeStore: @unchecked Sendable {
   public static let key = "roaming.resume.v1"
   // UserDefaults synchronizes individual operations, not read/modify/write.

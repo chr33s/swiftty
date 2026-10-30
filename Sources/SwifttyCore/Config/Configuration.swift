@@ -162,6 +162,21 @@ public struct ThemeSelection: Sendable, Equatable {
     return fields
   }
 
+  /// The `theme` value that selects this, as the Settings window writes it.
+  public var configurationValue: String {
+    func field(_ name: String) -> String {
+      let special = ",:=\"\\".unicodeScalars
+      guard name.unicodeScalars.contains(where: special.contains) else {
+        return name
+      }
+      let escaped = name.replacing("\\", with: "\\\\")
+        .replacing("\"", with: "\\\"")
+      return "\"\(escaped)\""
+    }
+    if light == dark, field(light) == light { return light }
+    return "light:\(field(light)),dark:\(field(dark))"
+  }
+
   public func name(for scheme: ColorScheme) -> String {
     scheme == .light ? light : dark
   }
@@ -253,6 +268,10 @@ public struct Configuration: Sendable, Equatable {
 
   /// Problems found while loading, as `file:line: message`.
   public var diagnostics: [String] = []
+
+  /// System display preferences applied by `accommodating(_:)`; never read
+  /// from a file.
+  public var accommodations = DisplayAccommodations()
 
   public struct CellAdjustment: Sendable, Equatable {
     public var fraction: Double = 0
@@ -780,6 +799,12 @@ public struct Configuration: Sendable, Equatable {
   }
 
   /// Theme names that could not be loaded (missing, unreadable or invalid).
+  /// Everything to report about this configuration, one line each.
+  public var problems: [String] {
+    diagnostics + missingThemes.map { "theme unavailable: \($0)" }
+      + missingFontStyles.map { "font style unavailable: \($0)" }
+  }
+
   public var missingThemes: [String] {
     guard let theme else { return [] }
     return Set([theme.light, theme.dark]).sorted()
@@ -845,6 +870,7 @@ public struct Configuration: Sendable, Equatable {
     o.cursorStyle = cursorStyle
     o.hollowCursor = cursorHollow
     o.cursorOpacity = cursorOpacity
+    o.reducesMotion = accommodations.reduceMotion
     return o
   }
 

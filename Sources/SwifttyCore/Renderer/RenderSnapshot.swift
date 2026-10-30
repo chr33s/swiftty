@@ -13,6 +13,10 @@ final class SnapshotSource: Sendable {}
 /// Backed by pooled storage that is refilled only for damaged rows, so
 /// producing a snapshot does not copy the whole grid every frame. Storage is
 /// never mutated while any snapshot referencing it is alive.
+///
+/// Sendable: none: immutable after init except the value-type `damage`. The
+/// raw base pointers stay valid because each snapshot retains `storage`, and
+/// `SnapshotBuilder` refills pooled storage only when uniquely referenced.
 public struct RenderSnapshot: @unchecked Sendable {
   let storage: SnapshotStorage
   let source: SnapshotSource

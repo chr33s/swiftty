@@ -3,6 +3,10 @@ import Foundation
 
 /// One reschedulable source, confined to the service queue. Deinitialization
 /// only cancels the thread-safe source; mutable scheduling state stays on queue.
+///
+/// Sendable: `deadline` is read and written only on `queue` (the service
+/// queue and the source's handler queue); the timer source is owned by the
+/// instance and cancelled in `deinit`.
 final class InboxSnoozeTimer: @unchecked Sendable {
   private let queue: DispatchQueue
   private let source: any DispatchSourceTimer

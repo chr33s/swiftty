@@ -134,6 +134,10 @@ public enum LaunchAgentCommand {
 /// All waitpid/signal operations belong to this queue, so a collected PID
 /// cannot receive a late timeout signal. Reaping can outlive the caller if
 /// the kernel has not made a killed child waitable yet.
+///
+/// Sendable: `exitSource`, `timer`, `finished` and `killed` are touched only
+/// on `queue`; the result lives in the `outcome` Mutex. The sources retain
+/// the wait until the child is reaped and they are cancelled on `queue`.
 private final class LaunchAgentCommandWait: @unchecked Sendable {
   let deadline: DispatchTime
   let completion = DispatchSemaphore(value: 0)

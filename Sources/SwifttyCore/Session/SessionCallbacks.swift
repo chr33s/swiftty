@@ -1,6 +1,9 @@
 import Foundation
 
 /// Handlers can be replaced from any thread, including during invocation.
+///
+/// Sendable: the only mutable state, `state`, is read and written under
+/// `lock`; handlers are invoked from copies outside it. No unsafe storage.
 final class SessionCallbacks: @unchecked Sendable {
   struct State: Sendable {
     var onUpdate: (@Sendable () -> Void)?

@@ -48,6 +48,9 @@ public struct RenderOptions: Equatable, Sendable {
   /// Minimum WCAG contrast ratio between text and its background (1...21);
   /// text below it is drawn in black or white (Ghostty's `minimum-contrast`).
   public var minimumContrast: Double = 1
+  /// Reduce Motion: a custom shader's `time` stays at zero, so it draws a
+  /// static frame and never keeps the host animating.
+  public var reducesMotion = false
 
   public init() {}
 }
@@ -140,7 +143,9 @@ public final class MetalRenderer {
 
   /// Whether a custom post-processing shader animates (uses `time`), so
   /// the host keeps drawing.
-  public var isAnimating: Bool { postProcess?.usesTime ?? false }
+  public var isAnimating: Bool {
+    !options.reducesMotion && postProcess?.usesTime == true
+  }
 
   /// Padding around the grid, in pixels (`RenderOptions` overrides it).
   public var padding: CGFloat = 8 {
@@ -496,7 +501,8 @@ public final class MetalRenderer {
         from: intermediate,
         to: target,
         commandBuffer: commandBuffer,
-        time: Float(CACurrentMediaTime() - startTime),
+        time: options.reducesMotion
+          ? 0 : Float(CACurrentMediaTime() - startTime),
         makeEncoder: makeRenderEncoder,
       )
     }

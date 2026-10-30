@@ -514,8 +514,13 @@ struct TerminalStateTests {
 struct GridInvariantTests {
   @Test
   func `cell layout matches fast path assumptions`() {
+    // spec.apple.md A08: an internal storage contract, verified here.
+    #expect(MemoryLayout<Cell>.size == 16)
     #expect(MemoryLayout<Cell>.stride == 16)
+    #expect(MemoryLayout<Cell>.alignment == 4)
     #expect(MemoryLayout<Cell>.offset(of: \Cell.glyph) == 0)
+    #expect(MemoryLayout<Cell>.offset(of: \Cell.attributes) == 4)
+    #expect(MemoryLayout<Cell>.offset(of: \Cell.width) == 15)
   }
 
   @Test(arguments: [

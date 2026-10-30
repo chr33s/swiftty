@@ -91,6 +91,9 @@ public struct FontStyle: OptionSet, Hashable, Sendable {
 }
 
 /// A primary font in its four styles plus pixel cell metrics.
+///
+/// Sendable: none: immutable after init. The retained `CTFont`s are
+/// immutable, thread-safe CoreText objects that live as long as the font.
 public final class ResolvedFont: @unchecked Sendable {
   public let descriptor: FontDescriptor
   /// Indexed by `FontStyle.rawValue`: regular, bold, italic, bold italic.
@@ -336,6 +339,9 @@ public final class ResolvedFont: @unchecked Sendable {
 }
 
 /// A glyph in a specific (possibly fallback) font.
+///
+/// Sendable: none: immutable after init. The retained `CTFont` is an
+/// immutable, thread-safe CoreText object that lives as long as any copy.
 public struct GlyphLookup: @unchecked Sendable {
   public let font: CTFont
   public let glyph: CGGlyph

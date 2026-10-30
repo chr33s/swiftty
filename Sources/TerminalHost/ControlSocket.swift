@@ -62,6 +62,10 @@ public enum ControlDirectory {
 /// Peers must have the agent's UID (`getpeereid`). At most 32 exchanges
 /// are admitted per server, including cancelled handlers until they finish.
 /// Further connections are closed without invoking the handler.
+///
+/// Sendable: the listener descriptor, its read source, path ownership and
+/// admitted exchanges live in the `state` Mutex; accepts run on `queue`.
+/// The descriptor is closed by its source's cancel handler after `stop`.
 public final class ControlSocketServer: @unchecked Sendable {
   public typealias Handler = @Sendable ([UInt8]) async -> [UInt8]
   private static let maxConcurrentExchanges = 32

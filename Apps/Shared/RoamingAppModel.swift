@@ -10,6 +10,7 @@ import SSHClient
 import SSHIdentity
 import ScreenProtocol
 import SessionCore
+import SwiftUI
 import SwifttyCore
 import TerminalSurface
 
@@ -414,6 +415,11 @@ public final class RoamingAppModel {
   /// (spec §10) or the app is suspended.
   public let transferPolicy = TransferPausePolicy()
 
+  /// Every window showing this model; app-wide work follows their
+  /// combined phase, never one window's (spec.apple.md A02).
+  @ObservationIgnored
+  private var scenes = ScenePhases()
+
   @ObservationIgnored
   let store: ConnectionStore
   /// A failed load must not be overwritten by a later save of the
@@ -455,6 +461,22 @@ public final class RoamingAppModel {
   /// Opt-in CloudKit metadata sync, when the build is configured for it.
   @ObservationIgnored
   public private(set) var sync: ConnectionSyncCoordinator?
+
+  /// One window's phase changed (nil: it went away). Foreground-only
+  /// metadata sync (spec.ssh-identity.md §8.2) and suspension of bulk
+  /// SFTP work (spec §10) follow the app as a whole, so one of two
+  /// windows going to the background pauses neither. A Mac window losing
+  /// focus is not a suspension.
+  func scenePhaseChanged(_ phase: ScenePhase?, scene: UUID) {
+    guard let change = scenes.set(phase, for: scene), let new = change.new
+    else { return }
+    sync?.setActive(new == .active)
+    if new == .active { Task { await refreshConnections() } }
+    switch profile.kind {
+    case .catalyst: break
+    case .mobile, .vision, .tv: transferPolicy.setSuspended(new == .background)
+    }
+  }
 
   /// Refreshes connection state when the app returns to the foreground.
   func refreshConnections() async {

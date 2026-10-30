@@ -75,6 +75,11 @@ public struct RegistryPolicy: Sendable {
 /// capabilities, attachment authorization and retention. It owns no
 /// shells; RST/1 session identifiers are workspace identities and the
 /// grant's server instance is the SwiftMux service epoch.
+///
+/// Sendable: entries, credentials and counters live in the `state` Mutex,
+/// the sweep timer in `timer`, and the identity in `identityBox`; the
+/// `control` client is used only on its own queue and closed there in
+/// `deinit`. No unsafe storage.
 public final class SessionRegistry: @unchecked Sendable {
   /// Includes transport-closed requests until their owner work finishes.
   private static let maxPendingAttachments = 32

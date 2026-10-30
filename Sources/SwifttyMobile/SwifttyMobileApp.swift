@@ -95,17 +95,38 @@ open class TerminalViewController: UIViewController {
   @available(*, unavailable)
   public required init?(coder: NSCoder) { fatalError() }
 
+  private var backgroundBlur: UIView?
+
+  /// Reduce Transparency draws the window opaque, as the terminal does;
+  /// re-run when it changes.
+  @objc
+  private func applyBackground() {
+    let presented = configuration.accommodating(.current)
+    backgroundBlur?.removeFromSuperview()
+    backgroundBlur = nil
+    guard presented.backgroundOpacity < 1 else {
+      view.backgroundColor = .black
+      return
+    }
+    view.backgroundColor = .clear
+    guard presented.backgroundBlur > 0 else { return }
+    let blur = Self.backgroundView()
+    blur.frame = view.bounds
+    blur.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    view.insertSubview(blur, at: 0)
+    backgroundBlur = blur
+  }
+
   override open func viewDidLoad() {
     super.viewDidLoad()
-    view.backgroundColor = .black
-    if configuration.backgroundOpacity < 1 {
-      view.backgroundColor = .clear
-      if configuration.backgroundBlur > 0 {
-        let blur = Self.backgroundView()
-        blur.frame = view.bounds
-        blur.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        view.addSubview(blur)
-      }
+    applyBackground()
+    for name in DisplayAccommodations.changeNotifications {
+      NotificationCenter.default.addObserver(
+        self,
+        selector: #selector(applyBackground),
+        name: name,
+        object: nil
+      )
     }
     do {
       let terminal = try TerminalUIView(
@@ -114,8 +135,10 @@ open class TerminalViewController: UIViewController {
       )
       terminal.translatesAutoresizingMaskIntoConstraints = false
       terminal.onTitle = { [weak self] title in self?.title = title }
-      terminal.onBackgroundColor = { [weak self] color in
-        guard let self, configuration.backgroundOpacity >= 1 else { return }
+      terminal.onBackgroundColor = { [weak self, weak terminal] color in
+        guard let self, let terminal,
+          terminal.configuration.backgroundOpacity >= 1
+        else { return }
         view.backgroundColor = color
       }
       view.addSubview(terminal)

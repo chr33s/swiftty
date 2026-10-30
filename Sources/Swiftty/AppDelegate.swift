@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private let muxUpdate = MuxUpdateController()
   /// Connect a Device… (one panel; it owns the Bonjour registration).
   private var connectPanel: ConnectDevicePanelController?
+  /// swiftty › Settings… (one window).
+  private var settings: SettingsWindowController?
   private lazy var attentionLinks = AttentionLinkRouter(
     ownsWorkspace: { [weak self] id in
       self?.workspaces.controller(holding: id) != nil
@@ -43,7 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let config = Configuration.load()
     self.config = config
     workspaces = WorkspaceCoordinator(
-      configuration: config,
+      configuration: config.accommodating(.current),
       listWorkspaces: listMuxWorkspaces,
       openWorkspace: openMuxWorkspace,
       reportListError: reportMuxAttachError,
@@ -74,6 +76,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    NSWorkspace.shared.notificationCenter.addObserver(
+      self,
+      selector: #selector(accommodationsChanged),
+      name: DisplayAccommodations.didChangeNotification,
+      object: nil
+    )
     NSApp.mainMenu = makeMenu()
     workspaces.launch()
     NSApp.activate()
@@ -136,10 +144,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   @objc
   func reloadConfiguration(_ sender: Any?) {
+    reload()
+    // An open Settings window lists the problems itself.
+    if settings?.window?.isVisible != true { reportProblems() }
+  }
+
+  /// Re-reads the file and applies it everywhere, Settings included.
+  private func reload() {
     config = Configuration.load()
     NSApp.mainMenu = makeMenu()
-    workspaces.apply(config)
-    reportProblems()
+    workspaces.apply(config.accommodating(.current))
+    settings?.model.refresh(config)
+  }
+
+  /// The native Settings window (spec.apple.md A01); its problems list
+  /// replaces the alert while it is open.
+  @objc
+  func openSettings(_ sender: Any?) {
+    let window =
+      settings
+      ?? SettingsWindowController(
+        model: SettingsModel(
+          url: Configuration.defaultURL,
+          configuration: config,
+          reload: { [weak self] in
+            guard let self else { return Configuration.load() }
+            reload()
+            return config
+          }
+        ),
+        editFile: { [weak self] in self?.openConfiguration(nil) }
+      )
+    settings = window
+    window.model.refresh(config)
+    window.present()
+  }
+
+  /// Reduce Motion, Reduce Transparency or Increase Contrast changed: the
+  /// file is unchanged, only its presentation (spec.apple.md A05).
+  @objc
+  private func accommodationsChanged() {
+    workspaces.apply(config.accommodating(.current))
   }
 
   @objc
@@ -158,10 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   /// Configuration errors, shown as a sheet on the front window.
   private func reportProblems() {
-    let problems =
-      config.diagnostics
-      + config.missingThemes.map { "theme unavailable: \($0)" }
-      + config.missingFontStyles.map { "font style unavailable: \($0)" }
+    let problems = config.problems
     guard !problems.isEmpty else { return }
     for problem in problems {
       FileHandle.standardError.write(Data("swiftty: \(problem)\n".utf8))
@@ -196,7 +238,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     submenu(
       "swiftty",
       [
-        item("Settings…", #selector(openConfiguration(_:)), key: ","),
+        item("Settings…", #selector(openSettings(_:)), key: ","),
+        item(
+          "Edit Configuration File…",
+          #selector(openConfiguration(_:)),
+          key: ",",
+          modifiers: [.command, .option]
+        ),
         item(
           "Reload Configuration",
           #selector(reloadConfiguration(_:)),

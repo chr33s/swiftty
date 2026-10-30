@@ -11,7 +11,10 @@ import UIKit
 public final class TerminalUIView: MTKView, MTKViewDelegate {
   private static let surfaces = NSHashTable<TerminalUIView>.weakObjects()
   public let session: TerminalSession
+  /// The configuration as presented (`DisplayAccommodations` applied).
   public private(set) var configuration: Configuration
+  /// The configuration as given, restored when a preference turns off.
+  private var configured: Configuration
   let renderer: MetalRenderer
   private lazy var redraw = DisplayDrawScheduler { [weak self] in
     self?.drawPendingFrame()
@@ -71,7 +74,11 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
   /// HID usage owning the repeat timer; other releases leave it running.
   var keyRepeatUsage: Int?
   /// Key commands and their actions, keyed by unique issued identifiers.
-  var keyCommandCache: [UIKeyCommand]?
+  var keyCommandCache: [UIKeyCommand]? {
+    didSet { searchKeyCommandCache = nil }
+  }
+  /// `keyCommandCache` filtered to search navigation (find field focused).
+  var searchKeyCommandCache: [UIKeyCommand]?
   var keyCommandBindings: [String: Keybindings.Binding] = [:]
   #if !os(tvOS)
   /// Defaults to the system clipboard; tests can use a local pasteboard.
@@ -208,6 +215,8 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
     fontSize: CGFloat? = nil
   ) throws {
     self.session = session
+    configured = configuration
+    let configuration = configuration.accommodating(.current)
     self.configuration = configuration
     let overrideSize = fontSize.map(Self.boundedFontSize)
     explicitFontSize = overrideSize
@@ -276,6 +285,14 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
       name: UIAccessibility.voiceOverStatusDidChangeNotification,
       object: nil,
     )
+    for name in DisplayAccommodations.changeNotifications {
+      center.addObserver(
+        self,
+        selector: #selector(accommodationsChanged),
+        name: name,
+        object: nil,
+      )
+    }
     registerForTraitChanges([
       UITraitPreferredContentSizeCategory.self, UITraitDisplayScale.self,
     ]) { (view: TerminalUIView, _) in view.applyFont() }
@@ -326,14 +343,21 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
   /// Applies a new configuration (font, colors, render options,
   /// shader) to the running view.
   public func apply(_ configuration: Configuration) {
-    self.configuration = configuration
+    configured = configuration
+    self.configuration = configuration.accommodating(.current)
     keyCommandCache = nil
     keyCommandBindings.removeAll()
     applyColorScheme()
     applyTranslucency()
     loadShader()
     applyFont()
+    // Reduce Motion lives in the render options `applyFont` just set.
+    updateFrameDriving()
   }
+
+  /// Reduce Motion, Reduce Transparency or Darken Colors changed.
+  @objc
+  private func accommodationsChanged() { apply(configured) }
 
   private func loadShader() {
     var source: String?

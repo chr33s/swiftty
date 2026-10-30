@@ -29,6 +29,12 @@ final class PendingPaneEvents: Sendable { let events = Mutex<[PaneEvent]>([]) }
 /// One PTY, its process lifecycle and its authoritative terminal. Every
 /// operation runs on `queue` in order: output parsing, input writes,
 /// replies, resizes and frame capture.
+///
+/// Sendable: terminal, parser, descriptors and sources are confined to
+/// `queue`; shared counters use `Mutex`/`Atomic`; `onChange`/`onEvent` are
+/// set once before the pane is published to the service, and `pid` is an
+/// `Atomic` that can be set only once. The `readBuffer` allocation is used
+/// only on `queue` and freed in `deinit`.
 final class PaneRuntime: @unchecked Sendable {
   let id: PaneID
   let workspace: WorkspaceID
@@ -72,7 +78,10 @@ final class PaneRuntime: @unchecked Sendable {
   private let observePaneIO: (@Sendable (PaneID, PaneIOObservation) -> Void)?
   private var master: Int32 = -1
   private var slave: Int32 = -1
-  private(set) var pid: pid_t = 0
+  /// Set once at spawn on `queue`; read on the service queue too.
+  private let spawnedPID = Atomic<pid_t>(0)
+  /// The child's process id, 0 before spawn.
+  var pid: pid_t { spawnedPID.load(ordering: .acquiring) }
   private var readSource: DispatchSourceRead?
   private var readSourceActive = false
   private var processingRead = false
@@ -252,7 +261,12 @@ final class PaneRuntime: @unchecked Sendable {
     )
     master = p.master
     slave = p.slave
-    pid = p.pid
+    let (stored, _) = spawnedPID.compareExchange(
+      expected: 0,
+      desired: p.pid,
+      ordering: .releasing
+    )
+    precondition(stored, "a pane spawns one process")
     let fd = master
     let read = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
     read.setEventHandler { [weak self] in self?.readAvailable() }

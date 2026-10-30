@@ -72,6 +72,11 @@ public protocol RSTListener: AnyObject, Sendable {
 /// tests without a network. Delivery has a finite record and byte window;
 /// sends fail with `resourceLimit` when full, allowing the caller to retry
 /// after delivery advances. There is no internal queue of waiting senders.
+///
+/// Sendable: mutable delivery state lives in the `state` Mutex and handlers
+/// run on the serial `delivery` queue. `peer` (weak) and `retainedPeer` are
+/// set once in `pair` before either end is returned; the client keeps the
+/// server alive.
 public final class InMemoryRSTConnection: RSTConnection, @unchecked Sendable {
   static let maxPreCanceledSnapshots = 64
   static let maxHeldSnapshots = 8

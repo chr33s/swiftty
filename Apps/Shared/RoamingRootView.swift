@@ -10,6 +10,9 @@ public struct RoamingRootView: View {
   private var scenePhase
   @State
   private var inbox: RoamingInboxModel?
+  /// This window, among the scenes sharing `model`.
+  @State
+  private var scene = UUID()
 
   public init(model: RoamingAppModel) { self.model = model }
 
@@ -59,20 +62,14 @@ public struct RoamingRootView: View {
     }
     .modifier(InboxHostRefresh(model: model, inbox: inbox))
     .onChange(of: scenePhase, initial: true) { _, phase in
-      // Foreground recovery fetches the inbox again (no push delivery);
-      // never prompting for a password in the background.
+      // Foreground recovery fetches this window's inbox again (no push
+      // delivery); never prompting for a password in the background.
       if phase == .active { inbox?.refresh(interactive: false) }
-      // Foreground-only metadata sync (spec.ssh-identity.md §8.2).
-      model.sync?.setActive(phase == .active)
-      if phase == .active { Task { await model.refreshConnections() } }
-      // Suspension pauses bulk SFTP work; a Mac window losing focus does
-      // not (spec §10).
-      switch model.profile.kind {
-      case .catalyst: break
-      case .mobile, .vision, .tv:
-        model.transferPolicy.setSuspended(phase == .background)
-      }
+      model.scenePhaseChanged(phase, scene: scene)
     }
+    // A root view shown again registers again; a repeat is a no-op.
+    .onAppear { model.scenePhaseChanged(scenePhase, scene: scene) }
+    .onDisappear { model.scenePhaseChanged(nil, scene: scene) }
   }
 
   /// Hide terminal content from app-switcher snapshots on platforms that

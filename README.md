@@ -33,7 +33,10 @@ run so their diagnostics are available. Completion is audited separately for
 each bundle. Allocation budgets run only with optimized code;
 `Scripts/test-native.sh -c release` checks them alongside the rest of the suite.
 
-`mise.toml` sets `SDKROOT` for swift.org toolchains. Build the UIKit frontend
+Use Xcode's Swift 6.4 toolchain, as CI does; `mise.toml` pins the other
+tools but not Swift, because swift.org toolchains bundle a Swift Testing runtime
+that conflicts with Xcode 27.2's and stops `Scripts/test-native.sh` from
+finding tests. Build the UIKit frontend
 with Xcode; the package's AppKit executable scheme is macOS-only:
 
 ```sh
@@ -665,7 +668,11 @@ tmux for native tests.
 Ghostty-style `key = value` files support whole-line `#` comments, repeatable
 keys, empty-value resets and `config-file` includes. Unknown keys are reported
 and ignored. macOS reads `$XDG_CONFIG_HOME/swiftty/config` (default
-`~/.config/swiftty/config`); Settings opens it and Shift-Cmd-, reloads it.
+`~/.config/swiftty/config`). Settings (Cmd-,) edits the common options in
+place, rewriting only their own lines, and lists configuration problems;
+Edit Configuration File (Opt-Cmd-,) opens the file and Shift-Cmd-, reloads it.
+Reduce Motion, Reduce Transparency and Increase Contrast adjust how it is
+drawn without changing the file ([spec.apple.md](spec.apple.md)).
 iOS reads `Documents/config`.
 
 Terminal windows use Liquid Glass by default, with `background-opacity = 0.5`

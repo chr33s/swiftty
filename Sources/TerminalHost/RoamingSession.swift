@@ -18,6 +18,11 @@ import Synchronization
 /// in-process SMX client, so the native app and remote clients share one
 /// single-writer rule. Detaching releases the lease; the shell keeps
 /// running. Never logs tokens, input or terminal contents.
+///
+/// Sendable: ledger, attachment, lease and revision state are confined to
+/// the serial owner `queue`; `status` lives in the `statusBox` Mutex;
+/// `onTerminateRequested` is set once by the registry before publication.
+/// No unsafe storage.
 public final class RoamingSession: @unchecked Sendable {
   public enum State: String, Sendable, Hashable {
     case reserved, attached, detached, exited, terminated

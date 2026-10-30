@@ -10,6 +10,11 @@ import Synchronization
 /// the session's owner queue in order; a later attachment fences this one.
 ///
 /// Never logs tokens, input or terminal contents.
+///
+/// Sendable: `phase` and `reader` are Mutex-guarded; the epoch, writer,
+/// scheduler and viewport fields are touched only on the queue of the one
+/// session it attaches to. The connection and sender are Sendable references
+/// held for the attachment's lifetime.
 final class HostAttachment: @unchecked Sendable {
   private enum Phase {
     case awaitingAttach

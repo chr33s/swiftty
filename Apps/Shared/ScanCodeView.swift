@@ -153,6 +153,10 @@ final class QRScanner: NSObject, AVCaptureMetadataOutputObjectsDelegate {
   }
 
   /// Start and stop run on one serial queue, as AVFoundation requires.
+  ///
+  /// Sendable: none: immutable after init. The session is configured on the
+  /// main actor before being sent, then started and stopped only on `queue`;
+  /// each queued block retains the session through its copy of this value.
   private struct Capture: @unchecked Sendable { let session: AVCaptureSession }
 
   nonisolated func metadataOutput(

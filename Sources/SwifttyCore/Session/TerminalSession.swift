@@ -23,6 +23,11 @@ import Dispatch
 /// `semanticInputHandler` and proposes grid sizes to
 /// `gridProposalHandler`, so remote modes and side effects stay with the
 /// terminal that owns them (spec.roaming.md §A.4.3–4.4).
+///
+/// Sendable: terminal state, parser, transport sources and buffers are
+/// confined to `queue`; callbacks live behind `SessionCallbacks`' lock. The
+/// `readBuffer` allocation is owned by the session, used only on `queue`, and
+/// deallocated in `deinit` after every source handler has finished.
 public final class TerminalSession: @unchecked Sendable {
   package let queue = DispatchQueue(
     label: "swiftty.terminal",

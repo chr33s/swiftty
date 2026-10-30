@@ -6,6 +6,10 @@ import Darwin
 /// Spawned with `posix_spawn`: `POSIX_SPAWN_SETSID` makes the child a
 /// session leader and opening the slave by path then makes it the
 /// controlling terminal, so no fork-time code is needed.
+///
+/// Sendable: none: immutable after init. The owned master and optional drain
+/// slave descriptors stay open for the process object's lifetime and close in
+/// their `deinit`; `resize` and `hangUp` are thread-safe system calls.
 public final class PTYProcess: @unchecked Sendable {
   public let master: FileDescriptor
   public let pid: pid_t

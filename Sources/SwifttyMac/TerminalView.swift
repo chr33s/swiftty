@@ -9,7 +9,10 @@ public final class TerminalView: MTKView, MTKViewDelegate {
   private static let surfaces = NSHashTable<TerminalView>.weakObjects()
   public let session: TerminalSession
   let renderer: MetalRenderer
+  /// The configuration as presented (`DisplayAccommodations` applied).
   private(set) var config: Configuration
+  /// The configuration as given, restored when a preference turns off.
+  private var configured: Configuration
   /// Manual zoom, or nil to follow the configured point size.
   private var explicitFontSize: CGFloat?
   var fontSize: CGFloat {
@@ -95,7 +98,8 @@ public final class TerminalView: MTKView, MTKViewDelegate {
   /// Hosts `session`: a local PTY session to `start()`, an external
   /// transport's, or a presentation session showing remote frames.
   public init(configuration: Configuration, session: TerminalSession) throws {
-    config = configuration
+    configured = configuration
+    config = configuration.accommodating(.current)
     colorScheme = Self.scheme(of: NSApp.effectiveAppearance)
     self.session = session
     guard let device = MTLCreateSystemDefaultDevice() else {
@@ -129,7 +133,17 @@ public final class TerminalView: MTKView, MTKViewDelegate {
     }
     Self.surfaces.add(self)
     installKittyClipboard()
+    NSWorkspace.shared.notificationCenter.addObserver(
+      self,
+      selector: #selector(accommodationsChanged),
+      name: DisplayAccommodations.didChangeNotification,
+      object: nil
+    )
   }
+
+  /// Reduce Motion, Reduce Transparency or Increase Contrast changed.
+  @objc
+  private func accommodationsChanged() { apply(configured) }
 
   @available(*, unavailable)
   required init(coder: NSCoder) { fatalError() }
@@ -194,6 +208,8 @@ public final class TerminalView: MTKView, MTKViewDelegate {
   /// Applies a reloaded configuration. The scrollback limit and command
   /// only take effect in new windows.
   public func apply(_ configuration: Configuration) {
+    configured = configuration
+    let configuration = configuration.accommodating(.current)
     let fontChanged =
       configuration.fontDescriptor(scale: 1) != config.fontDescriptor(scale: 1)
     let paletteChanged =

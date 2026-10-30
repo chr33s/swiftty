@@ -48,6 +48,10 @@ public enum HostIdentityError: Error, Equatable, Sendable {
 /// The certificate is replaced when it nears expiry or its subject
 /// alternative names change; replacement implies clients receive the new
 /// pin through fresh SSH authentication.
+///
+/// Sendable: none: immutable after init. The only non-Sendable field is the
+/// retained `SecIdentity`, an immutable, thread-safe CF object that lives as
+/// long as any copy of the identity.
 public struct HostIdentity: @unchecked Sendable {
   // SecIdentity is an immutable, thread-safe CF object.
   public let certificateDER: Data

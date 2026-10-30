@@ -4,11 +4,17 @@
 import Darwin
 import Dispatch
 import Foundation
+import Synchronization
 import XPC
 
 /// One XPC connection carrying SMX records as `Data` payloads. XPC supplies
 /// message boundaries and ordering; this type only frames bytes.
 /// Handlers run on `queue`.
+///
+/// Sendable: `handler`, `closed`, and `recordLimit` are written once by
+/// `activate` (enforced by `activated`) before `xpc_connection_activate`
+/// and thereafter only on `queue`, the connection's target queue. The retained `xpc_connection_t` lives as
+/// long as the channel; `send` and `cancel` are thread-safe XPC calls.
 public final class SMXChannel: @unchecked Sendable {
   public enum Event: Sendable {
     case message(Data)
@@ -18,6 +24,8 @@ public final class SMXChannel: @unchecked Sendable {
 
   public let queue: DispatchQueue
   private let connection: xpc_connection_t
+  /// `activate` runs once: its writes precede every event.
+  private let activated = Atomic(false)
   private var handler: (@Sendable (Event) -> Void)?
   private var closed = false
   private var recordLimit: @Sendable () -> Int = {
@@ -70,6 +78,12 @@ public final class SMXChannel: @unchecked Sendable {
     },
     _ handler: @escaping @Sendable (Event) -> Void
   ) {
+    let (first, _) = activated.compareExchange(
+      expected: false,
+      desired: true,
+      ordering: .acquiringAndReleasing
+    )
+    precondition(first, "an SMXChannel is activated once")
     self.recordLimit = recordLimit
     self.handler = handler
     xpc_connection_set_event_handler(connection) { [weak self] object in
@@ -122,9 +136,16 @@ public final class SMXChannel: @unchecked Sendable {
 }
 
 /// An endpoint for connecting to an anonymous listener.
+///
+/// Sendable: none: immutable after init. The retained `xpc_endpoint_t` is an
+/// immutable, thread-safe XPC object that lives as long as any copy.
 public struct SMXEndpoint: @unchecked Sendable { let endpoint: xpc_endpoint_t }
 
 /// Accepts XPC connections on a Mach service name, or anonymously.
+///
+/// Sendable: none: immutable after init. Events arrive on `queue`; the
+/// retained listener `xpc_connection_t` lives as long as the listener and is
+/// used only through thread-safe XPC calls.
 public final class SMXListener: @unchecked Sendable {
   private let listener: xpc_connection_t
   private let queue: DispatchQueue

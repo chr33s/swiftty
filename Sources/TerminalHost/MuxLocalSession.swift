@@ -12,6 +12,11 @@ import Synchronization
 /// The roaming host owns no PTYs; it reaches panes only through this, so
 /// remote attachments get the same leases, takeover fencing and input
 /// ledger as the native frontend.
+///
+/// Sendable: the connection, pending request/input tables, close state,
+/// `welcome` and the handler properties are read and written only on
+/// `queue`; sink callbacks hop there and hold `self` weakly. No unsafe
+/// storage.
 final class MuxLocalSession: @unchecked Sendable {
   typealias EventHandler = (MuxEvent) -> Void
 

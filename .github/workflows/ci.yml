@@ -39,6 +39,9 @@ jobs:
       - name: Check formatting and documentation
         if: matrix.configuration == 'debug'
         run: Scripts/format-swift.sh check
+      - name: Check unchecked Sendable documentation
+        if: matrix.configuration == 'debug'
+        run: Scripts/check-unchecked-sendable.sh
   frontends:
     runs-on: namespace-profile-mac
     strategy:

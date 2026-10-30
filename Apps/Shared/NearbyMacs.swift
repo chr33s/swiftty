@@ -132,6 +132,9 @@ struct DNSSDResolver: ServiceResolving {
 /// reference on its own queue, so a late callback cannot outlive it.
 private final class DNSSDResolveOperation: Sendable {
   /// A DNS-SD reference, touched only on `queue` after registration.
+  ///
+  /// Sendable: none: immutable after init. It is stored in the `state` Mutex
+  /// and passed to DNS-SD only on `queue`, where `finish` deallocates it once.
   private struct Reference: @unchecked Sendable {
     let ref: DNSServiceRef
   }

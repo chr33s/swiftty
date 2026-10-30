@@ -181,6 +181,12 @@ final class RoamingTerminalController: TerminalSurfaceController {
   private var monitor: NWPathMonitor?
   @ObservationIgnored
   private var pathSeen = false
+  /// The windows showing this screen.
+  @ObservationIgnored
+  private var scenes = ScenePhases()
+  /// The last lifecycle call was `enterBackground`.
+  @ObservationIgnored
+  private var backgrounded = false
   #if os(macOS) || targetEnvironment(macCatalyst)
   @ObservationIgnored
   private var powerMonitor: SystemPowerMonitor?
@@ -390,14 +396,27 @@ final class RoamingTerminalController: TerminalSurfaceController {
   /// Mobile, spatial and TV scenes detach in the background and
   /// reattach in the foreground. A Mac window losing focus is not a
   /// suspension; sleep is (spec §9, `SystemPowerMonitor`).
-  func scenePhaseChanged(_ phase: ScenePhase) {
+  ///
+  /// The controller belongs to the screen model, which more than one
+  /// window can show, so only the windows' combined phase counts: one of
+  /// two windows going to the background detaches nothing. Transient
+  /// inactivity (Control Center, a permission alert) never detaches
+  /// (spec.apple.md A02). Whether the last call detached is remembered, so
+  /// a window shown after the others went away still reattaches, while a
+  /// screen's first appearance does not.
+  func scenePhaseChanged(_ phase: ScenePhase?, scene: UUID) {
+    guard let change = scenes.set(phase, for: scene) else { return }
     switch model.profile.kind {
     case .catalyst: return
     case .mobile, .vision, .tv: break
     }
-    switch phase {
-    case .background: serial { await $0.enterBackground() }
-    case .active: serial { await $0.enterForeground() }
+    switch change.new {
+    case .background where !backgrounded:
+      backgrounded = true
+      serial { await $0.enterBackground() }
+    case .active where change.old != nil || backgrounded:
+      backgrounded = false
+      serial { await $0.enterForeground() }
     default: break
     }
   }

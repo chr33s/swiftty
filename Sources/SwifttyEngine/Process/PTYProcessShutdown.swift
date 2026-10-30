@@ -5,6 +5,10 @@ import Dispatch
 /// Owns reaping after the session releases its PTY. Mutable fields belong
 /// to the private queue. Sources retain the owner until it cancels both;
 /// no session or PTY descriptor is held during the grace period.
+///
+/// Sendable: `exitSource`, `timer`, `finished` and `forced` are touched only
+/// on `queue`; `pid` and `killAfter` are immutable. The instance lives until
+/// `finish` cancels both sources on `queue`.
 package final class PTYProcessShutdown: @unchecked Sendable {
   private let pid: pid_t
   private let queue = DispatchQueue(

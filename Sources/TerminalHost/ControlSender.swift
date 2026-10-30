@@ -9,7 +9,7 @@ import Synchronization
 /// records under the transport's flow control. A peer that stops reading
 /// long enough to exceed the byte bound loses its connection instead of
 /// growing an unbounded queue.
-final class ControlSender: @unchecked Sendable {
+final class ControlSender: Sendable {
   private struct State {
     var queue: [[UInt8]] = []
     var head = 0

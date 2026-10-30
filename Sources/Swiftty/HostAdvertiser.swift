@@ -78,6 +78,9 @@ final class HostAdvertiser {
 /// queue, restricted to the `local.` domain.
 @MainActor
 final class DNSSDRegistrar: ServiceRegistering {
+  /// Sendable: none: immutable after init. Created, scheduled on, and
+  /// deallocated by the main-actor registrar on the main queue only; the
+  /// `DNSServiceRef` lives until `cancel` or the isolated `deinit`.
   private struct Reference: @unchecked Sendable { let ref: DNSServiceRef }
   private var reference: Reference?
   private var box: Unmanaged<CallbackBox>?
