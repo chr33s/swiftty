@@ -262,17 +262,7 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
     applyTranslucency()
     loadShader()
 
-    session.onUpdate = { [weak self] in
-      DispatchQueue.main.async {
-        MainActor.assumeIsolated { self?.setNeedsDisplay() }
-      }
-    }
-    session.onEvent = { [weak self] event in
-      DispatchQueue.main.async {
-        MainActor.assumeIsolated { self?.handle(event) }
-      }
-    }
-
+    installSessionCallbacks()
     installGestures()
     installKittyClipboard()
     Self.surfaces.add(self)
@@ -462,8 +452,28 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
     updateFrameDriving()
   }
 
+  /// Routes the session's updates and events to this view. A session has
+  /// one handler of each, and it notifies again only after a snapshot, so
+  /// an update delivered to another view built for the same session
+  /// (SwiftUI can make more than one) would leave this one unpainted until
+  /// something else, such as a keyboard resize, redraws it.
+  private func installSessionCallbacks() {
+    session.onUpdate = { [weak self] in
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated { self?.setNeedsDisplay() }
+      }
+    }
+    session.onEvent = { [weak self] event in
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated { self?.handle(event) }
+      }
+    }
+  }
+
   override public func didMoveToWindow() {
     super.didMoveToWindow()
+    // The view on screen owns the session's callbacks.
+    if window != nil { installSessionCallbacks() }
     observeVisibility()
     let center = NotificationCenter.default
     center.removeObserver(
