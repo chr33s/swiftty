@@ -55,10 +55,28 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
     if let bar = loadedAccessoryBar { return bar }
     let bar = TerminalAccessoryBar()
     bar.onKey = { [weak self] key in self?.accessoryKey(key) }
+    bar.onDiscreteKey = { [weak self] key in self?.discreteKey(key) }
+    bar.onPaste = { [weak self] in _ = self?.perform(.pasteFromClipboard) }
     bar.onDismiss = { [weak self] in _ = self?.resignFirstResponder() }
+    bar.onPadIntent = { [weak self] intent in self?.padIntent(intent) ?? false }
+    bar.update(sticky)
     loadedAccessoryBar = bar
+    updatePadAvailability()
     return bar
   }
+
+  /// The accessory's virtual key run (pad slides and discrete arrows),
+  /// separate from hardware held keys.
+  lazy var virtualKeys: VirtualKeyOwner = {
+    let owner = VirtualKeyOwner()
+    owner.send = { [weak self] event in self?.session.send(.key(event)) }
+    owner.isAuthorized = { [weak self] in
+      self?.effectiveCapabilities.textInput == true
+    }
+    return owner
+  }()
+  /// Generation of the pad's held run, if it holds one.
+  var padRun: UInt64?
 
   /// IME composition, drawn as the renderer's preedit.
   var markedText = ""
@@ -1051,6 +1069,7 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
       releaseHardwareKeys()
       discardComposition()
     }
+    updatePadAvailability()
     if !available.search, isSearchVisible { hideSearch() }
     if !available.scrollback {
       stopMomentum()

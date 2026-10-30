@@ -23,6 +23,13 @@ extension SwiftMuxExtensionTests {
     )
     let live = try await c.frame(of: pane, timeout: .seconds(30), label: "tail")
     { $0.lines.contains("TAIL-MARK") }
+    // The shell's prompt follows TAIL-MARK; let the controller settle so the
+    // quiet check below sees only frames caused by observers or compression.
+    while (try? await c.frame(
+      of: pane,
+      timeout: .milliseconds(300),
+      label: "settle"
+    ) { _ in true }) != nil {}
     let a = try await observe(h, ws, panes: [pane])
     let b = try await observe(h, ws, panes: [pane])
     try await a.execute(.scroll(pane: pane, .lines(2_700)))

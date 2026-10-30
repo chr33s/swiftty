@@ -110,7 +110,8 @@ extension QUICTransportTests {
     }
 
     do {
-      try await transportEventually(.seconds(2)) {
+      // Setup only: a loaded runner can take seconds to write the first 4 MiB.
+      try await transportEventually(.seconds(10)) {
         gate.isHolding && result.withLock { $0 != nil }
       }
       try result.withLock { try $0?.get() }
@@ -122,8 +123,15 @@ extension QUICTransportTests {
           bodyLength: RSTLimits.maxSnapshotEncodedBytes,
           fill: UInt8(id)
         )
-        try await server.sendSnapshot(newer, stream: UInt64(id))
+        // The native send can wait for connection credit that only the held
+        // reader returns, so delivery is awaited alongside it: awaitSnapshot
+        // releases that reader when credit runs out.
+        let sending = Task {
+          try await server.sendSnapshot(newer, stream: UInt64(id))
+        }
+        defer { sending.cancel() }
         if try await awaitSnapshot(newer) { resumedForCredit = true }
+        try await sending.value
         if cancelAfterSend { server.cancelSnapshot(stream: UInt64(id)) }
       }
       // With credit available, confirm actual overflow retirement while the old

@@ -89,6 +89,8 @@ extension TerminalUIView {
     if !KeyTranslator.isModifier(usage) {
       stopKeyRepeat()
       hardwareTextInput.cancel()
+      // A physical terminal key preempts the accessory's virtual keys.
+      preemptVirtualKey(stoppingAccessoryRepeat: true)
     }
     let mods = modifiers.union(sticky.active)
     // While composing, every key belongs to the input method.
@@ -211,6 +213,7 @@ extension TerminalUIView {
   internal func releaseHardwareKeys() {
     stopKeyRepeat()
     loadedAccessoryBar?.stopRepeating()
+    endVirtualKeys()
     hardwareTextInput.cancel()
     for release in heldKeys.values { session.send(.key(release)) }
     heldKeys.removeAll()
@@ -222,12 +225,13 @@ extension TerminalUIView {
   /// The configured bindings as key commands, so they show in the
   /// discoverability HUD (hold Cmd) and take priority over the system.
   ///
-  /// Only while the terminal itself is first responder: a descendant text
-  /// field (Find) keeps its own editing shortcuts, and only search
-  /// navigation reaches the terminal from there (spec.apple.md A03).
+  /// While the Find field is focused it keeps its own editing shortcuts,
+  /// and only search navigation reaches the terminal (spec.apple.md A03).
   public override var keyCommands: [UIKeyCommand]? {
     let all = keyCommandCache ?? buildKeyCommands()
-    guard !isFirstResponder else { return all }
+    // The only descendant that takes focus is the Find field.
+    guard !isFirstResponder, isSearchVisible, searchBar.field.isFirstResponder
+    else { return all }
     if let cached = searchKeyCommandCache { return cached }
     let search = all.filter {
       guard let identifier = $0.propertyList as? String,
@@ -407,9 +411,98 @@ extension TerminalUIView {
       accessoryBar.update(sticky)
       return
     }
-    guard effectiveCapabilities.textInput else { return }
+    // A held physical terminal key keeps its press to itself.
+    guard effectiveCapabilities.textInput, heldKeys.isEmpty else { return }
     clearSelection()
     send(key.inputs(modifiers: consumeSticky()))
+  }
+
+  // MARK: Virtual keys (spec.keyboard.md §5)
+
+  /// Whether a virtual key press may start: input is allowed, no IME
+  /// composition is active and no physical terminal key is held.
+  internal var canAdmitVirtualPress: Bool {
+    effectiveCapabilities.textInput && markedText.isEmpty && heldKeys.isEmpty
+  }
+
+  /// Gesture intents from the accessory's directional pad. Returns
+  /// whether an activation was admitted.
+  internal func padIntent(_ intent: PadIntent) -> Bool {
+    // A pause, an end, a cancellation or a new direction releases the
+    // held direction first.
+    if let run = padRun {
+      padRun = nil
+      virtualKeys.release(run)
+      loadedAccessoryBar?.showChord(nil)
+    }
+    guard case let .activate(direction) = intent else { return true }
+    guard isFirstResponder, canAdmitVirtualPress else { return false }
+    loadedAccessoryBar?.stopRepeating()
+    clearSelection()
+    noteInput()
+    // Every repeat and the release use the chord captured here.
+    let modifiers = consumeSticky()
+    guard
+      let run = virtualKeys.press(
+        KeyEvent(direction.key, modifiers: modifiers),
+        source: .pad,
+        repeats: true
+      )
+    else { return false }
+    padRun = run
+    if !modifiers.isEmpty {
+      loadedAccessoryBar?.showChord(Self.chord(modifiers, key: direction.name))
+    }
+    return true
+  }
+
+  /// One press and release from the Keys panel or an accessibility
+  /// action, without repeat.
+  internal func discreteKey(_ key: Key) {
+    guard isFirstResponder, canAdmitVirtualPress else { return }
+    preemptVirtualKey(stoppingAccessoryRepeat: true)
+    clearSelection()
+    noteInput()
+    let modifiers = consumeSticky()
+    if let run = virtualKeys.press(
+      KeyEvent(key, modifiers: modifiers),
+      source: .discrete,
+      repeats: false
+    ) {
+      virtualKeys.release(run)
+    }
+  }
+
+  static func chord(_ modifiers: KeyModifiers, key: String) -> String {
+    var parts: [String] = []
+    if modifiers.contains(.control) { parts.append(String(localized: "Ctrl")) }
+    if modifiers.contains(.alt) { parts.append(String(localized: "Alt")) }
+    return (parts + [key]).joined(separator: " + ")
+  }
+
+  /// Another input source takes over: the virtual run stops and the pad
+  /// ignores its current touch until it lifts.
+  internal func preemptVirtualKey(stoppingAccessoryRepeat: Bool = false) {
+    if stoppingAccessoryRepeat { loadedAccessoryBar?.stopRepeating() }
+    virtualKeys.stop()
+    padRun = nil
+    loadedAccessoryBar?.showChord(nil)
+    loadedAccessoryBar?.directionPad.abandon(suppressing: true)
+  }
+
+  /// Lifecycle cleanup: releases through the original destination while it
+  /// is still authorized, and forgets the pad's touch.
+  internal func endVirtualKeys() {
+    virtualKeys.stop()
+    padRun = nil
+    loadedAccessoryBar?.showChord(nil)
+    loadedAccessoryBar?.directionPad.abandon(suppressing: false)
+  }
+
+  /// The pad is disabled while composing or when input is refused.
+  internal func updatePadAvailability() {
+    loadedAccessoryBar?.directionPad.isEnabled =
+      effectiveCapabilities.textInput && markedText.isEmpty
   }
 
   /// Modifiers for the next key, releasing latched accessory toggles.
@@ -423,6 +516,7 @@ extension TerminalUIView {
   internal func send(_ inputs: [TerminalInput]) {
     guard !inputs.isEmpty, effectiveCapabilities.textInput else { return }
     stopKeyRepeat()
+    preemptVirtualKey()
     noteInput()
     for input in inputs { session.send(input) }
   }
@@ -629,6 +723,8 @@ extension TerminalUIView: UITextInput {
     stopKeyRepeat()
     stopMomentum()
     hardwareTextInput.cancel()
+    // Composition cancels a pad run; a fresh touch is needed afterwards.
+    if !(markedText ?? "").isEmpty { preemptVirtualKey() }
     setPreedit(markedText ?? "", selection: selectedRange)
   }
 
@@ -655,6 +751,7 @@ extension TerminalUIView: UITextInput {
         || renderer.options.preeditSelection != renderedSelection
     else { return }
     markedText = text
+    updatePadAvailability()
     renderer.options.preedit = Array(text.unicodeScalars)
     renderer.options.preeditSelection = renderedSelection
     setNeedsDisplay()

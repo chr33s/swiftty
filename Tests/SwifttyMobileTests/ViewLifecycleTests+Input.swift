@@ -27,8 +27,7 @@ extension ViewLifecycleTests {
       bar.removeFromSuperview()
     }
     func findButton(in parent: UIView) -> UIButton? {
-      if let button = parent as? UIButton,
-        button.accessibilityLabel == AccessoryKey.up.title
+      if let button = parent as? UIButton, button.accessibilityLabel == "Escape"
       {
         return button
       }
@@ -39,7 +38,7 @@ extension ViewLifecycleTests {
     var keys: [AccessoryKey] = []
     bar.onKey = { keys.append($0) }
     _ = bar.perform(NSSelectorFromString("keyDown:"), with: button)
-    #expect(keys == [.up])
+    #expect(keys == [.escape])
     if repeating {
       let deadline = ContinuousClock.now + .seconds(2)
       while keys.count < 2, ContinuousClock.now < deadline {
@@ -117,7 +116,9 @@ extension ViewLifecycleTests {
     #expect(writes.withLock { $0 } == Array("Y".utf8))
   }
 
-  @Test(.enabled(if: hasMetal), arguments: [0, 1, 2, 3, 4, 5])
+  // An accessory key no longer interrupts a held physical key: it is
+  // refused (DirectionPadEventTests).
+  @Test(.enabled(if: hasMetal), arguments: [0, 1, 2, 3, 5])
   func `new text bindings and composition stop an older key repeat`(
     _ transition: Int
   ) throws {
@@ -152,7 +153,6 @@ extension ViewLifecycleTests {
     case 2:
       view.setMarkedText("中", selectedRange: NSRange(location: 1, length: 0))
     case 3: view.insertText("x")
-    case 4: view.accessoryKey(.tab)
     default:
       let command = try #require(
         view.keyCommands?

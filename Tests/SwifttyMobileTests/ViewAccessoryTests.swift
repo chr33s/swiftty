@@ -7,6 +7,8 @@ extension ViewLifecycleTests {
   @Test
   func `esc ctrl alt and tab are SF Symbols with spoken names`() throws {
     let bar = TerminalAccessoryBar()
+    bar.frame = CGRect(x: 0, y: 0, width: 393, height: 56)
+    bar.layoutIfNeeded()
     func button(_ label: String, in view: UIView) -> UIButton? {
       if let button = view as? UIButton, button.accessibilityLabel == label {
         return button
@@ -20,9 +22,13 @@ extension ViewLifecycleTests {
       #expect(found.configuration?.image != nil)
       #expect(found.configuration?.title == nil)
     }
-    // Arrows and symbols keep their text.
+    // One directional pad replaces the four arrow buttons.
     #expect(AccessoryKey.up.symbolName == nil)
-    #expect(button(AccessoryKey.up.title, in: bar) != nil)
+    for key in [AccessoryKey.left, .down, .up, .right] {
+      #expect(button(key.title, in: bar) == nil)
+    }
+    #expect(bar.directionPad.accessibilityLabel == "Arrow keys")
+    #expect(!bar.directionPad.isHidden)
   }
 
   @Test
@@ -43,20 +49,20 @@ extension ViewLifecycleTests {
       }
       return view.subviews.lazy.compactMap { findButton(title, in: $0) }.first
     }
-    let up = try #require(findButton(AccessoryKey.up.title, in: bar))
-    let left = try #require(findButton(AccessoryKey.left.title, in: bar))
+    let up = try #require(findButton("Escape", in: bar))
+    let left = try #require(findButton("Tab", in: bar))
     var delivered: [AccessoryKey] = []
     bar.onKey = { delivered.append($0) }
     _ = bar.perform(NSSelectorFromString("keyDown:"), with: up)
     _ = bar.perform(NSSelectorFromString("keyDown:"), with: left)
     _ = bar.perform(NSSelectorFromString("keyUp:"), with: up)
-    #expect(delivered == [.up, .left])
+    #expect(delivered == [.escape, .tab])
     let deadline = ContinuousClock.now + .seconds(2)
     while delivered.count < 3, ContinuousClock.now < deadline {
       try await Task.sleep(for: .milliseconds(20))
     }
     #expect(delivered.count >= 3)
-    #expect(delivered.dropFirst().allSatisfy { $0 == .left })
+    #expect(delivered.dropFirst().allSatisfy { $0 == .tab })
     _ = bar.perform(NSSelectorFromString("keyUp:"), with: left)
     let stoppedCount = delivered.count
     try await Task.sleep(for: .milliseconds(150))
@@ -75,9 +81,7 @@ extension ViewLifecycleTests {
       bar.removeFromSuperview()
     }
     func findButton(in view: UIView) -> UIButton? {
-      if let button = view as? UIButton,
-        button.accessibilityLabel == AccessoryKey.up.title
-      {
+      if let button = view as? UIButton, button.accessibilityLabel == "Escape" {
         return button
       }
       return view.subviews.lazy.compactMap { findButton(in: $0) }.first

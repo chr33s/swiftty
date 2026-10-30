@@ -21,20 +21,20 @@ extension ViewLifecycleTests {
       }
       return view.subviews.lazy.compactMap { findButton(title, in: $0) }.first
     }
-    let up = try #require(findButton(AccessoryKey.up.title, in: bar))
-    let left = try #require(findButton(AccessoryKey.left.title, in: bar))
+    let up = try #require(findButton("Escape", in: bar))
+    let left = try #require(findButton("Tab", in: bar))
     var delivered: [AccessoryKey] = []
     bar.onKey = { delivered.append($0) }
     up.sendActions(for: .touchDown)
     left.sendActions(for: .touchDown)
     up.sendActions(for: .touchUpInside)
-    #expect(delivered == [.up, .left])
+    #expect(delivered == [.escape, .tab])
     let deadline = ContinuousClock.now + .seconds(2)
     while delivered.count < 3, ContinuousClock.now < deadline {
       try await Task.sleep(for: .milliseconds(20))
     }
     #expect(delivered.count >= 3)
-    #expect(delivered.dropFirst().allSatisfy { $0 == .left })
+    #expect(delivered.dropFirst().allSatisfy { $0 == .tab })
     left.sendActions(for: .touchUpInside)
     let stoppedCount = delivered.count
     try await Task.sleep(for: .milliseconds(150))
