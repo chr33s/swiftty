@@ -1,11 +1,17 @@
 # Swiftty: Apple platform and Swift design requirements
 
-**Status:** Normative. Adopts the amendments proposed in
-[`swiftty-apple-swift-design-review.md`](swiftty-apple-swift-design-review.md)
-(2026-10-30, findings A01–A10) for the Apple Platform Compatibility
-Specification v1.0 clauses named below, and records how this repository
-satisfies them. Where this document and an older clause disagree, this
-document wins.
+**Status:** Normative. Amends the Apple Platform Compatibility
+Specification v1.0 clauses named below (design review of 2026-10-30,
+findings A01–A10, against `6a3831ca`), gives the reason for each
+amendment, and records how this repository satisfies them. Where this
+document and an older clause disagree, this document wins.
+
+The review found the architecture a good fit for Swift and Apple
+platforms. None of the amendments requires replacing the terminal engine,
+rewriting the UI in SwiftUI, or putting an actor around every operation.
+They separate platform requirements, Human Interface Guidelines, Swift
+safety obligations and product choices; a missing clause was not taken as
+evidence of a bug.
 
 Clause IDs (CFG-, SESSION-, ARCH-, UI-, MAC-, DIST-, TXT-, PERF-, SAFE-,
 Appendix A) refer to that specification. "Implemented" means the code
@@ -13,6 +19,12 @@ and tests named exist in this tree; it does not mean device, accessibility
 session or App Review evidence has been collected.
 
 ## A01 — Native settings (CFG-01)
+
+**Rationale.** Opening the config file was the whole settings experience,
+weaker than the macOS convention of an app-owned window behind App →
+Settings and ⌘,. This is a UX expectation, not an App Store rule; the file
+format stays authoritative. ([HIG: Settings][SETTINGS],
+[Settings interface][SETTINGS-API])
 
 > Native macOS MUST provide an app-owned Settings window for common
 > preferences and configuration diagnostics, accessible through App →
@@ -53,6 +65,13 @@ no silent overwriting of unrelated advanced options.
 
 ## A02 — Scene lifecycle (SESSION-03, replacement)
 
+**Rationale.** "Unavailable or backgrounded" was too broad: Apple
+separates temporary inactivity (permission alerts, Control Center) from
+backgrounding, and scene state from app state. The code already ignored
+`.inactive`; the clause preserves that rather than fixing a demonstrated
+bug, and keeps UI interruptions from being treated as connection failures.
+([sceneWillResignActive][INACTIVE], [ScenePhase][SCENEPHASE])
+
 > Lifecycle decisions MUST distinguish scene inactivity, scene backgrounding
 > and application suspension. Temporary inactivity pauses input and
 > unnecessary presentation work without detaching solely because a system
@@ -80,6 +99,13 @@ window focus; sleep and wake go through `SystemPowerMonitor`. Tests:
 `ScenePhasesTests`.
 
 ## A03 — Keyboard context (CFG-03, UI-01)
+
+**Rationale.** Key sequences are a legitimate terminal feature but must not
+capture typing in Find, authentication prompts, connection fields or
+settings. UIKit normally lets text input win over app key commands; an
+override needs justification. No invented timeout or Command-key
+substitution is required. ([wantsPriorityOverSystemBehavior][KEY-PRIORITY],
+[HIG: Keyboards][KEYBOARDS])
 
 > Terminal key sequences and key-table state MUST be scoped to the focused
 > terminal and its attachment. Native text fields retain their normal
@@ -111,6 +137,14 @@ input method on both platforms; held keys are released on focus loss.
 
 ## A04 — Isolation, transfer and suspension (ARCH-01, Appendix A, CFG-03)
 
+**Rationale.** One serial session owner is sound, but Swift 6 checking does
+not prove `@unchecked Sendable` types (`TerminalSession`, `RenderSnapshot`)
+safe; their invariants must be maintained. Converting everything to actors
+is not a remedy: actor work interleaves across suspension and is not FIFO,
+so ordering stays an explicit contract. Queues, actors and executors remain
+available; no per-byte tasks, locks or hops. ([Sendable][SENDABLE],
+[SE-0306][ACTORS])
+
 > Each session MUST have one explicit isolation domain. UI state remains
 > main-actor isolated. Values crossing isolation boundaries MUST use checked
 > Sendable conformance, valid ownership transfer, or a documented manually
@@ -137,6 +171,13 @@ CI. Action chains do not exist yet (one binding runs one action); the
 chain rule applies when they are added.
 
 ## A05 — Accessibility preferences (UI-01, UI-02, CFG-04)
+
+**Rationale.** Custom rendering does not inherit native text-view
+accessibility, so acceptance names larger text, contrast, reduced
+motion/transparency and keyboard access explicitly. The grid need not
+become one text view per cell; a custom enlargement mechanism is fine if
+the result is usable. ([HIG: Accessibility][ACCESSIBILITY],
+[Testing system features][ACCESSIBILITY-TEST], [Larger text][LARGER-TEXT])
 
 > App chrome and companion text MUST support applicable system text-size
 > settings without clipping essential controls. Terminal content MUST
@@ -171,6 +212,12 @@ and the terminal accessibility text model are unchanged. Tests:
 
 ## A06 — App Intents (MAC-02)
 
+**Rationale.** A shared typed action executor for menus, AppleScript and
+intents is sound, but intents may run in the background or while locked,
+so foreground UI cannot be assumed. The exact policy per intent is a
+product decision. ([supportedModes][INTENT-MODES],
+[IntentAuthenticationPolicy][INTENT-AUTH])
+
 > Each App Intent MUST declare its supported execution modes and
 > authentication policy. Operations exposing protected session information
 > or mutating session state MUST use the documented authenticated policy
@@ -194,6 +241,11 @@ continuation, cancellation and takeover refusal.
 
 ## A07 — Distribution updates (MAC-03, DIST-01, replacement)
 
+**Rationale.** "Do not require a custom updater in store clients" was too
+weak: App Review guideline 2.4.5(vii) requires App Store updates. This
+concerned wording, not a prohibited updater in the shipped app.
+([App Review Guidelines][STORE-RULES])
+
 > Developer ID builds MAY implement the specified update discovery and
 > staging flow. App Store builds MUST receive application updates through
 > the App Store and MUST NOT enable the custom application updater.
@@ -208,6 +260,14 @@ staging (`MuxUpdate.swift`) is the permitted Developer ID flow. An App
 Store profile must be defined, without that updater, before one ships.
 
 ## A08 — Memory and performance (TXT-04, PERF-01, Appendix A)
+
+**Rationale.** Compact cells, borrowing and low allocation match where Swift
+is heading (spans, inline storage, noncopyable containers). The clauses
+stop an internal optimization being read as a wire/persistence format or
+an app-wide ban on ordinary Swift types: one bounded hyperlink record is
+not an allocation per printed cell. Glyph-at-offset-zero is relied on, so
+the layout is tested, not stylistic. ([Swift 6.4][SWIFT-SYSTEMS],
+[MemoryLayout][LAYOUT], [WWDC24 Swift performance][PERFORMANCE])
 
 > Preserve the current 16-byte cell stride on supported toolchains and
 > targets. Verify size, stride, alignment and field offsets used by
@@ -237,6 +297,14 @@ alignment 4 and the offsets of `glyph` (0, relied on by
 
 ## A09 — Service authorization and pasteboard (SESSION-01, DIST-01, SAFE-01)
 
+**Rationale.** The existing per-user `SMAppService.agent` model with
+`requiresApproval` handling is kept; registration stays subject to user
+authorization and revocation. "Without root" is a Swiftty constraint, not
+an Apple one. An OSC clipboard grant does not exempt Swiftty from the OS
+pasteboard privacy layer, which distinguishes user paste from programmatic
+reads. ([SMAppService.register][SERVICE], [UIPasteControl][PASTE],
+[NSPasteboard.AccessBehavior][MAC-PASTE])
+
 > Preserve the bundled per-user SMAppService registration model and run the
 > helper without root privileges. Explain why the helper persists, respect
 > disabled/revoked/unregistered states, and provide the normal removal path.
@@ -261,6 +329,9 @@ command or a granted OSC/Kitty clipboard request.
 
 ## A10 — Testing framework (Appendix A, replacement)
 
+**Rationale.** App-hosted tests need not be XCTest. Existing tests and the
+native AppKit host stay. ([Testing][TESTING])
+
 > Use Swift Testing for new unit/component tests, including app-hosted and
 > main-actor tests where appropriate. Use XCTest/XCUITest for UI automation
 > and platform performance-testing APIs. Preserve the existing native-host
@@ -273,11 +344,15 @@ in `Tests/AppUITests` and the signed runtime suites.
 
 ## Retained choices
 
-AppKit/UIKit terminal views with SwiftUI where useful; CoreText and Metal;
-damage-driven rendering with idle suspension; one serial terminal owner;
-compact cells, borrowed storage and bounded side metadata; a headless engine
-separate from UI; windowed visionOS and focus-oriented tvOS; a read-only
-watch companion; the Kitty graphics exclusion; and the OS 27.0 baseline.
+AppKit/UIKit terminal views with SwiftUI where useful (Apple supports
+integration both ways; no renderer rewrite); CoreText and Metal;
+damage-driven rendering with idle suspension (MTKView supports event-driven
+drawing); one serial terminal owner (deterministic mutation and input
+order); compact cells, borrowed storage and bounded side metadata; a
+headless engine separate from UI; windowed visionOS and focus-oriented
+tvOS; a read-only watch companion; the Kitty graphics exclusion; and the
+OS 27.0 baseline (a support policy, not an idiom requirement).
+([AppKit integration][INTEROP], [MTKView][METALKIT])
 
 ## Remaining verification
 
@@ -285,3 +360,33 @@ Not exercised by this change: device and simulator sessions for the A02
 acceptance list, VoiceOver/Full Keyboard Access/largest-text passes for
 A05, the iOS Find-field shortcut behavior on hardware keyboards (A03), and
 App Review for any future App Store profile (A07).
+
+The review was done by specification/source inspection against Apple and
+Swift documentation, without builds, accessibility sessions, measurements
+or device tests.
+
+## Sources
+
+[SETTINGS]: https://developer.apple.com/design/human-interface-guidelines/settings
+[SETTINGS-API]: https://developer.apple.com/documentation/foundation/adding-a-settings-interface-to-your-app
+[INACTIVE]: https://developer.apple.com/documentation/uikit/uiscenedelegate/scenewillresignactive(_:)
+[SCENEPHASE]: https://developer.apple.com/documentation/swiftui/scenephase
+[KEY-PRIORITY]: https://developer.apple.com/documentation/uikit/uikeycommand/wantspriorityoversystembehavior
+[KEYBOARDS]: https://developer.apple.com/design/human-interface-guidelines/keyboards
+[SENDABLE]: https://docs.swift.org/latest/documentation/swift/sendable/
+[ACTORS]: https://github.com/swiftlang/swift-evolution/blob/main/proposals/0306-actors.md
+[ACCESSIBILITY]: https://developer.apple.com/design/human-interface-guidelines/accessibility
+[ACCESSIBILITY-TEST]: https://developer.apple.com/documentation/accessibility/testing-system-accessibility-features-in-your-app
+[LARGER-TEXT]: https://developer.apple.com/help/app-store-connect/manage-app-accessibility/larger-text-evaluation-criteria
+[INTENT-MODES]: https://developer.apple.com/documentation/appintents/appintent/supportedmodes
+[INTENT-AUTH]: https://developer.apple.com/documentation/appintents/intentauthenticationpolicy
+[STORE-RULES]: https://developer.apple.com/app-store/review/guidelines/
+[SWIFT-SYSTEMS]: https://www.swift.org/blog/swift-6.4-released/
+[LAYOUT]: https://developer.apple.com/documentation/swift/memorylayout
+[PERFORMANCE]: https://developer.apple.com/videos/play/wwdc2024/10217/
+[SERVICE]: https://developer.apple.com/documentation/servicemanagement/smappservice/register()
+[PASTE]: https://developer.apple.com/documentation/uikit/uipastecontrol
+[MAC-PASTE]: https://developer.apple.com/documentation/appkit/nspasteboard/accessbehavior-swift.enum/ask
+[TESTING]: https://developer.apple.com/documentation/xctest/
+[INTEROP]: https://developer.apple.com/documentation/swiftui/appkit-integration
+[METALKIT]: https://developer.apple.com/documentation/metalkit/mtkview
