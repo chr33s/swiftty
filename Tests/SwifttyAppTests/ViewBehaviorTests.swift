@@ -14,6 +14,8 @@ import TestSupport
 struct ViewBehaviorTests {
   nonisolated static let hasMetal = MTLCreateSystemDefaultDevice() != nil
 
+  init() { DisplayAccommodations.override = DisplayAccommodations() }
+
   func makeView(
     configuration: Configuration = Configuration()
   ) throws -> TerminalView {

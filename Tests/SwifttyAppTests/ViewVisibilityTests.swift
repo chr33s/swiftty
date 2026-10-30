@@ -10,6 +10,8 @@ import Testing
 struct ViewVisibilityTests {
   nonisolated static let hasMetal = MTLCreateSystemDefaultDevice() != nil
 
+  init() { DisplayAccommodations.override = DisplayAccommodations() }
+
   @Test(
     .enabled(if: hasMetal),
     arguments: ["view", "parent", "window", "reparent"]

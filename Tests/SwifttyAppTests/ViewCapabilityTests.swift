@@ -14,6 +14,8 @@ import TestSupport
 struct ViewCapabilityTests {
   nonisolated static let hasMetal = MTLCreateSystemDefaultDevice() != nil
 
+  init() { DisplayAccommodations.override = DisplayAccommodations() }
+
   func makeView(session: TerminalSession? = nil) throws -> TerminalView {
     _ = NSApplication.shared
     guard let session else { return try TerminalView(configuration: .init()) }
