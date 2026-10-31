@@ -314,7 +314,7 @@ extension ClientConnectionState {
     case .reconnecting: .localized("Reconnecting")
     case .backgroundDetached: .localized("Detached")
     case .sessionExited: .localized("Session exited")
-    case .sessionLost: .localized("Session lost")
+    case .sessionLost: .localized("Workspace lost")
     case .userClosed: .localized("Closed")
     }
   }

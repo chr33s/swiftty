@@ -106,7 +106,7 @@ private struct HostRow: View {
         if isResumable {
           // Resuming still needs fresh SSH sign-in.
           Label(
-            .localized("Detached session — open to resume"),
+            .localized("Detached workspace — open to resume"),
             systemImage: "arrow.uturn.forward"
           )
           .font(.caption).foregroundStyle(.tint)

@@ -95,7 +95,7 @@ struct EndpointStageNotice: Hashable, Sendable {
         Sign-in succeeded; this address is the one the Mac's roaming \
         configuration advertises. A local-network name or address may not be \
         reachable over the route used for SSH, such as cellular or a VPN. \
-        The session is kept on the Mac.
+        The workspace is kept on the Mac.
         """,
       bundle: #bundle
     )
@@ -144,7 +144,7 @@ final class RoamingTerminalController: TerminalSurfaceController {
     /// it, resuming a workspace once one was granted. Without a choice,
     /// only a remembered workspace is resumed: nothing is created.
     case selected
-    /// An explicit Start New Session: forget the remembered session and
+    /// An explicit New Workspace: forget the remembered session and
     /// create one.
     case newSession
   }
@@ -329,7 +329,8 @@ final class RoamingTerminalController: TerminalSurfaceController {
     // A reveal's pane focus and takeover apply to this attempt only.
     if case let .resume(id, _?) = intent { self.intent = .resume(id, nil) }
     phase = .preparing(
-      resuming ? .localized("Resuming session") : .localized("Starting session")
+      resuming
+        ? .localized("Resuming workspace") : .localized("Starting workspace")
     )
     do {
       try await client.start(target)
@@ -533,11 +534,11 @@ final class RoamingTerminalController: TerminalSurfaceController {
     case .sessionLost:
       SurfaceProblem(
         title: resuming
-          ? .localized("Previous session no longer exists")
-          : .localized("Session lost"),
+          ? .localized("Previous workspace no longer exists")
+          : .localized("Workspace lost"),
         detail: String(
           localized: """
-            The Mac no longer has this session: it expired, was terminated, or the \
+            The Mac no longer has this workspace: it expired, was ended, or the \
             helper restarted. Nothing was replayed into another shell.
             """,
           bundle: #bundle
@@ -550,7 +551,7 @@ final class RoamingTerminalController: TerminalSurfaceController {
         title: .localized("Mac unreachable over SSH"),
         detail: String(
           localized:
-            "The session is kept on the Mac. Try again when the network is back.",
+            "The workspace is kept on the Mac. Try again when the network is back.",
           bundle: #bundle
         ),
         actions: [.retry]
@@ -580,7 +581,7 @@ final class RoamingTerminalController: TerminalSurfaceController {
         detail: String(
           localized: """
             The selected SSH key could not be read: it was deleted, is not on this \
-            device, or the device is locked. The session is kept on the Mac; no \
+            device, or the device is locked. The workspace is kept on the Mac; no \
             credentials were sent.
             """,
           bundle: #bundle
@@ -813,7 +814,7 @@ final class SSHShellController: TerminalSurfaceController {
           detail: String(
             localized: """
               This ordinary SSH shell ended with its connection and cannot be resumed. \
-              A roaming session on the Mac is not affected.
+              Your workspace on the Mac is not affected.
               """,
             bundle: #bundle
           ),

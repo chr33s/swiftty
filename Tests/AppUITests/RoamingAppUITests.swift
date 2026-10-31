@@ -116,7 +116,7 @@ final class RoamingAppUITests: XCTestCase {
 
     // Detach keeps the shell on the host; reopening resumes it.
     openSessionMenuItem(id: "session.detach", title: "Detach")
-    let resumable = anyText("Detached session — open to resume")
+    let resumable = anyText("Detached workspace — open to resume")
     XCTAssertTrue(
       resumable.waitForExistence(timeout: 10),
       "no resumable session listed"
@@ -410,7 +410,7 @@ final class RoamingAppUITests: XCTestCase {
       "hosts.add": ["Add Host"], "host.save": ["Save"],
       "terminal.close": ["Close"],
       // Catalyst shows a toolbar menu as "More".
-      "session.menu": ["Session", "More"], "sftp.done": ["Done"],
+      "session.menu": ["Workspace", "More"], "sftp.done": ["Done"],
     ]
     if let names = labels[id] {
       return app.descendants(matching: .any)

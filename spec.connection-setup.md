@@ -150,7 +150,7 @@ attaches according to its explicit `WorkspaceIntent`. A retry reattaches the
 workspace that was granted, so a create is never repeated. Without an
 explicit choice, a screen resumes only a remembered workspace. If no
 workspace is remembered, the screen shows "Choose a workspace" and creates
-nothing until the user chooses **Start New Session**. **Resume Last
+nothing until the user chooses **New Workspace**. **Resume Last
 Workspace** (in the host's context menu) names the remembered identity and
 never falls back to creating a workspace. Attention-link reveals and
 reconnects keep their existing semantics.

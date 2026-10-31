@@ -108,35 +108,41 @@ struct RoamingSurfaceView: View {
           Button(.localized("Detach"), systemImage: "eject") {
             app.close(.detach)
           }
+          .accessibilityHint(
+            Text(
+              "Disconnect from this workspace. Programs keep running on your Mac.",
+              bundle: #bundle
+            )
+          )
           .accessibilityIdentifier("session.detach")
           if controller.model.sessionID != nil {
             Button(
-              .localized("Terminate Session…"),
+              .localized("End Workspace…"),
               systemImage: "xmark.octagon",
               role: .destructive
             ) { confirmTerminate = true }
           }
         } label: {
-          Label(.localized("Session"), systemImage: "ellipsis.circle")
+          Label(.localized("Workspace"), systemImage: "ellipsis.circle")
         }
         .accessibilityIdentifier("session.menu")
       }
     }
     .confirmationDialog(
       Text(
-        "Terminate the session on \(controller.model.host.nickname)?",
+        "End the workspace on \(controller.model.host.nickname)?",
         bundle: #bundle
       ),
       isPresented: $confirmTerminate,
       titleVisibility: .visible
     ) {
-      Button(.localized("Terminate Session"), role: .destructive) {
+      Button(.localized("End Workspace"), role: .destructive) {
         app.close(.terminate)
       }
       Button(.localized("Cancel"), role: .cancel) {}
     } message: {
       Text(
-        "The shell on the Mac and every program running in it will be ended.",
+        "This ends all running programs in every tab and pane of this workspace.",
         bundle: #bundle
       )
     }
@@ -186,8 +192,8 @@ struct FallbackBanner: View {
       }
       Text(
         """
-        An ordinary SSH shell is a different shell. The roaming session stays \
-        on the Mac and can be resumed later.
+        An ordinary SSH shell opens separately. Your workspace remains on the \
+        Mac and can be resumed later.
         """,
         bundle: #bundle
       )
@@ -212,10 +218,13 @@ struct SSHSurfaceView: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      // Never presented as the resumed roaming session.
+      // Never presented as the resumed workspace.
       Label(
         .localized(
-          "Ordinary SSH shell — not the roaming session. It ends if the connection drops."
+          """
+          Ordinary SSH shell. It is separate from your workspace and ends if the \
+          connection drops.
+          """
         ),
         systemImage: "exclamationmark.triangle"
       )
@@ -308,7 +317,7 @@ struct ProblemCard: View {
             .glassButtonStyle(prominent: true)
             .accessibilityIdentifier("session.retry")
         case .startNewSession:
-          Button(.localized("Start New Session")) { perform(.startNewSession) }
+          Button(.localized("New Workspace")) { perform(.startNewSession) }
             .glassButtonStyle(prominent: true)
         case .openOrdinarySSH:
           VStack(alignment: .leading, spacing: 4) {
@@ -316,11 +325,8 @@ struct ProblemCard: View {
               perform(.openOrdinarySSH)
             }
             .accessibilityIdentifier("session.openSSH")
-            Text(
-              "A different shell; it is not the roaming session.",
-              bundle: #bundle
-            )
-            .font(.caption).foregroundStyle(.secondary)
+            Text("Opens a separate SSH shell.", bundle: #bundle).font(.caption)
+              .foregroundStyle(.secondary)
           }
         }
       }
