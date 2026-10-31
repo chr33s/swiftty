@@ -800,15 +800,7 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
 
   override public func setNeedsDisplay(_ rect: CGRect) { requestRedraw() }
 
-  // DEBUG(paint): temporary diagnostics for the iOS repaint stall.
-  static let paintLog = Logger(subsystem: "swiftty", category: "paint")
-
-  private var paintState: String {
-    "vis=\(surfaceVisibility) paused=\(isRenderingPaused) active=\(redraw.isActive) mtkPaused=\(isPaused) win=\(window != nil) bounds=\(bounds.size) drawable=\(drawableSize) alpha=\(alpha) hidden=\(isHidden)"
-  }
-
   private func requestRedraw() {
-    Self.paintLog.debug("request \(self.paintState, privacy: .public)")
     // A layer animation can make a transparent surface visible without changing its model alpha.
     if !redraw.isActive, isPaused, !isRenderingPaused,
       surfaceVisibility != .hidden
@@ -819,7 +811,6 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
   }
 
   private func drawPendingFrame() {
-    Self.paintLog.debug("tick \(self.paintState, privacy: .public)")
     guard isSurfaceVisible, !isRenderingPaused else {
       updateFrameDriving()
       redraw.request()
@@ -886,9 +877,6 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
       let frame = submittedFrame
       // A skipped final frame needs another draw even when output stops.
       drawable.addPresentedHandler { [weak self] drawable in
-        TerminalUIView.paintLog.debug(
-          "presented frame=\(frame) time=\(drawable.presentedTime)"
-        )
         guard drawable.presentedTime == 0 else { return }
         DispatchQueue.main.async {
           guard let self, self.submittedFrame == frame else { return }
@@ -897,12 +885,7 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
       }
       #endif
       drewFrame = renderer.draw(snapshot, in: self)
-      Self.paintLog.debug("drew=\(self.drewFrame) frame=\(self.submittedFrame)")
       if !drewFrame { redraw.request() }
-    } else {
-      Self.paintLog.debug(
-        "draw skipped visible=\(surfaceVisible) (no drawable if visible)"
-      )
     }
     cursorBlinks = configuration.cursorStyleBlink ?? snapshot.cursor.isBlinking
     if surfaceVisible { updateBlinkTimer() } else { updateFrameDriving() }
