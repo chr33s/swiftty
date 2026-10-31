@@ -11,8 +11,16 @@ extension View {
     #endif
   }
 
-  func glassSurface() -> some View {
-    background { Color.clear.glassPanel(cornerRadius: 0).ignoresSafeArea() }
+  /// Glass behind the view, reaching into the safe areas unless
+  /// `fillsSafeArea` is false: a terminal leaves its insets to
+  /// `TerminalChromeBackground`, which the glass would cover.
+  @ViewBuilder
+  func glassSurface(fillsSafeArea: Bool = true) -> some View {
+    if fillsSafeArea {
+      background { Color.clear.glassPanel(cornerRadius: 0).ignoresSafeArea() }
+    } else {
+      background { Color.clear.glassPanel(cornerRadius: 0) }
+    }
   }
 
   @ViewBuilder

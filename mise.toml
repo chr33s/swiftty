@@ -14,6 +14,10 @@ SDKROOT = "{{exec(command='xcrun --sdk macosx --show-sdk-path')}}"
 description = "Build SwifttyCore and the app (debug)"
 run = "swift build"
 
+[tasks.restart]
+description = "Restart SwifttyMux agent (launchctl)"
+run = "launchctl kickstart -k gui/$(id -u)/com.chr33s.swiftty.swiftmux"
+
 [tasks.release]
 description = "Build everything (release)"
 run = "swift build -c release"

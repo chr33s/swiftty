@@ -137,18 +137,16 @@ private struct TerminalChromeBackground: ViewModifier {
     #if os(iOS) && !targetEnvironment(macCatalyst)
     if let color {
       content
-        .background {
-          GeometryReader { proxy in
-            VStack(spacing: 0) {
-              color.frame(height: proxy.safeAreaInsets.top)
-              Spacer(minLength: 0)
-              color.frame(height: proxy.safeAreaInsets.bottom)
-            }
-            .ignoresSafeArea()
-          }
-          // The terminal lifts itself above the keyboard; the strip stays
-          // at the screen edge.
-          .ignoresSafeArea(.keyboard)
+        // Zero-height strips on the content's edges, grown into the insets
+        // by `ignoresSafeArea`. (A background `GeometryReader` sits inside
+        // the safe area, so its insets read as zero.) The terminal lifts
+        // itself above the keyboard; the bottom strip stays at the screen
+        // edge.
+        .background(alignment: .top) {
+          color.frame(height: 0).ignoresSafeArea(edges: .top)
+        }
+        .background(alignment: .bottom) {
+          color.frame(height: 0).ignoresSafeArea(edges: .bottom)
         }
         .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
         .toolbarColorScheme(color.isDark ? .dark : .light, for: .navigationBar)

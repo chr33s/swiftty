@@ -81,7 +81,8 @@ struct RoamingSurfaceView: View {
       session: controller.display,
       capabilities: controller.model.capabilities
     )
-    .uiTestingScreenProbe(controller.model).glassSurface().overlay { overlay }
+    .uiTestingScreenProbe(controller.model)
+    .glassSurface(fillsSafeArea: false).overlay { overlay }
     .safeAreaInset(edge: .bottom) {
       if controller.offersOrdinarySSH {
         FallbackBanner(
@@ -236,7 +237,8 @@ struct SSHSurfaceView: View {
         session: controller.session,
         capabilities: controller.model.capabilities
       )
-      .uiTestingScreenProbe(controller.model).glassSurface().overlay { overlay }
+      .uiTestingScreenProbe(controller.model)
+      .glassSurface(fillsSafeArea: false).overlay { overlay }
     }
     .ignoresSafeArea(.keyboard, edges: .bottom)
     #if !os(tvOS)
