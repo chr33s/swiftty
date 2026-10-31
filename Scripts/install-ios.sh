@@ -62,7 +62,9 @@ for d in json.load(open(sys.argv[1]))["result"]["devices"]:
     if (hw.get("reality") == "physical" and hw.get("platform") == "iOS"
             and conn.get("transportType") == "wired"
             and conn.get("pairingState") == "paired"
-            and conn.get("tunnelState") == "connected"):
+            # devicectl opens the tunnel on demand, so an idle device
+            # reports "disconnected"; only "unavailable" is unusable.
+            and conn.get("tunnelState") != "unavailable"):
         print(hw["udid"], d.get("deviceProperties", {}).get("name", hw["udid"]))
 PY
 )
