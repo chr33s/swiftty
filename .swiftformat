@@ -1,9 +1,0 @@
---swiftversion 6.4
---indent 2
---maxwidth 80
---wraparguments before-first
---wrapcollections before-first
---stripunusedargs closure-only
---disable redundantSelf,wrapMultilineStatementBraces,preferForLoop,hoistPatternLet,redundantReturn,swiftTestingTestCaseNames
---exclude Sources/SwifttyEngine/Unicode/Tables.swift
---ifdef no-indent

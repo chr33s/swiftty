@@ -712,7 +712,7 @@ extension TerminalUIView: UITextInput {
 
   public var markedTextStyle: [NSAttributedString.Key: Any]? {
     get { nil }
-    set {}  // swiftlint:disable:this unused_setter_value
+    set {}
   }
 
   public func setMarkedText(_ markedText: String?, selectedRange: NSRange) {

@@ -2,8 +2,6 @@
 # Swift comes from Xcode, as on CI: swift.org toolchains bundle their own
 # Swift Testing runtime, which conflicts with Xcode 27.2's XCTest and
 # stops the native test host from discovering tests.
-swiftformat = "0.64.4" # latest release with a standalone macOS CLI asset
-swiftlint = "0.65.1"
 tmux = "3.7c" # integration tests; latest available tmux-builds release
 zig = "0.17.0" # builds upstream ghostty-bench for comparison
 "github:sharkdp/hyperfine" = "2.0.0" # upstream now publishes native arm64 binaries
@@ -72,8 +70,8 @@ description = "Format sources"
 run = "Scripts/format-swift.sh"
 
 [tasks.lint]
-description = "Lint sources"
-run = "swiftlint lint --quiet Sources Tests"
+description = "Lint sources (swift-format, strict)"
+run = "Scripts/format-swift.sh check"
 
 [tasks.compare]
 description = "Compare against upstream ghostty-bench: mise run compare <ghostty-src> <corpus-dir>"

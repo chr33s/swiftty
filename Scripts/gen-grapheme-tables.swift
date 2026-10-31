@@ -259,7 +259,6 @@ if args.contains("--test-data") {
   print(
     "// Each line: \"/\" = break (÷), \"x\" = no break (×), scalars in hex."
   )
-  print("// swiftlint:disable all")
   print("")
   print("enum GraphemeBreakTestData {")
   print("    static let version = \"\(testVersion)\"")
@@ -277,8 +276,6 @@ if args.contains("--test-data") {
       + "]"
   )
   print("}")
-  print("")
-  print("// swiftlint:enable all")
   exit(0)
 }
 
@@ -573,7 +570,6 @@ print(
   "// DerivedCoreProperties InCB/Default_Ignorable, DerivedGeneralCategory, emoji-data,"
 )
 print("// emoji-variation-sequences). Do not edit.")
-print("// swiftlint:disable all")
 print("")
 print("enum GraphemeBreakTables {")
 print("    static let version = \"\(ucdVersion)\"")
@@ -604,5 +600,3 @@ print("    static let stage2: StaticString = \"" + escape(best.stage2) + "\"")
 print("")
 print("    static let stage2Count = \(best.stage2.count)")
 print("}")
-print("")
-print("// swiftlint:enable all")
