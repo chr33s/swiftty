@@ -452,28 +452,43 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
     updateFrameDriving()
   }
 
-  /// Routes the session's updates and events to this view. A session has
-  /// one handler of each, and it notifies again only after a snapshot, so
-  /// an update delivered to another view built for the same session
-  /// (SwiftUI can make more than one) would leave this one unpainted until
-  /// something else, such as a keyboard resize, redraws it.
+  /// Routes the session's updates and events to the live views showing it,
+  /// never to one captured view. A session has one handler of each and
+  /// notifies again only after a snapshot, so a handler held by a discarded
+  /// view (SwiftUI can build more than one for a session) would swallow
+  /// every later update and leave the view on screen unpainted.
   private func installSessionCallbacks() {
-    session.onUpdate = { [weak self] in
+    session.onUpdate = { [weak session] in
       DispatchQueue.main.async {
-        MainActor.assumeIsolated { self?.setNeedsDisplay() }
+        MainActor.assumeIsolated {
+          guard let session else { return }
+          for view in Self.views(showing: session) { view.setNeedsDisplay() }
+        }
       }
     }
-    session.onEvent = { [weak self] event in
+    session.onEvent = { [weak session] event in
       DispatchQueue.main.async {
-        MainActor.assumeIsolated { self?.handle(event) }
+        MainActor.assumeIsolated {
+          guard let session else { return }
+          Self.eventTarget(for: session)?.handle(event)
+        }
       }
     }
   }
 
+  static func views(showing session: TerminalSession) -> [TerminalUIView] {
+    surfaces.allObjects.filter { $0.session === session }
+  }
+
+  /// Events (title, bell, clipboard) run once: on the view in a window,
+  /// else on any view of the session.
+  static func eventTarget(for session: TerminalSession) -> TerminalUIView? {
+    let views = views(showing: session)
+    return views.first { $0.window != nil } ?? views.first
+  }
+
   override public func didMoveToWindow() {
     super.didMoveToWindow()
-    // The view on screen owns the session's callbacks.
-    if window != nil { installSessionCallbacks() }
     observeVisibility()
     let center = NotificationCenter.default
     center.removeObserver(
@@ -785,7 +800,15 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
 
   override public func setNeedsDisplay(_ rect: CGRect) { requestRedraw() }
 
+  // DEBUG(paint): temporary diagnostics for the iOS repaint stall.
+  static let paintLog = Logger(subsystem: "swiftty", category: "paint")
+
+  private var paintState: String {
+    "vis=\(surfaceVisibility) paused=\(isRenderingPaused) active=\(redraw.isActive) mtkPaused=\(isPaused) win=\(window != nil) bounds=\(bounds.size) drawable=\(drawableSize) alpha=\(alpha) hidden=\(isHidden)"
+  }
+
   private func requestRedraw() {
+    Self.paintLog.debug("request \(self.paintState, privacy: .public)")
     // A layer animation can make a transparent surface visible without changing its model alpha.
     if !redraw.isActive, isPaused, !isRenderingPaused,
       surfaceVisibility != .hidden
@@ -796,6 +819,7 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
   }
 
   private func drawPendingFrame() {
+    Self.paintLog.debug("tick \(self.paintState, privacy: .public)")
     guard isSurfaceVisible, !isRenderingPaused else {
       updateFrameDriving()
       redraw.request()
@@ -862,6 +886,9 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
       let frame = submittedFrame
       // A skipped final frame needs another draw even when output stops.
       drawable.addPresentedHandler { [weak self] drawable in
+        TerminalUIView.paintLog.debug(
+          "presented frame=\(frame) time=\(drawable.presentedTime)"
+        )
         guard drawable.presentedTime == 0 else { return }
         DispatchQueue.main.async {
           guard let self, self.submittedFrame == frame else { return }
@@ -870,7 +897,12 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
       }
       #endif
       drewFrame = renderer.draw(snapshot, in: self)
+      Self.paintLog.debug("drew=\(self.drewFrame) frame=\(self.submittedFrame)")
       if !drewFrame { redraw.request() }
+    } else {
+      Self.paintLog.debug(
+        "draw skipped visible=\(surfaceVisible) (no drawable if visible)"
+      )
     }
     cursorBlinks = configuration.cursorStyleBlink ?? snapshot.cursor.isBlinking
     if surfaceVisible { updateBlinkTimer() } else { updateFrameDriving() }

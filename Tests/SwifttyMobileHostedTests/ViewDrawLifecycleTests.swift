@@ -327,6 +327,54 @@ struct ViewDrawLifecycleTests {
     #expect(retained == nil)
   }
 
+  @Test(.enabled(if: hasMetal))
+  func `a discarded second view of a session leaves the shown one updating`()
+    async throws
+  {
+    let scene = try await foregroundScene()
+    let window = UIWindow(windowScene: scene)
+    window.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
+    var configuration = Configuration()
+    configuration.cursorStyleBlink = false
+    let session = TerminalSession()
+    let view = try TerminalUIView(
+      session: session,
+      configuration: configuration
+    )
+    view.frame = window.bounds
+    window.addSubview(view)
+    window.makeKeyAndVisible()
+    defer {
+      view.removeFromSuperview();
+      window.isHidden = true
+    }
+    var deadline = ContinuousClock.now + .seconds(2)
+    while view.lastCursor == nil, ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    try #require(view.lastCursor?.x == 0)
+    // SwiftUI can build a second view for the same session after the
+    // first is on screen, then discard it.
+    weak var discarded: TerminalUIView?
+    do {
+      let other = try TerminalUIView(
+        session: session,
+        configuration: configuration
+      )
+      discarded = other
+    }
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(discarded == nil)
+    for (index, text) in ["A", "B", "C"].enumerated() {
+      session.feed(Array(text.utf8))
+      deadline = ContinuousClock.now + .seconds(2)
+      while view.lastCursor?.x != index + 1, ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+      }
+      #expect(view.lastCursor?.x == index + 1)
+    }
+  }
+
   @MainActor
   private final class DrawRecorder: NSObject, MTKViewDelegate {
     var draws = 0
