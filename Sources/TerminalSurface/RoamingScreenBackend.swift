@@ -91,6 +91,7 @@ public final class RoamingScreenBackend: TerminalSurfaceBackend {
 
   public let client: RoamingClient
   private let mailbox: FrameMailbox
+  private let inputPump: OrderedInputPump
   private let state = Mutex(State())
 
   /// - Parameters:
@@ -108,14 +109,32 @@ public final class RoamingScreenBackend: TerminalSurfaceBackend {
     timing: SurfaceTiming = .system
   ) {
     mailbox = FrameMailbox(forward: sink)
-    client = RoamingClient(
+    let client = RoamingClient(
       bootstrapper: bootstrapper,
       connector: connector,
       sink: mailbox,
       configuration: configuration,
       timing: timing
     )
+    self.client = client
+    inputPump = OrderedInputPump { [weak client] input in
+      guard let client else { return .refused(.closed) }
+      return await client.submit(input)
+    }
   }
+
+  /// Binds the presentation session's synchronous, ordered callback to this
+  /// attachment. The pump retains this client's identity without owning its
+  /// lifetime: queued input cannot follow a retry, and a retained display
+  /// callback cannot form a client → sink → display → pump → client cycle.
+  package func bindInput(to display: TerminalSession) {
+    display.semanticInputHandler = { [inputPump] input in
+      if let input = SurfaceInput(input) { inputPump.enqueue(input) }
+    }
+  }
+
+  /// Synchronous fencing before an application waits for queued lifecycle work.
+  package func stopInput() { inputPump.close() }
 
   /// Observes nonsecret status (UI chrome, companion bridge).
   public var onStatus: (@Sendable (RoamingStatus) -> Void)? {
@@ -209,7 +228,12 @@ public final class RoamingScreenBackend: TerminalSurfaceBackend {
     await client.scrollViewport(by: lines)
   }
 
-  public func close() async { await client.close(.detach) }
+  public func close() async { await close(.detach) }
+
+  package func close(_ mode: RoamingCloseMode) async {
+    stopInput()
+    await client.close(mode)
+  }
 
   // MARK: Platform lifecycle
 
@@ -217,5 +241,5 @@ public final class RoamingScreenBackend: TerminalSurfaceBackend {
   public func enterForeground() async { await client.enterForeground() }
   public func wake() async { await client.wake() }
   public func pathChanged() async { await client.pathChanged() }
-  public func terminate() async { await client.close(.terminate) }
+  public func terminate() async { await close(.terminate) }
 }

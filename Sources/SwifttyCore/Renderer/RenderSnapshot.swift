@@ -20,6 +20,7 @@ final class SnapshotSource: Sendable {}
 public struct RenderSnapshot: @unchecked Sendable {
   let storage: SnapshotStorage
   let source: SnapshotSource
+  package var sourceIdentity: AnyObject { source }
   // Base pointers into `storage`, valid while `storage` is retained. Kept
   // here (rather than read through the class) so span accessors do not
   // borrow the class reference; Swift 6.4's optimizer miscompiles that.
@@ -55,6 +56,9 @@ public struct RenderSnapshot: @unchecked Sendable {
   /// Monotonic counter within one session; equal sequences from that
   /// session mean identical content.
   public let sequence: UInt64
+  /// Changes only when the builder observes presentation changes; polling an
+  /// unchanged snapshot must not invalidate an otherwise displayed baseline.
+  package let presentationRevision: UInt64
 
   init(
     storage: SnapshotStorage,
@@ -75,6 +79,7 @@ public struct RenderSnapshot: @unchecked Sendable {
     viewportOffset: Int,
     scrollbackCount: Int,
     sequence: UInt64,
+    presentationRevision: UInt64? = nil,
   ) {
     self.storage = storage
     self.source = source
@@ -100,6 +105,7 @@ public struct RenderSnapshot: @unchecked Sendable {
     self.viewportOffset = viewportOffset
     self.scrollbackCount = scrollbackCount
     self.sequence = sequence
+    self.presentationRevision = presentationRevision ?? sequence
   }
 
   /// Borrowed row metadata. O(1), with no allocation.

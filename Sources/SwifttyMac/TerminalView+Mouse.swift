@@ -24,20 +24,7 @@ extension TerminalView {
   }
 
   func unclampedCell(at p: NSPoint) -> (column: Int, row: Int) {
-    let scale = window?.backingScaleFactor ?? 2
-    let x = (p.x * scale - renderer.options.paddingX) / renderer.cellSize.width
-    let y =
-      ((bounds.height - p.y) * scale - renderer.options.paddingY)
-      / renderer.cellSize.height
-    return (TerminalGeometry.cellIndex(x), TerminalGeometry.cellIndex(y))
-  }
-
-  /// Absolute point under the pointer, clamped to the grid.
-  func point(for event: NSEvent) -> TerminalPoint {
-    let c = unclampedCell(for: event)
-    return session.withState { state in
-      state.viewportPoint(row: c.row, column: c.column)
-    }
+    TerminalPointer.cell(at: p, in: self, renderer: renderer)
   }
 
   var tracking: Bool { !lastModes.isDisjoint(with: Modes.mouseTracking) }
@@ -50,7 +37,7 @@ extension TerminalView {
     guard tracking else { return }
     let c = cell(for: event)
     let pixel = terminalPixel(for: event)
-    session.send(
+    submitInput(
       .mouse(
         MouseEvent(
           action,
@@ -65,72 +52,72 @@ extension TerminalView {
     )
   }
 
-  /// Shift selects even while the application tracks the mouse.
-  private func selects(_ event: NSEvent) -> Bool {
-    !tracking || event.modifierFlags.contains(.shift)
-  }
-
   public override func mouseDown(with event: NSEvent) {
-    reportsLeftMouseGesture = false
     selectionOrigin = nil
-    if event.modifierFlags.contains(.command), let link = link(for: event) {
-      open(link.url)
-      return
-    }
-    guard selects(event) else {
-      reportsLeftMouseGesture = true
-      sendMouse(.press, .left, event)
-      return
-    }
-    beginSelection(event)
+    pointer.beginLeftGesture(
+      event,
+      reporting: tracking,
+      openLink: {
+        guard let link = link(for: event) else { return false }
+        open(link.url)
+        return true
+      },
+      report: { sendMouse(.press, .left, event) },
+      select: { beginSelection(event, unit: $0) }
+    )
   }
 
   public override func mouseUp(with event: NSEvent) {
-    defer { reportsLeftMouseGesture = false }
-    guard selectionOrigin == nil else {
-      if selectionDragged { extendSelection(event, scrollEdges: false) }
-      endSelection(event)
-      return
-    }
-    if reportsLeftMouseGesture { sendMouse(.release, .left, event) }
+    pointer.endLeftGesture(
+      select: {
+        guard selectionOrigin != nil else { return }
+        if selectionDragged { extendSelection(event, scrollEdges: false) }
+        endSelection(event)
+      },
+      report: { sendMouse(.release, .left, event) }
+    )
   }
 
   public override func mouseDragged(with event: NSEvent) {
-    guard selectionOrigin == nil else {
-      extendSelection(event);
-      return
-    }
-    if reportsLeftMouseGesture { sendMouse(.motion, .left, event) }
+    pointer.dragLeftGesture(
+      select: { extendSelection(event) },
+      report: { sendMouse(.motion, .left, event) }
+    )
   }
 
   // MARK: Selection
 
-  private func beginSelection(_ event: NSEvent) {
+  private func beginSelection(_ event: NSEvent, unit: SelectionUnit) {
     let c = unclampedCell(for: event)
     let rectangle = event.modifierFlags.contains(.option)
-    selectionUnit =
-      switch event.clickCount {
-      case 2: .word
-      case 3...: .line
-      default: .cell
-      }
+    selectionUnit = unit
     selectionDragged = false
     let unit = selectionUnit
-    let origin = session.mutate { state in
-      let p = state.viewportPoint(row: c.row, column: c.column)
-      let span =
-        switch unit {
-        case .cell: (start: p, end: p)
-        case .word: state.wordRange(at: p)
-        case .line: state.lineRange(at: p)
+    guard let snapshot = lastSnapshot,
+      let origin = session.selectPresentation(
+        matching: snapshot,
+        { state in
+          let p = state.viewportPoint(row: c.row, column: c.column)
+          let span =
+            switch unit {
+            case .cell: (start: p, end: p)
+            case .word: state.wordRange(at: p)
+            case .line: state.lineRange(at: p)
+            }
+          let selection: Selection? =
+            unit == .cell
+            ? nil
+            : Selection(
+              anchor: span.start,
+              head: span.end,
+              rectangle: rectangle
+            )
+          return (
+            selection, (span: span, generation: state.addressingGeneration)
+          )
         }
-      state.setSelection(
-        unit == .cell
-          ? nil
-          : Selection(anchor: span.start, head: span.end, rectangle: rectangle)
       )
-      return (span: span, generation: state.addressingGeneration)
-    }
+    else { return }
     selectionOrigin = (origin.span.start, origin.span.end, origin.generation)
     lastClick = (origin.span.start, origin.generation)
     hasSelection = selectionUnit != .cell
@@ -143,20 +130,15 @@ extension TerminalView {
     let unit = selectionUnit
     let requiresSelection = hasSelection
     selectionDragged = true
-    let extended = session.mutate {
-      state -> (extended: Bool, hasSelection: Bool) in
+    guard let snapshot = lastSnapshot else { return }
+    let extended = session.selectPresentation(matching: snapshot) {
+      state -> (Selection?, (extended: Bool, hasSelection: Bool)) in
       // Output may invalidate an active drag before the next frame.
       guard state.addressingGeneration == origin.generation,
         state.contains(absoluteRow: origin.start.row),
         state.contains(absoluteRow: origin.end.row),
         !requiresSelection || state.selection != nil
-      else { return (false, state.selection != nil) }
-      // Dragging past the top or bottom edge scrolls the viewport.
-      if scrollEdges {
-        state.scrollViewport(
-          by: SelectionMath.edgeScroll(row: c.row, rows: state.rows)
-        )
-      }
+      else { return (state.selection, (false, state.selection != nil)) }
       let p = state.viewportPoint(row: c.row, column: c.column)
       let span =
         switch unit {
@@ -164,17 +146,39 @@ extension TerminalView {
         case .word: state.wordRange(at: p)
         case .line: state.lineRange(at: p)
         }
-      state.setSelection(
+      return (
         SelectionMath.extend(
           origin: (origin.start, origin.end),
           to: span,
           rectangle: rectangle
-        )
+        ), (true, true)
       )
-      return (true, true)
+    }
+    guard let extended else {
+      // Pending output cannot become a drag endpoint. Still retire an origin
+      // that output invalidated, even before the next frame can be submitted.
+      let current = session.withState { state in
+        (
+          valid: state.addressingGeneration == origin.generation
+            && state.contains(absoluteRow: origin.start.row)
+            && state.contains(absoluteRow: origin.end.row)
+            && (!requiresSelection || state.selection != nil),
+          selected: state.selection != nil
+        )
+      }
+      hasSelection = current.selected
+      if !current.valid { selectionOrigin = nil }
+      return
     }
     hasSelection = extended.hasSelection
-    if !extended.extended { selectionOrigin = nil }
+    if !extended.extended {
+      selectionOrigin = nil
+    } else if scrollEdges {
+      // Select the displayed edge first. Rows revealed by scrolling become
+      // eligible only after their frame is accepted, on a later drag event.
+      let lines = SelectionMath.edgeScroll(row: c.row, rows: snapshot.rowCount)
+      if lines != 0 { session.scrollViewport(by: lines) }
+    }
   }
 
   private func endSelection(_ event: NSEvent) {
@@ -199,22 +203,28 @@ extension TerminalView {
   /// a click moves its cursor there with arrow keys, or is reported to a
   /// shell that asked for `click_events`.
   private func moveShellCursor(to p: TerminalPoint, generation: UInt64) {
-    guard capabilities.textInput else { return }
-    let action = session.withState { state in
-      state.addressingGeneration == generation
-        ? state.promptClickAction(at: p) : nil
-    }
+    guard capabilities.textInput, let snapshot = lastSnapshot else { return }
+    let action =
+      session.withPresentationState(matching: snapshot) { state in
+        state.addressingGeneration == generation
+          ? state.promptClickAction(at: p) : nil
+      } ?? nil
     guard let action else { return }
-    for input in ClickToMove.inputs(action) { session.send(input) }
+    for input in ClickToMove.inputs(action) { submitInput(input) }
   }
 
   // MARK: Links and the pointer
 
   func link(for event: NSEvent) -> TerminalLink? {
-    guard capabilities.openURLs else { return nil }
-    let p = point(for: event)
+    guard capabilities.openURLs, let snapshot = lastSnapshot else { return nil }
+    let cell = unclampedCell(for: event)
     let detect = config.linkURL
-    return session.withState { $0.link(at: p, detectURLs: detect) }
+    return session.withPresentationState(matching: snapshot) { state in
+      state.link(
+        at: state.viewportPoint(row: cell.row, column: cell.column),
+        detectURLs: detect
+      )
+    } ?? nil
   }
 
   /// Opens web, mail, FTP and SSH links only: the application chooses
@@ -259,13 +269,15 @@ extension TerminalView {
     }
     hoverCell = hoverEvent.map { cell(for: $0) }
     let span = link.flatMap { link in
-      link.id == 0
-        ? session.withState {
-          LinkPolicy.span(
-            of: link.range,
-            firstVisibleRow: $0.absoluteRow(viewportRow: 0)
-          )
-        } : nil
+      guard link.id == 0, let snapshot = lastSnapshot else {
+        return nil as HighlightSpan?
+      }
+      return session.withPresentationState(matching: snapshot) {
+        LinkPolicy.span(
+          of: link.range,
+          firstVisibleRow: $0.absoluteRow(viewportRow: 0)
+        )
+      }
     }
     guard
       link != hoveredLink || renderer.options.hoveredLink != (link?.id ?? 0)
@@ -315,12 +327,18 @@ extension TerminalView {
   public override func menu(for event: NSEvent) -> NSMenu? {
     guard !tracking else { return nil }
     let c = unclampedCell(for: event)
-    lastClick = session.withState { state in
-      (
-        state.viewportPoint(row: c.row, column: c.column),
-        state.addressingGeneration
+    guard let snapshot = lastSnapshot,
+      let clicked = session.withPresentationState(
+        matching: snapshot,
+        { state in
+          (
+            state.viewportPoint(row: c.row, column: c.column),
+            state.addressingGeneration
+          )
+        }
       )
-    }
+    else { return nil }
+    lastClick = clicked
     let menu = NSMenu()
     // Unavailable actions are left out rather than disabled.
     if capabilities.allows(.copyToClipboard) {
@@ -399,37 +417,21 @@ extension TerminalView {
   }
 
   public override func scrollWheel(with event: NSEvent) {
-    let lineHeight =
-      renderer.cellSize.height / (window?.backingScaleFactor ?? 2)
-    let lines = scrollAccumulator.add(
-      event.hasPreciseScrollingDeltas
-        ? event.scrollingDeltaY / lineHeight : event.scrollingDeltaY
-    )
+    let mode: TerminalPointer.ScrollMode
     if tracking {
-      let cellWidth =
-        renderer.cellSize.width / (window?.backingScaleFactor ?? 2)
-      let columns = horizontalScrollAccumulator.add(
-        event.hasPreciseScrollingDeltas
-          ? event.scrollingDeltaX / cellWidth : event.scrollingDeltaX
-      )
-      for _ in 0 ..< abs(lines) {
-        sendMouse(.press, lines > 0 ? .wheelUp : .wheelDown, event)
-      }
-      for _ in 0 ..< abs(columns) {
-        sendMouse(.press, columns > 0 ? .wheelLeft : .wheelRight, event)
-      }
+      mode = .mouse
+    } else if lastModes.contains(.alternateScreen),
+      lastModes.contains(.alternateScroll)
+    {
+      mode = capabilities.textInput ? .arrows : .disabled
     } else {
-      horizontalScrollAccumulator.reset()
-      guard lines != 0 else { return }
-      if lastModes.contains(.alternateScreen),
-        lastModes.contains(.alternateScroll)
-      {
-        guard capabilities.textInput else { return }
-        for _ in 0 ..< abs(lines) {
-          session.send(.key(KeyEvent(lines > 0 ? .up : .down)))
-        }
-      } else if capabilities.scrollback {
-        session.scrollViewport(by: lines)
+      mode = capabilities.scrollback ? .history : .disabled
+    }
+    pointer.scroll(event, in: self, renderer: renderer, mode: mode) { input in
+      switch input {
+      case let .wheel(button): sendMouse(.press, button, event)
+      case let .key(key): submitInput(.key(KeyEvent(key)))
+      case let .history(lines): session.scrollViewport(by: lines)
       }
     }
   }

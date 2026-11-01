@@ -35,6 +35,10 @@ public final class TerminalSession: @unchecked Sendable {
   )
   private let queueKey = DispatchSpecificKey<Bool>()
   private let callbacks = SessionCallbacks()
+  // Public send remains unbounded. This separate credit bounds view-originated
+  // work, while accounting for all bytes sharing the PTY's pending buffer.
+  private let viewInputAdmission = PTYInputAdmission(limit: readBufferSize)
+  package var pendingViewInputBytes: Int { viewInputAdmission.pendingBytes }
 
   /// Called on `queue` when new content is ready; coalesced for each handler
   /// until the next `snapshot()`. A replacement receives the next pending
@@ -102,7 +106,9 @@ public final class TerminalSession: @unchecked Sendable {
 
   /// Receives semantic `.text`, `.key` (press and repeat) and `.paste`
   /// input instead of encoding it (presentation mode), on `queue`, in
-  /// order. Mouse, focus and raw bytes are dropped.
+  /// order. Mouse, focus and raw bytes are dropped. Accepted input retains
+  /// the handler present at submission, so rebinding cannot redirect queued
+  /// input to a replacement attachment.
   public var semanticInputHandler: (@Sendable (TerminalInput) -> Void)? {
     get { callbacks.semanticInput }
     set { callbacks.semanticInput = newValue }
@@ -135,6 +141,10 @@ public final class TerminalSession: @unchecked Sendable {
   private var state: TerminalState
   private var parser = Parser()
   private var builder = SnapshotBuilder()
+  // Selection overlays may change repeatedly between frames without changing
+  // the displayed cells. Any other published state change retires this ticket.
+  private var selectionPresentation: (source: SnapshotSource, revision: UInt64)?
+
   #if os(macOS)
   private var process: PTYProcess?
   private var readSource: DispatchSourceRead?
@@ -423,6 +433,46 @@ public final class TerminalSession: @unchecked Sendable {
     sendInput(input, encoded: nil)
   }
 
+  /// Native view input reserves credit before queueing encoding. Explicit
+  /// backends retain their own admission and refusal policy. Public `send`
+  /// remains unchanged for embedders that manage their own flow control.
+  @discardableResult
+  package func submitViewInput(_ input: TerminalInput) -> Bool {
+    switch input {
+    case let .text(text) where text.isEmpty: return true
+    case let .bytes(bytes) where bytes.isEmpty: return true
+    default: break
+    }
+    if !isPresentation, let handler = callbacks.inputHandler {
+      handler(input)
+      return true
+    }
+    let semanticHandler = isPresentation ? callbacks.semanticInput : nil
+    if isPresentation {
+      switch input {
+      case let .key(event) where event.action == .release: return true
+      case .text, .key, .paste: break
+      case .mouse, .focus, .bytes: return true
+      }
+    }
+    guard
+      let reservation = input.encodedByteReservation(
+        maxInputBytes: Self.readBufferSize
+      ), viewInputAdmission.reserve(reservation)
+    else { return false }
+    if isPresentation {
+      queue.async { [self] in
+        defer { _ = viewInputAdmission.encoded(0, reservation: reservation) }
+        semanticHandler?(input)
+      }
+    } else {
+      sendInput(input) { [self] bytes in
+        writeToChild(bytes, viewReservation: reservation)
+      }
+    }
+    return true
+  }
+
   /// An external transport can admit input synchronously before any
   /// encoding is queued. Its accepted inputs use `send(_:encoded:)`.
   package var inputHandler: (@Sendable (TerminalInput) -> Void)? {
@@ -466,7 +516,8 @@ public final class TerminalSession: @unchecked Sendable {
       switch input {
       case let .key(event) where event.action == .release: return
       case .text, .key, .paste:
-        queue.async { [self] in callbacks.semanticInput?(input) }
+        guard let handler = callbacks.semanticInput else { return }
+        queue.async { handler(input) }
       case .mouse, .focus, .bytes: return
       }
       return
@@ -734,6 +785,52 @@ public final class TerminalSession: @unchecked Sendable {
     }
   }
 
+  /// Queue-atomic inspection for coordinate-based UI actions. Refuses newer
+  /// terminal state until its snapshot is accepted by the view; no export or
+  /// extra snapshot construction is required.
+  package func withPresentationState<R>(
+    matching snapshot: RenderSnapshot,
+    _ body: (borrowing TerminalState) -> R
+  ) -> R? {
+    withState { state in
+      guard presentationMatches(snapshot) else { return nil }
+      return body(state)
+    }
+  }
+
+  /// Changes only the selection overlay. Its cells remain a valid interaction
+  /// baseline until another state change publishes, even before another draw.
+  package func selectPresentation<R>(
+    matching snapshot: RenderSnapshot,
+    _ body: (borrowing TerminalState) -> (Selection?, R)
+  ) -> R? {
+    queue.sync {
+      guard presentationMatches(snapshot) else { return nil }
+      let (selection, result) = body(state)
+      state.setSelection(selection)
+      publish()
+      selectionPresentation = (snapshot.source, snapshot.presentationRevision)
+      return result
+    }
+  }
+
+  /// Called only on the owning queue. Damage may have been consumed by an
+  /// unsubmitted snapshot, so checking damage alone is insufficient.
+  private func presentationMatches(_ snapshot: RenderSnapshot) -> Bool {
+    if let selectionPresentation,
+      selectionPresentation.source === snapshot.source,
+      selectionPresentation.revision == snapshot.presentationRevision
+    {
+      return true
+    }
+    guard let latest = builder.last else { return false }
+    return latest.sourceIdentity === snapshot.sourceIdentity
+      && latest.presentationRevision == snapshot.presentationRevision
+      && state.damage.isEmpty && currentCursor == snapshot.cursor
+      && state.modes == snapshot.modes
+      && state.viewportOffset == snapshot.viewportOffset
+  }
+
   // MARK: Presentation
 
   /// Atomically replaces the visible state with `frame` after validating
@@ -819,6 +916,7 @@ public final class TerminalSession: @unchecked Sendable {
 
   /// Flushes replies and events, then notifies the frontend once.
   private func publish() {
+    selectionPresentation = nil
     noteScrollbackActivity()
     if synchronizedGeneration != state.synchronizedOutputGeneration {
       synchronizedGeneration = state.synchronizedOutputGeneration
@@ -907,11 +1005,14 @@ public final class TerminalSession: @unchecked Sendable {
   private func writeToChild(
     _ bytes: [UInt8],
     reservation: Int = 0,
+    viewReservation: Int = 0,
     isReply: Bool = false
   ) {
     let admission = callbacks.ptyInputAdmission
+    _ = viewInputAdmission.encoded(bytes.count, reservation: viewReservation)
     if let admission, !admission.encoded(bytes.count, reservation: reservation)
     {
+      viewInputAdmission.consumed(bytes.count)
       return
     }
     guard !bytes.isEmpty else {
@@ -923,6 +1024,7 @@ public final class TerminalSession: @unchecked Sendable {
     #if os(macOS)
     guard let process else {
       admission?.consumed(bytes.count)
+      viewInputAdmission.consumed(bytes.count)
       onWrite?(bytes);
       return
     }
@@ -940,6 +1042,7 @@ public final class TerminalSession: @unchecked Sendable {
     let written =
       bytes.withUnsafeBytes { process.master.writeAvailable($0) } ?? bytes.count
     admission?.consumed(written)
+    viewInputAdmission.consumed(written)
     if written < bytes.count {
       pendingWrite.append(contentsOf: bytes[written...])
       pendingReplies.append(count: bytes.count - written, isReply: isReply)
@@ -948,6 +1051,7 @@ public final class TerminalSession: @unchecked Sendable {
     updateReadPressure()
     #else
     admission?.consumed(bytes.count)
+    viewInputAdmission.consumed(bytes.count)
     onWrite?(bytes)
     #endif
   }
@@ -961,6 +1065,7 @@ public final class TerminalSession: @unchecked Sendable {
     pendingWrite.removeFirst(written)
     pendingReplies.consumed(written)
     callbacks.ptyInputAdmission?.consumed(written)
+    viewInputAdmission.consumed(written)
     if pendingWrite.isEmpty {
       pendingWrite = []  // Release the consumed slice's backing storage.
       setWriteSourceActive(false)
@@ -1077,6 +1182,7 @@ public final class TerminalSession: @unchecked Sendable {
     writeSource?.cancel()
     writeSource = nil
     writeSourceActive = false
+    viewInputAdmission.consumed(pendingWrite.count)
     pendingWrite.removeAll()
     pendingReplies = PTYReplyLedger()
     bufferedRead = 0 ..< 0

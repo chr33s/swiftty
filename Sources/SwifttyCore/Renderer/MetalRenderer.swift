@@ -301,6 +301,14 @@ public final class MetalRenderer {
   public func tryDraw(
     _ snapshot: RenderSnapshot,
     in view: MTKView
+  ) -> SubmitResult { tryDraw(snapshot, in: view, onPresented: nil) }
+
+  /// The native presenter installs its callback only after nonblocking admission.
+  @MainActor
+  package func tryDraw(
+    _ snapshot: RenderSnapshot,
+    in view: MTKView,
+    onPresented: (@Sendable (any MTLDrawable) -> Void)?
   ) -> SubmitResult {
     guard inFlight.wait(timeout: .now()) == .success else { return .busy }
     guard let drawable = view.currentDrawable,
@@ -318,6 +326,9 @@ public final class MetalRenderer {
         acquired: true
       )
     else { return .resourceUnavailable }
+    #if os(macOS) && !targetEnvironment(macCatalyst)
+    if let onPresented { drawable.addPresentedHandler(onPresented) }
+    #endif
     commandBuffer.present(drawable)
     commandBuffer.commit()
     return .submitted

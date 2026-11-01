@@ -11,7 +11,10 @@ import TestSupport
 /// configuration reload, in the macOS view.
 @MainActor
 @Suite(.serialized)
-struct ViewBehaviorTests {
+final class ViewBehaviorTests {
+  private var displayWindows: [NSWindow] = []
+
+  isolated deinit { for window in displayWindows { window.close() } }
   nonisolated static let hasMetal = MTLCreateSystemDefaultDevice() != nil
 
   init() { DisplayAccommodations.override = DisplayAccommodations() }
@@ -20,7 +23,19 @@ struct ViewBehaviorTests {
     configuration: Configuration = Configuration()
   ) throws -> TerminalView {
     _ = NSApplication.shared
-    return try TerminalView(configuration: configuration)
+    let view = try TerminalView(configuration: configuration)
+    // Interaction tests need an admitted display baseline. Offscreen draw calls
+    // intentionally no longer publish received snapshots as visible content.
+    let window = InteractionTestWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+      styleMask: [.borderless],
+      backing: .buffered,
+      defer: false
+    )
+    window.isReleasedWhenClosed = false
+    window.contentView = view
+    displayWindows.append(window)
+    return view
   }
 
   @Test(
@@ -207,6 +222,7 @@ struct ViewBehaviorTests {
     let view = try makeView(
       configuration: Configuration.parse("command=/bin/sleep 30")
     )
+    view.removeFromSuperview()
     defer { view.stop() }
     let descriptor = MTLTextureDescriptor.texture2DDescriptor(
       pixelFormat: .bgra8Unorm,
@@ -245,6 +261,7 @@ struct ViewBehaviorTests {
     let view = try makeView(
       configuration: Configuration.parse("command=/bin/sleep 30")
     )
+    view.removeFromSuperview()
     defer { view.stop() }
     try view.renderer.setPostProcessShader(
       """
@@ -505,4 +522,10 @@ struct ViewBehaviorTests {
     )
   }
 
+}
+
+@MainActor
+final class InteractionTestWindow: NSWindow {
+  override var isVisible: Bool { true }
+  override var occlusionState: NSWindow.OcclusionState { [.visible] }
 }

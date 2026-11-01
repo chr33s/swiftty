@@ -13,7 +13,7 @@ extension ViewBehaviorTests {
   @Test(.enabled(if: hasMetal))
   func `accessibility point queries exclude the search overlay`() throws {
     let view = try makeView()
-    let window = NSWindow(
+    let window = InteractionTestWindow(
       contentRect: NSRect(x: 0, y: 0, width: 800, height: 240),
       styleMask: [.titled],
       backing: .buffered,

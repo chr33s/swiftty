@@ -11,15 +11,32 @@ import TestSupport
 /// disable local-emulator features and program side effects.
 @MainActor
 @Suite(.serialized)
-struct ViewCapabilityTests {
+final class ViewCapabilityTests {
+  private var displayWindows: [NSWindow] = []
+  isolated deinit { for window in displayWindows { window.close() } }
   nonisolated static let hasMetal = MTLCreateSystemDefaultDevice() != nil
 
   init() { DisplayAccommodations.override = DisplayAccommodations() }
 
-  func makeView(session: TerminalSession? = nil) throws -> TerminalView {
+  func makeView(
+    session: TerminalSession? = nil,
+    configuration: Configuration = .init()
+  ) throws -> TerminalView {
     _ = NSApplication.shared
-    guard let session else { return try TerminalView(configuration: .init()) }
-    return try TerminalView(configuration: .init(), session: session)
+    let view = try TerminalView(
+      configuration: configuration,
+      session: session ?? TerminalSession()
+    )
+    let window = InteractionTestWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+      styleMask: [.borderless],
+      backing: .buffered,
+      defer: false
+    )
+    window.isReleasedWhenClosed = false
+    window.contentView = view
+    displayWindows.append(window)
+    return view
   }
 
   /// Runs the main run loop until `condition` holds or a second passes.
@@ -139,7 +156,7 @@ struct ViewCapabilityTests {
     _ allowed: Bool
   ) throws {
     _ = NSApplication.shared
-    let view = try TerminalView(
+    let view = try makeView(
       configuration: Configuration.parse("cursor-click-to-move=true")
     )
     view.setFrameSize(NSSize(width: 400, height: 200))
@@ -344,6 +361,7 @@ struct ViewCapabilityTests {
         pressure: 1
       )
     )
+    view.draw(in: view)
     let menu = try #require(view.menu(for: event))
     let titles = menu.items.map(\.title)
     #expect(titles.contains("Copy"))

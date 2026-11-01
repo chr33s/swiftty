@@ -42,7 +42,8 @@ extension TerminalView {
     case .clearScreen: session.mutate { $0.clearScreenKeepingCursorLine() }
     case .reset: session.reset()
     case .text, .textBytes, .csi, .esc:
-      action.bytes.map { session.send(.bytes($0)) }
+      guard let bytes = action.bytes else { return false }
+      return submitInput(.bytes(bytes))
     case .ignore: break
     }
     return true
@@ -59,8 +60,7 @@ extension TerminalView {
     }
     guard let text = pasteboard.string(forType: .string) else { return false }
     clearSelection()
-    session.send(.paste(text))
-    return true
+    return submitInput(.paste(text))
   }
 
   @objc

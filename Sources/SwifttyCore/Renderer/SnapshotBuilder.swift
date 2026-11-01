@@ -3,6 +3,7 @@ package struct SnapshotBuilder {
   private let source = SnapshotSource()
   private var pool: [SnapshotStorage] = []
   private var sequence: UInt64 = 0
+  private var presentationRevision: UInt64 = 0
   private(set) var last: RenderSnapshot?
 
   package init() { pool.reserveCapacity(3) }
@@ -23,6 +24,19 @@ package struct SnapshotBuilder {
     {
       damage.setFull()
     }
+    let modes = state.modes
+    let cursor = CursorState(
+      x: state.cursor.x,
+      y: state.cursor.y,
+      isVisible: modes.contains(.cursorVisible) && state.viewportOffset == 0,
+      style: state.cursorStyle,
+      isBlinking: modes.contains(.cursorBlink),
+    )
+    if !damage.isEmpty || last?.cursor != cursor || last?.modes != modes
+      || last?.viewportOffset != state.viewportOffset
+    {
+      presentationRevision &+= 1
+    }
     for storage in pool { storage.pending.formUnion(damage) }
 
     let storage = takeFreeStorage()
@@ -30,7 +44,6 @@ package struct SnapshotBuilder {
     storage.fill(from: state, damage: damage)
 
     sequence &+= 1
-    let modes = state.modes
     func span(
       _ start: TerminalPoint,
       _ end: TerminalPoint,
@@ -87,13 +100,7 @@ package struct SnapshotBuilder {
       columns: state.columns,
       rowCount: rowCount,
       overscanRows: extra,
-      cursor: CursorState(
-        x: state.cursor.x,
-        y: state.cursor.y,
-        isVisible: modes.contains(.cursorVisible) && state.viewportOffset == 0,
-        style: state.cursorStyle,
-        isBlinking: modes.contains(.cursorBlink),
-      ),
+      cursor: cursor,
       selection: selection,
       searchMatches: matches,
       selectedSearchMatch: selectedMatch,
@@ -106,6 +113,7 @@ package struct SnapshotBuilder {
       viewportOffset: state.viewportOffset,
       scrollbackCount: state.scrollbackCount,
       sequence: sequence,
+      presentationRevision: presentationRevision,
     )
     last = snapshot
     return snapshot

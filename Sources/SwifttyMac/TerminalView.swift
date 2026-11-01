@@ -4,6 +4,9 @@ import QuartzCore
 import SwifttyCore
 
 /// An MTKView that renders a session on demand at the display refresh rate.
+/// Standalone view input has a 64 KiB admission budget; refusal beeps rather
+/// than accumulating unbounded pending input. Explicit transport backends keep
+/// their admission policy. Public `session.send` retains its embedding contract.
 @MainActor
 public final class TerminalView: MTKView, MTKViewDelegate {
   private static let surfaces = NSHashTable<TerminalView>.weakObjects()
@@ -22,15 +25,16 @@ public final class TerminalView: MTKView, MTKViewDelegate {
   /// Modes of the last drawn frame, as `capabilities` lets the view act
   /// on them (mouse tracking is masked without mouse reporting).
   var lastModes: Modes = .initial
-  var scrollAccumulator = ScrollAccumulator()
-  var horizontalScrollAccumulator = ScrollAccumulator()
+  let pointer = TerminalPointer()
+  var scrollAccumulator: ScrollAccumulator { pointer.vertical }
+  var horizontalScrollAccumulator: ScrollAccumulator { pointer.horizontal }
   var gridSize = (columns: 0, rows: 0)
   /// The last drawn frame: the cursor for the IME candidate window, the
   /// text for accessibility.
   var lastSnapshot: RenderSnapshot?
   var colorScheme: ColorScheme
 
-  enum SelectionUnit { case cell, word, line }
+  typealias SelectionUnit = TerminalPointer.SelectionUnit
   var selectionUnit = SelectionUnit.cell
   /// Span the gesture started on (one cell, word or line).
   var selectionOrigin:
@@ -38,7 +42,10 @@ public final class TerminalView: MTKView, MTKViewDelegate {
   var selectionDragged = false
   /// Later drag/release reports belong to the terminal only when it
   /// received this gesture's initial press.
-  var reportsLeftMouseGesture = false
+  var reportsLeftMouseGesture: Bool {
+    get { pointer.reportsLeftGesture }
+    set { pointer.reportsLeftGesture = newValue }
+  }
   var hasSelection = false
   var pasteboard = NSPasteboard.general
   /// What this surface offers for its session (`.full` by default; a
@@ -58,20 +65,17 @@ public final class TerminalView: MTKView, MTKViewDelegate {
   /// The pointer the application asked for (OSC 22).
   var applicationCursor = NSCursor.iBeam
 
-  var markedText = ""
-  var markedSelection = NSRange(location: NSNotFound, length: 0)
+  let composition = TerminalComposition()
+  var markedText: String { composition.text }
   /// The key event being interpreted, for commands the input system does not handle.
-  var interpretingEvent: NSEvent?
+  private let keyboard = TerminalKeyboard()
+  var interpretingEvent: NSEvent? {
+    get { keyboard.interpretingEvent }
+    set { keyboard.interpretingEvent = newValue }
+  }
   var heldKeys: [UInt16: KeyEvent] = [:]
 
-  // Blinking: one timer drives the cursor and SGR 5 text.
-  private var blinkTimer: Timer?
-  private var blinkOn = true
-  private var cursorBlinks = false
-  private var isStopped = false
-  private var submittedFrame: UInt64 = 0
-  private var retryScheduled = false
-  private var visibilityObservers: [NSKeyValueObservation] = []
+  private lazy var display = TerminalDisplay(view: self, renderer: renderer)
 
   package var searchBar: SearchBar?
   var accessibilityThrottle = NotificationThrottle(interval: 0.5)
@@ -102,21 +106,9 @@ public final class TerminalView: MTKView, MTKViewDelegate {
     config = configuration.accommodating(.current)
     colorScheme = Self.scheme(of: NSApp.effectiveAppearance)
     self.session = session
-    guard let device = MTLCreateSystemDefaultDevice() else {
-      throw RendererError.setup("no Metal device")
-    }
-    renderer = try MetalRenderer(
-      device: device,
-      fontManager: CoreTextFontManager(),
-      font: configuration.fontDescriptor(scale: 2)
-    )
-    super.init(frame: .zero, device: device)
-    (layer as? CAMetalLayer)?.maximumDrawableCount = 2
-    colorPixelFormat = .bgra8Unorm
-    framebufferOnly = true
-    isPaused = true
-    enableSetNeedsDisplay = true
-    autoResizeDrawable = true
+    renderer = try TerminalDisplay.makeRenderer(configuration: configuration)
+    super.init(frame: .zero, device: renderer.device)
+    TerminalDisplay.prepare(self)
     delegate = self
     applyRenderOptions(scale: 2)
     loadShader()
@@ -151,7 +143,7 @@ public final class TerminalView: MTKView, MTKViewDelegate {
   public func start() throws {
     updateGrid()
     try session.start(config.sessionConfiguration(scheme: colorScheme))
-    isStopped = false
+    display.isStopped = false
     Self.surfaces.add(self)
     session.mutate { $0.setColorScheme(colorScheme) }
     updateFrameDriving()
@@ -159,7 +151,7 @@ public final class TerminalView: MTKView, MTKViewDelegate {
 
   public func stop() {
     Self.surfaces.remove(self)
-    isStopped = true
+    display.isStopped = true
     resetBlink()
     isPaused = true
     enableSetNeedsDisplay = true
@@ -231,42 +223,17 @@ public final class TerminalView: MTKView, MTKViewDelegate {
   /// Replaces the configured options, keeping the ones the view drives
   /// (composition, link hover, blink phase, focus).
   private func applyRenderOptions(scale: CGFloat) {
-    layer?.isOpaque = config.backgroundOpacity >= 1
-    renderer.options = Self.merge(
-      configured: config.renderOptions(scale: scale),
-      current: renderer.options
-    )
+    display.apply(configuration: config, scale: scale)
   }
 
   static func merge(
     configured: RenderOptions,
     current: RenderOptions
   ) -> RenderOptions {
-    var options = configured
-    options.preedit = current.preedit
-    options.preeditSelection = current.preeditSelection
-    options.hoveredLink = current.hoveredLink
-    options.underlinedSpan = current.underlinedSpan
-    options.textBlinkVisible = current.textBlinkVisible
-    options.cursorVisible = current.cursorVisible
-    options.isFocused = current.isFocused
-    return options
+    TerminalDisplay.merge(configured: configured, current: current)
   }
 
-  private func loadShader() {
-    do {
-      try renderer.setPostProcessShader(
-        config.customShader.map {
-          try String(contentsOfFile: $0, encoding: .utf8)
-        }
-      )
-    } catch {
-      FileHandle.standardError.write(
-        Data("swiftty: custom-shader: \(error)\n".utf8)
-      )
-      try? renderer.setPostProcessShader(nil)
-    }
-  }
+  private func loadShader() { display.loadShader(config.customShader) }
 
   package static func scheme(of appearance: NSAppearance) -> ColorScheme {
     appearance.bestMatch(from: [.darkAqua, .aqua]) == .aqua ? .light : .dark
@@ -289,7 +256,10 @@ public final class TerminalView: MTKView, MTKViewDelegate {
   // MARK: Layout
 
   public override func viewWillMove(toWindow newWindow: NSWindow?) {
-    if window !== newWindow { clearHover() }
+    if window !== newWindow {
+      clearHover()
+      discardComposition()
+    }
     if let window, window !== newWindow, window.firstResponder === self {
       _ = resignFirstResponder()
     }
@@ -374,7 +344,7 @@ public final class TerminalView: MTKView, MTKViewDelegate {
     // A window keeps its first responder when another window becomes key.
     if window?.firstResponder === self {
       if notification.name == NSWindow.didBecomeKeyNotification {
-        session.send(.focus(true))
+        submitInput(.focus(true))
       } else {
         _ = resignFirstResponder()
       }
@@ -445,11 +415,7 @@ public final class TerminalView: MTKView, MTKViewDelegate {
         super.needsDisplay = newValue
         return
       }
-      switch surfaceVisibility {
-      case .hidden: break
-      case .awaitingOpacity: retryDraw(frame: submittedFrame)
-      case .visible: super.needsDisplay = true
-      }
+      if display.shouldInvalidate() { super.needsDisplay = true }
     }
   }
 
@@ -457,218 +423,32 @@ public final class TerminalView: MTKView, MTKViewDelegate {
 
   public func draw(in view: MTKView) {
     let snapshot = session.snapshot()
-    if let event = hoverEvent,
-      !snapshot.damage.isEmpty
-        || lastSnapshot?.viewportOffset != snapshot.viewportOffset
-        || (hoverCell.map { $0 != cell(for: event) } ?? true)
-    {
-      refreshHover()
-    }
+    let needsHoverRefresh =
+      hoverEvent.map { event in
+        !snapshot.damage.isEmpty
+          || lastSnapshot?.viewportOffset != snapshot.viewportOffset
+          || (hoverCell.map { $0 != cell(for: event) } ?? true)
+      } ?? false
+    let result = display.submit(
+      snapshot,
+      focused: window?.isKeyWindow == true && window?.firstResponder === self,
+      cursorBlink: config.cursorStyleBlink
+    )
+    guard result == .submitted else { return }
     lastModes = capabilities.effectiveModes(snapshot.modes)
     lastSnapshot = snapshot
+    if needsHoverRefresh { refreshHover() }
     if hasSelection, snapshot.selection == nil {
       hasSelection = false
       selectionOrigin = nil
     }
-    cursorBlinks = config.cursorStyleBlink ?? snapshot.cursor.isBlinking
-    renderer.options.isFocused =
-      window?.isKeyWindow == true && window?.firstResponder === self
-    renderer.options.cursorVisible =
-      blinkOn || !cursorBlinks || !renderer.options.isFocused
-    renderer.options.textBlinkVisible = blinkOn
-    if isSurfaceVisible, let drawable = currentDrawable,
-      currentRenderPassDescriptor != nil
-    {
-      submittedFrame &+= 1
-      let frame = submittedFrame
-      drawable.addPresentedHandler { [weak self] drawable in
-        guard drawable.presentedTime == 0 else { return }
-        DispatchQueue.main.async { self?.retryDraw(frame: frame) }
-      }
-      if !renderer.draw(snapshot, in: self) { retryDraw(frame: frame) }
-    } else {
-      retryDraw(frame: submittedFrame)
-    }
-    updateFrameDriving()
     postAccessibilityChange()
   }
 
-  private var isSurfaceVisible: Bool { surfaceVisibility == .visible }
-
-  private enum SurfaceVisibility { case hidden, awaitingOpacity, visible }
-
-  private var surfaceVisibility: SurfaceVisibility {
-    guard let window, window.isVisible,
-      window.occlusionState.contains(.visible), window.alphaValue > 0,
-      !isHiddenOrHasHiddenAncestor, bounds.width > 0, bounds.height > 0
-    else { return .hidden }
-    var awaitingOpacity = false
-    var ancestor: NSView? = self
-    while let view = ancestor {
-      if view.alphaValue <= 0 {
-        guard let layer = view.layer, hasOpacityAnimation(layer) else {
-          return .hidden
-        }
-        if (layer.presentation()?.opacity ?? 0) <= 0 {
-          guard hasOpacityAnimation(layer, awaitingPresentation: true) else {
-            return .hidden
-          }
-          awaitingOpacity = true
-        }
-      }
-      ancestor = view.superview
-    }
-    return awaitingOpacity ? .awaitingOpacity : .visible
-  }
-
-  private func hasOpacityAnimation(
-    _ layer: CALayer,
-    awaitingPresentation: Bool = false
-  ) -> Bool {
-    layer.animationKeys()?
-      .contains { key in
-        guard let animation = layer.animation(forKey: key) else { return false }
-        if awaitingPresentation {
-          var speed = animation.speed
-          var ancestor: CALayer? = layer
-          while let current = ancestor {
-            speed *= current.speed
-            ancestor = current.superlayer
-          }
-          guard speed != 0 else { return false }
-          // Retained animations still run; stop polling only after their active time ends.
-          // Core Animation resolves a zero begin time when it commits the animation.
-          if !animation.isRemovedOnCompletion, animation.beginTime != 0 {
-            let time =
-              (layer.convertTime(CACurrentMediaTime(), from: nil)
-                - animation.beginTime) * Double(animation.speed)
-              + animation.timeOffset
-            let cycles =
-              animation.repeatCount > 0 ? Double(animation.repeatCount) : 1
-            let duration =
-              animation.repeatDuration > 0
-              ? animation.repeatDuration
-              : animation.duration * (animation.autoreverses ? 2 : 1) * cycles
-            if speed > 0 ? time >= duration : time <= 0 { return false }
-          }
-        }
-        return Self.animatesOpacity(animation)
-      } ?? false
-  }
-
-  private static func animatesOpacity(_ animation: CAAnimation) -> Bool {
-    if let property = animation as? CAPropertyAnimation {
-      return property.keyPath == "opacity"
-    }
-    return (animation as? CAAnimationGroup)?.animations?
-      .contains(where: animatesOpacity) ?? false
-  }
-
-  private func observeVisibility() {
-    visibilityObservers.removeAll()
-    // Opacity composites the existing frame; redraw only when transparency ends.
-    let refresh: @Sendable (Bool) -> Void = { [weak self] becameVisible in
-      DispatchQueue.main.async {
-        guard let self else { return }
-        self.updateFrameDriving()
-        if becameVisible, self.isSurfaceVisible { self.needsDisplay = true }
-      }
-    }
-    var ancestor: NSView? = self
-    while let view = ancestor {
-      visibilityObservers.append(
-        view.observe(\.alphaValue, options: [.old, .new]) { _, change in
-          refresh(change.oldValue == 0 && (change.newValue ?? 0) > 0)
-        }
-      )
-      ancestor = view.superview
-    }
-    if let window {
-      visibilityObservers.append(
-        window.observe(\.alphaValue, options: [.old, .new]) { _, change in
-          refresh(change.oldValue == 0 && (change.newValue ?? 0) > 0)
-        }
-      )
-    }
-  }
-
-  private func updateFrameDriving() {
-    let rate = window?.screen?.maximumFramesPerSecond ?? 60
-    if preferredFramesPerSecond != rate { preferredFramesPerSecond = rate }
-    // A shader that animates needs frames without new output.
-    let animating = renderer.isAnimating && !isStopped && isSurfaceVisible
-    if animating == isPaused {
-      isPaused = !animating
-      enableSetNeedsDisplay = !animating
-    }
-    updateBlinkTimer()
-  }
-
-  private func retryDraw(frame: UInt64) {
-    guard !retryScheduled, !isStopped, !renderer.isAnimating || isPaused,
-      submittedFrame == frame, surfaceVisibility != .hidden
-    else { return }
-    retryScheduled = true
-    let delay = 1 / Double(max(1, preferredFramesPerSecond))
-    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-      guard let self else { return }
-      retryScheduled = false
-      guard !isStopped, !renderer.isAnimating || isPaused,
-        submittedFrame == frame, surfaceVisibility != .hidden
-      else { return }
-      if isSurfaceVisible {
-        updateFrameDriving()
-        needsDisplay = true
-      } else {
-        retryDraw(frame: frame)
-      }
-    }
-  }
-
-  private func updateBlinkTimer() {
-    let needed =
-      !isStopped && isSurfaceVisible
-      && ((cursorBlinks && renderer.options.isFocused)
-        || renderer.hasBlinkingText)
-    if needed, blinkTimer == nil {
-      blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) {
-        [weak self] timer in
-        guard let self else {
-          timer.invalidate();
-          return
-        }
-        let identity = ObjectIdentifier(timer)
-        MainActor.assumeIsolated {
-          guard self.blinkTimer.map(ObjectIdentifier.init) == identity else {
-            return
-          }
-          guard self.isSurfaceVisible else {
-            self.updateFrameDriving();
-            return
-          }
-          self.blinkOn.toggle()
-          self.needsDisplay = true
-        }
-      }
-    } else if !needed, let timer = blinkTimer {
-      timer.invalidate()
-      blinkTimer = nil
-      if !blinkOn {
-        blinkOn = true
-        needsDisplay = true
-      }
-    }
-  }
-
-  /// Input shows the cursor at once and restarts its blink.
-  func resetBlink() {
-    blinkTimer?.invalidate()
-    blinkTimer = nil
-    if !blinkOn {
-      blinkOn = true
-      needsDisplay = true
-    }
-  }
+  private var isSurfaceVisible: Bool { display.isSurfaceVisible }
+  private func observeVisibility() { display.observeVisibility() }
+  private func updateFrameDriving() { display.updateFrameDriving() }
+  func resetBlink() { display.resetBlink() }
 
   /// Tells VoiceOver the text changed, at most twice a second; a change
   /// inside that window is posted when it ends, so the last output is
@@ -740,7 +520,7 @@ public final class TerminalView: MTKView, MTKViewDelegate {
   public override func becomeFirstResponder() -> Bool {
     clearHover()
     if window == nil || window?.isKeyWindow == true {
-      session.send(.focus(true))
+      submitInput(.focus(true))
     }
     needsDisplay = true
     return true
@@ -749,7 +529,7 @@ public final class TerminalView: MTKView, MTKViewDelegate {
   public override func resignFirstResponder() -> Bool {
     clearHover()
     releaseHeldKeys()
-    session.send(.focus(false))
+    submitInput(.focus(false))
     needsDisplay = true
     return true
   }
@@ -758,30 +538,40 @@ public final class TerminalView: MTKView, MTKViewDelegate {
     // Key-up may go to the next responder after focus moves away.
     for var key in heldKeys.values {
       key.action = .release
-      session.send(.key(key))
+      submitInput(.key(key))
     }
     heldKeys.removeAll()
   }
 
   /// Key bindings run before the menu's key equivalents.
   public override func performKeyEquivalent(with event: NSEvent) -> Bool {
-    guard window?.firstResponder === self, !hasMarkedText(),
-      let binding = binding(for: event)
-    else { return super.performKeyEquivalent(with: event) }
-    let performed = performBinding(binding)
-    if binding.requiresPerformable, !performed { return false }
-    if !binding.consumesInput { handleTerminalInput(event) }
+    keyboard.keyEquivalent(
+      in: self,
+      composing: hasMarkedText(),
+      binding: binding(for: event),
+      perform: performBinding,
+      sendUnbound: { handleTerminalInput(event) }
+    ) ?? super.performKeyEquivalent(with: event)
+  }
+
+  @discardableResult
+  func submitInput(_ input: TerminalInput) -> Bool {
+    guard session.submitViewInput(input) else {
+      NSSound.beep()
+      return false
+    }
     return true
   }
 
   public override func keyDown(with event: NSEvent) {
     resetBlink()
-    if config.mouseHideWhileTyping { NSCursor.setHiddenUntilMouseMoves(true) }
-    if !hasMarkedText(), let binding = binding(for: event) {
-      let performed = performBinding(binding)
-      if binding.consumesInput, !binding.requiresPerformable || performed {
-        return
-      }
+    if keyboard.consumesKeyDown(
+      hideMouse: config.mouseHideWhileTyping,
+      composing: hasMarkedText(),
+      binding: binding(for: event),
+      perform: performBinding
+    ) {
+      return
     }
     handleTerminalInput(event)
   }
@@ -789,17 +579,15 @@ public final class TerminalView: MTKView, MTKViewDelegate {
   private func handleTerminalInput(_ event: NSEvent) {
     guard capabilities.textInput else { return }
     clearSelection()
-    // While composing, every key belongs to the input method.
-    if !hasMarkedText(), sendKey(event) { return }
-    interpretingEvent = event
-    interpretKeyEvents([event])
-    interpretingEvent = nil
+    keyboard.interpret(event, in: self, composing: hasMarkedText()) {
+      sendKey(event)
+    }
   }
 
   public override func keyUp(with event: NSEvent) {
     if var key = heldKeys.removeValue(forKey: event.keyCode) {
       key.action = .release
-      session.send(.key(key))
+      submitInput(.key(key))
     }
   }
 
@@ -843,8 +631,7 @@ public final class TerminalView: MTKView, MTKViewDelegate {
     guard capabilities.textInput else { return }
     var key = key
     key.action = event.isARepeat ? .repeat : .press
-    heldKeys[event.keyCode] = key
-    session.send(.key(key))
+    if submitInput(.key(key)) { heldKeys[event.keyCode] = key }
   }
 
   /// The key event for keys the terminal encodes itself, or nil for text.
@@ -977,20 +764,5 @@ struct NotificationThrottle {
   mutating func fire(at now: CFTimeInterval) {
     pending = false
     last = now
-  }
-}
-
-/// `AccessibilityText` for the latest snapshot, built once per snapshot
-/// however many accessibility queries read it.
-struct AccessibilityTextCache {
-  private var cached: (sequence: UInt64, text: AccessibilityText)?
-  private(set) var builds = 0
-
-  mutating func text(for snapshot: RenderSnapshot) -> AccessibilityText {
-    if let cached, cached.sequence == snapshot.sequence { return cached.text }
-    let text = AccessibilityText(snapshot)
-    builds += 1
-    cached = (snapshot.sequence, text)
-    return text
   }
 }

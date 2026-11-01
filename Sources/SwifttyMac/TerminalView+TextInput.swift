@@ -20,7 +20,7 @@ extension TerminalView: @MainActor NSTextInputClient {
         key.text = text
         sendHardwareKey(key, event: event)
       } else {
-        session.send(.text(text))
+        submitInput(.text(text))
       }
     }
   }
@@ -31,7 +31,7 @@ extension TerminalView: @MainActor NSTextInputClient {
     guard capabilities.textInput, let event = interpretingEvent,
       !sendKey(event), let text = event.characters, !text.isEmpty
     else { return }
-    session.send(.text(text))
+    submitInput(.text(text))
   }
 
   public func setMarkedText(
@@ -58,45 +58,19 @@ extension TerminalView: @MainActor NSTextInputClient {
   }
 
   func discardComposition() {
-    setPreedit("")
-    inputContext?.discardMarkedText()
+    composition.discard(renderer: renderer, view: self)
   }
 
   private func setPreedit(
     _ text: String,
     selection: NSRange = NSRange(location: NSNotFound, length: 0)
   ) {
-    let length = text.utf16.count
-    let start = min(length, max(0, selection.location))
-    markedSelection =
-      length == 0
-      ? NSRange(location: NSNotFound, length: 0)
-      : NSRange(
-        location: start,
-        length: min(length - start, max(0, selection.length))
-      )
-    let renderedSelection = text.isEmpty ? nil : markedSelection
-    guard
-      text != markedText
-        || renderer.options.preeditSelection != renderedSelection
-    else { return }
-    markedText = text
-    renderer.options.preedit = Array(text.unicodeScalars)
-    renderer.options.preeditSelection = renderedSelection
-    needsDisplay = true
+    composition.set(text, selection: selection, renderer: renderer, view: self)
   }
 
-  public func hasMarkedText() -> Bool { !markedText.isEmpty }
-
-  public func markedRange() -> NSRange {
-    hasMarkedText()
-      ? NSRange(location: 0, length: markedText.utf16.count)
-      : NSRange(location: NSNotFound, length: 0)
-  }
-
-  public func selectedRange() -> NSRange {
-    hasMarkedText() ? markedSelection : NSRange(location: NSNotFound, length: 0)
-  }
+  public func hasMarkedText() -> Bool { !composition.text.isEmpty }
+  public func markedRange() -> NSRange { composition.markedRange }
+  public func selectedRange() -> NSRange { composition.selection }
 
   public func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
 
@@ -112,42 +86,12 @@ extension TerminalView: @MainActor NSTextInputClient {
     forCharacterRange range: NSRange,
     actualRange: NSRangePointer?
   ) -> NSRect {
-    let location = range.location == NSNotFound ? 0 : max(0, range.location)
-    let length = range.location == NSNotFound ? 0 : max(0, range.length)
-    let (end, overflow) = location.addingReportingOverflow(length)
-    let scalars = renderer.options.preedit
-    let startPosition = TerminalGeometry.compositionPosition(
-      in: scalars,
-      atUTF16Offset: location
+    composition.firstRect(
+      for: range,
+      actualRange: actualRange,
+      cursor: (lastSnapshot?.cursor.x ?? 0, lastSnapshot?.cursor.y ?? 0),
+      renderer: renderer,
+      view: self
     )
-    let endPosition =
-      length > 0
-      ? TerminalGeometry.compositionPosition(
-        in: scalars,
-        atUTF16Offset: overflow ? .max : end,
-        roundUp: true,
-      ) : startPosition
-    actualRange?.pointee = NSRange(
-      location: startPosition.utf16Offset,
-      length: endPosition.utf16Offset - startPosition.utf16Offset,
-    )
-    let scale = window?.backingScaleFactor ?? renderer.font.descriptor.scale
-    let column =
-      CGFloat(lastSnapshot?.cursor.x ?? 0) + CGFloat(startPosition.column)
-    let row = CGFloat(lastSnapshot?.cursor.y ?? 0)
-    let cell = renderer.cellSize
-    let x: CGFloat = (renderer.options.paddingX + column * cell.width) / scale
-    let top: CGFloat =
-      (renderer.options.paddingY + (row + 1) * cell.height) / scale
-    let width =
-      CGFloat(endPosition.column - startPosition.column) * cell.width / scale
-    let rect = NSRect(
-      x: x,
-      y: bounds.height - top,
-      width: width,
-      height: cell.height / scale
-    )
-    guard let window else { return rect }
-    return window.convertToScreen(convert(rect, to: nil))
   }
 }

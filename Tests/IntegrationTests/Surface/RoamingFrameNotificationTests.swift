@@ -45,6 +45,70 @@ struct RoamingFrameNotificationTests {
     )
   }
 
+  @Test(arguments: [false, true])
+  func presentationInputBindingCannotFollowAReplacementAttachment(
+    bounded: Bool
+  ) async throws {
+    let oldHost = try FakeHost()
+    let newHost = try FakeHost()
+    let display = TerminalSession(presentationColumns: 20, rows: 4)
+    let old = backend(host: oldHost, sink: display)
+    try await old.start(.create(GridSize(columns: 20, rows: 4)))
+    try #require(await eventually { old.lifecycle == .active })
+    old.bindInput(to: display)
+    let retiredCallback = try #require(display.semanticInputHandler)
+    display.send(.text("old"))
+    try #require(await eventually { await oldHost.applied == [1] })
+    old.stopInput()
+    await old.close()
+
+    let replacement = backend(host: newHost, sink: display)
+    try await replacement.start(.create(GridSize(columns: 20, rows: 4)))
+    try #require(await eventually { replacement.lifecycle == .active })
+    // Input accepted before rebinding must retain the old attachment even
+    // when the presentation queue has not yet invoked its callback.
+    display.semanticInputHandler = retiredCallback
+    let gate = DispatchSemaphore(value: 0)
+    display.queue.async { gate.wait() }
+    defer { gate.signal() }
+    if bounded {
+      #expect(display.submitViewInput(.text("queued for retired attachment")))
+    } else {
+      display.send(.text("queued for retired attachment"))
+    }
+    replacement.bindInput(to: display)
+    gate.signal()
+    // A callback already captured on the session queue remains bound to the
+    // retired pump. It cannot read a mutable slot pointing at the new client.
+    retiredCallback(.text("must not reach the replacement"))
+    display.send(.text("new"))
+    try #require(await eventually { await newHost.applied == [1] })
+    await replacement.close()
+    display.send(.text("closed"))
+    _ = display.snapshot()
+    #expect(await oldHost.applied == [1])
+    #expect(await newHost.applied == [1])
+    display.semanticInputHandler = nil
+  }
+
+  @Test
+  func closingBackendReleasesClientEvenWhileDisplayRetainsItsInputCallback()
+    async throws
+  {
+    let host = try FakeHost()
+    let display = TerminalSession(presentationColumns: 20, rows: 4)
+    var attachment: RoamingScreenBackend? = backend(host: host, sink: display)
+    try await attachment?.start(.create(GridSize(columns: 20, rows: 4)))
+    attachment?.bindInput(to: display)
+    let released: @Sendable () -> Bool = { [weak client = attachment?.client] in
+      client == nil
+    }
+    defer { display.semanticInputHandler = nil }
+    await attachment?.close()
+    attachment = nil
+    #expect(await eventually { released() })
+  }
+
   @Test
   func lateHandlerReceivesCachedFrameWithoutAnotherSnapshot() async throws {
     let host = try FakeHost()

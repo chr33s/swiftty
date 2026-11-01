@@ -295,6 +295,31 @@ the layout is tested, not stylistic. ([Swift 6.4][SWIFT-SYSTEMS],
 alignment 4 and the offsets of `glyph` (0, relied on by
 `TerminalState.storeASCII`), `attributes` (4) and `width` (15).
 
+### Shared-surface device validation — 2026-11-01
+
+Against baseline `78ee561d977bf4c1c25976126c07f8480370ec65`, both versions passed
+231 hosted tests in 24 suites on a physical iPad Pro 12.9-inch (5th generation,
+iPad13,8). Baseline took 76.335 seconds; current took 75.937 seconds. The suite
+checks actual drawable presentation, recovery after idle/hidden/background states,
+and suppression of idle/hidden/background rendering. Temporary test hosts disabled
+Auto-Lock for four minutes after launch. These are drawing-activity checks, not
+battery watt-hour measurements.
+
+| Frame-time p95, ms | Baseline | Current | Budget |
+|---|---:|---:|---:|
+| Full redraw | 2.684 | 3.551 | 16.7 |
+| Dense search highlights | 3.515 | 2.667 | 16.7 |
+
+Logs: `/private/tmp/swiftty-device-{baseline,current}-final-tests.log`.
+The shipping MobileClient Release build passed for physical iOS arm64 and arm64e,
+including the production roaming integration (`swiftty-layered-shipping-ios-build.log`).
+An earlier hosted simulator run passed 231 tests, but preceded the final fixes;
+the physical runs above cover final sources. This is evidence for the shared-surface
+change, not completion of every platform's release matrix or signing/distribution.
+Desktop correctness and production measurements are recorded in
+[spec.md](spec.md#shared-surface-implementation-and-validation--2026-11-01) and
+[spec.multiplexer.md](spec.multiplexer.md#shared-surface-measurements--2026-11-01).
+
 ## A09 — Service authorization and pasteboard (SESSION-01, DIST-01, SAFE-01)
 
 **Rationale.** The existing per-user `SMAppService.agent` model with

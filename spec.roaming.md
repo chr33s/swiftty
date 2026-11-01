@@ -600,6 +600,35 @@ Bound byte counts as well as message counts. Do not wrap networking in an unboun
 
 Scope connection tasks to an attachment, but scope the host PTY task to the server session. Canceling one attachment must not cancel the shell. All close/cleanup paths are idempotent and deadline-bounded. Swift 6.4's async cleanup features may be used, but cannot substitute for deadlines. [S6]
 
+### Production attachment ownership
+
+`Apps/Shared/LiveTerminalSurface.swift` uses `RoamingScreenBackend` as the single
+production binding for frames, semantic input, connection status, geometry and
+explicit close. The application-owned `ClientSlot` and duplicate input pump are
+removed. Interactive SSH trust, saved-host/credential selection, scene observation,
+user prompts and ordered application lifecycle intent remain in the application.
+The reusable attachment owns bounded ordering, mailbox/display delivery and its
+client identity; do not add a third wrapper around parallel implementations.
+
+Capture a semantic-input callback when input is submitted, not when a queued
+operation eventually drains. An old operation must never follow a replacement
+attachment. Each pump refers weakly to its original client, so it cannot redirect
+input or retain a closed client through client → sink → display → pump. Close
+fences the pump before awaiting lifecycle work. Retries retain workspace identity,
+never create a replacement shell or replay uncertain input into another session,
+and preserve existing trust/reconnect guarantees. Ordinary SSH fallback remains a
+visibly separate connection-scoped shell. The same workspace and writer authority
+serve native SMX and roaming RST attachments; see [architecture ownership](spec.md#architecture-and-ownership).
+
+Implemented and validated 2026-11-01: `RoamingFrameNotificationTests` covers queued
+input across attachment replacement for public and bounded submission, and client
+release while a display retains its callback. Final admission/lifetime coverage
+passed 10 tests; the full native integration bundle passed 790 tests in each
+Debug/Release run. The shipping MobileClient Release build also passed for arm64
+and arm64e. Overall evidence is in [spec.md](spec.md#shared-surface-implementation-and-validation--2026-11-01)
+and [spec.apple.md A08](spec.apple.md#a08--memory-and-performance-txt-04-perf-01-appendix-a).
+These checks do not replace the remaining platform-wide release matrix in §2.4.
+
 ## 12. Resource and security limits
 
 | Resource | Proposed v1 limit |
@@ -675,6 +704,11 @@ Maintain the design-provenance record (Appendix B) citing the paper and public s
 ---
 
 ## Revision record
+
+**2026-11-01 — Shared attachment implementation:** Record `RoamingScreenBackend`
+as the production frame/input/lifecycle binding, with submission-time callback
+identity and closed-client lifetime fencing. Incorporate the shared architecture
+requirements into the owning specs; RST/1, trust and retention semantics are unchanged.
 
 **v0.4 — 2026-10-10:** Fold the Swiftty integration addendum (Appendix A) and the design-provenance record (Appendix B) into this document. No requirement changes.
 
@@ -861,11 +895,11 @@ The watch does not enter either terminal backend, receive a full RST frame, enco
 
 ### A.4 Required Swiftty adapter work
 
-#### A.4.1 Introduce a frontend session interface
+#### A.4.1 Frontend session interface
 
 The inspected mobile view stores a concrete `TerminalSession` and installs its callbacks. This is useful for byte-stream terminals, but does not directly accept a remote screen store. [R4]
 
-Introduce a project-owned `TerminalSurfaceBackend` abstraction with these responsibilities:
+Use the project-owned `TerminalSurfaceBackend` abstraction with these responsibilities:
 
 | Responsibility | Contract |
 |---|---|
@@ -877,7 +911,11 @@ Introduce a project-owned `TerminalSurfaceBackend` abstraction with these respon
 | Capabilities | State whether scrollback, search, mouse reporting, and local PTY actions are supported |
 | Lifecycle | Distinguish temporary attachment failure from actual session exit |
 
-Provide `LocalPTYBackend` for native macOS only and `SSHStreamBackend`/`RoamingScreenBackend` for direct-client platforms. Use a separate read-only companion store, not a terminal backend, on watchOS. These are proposed names, not existing Swiftty APIs.
+`LocalPTYBackend` serves native macOS, and `SSHStreamBackend`/`RoamingScreenBackend`
+serve direct-client platforms. These are implemented package types. The public
+direct-session embedding API remains supported; no universal public backend ABI
+or replacement of every RST presentation session with a new frame type is required.
+Use a separate read-only companion store, not a terminal backend, on watchOS.
 
 Adapt the native AppKit view, UIKit-derived full-client views, and tvOS frontend, including their supported keyboard, selection, accessibility, search, and resizing extensions. Changing only the view initializer is insufficient: operations that currently reach into local terminal state need backend-specific behavior.
 

@@ -1,5 +1,7 @@
 import AppKit
 import MetalKit
+import SwiftMuxExport
+import SwiftMuxProtocol
 @testable import Swiftty
 @testable import SwifttyMac
 import SwifttyCore
@@ -11,6 +13,73 @@ struct ViewVisibilityTests {
   nonisolated static let hasMetal = MTLCreateSystemDefaultDevice() != nil
 
   init() { DisplayAccommodations.override = DisplayAccommodations() }
+
+  @Test(.enabled(if: hasMetal), arguments: [false, true])
+  func hiddenFramesDoNotAdvanceEitherInteractionBaseline(_ mux: Bool) throws {
+    _ = NSApplication.shared
+    let session = TerminalSession(columns: 20, rows: 4)
+    let direct = try TerminalView(
+      configuration: Configuration(),
+      session: session
+    )
+    let pane = try MuxPaneView(pane: .init(), configuration: Configuration())
+    let view: MTKView = mux ? pane : direct
+    let renderer = mux ? pane.renderer : direct.renderer
+    let window = VisibilityWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 320, height: 200),
+      styleMask: [.borderless],
+      backing: .buffered,
+      defer: false
+    )
+    window.isReleasedWhenClosed = false
+    defer { window.close() }
+    window.contentView = view
+    let server = ServerInstanceID()
+    let attachment = AttachmentID()
+    func feed(_ text: String, revision: UInt64) throws {
+      session.feed(Array(text.utf8))
+      if mux {
+        let frame = try FrameExporter.frame(
+          from: session.withState { $0.captureOwnedScreen() },
+          identity: .init(
+            server: server,
+            attachment: attachment,
+            pane: pane.pane,
+            revision: revision,
+            layoutRevision: 1,
+            geometryGeneration: 0,
+            viewportRevision: 0
+          )
+        )
+        pane.receive(
+          try #require(MuxPaneView.importFrame(frame, limits: .init())),
+          server: server
+        )
+      }
+    }
+    func draw() {
+      if mux { pane.draw(in: pane) } else { direct.draw(in: direct) }
+    }
+    func text() -> String? {
+      if mux { return pane.accessibilityValue() as? String }
+      return direct.accessibilityValue() as? String
+    }
+    try feed("shown", revision: 1)
+    draw()
+    try #require(renderer.waitUntilIdle(timeout: .now() + 2))
+    try #require(text()?.contains("shown") == true)
+    let baseline = text()
+    view.isHidden = true
+    try feed("\r\nnew output", revision: 2)
+    draw()
+    #expect(text() == baseline)
+    if mux { #expect(pane.presented?.frame.identity.revision == 1) }
+    view.isHidden = false
+    draw()
+    try #require(renderer.waitUntilIdle(timeout: .now() + 2))
+    #expect(text()?.contains("new output") == true)
+    if mux { #expect(pane.presented?.frame.identity.revision == 2) }
+  }
 
   @Test(
     .enabled(if: hasMetal),

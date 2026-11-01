@@ -9,7 +9,7 @@ import TestSupport
 extension ViewBehaviorTests {
   @Test(
     .enabled(if: hasMetal),
-    arguments: ["resize", "reset", "evict", "height"]
+    arguments: ["resize", "reset", "evict", "height", "overwrite"]
   )
   func `selection drags reject an origin invalidated before the next frame`(
     _ change: String
@@ -20,6 +20,7 @@ extension ViewBehaviorTests {
     view.setFrameSize(NSSize(width: 320, height: 200))
     view.session.resize(columns: 10, rows: 2)
     view.session.feed(Array("abcd".utf8))
+    view.draw(in: view)
     func event(_ type: NSEvent.EventType, column: Int) throws -> NSEvent {
       try #require(
         NSEvent.mouseEvent(
@@ -47,6 +48,8 @@ extension ViewBehaviorTests {
       view.session.resize(columns: 20, rows: 2)
     } else if change == "height" {
       view.session.resize(columns: 10, rows: 3)
+    } else if change == "overwrite" {
+      view.session.feed(Array("\u{1B}[Hwxyz".utf8))
     } else if change == "reset" {
       view.session.reset()
       view.session.feed(Array("wxyz".utf8))

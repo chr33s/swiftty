@@ -51,7 +51,7 @@ extension ViewBehaviorTests {
   @Test(.enabled(if: hasMetal))
   func `search controls hide terminal links and mouse motion reports`() throws {
     let view = try makeView()
-    let window = NSWindow(
+    let window = InteractionTestWindow(
       contentRect: NSRect(x: 0, y: 0, width: 800, height: 240),
       styleMask: [.titled],
       backing: .buffered,
@@ -68,6 +68,7 @@ extension ViewBehaviorTests {
     )
     view.draw(in: view)
     view.showSearch(text: "x")
+    view.draw(in: view)
     let bar = try #require(view.searchBar)
     let location = view.convert(
       NSPoint(x: bar.field.bounds.midX, y: bar.field.bounds.midY),
@@ -132,7 +133,9 @@ extension ViewBehaviorTests {
     if searching { view.showSearch(text: "link") }
     let responder = try #require(window.firstResponder)
     view.session.feed(Array("https://a.test".utf8))
-    view.draw(in: view)
+    // This test supplies an admitted snapshot to isolate responder routing
+    // from window-server visibility; display admission has separate tests.
+    view.lastSnapshot = view.session.snapshot()
     let scale = window.backingScaleFactor
     let location = NSPoint(
       x: (view.renderer.options.paddingX + view.renderer.cellSize.width / 2)
@@ -174,7 +177,7 @@ extension ViewBehaviorTests {
       responder.flagsChanged(with: event)
       #expect((view.hoveredLink != nil) == flags.contains(.command))
       #expect(view.hoverEvent?.locationInWindow == location)
-      view.draw(in: view)
+      view.lastSnapshot = view.session.snapshot()
       #expect((view.hoveredLink != nil) == flags.contains(.command))
     }
     view.mouseExited(with: motion)
@@ -201,7 +204,7 @@ extension ViewBehaviorTests {
     _ searching: Bool
   ) throws {
     let view = try makeView()
-    let window = NSWindow(
+    let window = InteractionTestWindow(
       contentRect: NSRect(x: 0, y: 0, width: 640, height: 240),
       styleMask: [.titled],
       backing: .buffered,

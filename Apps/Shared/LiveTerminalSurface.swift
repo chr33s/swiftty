@@ -119,15 +119,6 @@ struct EndpointStageNotice: Hashable, Sendable {
   }
 }
 
-/// Holds the current client for nonisolated input submission.
-final class ClientSlot: Sendable {
-  private let value = Mutex<RoamingClient?>(nil)
-
-  var client: RoamingClient? { value.withLock { $0 } }
-
-  func set(_ client: RoamingClient?) { value.withLock { $0 = client } }
-}
-
 // MARK: - Roaming
 
 /// One roaming terminal: a presentation-mode `TerminalSession` displaying
@@ -158,11 +149,8 @@ final class RoamingTerminalController: TerminalSurfaceController {
   @ObservationIgnored
   private(set) var selection: HostConnectionSelection
   @ObservationIgnored
-  private let slot: ClientSlot
-  @ObservationIgnored
-  private let pump: OrderedInputPump
-  @ObservationIgnored
-  private var client: RoamingClient?
+  private var backend: RoamingScreenBackend?
+  private var client: RoamingClient? { backend?.client }
   @ObservationIgnored
   private var grid = GridSize(columns: 80, rows: 24)
   @ObservationIgnored
@@ -206,17 +194,6 @@ final class RoamingTerminalController: TerminalSurfaceController {
       configuration: Configuration().sessionConfiguration()
     )
     self.display = display
-    let slot = ClientSlot()
-    self.slot = slot
-    pump = OrderedInputPump(submit: { input in
-      guard let client = slot.client else { return .refused(.notActive(.idle)) }
-      return await client.submit(input)
-    })
-    // Semantic input arrives on the session queue, in order; the pump
-    // keeps that order across the hop to the client actor.
-    display.semanticInputHandler = { [pump] input in
-      if let input = SurfaceInput(input) { pump.enqueue(input) }
-    }
     display.gridProposalHandler = { [weak self] columns, rows in
       DispatchQueue.main.async {
         MainActor.assumeIsolated { self?.propose(columns: columns, rows: rows) }
@@ -279,11 +256,11 @@ final class RoamingTerminalController: TerminalSurfaceController {
       return
     }
     phase = .preparing(.localized("Signing in"))
-    if let old = client {
-      client = nil
-      slot.set(nil)
+    if let old = backend {
+      backend = nil
+      display.semanticInputHandler = nil
       lifecycleQueue.use(nil)
-      await old.close(.detach)
+      await old.close()
     }
     guard !closed, !Task.isCancelled else { return }
     let endpoint: SSHEndpoint
@@ -301,17 +278,18 @@ final class RoamingTerminalController: TerminalSurfaceController {
     }
     guard !closed, !Task.isCancelled else { return }
 
-    let client = RoamingClient(
+    let backend = RoamingScreenBackend(
       bootstrapper: SSHBootstrapper(endpoint: endpoint),
       connector: QUICGrantConnector(fallbackHost: endpoint.configuration.host),
       sink: display,
       configuration: RoamingClientConfiguration(initialGrid: grid)
     )
-    self.client = client
-    slot.set(client)
+    self.backend = backend
+    backend.bindInput(to: display)
+    let client = backend.client
     lifecycleQueue.use(client)
     let token = ObjectIdentifier(client)
-    await client.setStatusHandler { [weak self] status in
+    backend.onStatus = { [weak self] status in
       DispatchQueue.main.async {
         MainActor.assumeIsolated { self?.apply(status, from: token) }
       }
@@ -333,7 +311,7 @@ final class RoamingTerminalController: TerminalSurfaceController {
         ? .localized("Resuming workspace") : .localized("Starting workspace")
     )
     do {
-      try await client.start(target)
+      try await backend.start(target)
       guard !closed else { return }
       if case .preparing = phase { phase = .running }
     } catch {
@@ -474,8 +452,7 @@ final class RoamingTerminalController: TerminalSurfaceController {
     closed = true
     runTask?.cancel()
     let pendingLifecycle = lifecycleQueue.use(nil)
-    slot.set(nil)
-    pump.close()
+    backend?.stopInput()
     monitor?.cancel()
     #if os(macOS) || targetEnvironment(macCatalyst)
     powerMonitor?.invalidate()
@@ -484,14 +461,14 @@ final class RoamingTerminalController: TerminalSurfaceController {
     display.semanticInputHandler = nil
     display.gridProposalHandler = nil
     display.viewportScrollHandler = nil
-    let client = client
+    let backend = backend
     // An already-dispatched detach finishes first. Neither it nor the
     // close needs the main actor.
     let closing = Task.detached(priority: .high) {
-      guard let client else { return }
+      guard let backend else { return }
       await pendingLifecycle?.value
-      await client.close(mode)
-      await client.setStatusHandler(nil)
+      await backend.close(mode)
+      backend.onStatus = nil
     }
     self.closing = closing
     return closing

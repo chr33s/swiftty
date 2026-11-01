@@ -202,23 +202,26 @@ extension ViewBehaviorTests {
     arguments: [
       ("e\u{301}", 1), ("中", 2), ("👩‍💻", 2), ("🇻🇳", 2), ("❤\u{FE0F}", 2),
       ("⌚\u{FE0E}", 1),
-    ]
+    ],
+    [false, true]
   )
   func `IME candidate rectangles follow composition ranges`(
-    _ prefix: String,
-    _ columns: Int
+    _ sample: (String, Int),
+    _ mux: Bool
   ) throws {
-    let view = try makeView()
-    view.frame = NSRect(x: 0, y: 0, width: 640, height: 480)
-    view.session.feed(Array("\u{1B}[2;4H".utf8))
-    view.lastSnapshot = view.session.snapshot()
+    let (prefix, columns) = sample
+    let direct = try makeView()
+    let pane = try MuxPaneView(pane: .init(), configuration: Configuration())
+    let view: any NSTextInputClient = mux ? pane : direct
+    let renderer = mux ? pane.renderer : direct.renderer
+    let surface: NSView = mux ? pane : direct
+    surface.frame = NSRect(x: 0, y: 0, width: 640, height: 480)
     view.setMarkedText(
       prefix + "X",
       selectedRange: NSRange(location: prefix.utf16.count, length: 0),
       replacementRange: NSRange(location: NSNotFound, length: 0),
     )
-    let cellWidth =
-      view.renderer.cellSize.width / view.renderer.font.descriptor.scale
+    let cellWidth = renderer.cellSize.width / renderer.font.descriptor.scale
     let origin = view.firstRect(
       forCharacterRange: NSRange(location: 0, length: 0),
       actualRange: nil

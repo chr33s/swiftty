@@ -267,9 +267,18 @@ Implement three narrow additions:
 
 1. **Owned-frame exporter:** inside the engine module, capture terminal cells and interaction metadata atomically. Add bounded queue admission rather than calling synchronous snapshot APIs from their own queue.
 2. **Owned-frame importer:** inside Swiftty's rendering boundary, validate `PaneFrame` and construct independent immutable `RenderSnapshot` storage. Decode/validate off the main actor, then publish the finished presentation atomically.
-3. **Concrete `MuxPanePresenter`:** retain local snapshots, schedule drawing, send semantic input, request geometry/history operations, and subscribe/unsubscribe to its pane through the shared connection. An app/workspace controller owns the single connection and interactive lease; closing or rebinding one pane presenter does not detach the workspace. No generic plugin-backend framework is needed.
+3. **Concrete pane presenter (`MuxPaneView` in the implementation):** retain local snapshots, schedule drawing, send semantic input, request geometry/history operations, and subscribe/unsubscribe to its pane through the shared connection. An app/workspace controller owns the single connection and interactive lease; closing or rebinding one pane presenter does not detach the workspace. No generic plugin-backend framework is needed.
 
-Replace direct `session.withState`, `mutate`, `send`, `resize`, `start` and `stop` use throughout the view and its extensions. Changing only an initializer leaves input, copy/search, accessibility and lifetime tied to a local PTY. Reuse AppKit behavior and Metal rendering where their dependencies are already appropriate.
+The mux adapter routes state-dependent operations to the service rather than
+using direct-session `withState`, `mutate`, `send`, `resize`, `start` or `stop`.
+`MuxPaneView` holds pane identity and controller routing while composing the same
+package-internal `TerminalComposition`, `TerminalDisplay`, `TerminalKeyboard`,
+`TerminalPointer` and `TerminalAccessibility` helpers as the public direct view.
+See [shared native behavior](spec.md#shared-native-presentation-and-interaction).
+Do not retain parallel IME, pointer, accessibility or display orchestration behind
+a new wrapper, subclass `TerminalSession`, or create a dummy local session/PTY.
+Service-side encoding remains authoritative; typed mux input is never encoded
+against a speculative local mode mirror.
 
 At the pinned revision, the `SwifttyCore` target includes renderer/font code and shaders. The implementation splits out a headless `SwifttyEngine` target (section 11); the service holds no native renderer resources. [S16]
 
@@ -285,6 +294,14 @@ The exact path is:
 6. The Metal renderer reads cells/graphemes, fills its instance buffers/atlas, and attempts drawable submission. Only an accepted submission advances the presentation baseline.
 
 Keep the latest decoded/pending frame separate from the frame successfully admitted for drawing. Busy/no-drawable must not publish unseen content as the selection, IME-cursor or accessibility baseline. Track presentation completion where available; bind gestures to the presentation actually being shown. The existing view's assignment of `lastSnapshot` before a `Void`-returning draw call must change along with the renderer's submission result. Local selection overlays are applied through the importer/presenter without changing the frozen terminal content. [S13], [S15]
+
+`TerminalDisplay` preserves direct waiting submission but keeps mux nonblocking:
+it checks GPU capacity before acquiring a drawable. Refusal retains the newest
+pending frame and coalesces retry work. Pending command-output selection and
+file-drop registration advance only with accepted submission; frozen selection
+keeps its displayed content while output arrives. Accessibility cache identity
+includes the retained source as well as sequence, because separate imports may
+reuse sequence values.
 
 Reset caches on pane rebind, reattach and server-instance change. The current renderer detects skipped snapshot sequence numbers; preserve that protection, force full damage on initial imports, and prevent overlapping sequence numbers from different panes confusing renderer/accessibility caches. [S13]
 
@@ -548,6 +565,54 @@ The footprint covers the whole bench process, so the client that decodes every f
 Notarization: the package script signs Developer ID builds with a secure timestamp. When `NOTARY_PROFILE` names a `notarytool` keychain profile, it also submits the app, staples the ticket and runs `spctl --assess`. No notary credentials are stored on this machine, so that step has not run. Without it, Gatekeeper rejects the Developer ID build as `Unnotarized Developer ID`, as expected.
 
 `FrameTimeTests` measures optimized code. It is now enabled only in optimized builds (`swift test -c release`), where it passes with p95 0.68 ms and 1.77 ms. Debug builds skip it rather than failing. The `SnapshotTests` search budget is gated the same way (release p95 0.009 ms). The PTY slave-leak test waited only 1 s for an asynchronous hang-up and failed under full-suite load (also on `main`); it now waits up to 10 s and returns as soon as EOF arrives. Three consecutive full `swift test` runs then passed (1,202 tests each).
+
+### Shared-surface measurements — 2026-11-01
+
+Baseline `78ee561d977bf4c1c25976126c07f8480370ec65` versus the shared-surface
+implementation. Hardware/build conditions and correctness evidence are in
+[spec.md](spec.md#shared-surface-implementation-and-validation--2026-11-01):
+Mac17,7, 18 cores, 128 GiB, macOS 27.2 (26B123), Swift 6.4.2, matching plain
+production Release builds, verified non-testable. Workload: `swiftmux-bench`,
+32 MiB of SGR/UTF-8/wide text, serial runs without concurrent desktop builds/tests.
+Logs: `/private/tmp/swiftty-final-{baseline,current}-mux-bench.log`.
+
+| Metric | Baseline | Current |
+|---|---:|---:|
+| Mux input-to-frame p95, ms | 1.616 | 1.523 |
+| Mux 200×50 import p95, ms | 1.198 | 1.171 |
+| Mux 200×50 GPU p95, ms | 1.231 | 1.248 |
+| GPU p95 beside saturating large renderer, ms | 2.027 | 2.011 |
+| Detached throughput, MiB/s | 255.3 | 235.9 |
+| Attached throughput, MiB/s | 278.7 | 290.3 |
+| 32 noisy panes, no client, CPU / MiB | 504.5% / 200.7 | 495.9% / 202.5 |
+| 32 noisy panes, one visible, CPU / MiB | 411.3% / 220.3 | 408.2% / 224.5 |
+| 32 visible noisy panes, CPU / MiB | 379.1% / 670.9 | 437.8% / 428.7 |
+| 32 visible noisy panes, frames/s | 1838.9 | 1840.7 |
+| Idle footprint, MiB | 38.9 | 38.9 |
+
+Resource/throughput values
+for the saturating multi-process workload vary with scheduling; they are reported
+as measurements, not claimed improvements. A reverse-order pair confirmed this:
+detached throughput was 249.9→249.6 MiB/s and 32-visible CPU was 549.3%→506.2%
+(baseline→current), reversing the initial CPU difference. Input-to-frame p95 was
+1.993→1.701 ms. Logs: `swiftty-final-{baseline,current}-mux-reverse.log`. The mux benchmark measures input to
+received frame, import and GPU rendering separately; these are not a combined
+physical key-to-pixel measurement.
+
+Three alternating isolated-frame pairs, five rounds each, reuse the existing mux
+benchmark's export/import and GPU functions. Across 15 rounds per version:
+
+| Median of round p95 values, ms | Baseline | Current |
+|---|---:|---:|
+| 200×50 import | 0.497 | 0.490 |
+| 200×50 GPU | 1.216 | 1.217 |
+| 512×256 import | 5.761 | 5.677 |
+| 512×256 GPU | 8.027 | 7.844 |
+
+Large-frame GPU round ranges overlap: 7.694–11.500 ms baseline and
+7.581–11.427 ms current. Logs:
+`/private/tmp/swiftty-final-{baseline,current}-probe-{1,2,3}.log`.
+
 
 ## 12. Primary sources and evidence boundary
 

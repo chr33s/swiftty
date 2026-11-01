@@ -30,7 +30,7 @@ extension TerminalView {
 
   public override func draggingExited(_ sender: (any NSDraggingInfo)?) {
     if let bytes = session.mutate({ $0.dragLeave() }) {
-      session.send(.bytes(bytes))
+      submitInput(.bytes(bytes))
     }
   }
 
@@ -43,8 +43,7 @@ extension TerminalView {
     let event = moveEvent(sender)
     guard let bytes = session.mutate({ $0.dragDrop(event, items: items) })
     else { return false }
-    session.send(.bytes(bytes))
-    return true
+    return submitInput(.bytes(bytes))
   }
 
   private func dragMoved(_ sender: any NSDraggingInfo) -> NSDragOperation {
@@ -55,7 +54,7 @@ extension TerminalView {
         .map { ($0, state.dragAndDrop?.clientAccepted) }
     }
     guard let (bytes, accepted) = result else { return [] }
-    session.send(.bytes(bytes))
+    guard submitInput(.bytes(bytes)) else { return [] }
     // Until the program answers, offer a copy.
     switch accepted {
     case .none?: return []
