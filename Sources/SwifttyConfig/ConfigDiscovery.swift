@@ -3,7 +3,7 @@ import Foundation
 public enum ConfigDiscovery {
   public static func defaultURL(
     environment: [String: String] = ProcessInfo.processInfo.environment,
-    home: URL = FileManager.default.homeDirectoryForCurrentUser
+    home: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
   ) -> URL {
     let root =
       environment["XDG_CONFIG_HOME"]
@@ -16,7 +16,7 @@ public enum ConfigDiscovery {
   public static func resolve(
     arguments: [String] = CommandLine.arguments,
     environment: [String: String] = ProcessInfo.processInfo.environment,
-    home: URL = FileManager.default.homeDirectoryForCurrentUser
+    home: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
   ) throws -> URL? {
     if let index = arguments.firstIndex(of: "--config") {
       guard index + 1 < arguments.count, !arguments[index + 1].hasPrefix("--"),
@@ -44,7 +44,7 @@ public enum ConfigDiscovery {
   public static func load(
     arguments: [String] = CommandLine.arguments,
     environment: [String: String] = ProcessInfo.processInfo.environment,
-    home: URL = FileManager.default.homeDirectoryForCurrentUser
+    home: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
   ) throws -> SwifttyConfig {
     guard
       let url = try resolve(
