@@ -16,6 +16,7 @@ public final class JavaScriptRuntime: @unchecked Sendable {
 
   public init(
     environment: [String: String] = ProcessInfo.processInfo.environment,
+    configurationDirectory: URL = JavaScriptConfiguration.defaultDirectory,
     onAction: @escaping @Sendable (JavaScriptAction) -> Void = { _ in }
   ) {
     queue.setSpecific(key: queueKey, value: true)
@@ -45,6 +46,7 @@ public final class JavaScriptRuntime: @unchecked Sendable {
         identifier,
         forKeyedSubscript: "__identifier" as NSString
       )
+      installJSONCBridge(in: context, directory: configurationDirectory)
       context.evaluateScript(
         try! String(
           contentsOf: Bundle.module.resourceURL!

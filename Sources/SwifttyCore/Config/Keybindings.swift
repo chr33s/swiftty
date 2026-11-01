@@ -19,6 +19,7 @@ public enum KeyAction: Hashable, Sendable {
   case navigateSearch(next: Bool)
   case endSearch
   case clearScreen
+  case newTab
   case reset
   /// Sends text to the application (`text:` takes Zig-style escapes).
   case text(String)
@@ -73,6 +74,7 @@ public enum KeyAction: Hashable, Sendable {
       default: return nil
       }
     case "end_search": self = .endSearch
+    case "new_tab": self = .newTab
     case "clear_screen": self = .clearScreen
     case "reset": self = .reset
     case "text":

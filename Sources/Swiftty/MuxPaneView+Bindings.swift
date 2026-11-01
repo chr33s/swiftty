@@ -48,6 +48,7 @@ extension MuxPaneView {
   func perform(_ action: KeyAction) -> Bool {
     guard let controller else { return false }
     switch action {
+    case .newTab: controller.newTab()
     case .copyToClipboard:
       guard selection != nil else { return false }
       copy(nil)

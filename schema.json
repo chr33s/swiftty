@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/chr33s/swiftty/main/schema.json",
+  "title": "Swiftty Configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Editor schema URL."
+    },
+    "font": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "type": "string",
+          "minLength": 1,
+          "default": "Menlo"
+        },
+        "size": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 13
+        },
+        "line_height": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 1.2,
+          "description": "Cell height multiplier."
+        }
+      }
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "opacity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.95
+        },
+        "blur": {
+          "type": "boolean",
+          "default": true
+        },
+        "padding": {
+          "type": "number",
+          "minimum": 0,
+          "default": 8
+        },
+        "width": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0,
+          "description": "Initial window content dimension in points."
+        },
+        "height": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0,
+          "description": "Initial window content dimension in points."
+        }
+      }
+    },
+    "terminal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "shell": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "pattern": "^[^\\u0000]*$",
+          "default": null,
+          "description": "Executable path; null uses the default login shell."
+        },
+        "scrollback_limit": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807,
+          "default": 10000,
+          "description": "Maximum history rows; the existing byte budget also applies."
+        }
+      }
+    },
+    "keybindings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "trigger": {
+            "type": "string",
+            "minLength": 1,
+            "examples": [
+              "cmd+k",
+              "cmd+t"
+            ]
+          },
+          "action": {
+            "type": "string",
+            "minLength": 1,
+            "examples": [
+              "clear_screen",
+              "new_tab"
+            ]
+          }
+        },
+        "required": [
+          "trigger",
+          "action"
+        ]
+      }
+    },
+    "theme": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Theme name or light:A,dark:B selection."
+    },
+    "copy_on_select": {
+      "type": "boolean",
+      "default": false
+    },
+    "mouse_hide_while_typing": {
+      "type": "boolean",
+      "default": false
+    },
+    "cursor_style": {
+      "enum": [
+        null,
+        "block",
+        "bar",
+        "underline",
+        "block_hollow"
+      ]
+    },
+    "cursor_style_blink": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  }
+}

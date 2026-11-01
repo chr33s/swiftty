@@ -98,7 +98,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     limits = welcome.limits
     features = welcome.features
     config = configuration
-    let window = Self.makeWorkspaceWindow()
+    let window = Self.makeWorkspaceWindow(configuration: configuration)
     super.init(window: window)
     window.delegate = self
     let content = workspaceContent

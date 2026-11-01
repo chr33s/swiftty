@@ -368,6 +368,7 @@ extension TerminalUIView {
       }
     }
     switch action {
+    case .newTab: return false
     case .copyToClipboard: return copySelection()
     case .pasteFromClipboard: return pasteClipboard()
     case let .increaseFontSize(n): setFontSize(fontSize + CGFloat(n))

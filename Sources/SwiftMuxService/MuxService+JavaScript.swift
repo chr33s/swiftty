@@ -24,6 +24,7 @@ extension MuxService {
           _,
           launch in launch
         },
+        configurationDirectory: directory,
         onAction: { [weak self] action in
           self?.onQueue { $0.handleAutomation(action) }
         }

@@ -674,7 +674,8 @@ are not required by the application.
 The persistent SwiftMux service evaluates the script once before its first
 pane starts. Script edits take effect in the next service process; closing and
 reopening a window does not restart that service or reload JavaScript. The
-ordinary configuration reload command below applies to `config`, not `config.js`.
+ordinary configuration reload command below applies to the active terminal
+configuration file; JavaScript reloads separately.
 
 The global `swiftty` provides stdin/stdout filters, environment lookup, managed
 pane writes/splits/closes, shortcuts, dock badges, tab labels, native notifications
@@ -707,14 +708,62 @@ state in the script. Invalid/incomplete UTF-8, throwing filters and results over
 host byte limits pass through unchanged. Streamed pastes filter their payload
 while preserving the writer's paste framing and sanitization. Script errors are
 logged; one failing event listener does not prevent the others from running.
+Automation scripts can read JSONC data using the same parser as terminal
+configuration: `swiftty.jsonc.read("automation.jsonc")` loads a file beside
+`config.js`, and `swiftty.jsonc.parse(text)` parses a string. Comments and trailing
+commas are supported, with source-position diagnostics. Reads are synchronous
+and limited to 1 MiB; load settings at startup. Data uses JavaScript number
+precision and is never executed. Callback functions remain in `config.js`.
+
 See [the JavaScript specification](spec.javascript.md) for the API and OSC
 7501 change semantics.
 
 ## Configuration
 
+Swiftty supports JSONC configuration with `//` and `/* … */` comments and
+trailing commas. File discovery checks, in order:
+
+1. `swiftty --config <path>` (a missing explicit file is reported).
+2. `$XDG_CONFIG_HOME/swiftty/config.jsonc`, or `~/.config/swiftty/config.jsonc`.
+3. `~/.swiftty.jsonc`, then `~/.config/swiftty/config.json`.
+
+The existing extensionless Ghostty configuration remains a final compatibility
+fallback. With no file, JSONC defaults apply. **Edit Configuration File** creates
+a commented template on demand. Reload Configuration applies edits; Settings
+writes to the selected file, including an explicit `--config` path.
+
+```jsonc
+{
+  "$schema": "https://raw.githubusercontent.com/chr33s/swiftty/main/schema.json",
+  "font": { "family": "Menlo", "size": 14, "line_height": 1.2, },
+  "window": { "opacity": 0.95, "blur": true, "padding": 8, },
+  "terminal": { "shell": null, "scrollback_limit": 10000, },
+  "keybindings": [
+    { "trigger": "cmd+k", "action": "clear_screen" },
+    { "trigger": "cmd+t", "action": "new_tab" },
+  ],
+}
+```
+
+Each omitted section or setting uses its default. Optional `window.width` and
+`window.height` set the initial content size in points. `scrollback_limit` counts
+history rows; the terminal's existing byte budget also bounds storage. A shell
+is an executable path, not a shell command. The optional `theme`,
+`copy_on_select`, `mouse_hide_while_typing`, `cursor_style`, and
+`cursor_style_blink` fields support Settings edits. Unknown keys, invalid types,
+and invalid ranges are reported with the original file, line, and one-based
+UTF-8 byte column (tabs count as one). Duplicate keys are rejected.
+
+The dependency-free `SwifttyConfig` library provides `ConfigDiscovery`,
+`ConfigLoader`, `JSONCSanitizer`, and mutable Codable models. `ConfigLoader.save`
+validates and atomically writes pretty-printed, sorted JSON. Saving JSONC from
+Settings or the library replaces comments with canonical JSON; symlinked
+configuration files keep their links. `schema.json` provides editor completion;
+the `$schema` URL resolves from the repository's main branch once published.
+
 Ghostty-style `key = value` files support whole-line `#` comments, repeatable
 keys, empty-value resets and `config-file` includes. Unknown keys are reported
-and ignored. macOS reads `$XDG_CONFIG_HOME/swiftty/config` (default
+and ignored. The legacy macOS fallback is `$XDG_CONFIG_HOME/swiftty/config` (default
 `~/.config/swiftty/config`). Settings (Cmd-,) edits the common options in
 place, rewriting only their own lines, and lists configuration problems;
 Edit Configuration File (Opt-Cmd-,) opens the file and Shift-Cmd-, reloads it.
@@ -722,7 +771,7 @@ Reduce Motion, Reduce Transparency and Increase Contrast adjust how it is
 drawn without changing the file ([spec.apple.md](spec.apple.md)).
 iOS reads `Documents/config`.
 
-Terminal windows use Liquid Glass by default, with `background-opacity = 0.5`
+Legacy terminal windows use Liquid Glass by default, with `background-opacity = 0.5`
 and `background-blur = true`. Set `background-opacity = 1` for an opaque
 terminal or `background-blur = false` for translucency without glass.
 

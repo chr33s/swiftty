@@ -253,6 +253,117 @@ PTY and SSH admission reserve the largest possible encoding before queueing,
 because keyboard modes can change before encoding. This may refuse a large
 commit even when its current UTF-8 encoding would fit the pending-byte limit.
 
+## Configuration
+
+### JSONC format and discovery
+
+Terminal settings use JSONC: JSON with `//` and `/* ... */` comments and
+trailing commas in objects and arrays. The shared `SwifttyConfig` library MUST
+use only the Swift standard library and Foundation, including `JSONDecoder`
+and `JSONEncoder`; no external parser dependency is required.
+
+Resolve configuration in this order:
+
+1. Explicit `--config <path>`. A missing argument or missing explicit file is
+   an error, not permission to select a fallback.
+2. `${XDG_CONFIG_HOME:-~/.config}/swiftty/config.jsonc`.
+3. `~/.swiftty.jsonc`, then `~/.config/swiftty/config.json`.
+4. The app's existing extensionless Ghostty configuration, for compatibility.
+
+With no file, use internal JSONC defaults. Edit Configuration File can create a
+commented template on demand at the selected/default JSONC path; startup need
+not write a file. Reload and Settings edits MUST retain the selected path,
+including an explicit CLI override. Native settings and persistence behavior
+are specified in [the Apple platform spec](spec.apple.md#a01--native-settings-cfg-01).
+
+### Parsing and diagnostics
+
+The processing pipeline is UTF-8 source → byte-preserving sanitizer → syntax
+validation/source index → Foundation decoding → typed validation. Reads MUST
+require regular UTF-8 files and enforce the shared 1 MiB input limit.
+
+The sanitizer MUST replace each comment byte and permitted trailing comma with
+ASCII space, retaining CR and LF at their original offsets. It MUST operate
+outside quoted strings and respect escaped quotes and backslashes. URLs and
+comment-like text inside strings remain untouched. Scan UTF-8 bytes rather than
+Swift `Character` values so non-ASCII comments do not shift source positions.
+Reject unterminated comments, malformed JSON and duplicate keys; sanitization
+must not turn invalid comma placement into valid JSON.
+
+Syntax errors, unknown keys, missing required values, type mismatches and range
+errors MUST report the original file, one-based line and one-based UTF-8 byte
+column (tabs count as one), plus the coding path when available. Preserve a
+source index for mapping decoding paths to locations; Foundation decoding
+contexts alone do not guarantee exact source positions.
+
+The same syntax parser serves [JavaScript JSONC data](spec.javascript.md#jsonc-data-for-automation).
+Terminal configuration validation applies only when loading terminal settings.
+
+### Typed model and editor schema
+
+`SwifttyConfig` and its font, window, terminal and keybinding models are mutable
+`Codable` values. Omitted sections and settings use defaults:
+
+| Section | Settings and defaults |
+| --- | --- |
+| `font` | `family: "Menlo"`, `size: 13`, `line_height: 1.2` |
+| `window` | `opacity: 0.95`, `blur: true`, `padding: 8`; optional `width` and `height` in content points |
+| `terminal` | `shell: null` (default login shell), `scrollback_limit: 10000` history rows |
+| `keybindings` | Empty array; each entry requires `trigger` and `action` strings |
+
+A shell setting is an executable path, not a shell command. The existing
+scrollback byte budget also bounds history. Optional `theme`, `copy_on_select`,
+`mouse_hide_while_typing`, `cursor_style` and `cursor_style_blink` fields support
+native Settings edits. Use snake_case JSON keys and map `$schema` to the model's
+schema field.
+
+The repository's [schema.json](schema.json) MUST describe supported fields,
+defaults, types and ranges for editor completion and agree with runtime
+validation. Unknown keys are rejected. The optional `$schema` value is the
+plain URL `https://raw.githubusercontent.com/chr33s/swiftty/main/schema.json`,
+not a Markdown link; it resolves once published to the main branch.
+
+Example user configuration:
+
+```jsonc
+{
+  "$schema": "https://raw.githubusercontent.com/chr33s/swiftty/main/schema.json",
+  // Font configuration
+  "font": { "family": "SF Mono", "size": 14, "line_height": 1.15, },
+  /* Window styling and compositor blur */
+  "window": { "opacity": 0.92, "blur": true, "padding": 12, },
+  "terminal": { "shell": "/bin/zsh", "scrollback_limit": 50000, },
+  "keybindings": [
+    { "trigger": "cmd+k", "action": "clear_screen" },
+    { "trigger": "cmd+t", "action": "new_tab" },
+  ],
+}
+```
+
+### Serialization and required coverage
+
+Runtime settings mutations MUST round-trip through the typed model.
+`ConfigLoader.save` validates before atomically writing with
+`JSONEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]`. Saving replaces
+JSONC comments and formatting with canonical JSON; it does not promise textual
+round-trip preservation. Resolve a symlink's target when saving so linked
+dotfiles keep their links.
+
+Required verification covers:
+
+- URLs, escaped quotes, backslashes and comment markers inside strings.
+- Multiline and non-ASCII comments with identical UTF-8 byte offsets and line
+  endings after sanitization; valid trailing commas in both arrays and objects.
+- Unterminated comments, malformed commas, duplicate and unknown keys, missing
+  required values, invalid types/ranges and oversized or non-UTF-8 input.
+- Exact original-source diagnostics, including a type mismatch below a 20-line
+  comment block, nested coding paths, CRLF and non-ASCII input.
+- Discovery precedence, missing explicit paths, defaults and template creation.
+- Mutating settings, saving canonical sorted JSON and reloading equivalent
+  values, including validation failure and preservation of symlink targets.
+- Native Settings and JavaScript consumers using the shared parser/model
+  contracts, with their platform-specific acceptance criteria in their specs.
+
 ## OSC 7501 program status
 
 The core owns protocol validation, state, lifecycle and support replies.

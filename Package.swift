@@ -16,6 +16,7 @@ let package = Package(
     .tvOS("27.0"), .watchOS("27.0"),
   ],
   products: [
+    .library(name: "SwifttyConfig", targets: ["SwifttyConfig"]),
     .library(name: "SwifttyEngine", targets: ["SwifttyEngine"]),
     .library(name: "SwifttyCore", targets: ["SwifttyCore"]),
     .library(name: "SwifttyMobile", targets: ["SwifttyMobile"]),
@@ -57,8 +58,13 @@ let package = Package(
     ),
   ],
   targets: [
-    .target(name: "SwifttyJS", resources: [.copy("Resources")]),
-    .testTarget(name: "SwifttyJSTests", dependencies: ["SwifttyJS"]),
+    .target(name: "SwifttyConfig"),
+    .testTarget(name: "SwifttyConfigTests", dependencies: ["SwifttyConfig"]),
+    .target(
+      name: "SwifttyJS",
+      dependencies: ["SwifttyConfig"],
+      resources: [.copy("Resources")]
+    ), .testTarget(name: "SwifttyJSTests", dependencies: ["SwifttyJS"]),
     // Headless terminal engine: parser, state, history, input encoding
     // and PTY processes. No Metal, fonts or AppKit; the SwiftMux service
     // links only this.
@@ -71,7 +77,7 @@ let package = Package(
     .target(name: "CScrollbackChecksum"),
     .target(
       name: "SwifttyCore",
-      dependencies: ["SwifttyEngine"],
+      dependencies: ["SwifttyEngine", "SwifttyConfig"],
       resources: [.copy("Renderer/Shaders.metal")],
       swiftSettings: core,
     ),

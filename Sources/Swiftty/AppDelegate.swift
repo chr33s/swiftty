@@ -169,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       settings
       ?? SettingsWindowController(
         model: SettingsModel(
-          url: Configuration.defaultURL,
+          url: Configuration.activeURL,
           configuration: config,
           reload: { [weak self] in
             guard let self else { return Configuration.load() }
@@ -193,14 +193,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   @objc
   func openConfiguration(_ sender: Any?) {
-    let url = Configuration.defaultURL
+    let url = Configuration.activeURL
     if !FileManager.default.fileExists(atPath: url.path) {
-      try? FileManager.default.createDirectory(
-        at: url.deletingLastPathComponent(),
-        withIntermediateDirectories: true
-      )
-      try? "# swiftty configuration (Ghostty syntax)\n"
-        .write(to: url, atomically: true, encoding: .utf8)
+      try? Configuration.createConfigurationTemplate(at: url)
     }
     NSWorkspace.shared.open(url)
   }

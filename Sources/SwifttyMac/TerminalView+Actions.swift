@@ -8,6 +8,12 @@ extension TerminalView {
     guard capabilities.allows(action, presentation: session.isPresentation)
     else { return false }
     switch action {
+    case .newTab:
+      return NSApp.sendAction(
+        Selector(("newTerminalTab:")),
+        to: nil,
+        from: self
+      )
     case .copyToClipboard: return copySelection()
     case .pasteFromClipboard: return pasteClipboard()
     case let .increaseFontSize(n): setFontSize(fontSize + CGFloat(n))

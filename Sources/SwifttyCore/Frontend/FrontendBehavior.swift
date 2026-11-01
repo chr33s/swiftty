@@ -151,6 +151,7 @@ public enum ActionDispatch {
     case .searchSelection: "Find Selection"
     case let .navigateSearch(next): next ? "Find Next" : "Find Previous"
     case .endSearch: "End Find"
+    case .newTab: "New Tab"
     case .clearScreen: "Clear Screen"
     case .reset: "Reset Terminal"
     case .text, .textBytes, .csi, .esc: "Send Text"
@@ -343,7 +344,7 @@ extension SurfaceCapabilities {
     case .clearScreen, .reset: !presentation
     case .text, .textBytes, .csi, .esc: textInput && !presentation
     case .increaseFontSize, .decreaseFontSize, .resetFontSize, .selectAll,
-      .ignore:
+      .ignore, .newTab:
       true
     }
   }

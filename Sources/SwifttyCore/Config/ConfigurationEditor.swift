@@ -1,6 +1,7 @@
 import Foundation
 
-/// Sets individual keys of a configuration file in place, for the native
+/// Edits JSONC through its typed model, emitting canonical JSON.
+/// Sets individual keys of a legacy configuration file in place, for the native
 /// Settings window (spec.apple.md A01). The file stays authoritative:
 /// comments, includes, key bindings and keys these frontends do not know
 /// are kept byte for byte, and only the edited key's lines change.
@@ -77,6 +78,10 @@ public enum ConfigurationEditor {
     _ changes: [(key: String, value: String?)],
     to url: URL
   ) throws {
+    if Configuration.usesJSONC(url) {
+      try applyJSONC(changes, to: url)
+      return
+    }
     let target = url.resolvingSymlinksInPath()
     var text: String
     do {

@@ -89,6 +89,49 @@ complete public signatures. The root `swiftty` object exposes:
 | `currentPane` | Obtain a pane handle for the current callback or focused pane. |
 | `events` | Register shell, program-status, and keyboard callbacks. |
 | `env(key, defaultValue?)` | Read the runtime environment, with an optional fallback. |
+| `jsonc.parse(text)` / `jsonc.read(path)` | Parse JSONC data with the shared configuration parser. |
+
+### JSONC data for automation
+
+`config.js` can read separate JSONC data through `swiftty.jsonc.read(path)` or
+parse a string through `swiftty.jsonc.parse(text)`. Both reuse `SwifttyConfig`'s
+[syntax parser](spec.md#parsing-and-diagnostics), including comments, trailing commas, duplicate-key rejection,
+and source-accurate diagnostics. They do not apply the terminal settings schema.
+Objects, arrays, and scalar JSON values are supported; JavaScript number
+precision applies. Data is passed to `JSON.parse`, never evaluated as code.
+
+Relative paths resolve against the service's configured JavaScript directory
+(the directory containing `config.js`), not the shell's current directory.
+Absolute paths and `~` are also supported. Reads require regular UTF-8 files and
+are bounded to 1 MiB; string input has the same limit. Reads are synchronous, so
+load settings during initialization rather than inside stream filters.
+
+Parse failures throw catchable `SyntaxError` values with the original source
+path, line and one-based UTF-8 byte column; `line` and `column` are also available
+as error properties. File-system errors throw `Error`; non-string arguments
+throw `TypeError`. Catching an error does not mark the entire script as failed.
+
+```js
+const settings = swiftty.jsonc.read("automation.jsonc");
+if (!settings || typeof settings !== "object" || Array.isArray(settings)
+    || typeof settings.prefix !== "string") {
+  throw new Error("automation.jsonc must contain a string prefix");
+}
+const prefix = settings.prefix;
+swiftty.filter.onStdout(text => prefix + text);
+```
+
+For this example, `automation.jsonc` can contain:
+
+```jsonc
+{
+  // Settings consumed by config.js, not terminal configuration.
+  "prefix": "[output] ",
+}
+```
+
+Automation callbacks remain JavaScript in `config.js`. JSONC does not define a
+new declarative automation language or change the service's reload lifecycle.
 
 ### 3.1 Stream filters
 

@@ -113,7 +113,23 @@ export interface LifecycleHooks {
   bindKey(shortcut: string, callback: () => void): void;
 }
 
+/** JSON values parsed as data, never evaluated as JavaScript. */
+export type JSONValue = null | boolean | number | string | JSONValue[] | { [key: string]: JSONValue };
+
+export interface JSONCReader {
+  /** Parse comments and trailing commas. SyntaxError includes original line/byte column. */
+  parse(text: string): JSONValue;
+  /**
+   * Read a UTF-8 JSONC file (up to 1 MiB). Relative paths resolve beside config.js;
+   * absolute paths and ~ are supported. Reads are synchronous: load settings at startup.
+   * Uses JavaScript number precision, just like JSON.parse. No terminal schema is applied.
+   */
+  read(path: string): JSONValue;
+}
+
 export interface SwifttyContext {
+  /** Shared JSONC parser for automation settings. */
+  readonly jsonc: JSONCReader;
   /** Headless stream manipulation (Data Plane) */
   readonly filter: StreamFilter;
   /** AppKit UI manipulation (Control Plane) */

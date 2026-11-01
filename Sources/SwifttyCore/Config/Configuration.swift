@@ -261,6 +261,8 @@ public struct Configuration: Sendable, Equatable {
   /// Ghostty command syntax: shell expansion by default, or `direct:` arguments.
   public var command: String?
   public var workingDirectory: String?
+  public var windowWidth: Double?
+  public var windowHeight: Double?
   public var windowPaddingX: Double = 4
   public var windowPaddingY: Double = 4
 
@@ -282,9 +284,9 @@ public struct Configuration: Sendable, Equatable {
 
   // MARK: Loading
 
-  /// `$XDG_CONFIG_HOME/swiftty/config` (default `~/.config/swiftty/config`).
+  /// `$XDG_CONFIG_HOME/swiftty/config.jsonc` (default `~/.config/swiftty/config.jsonc`).
   public static var defaultURL: URL {
-    configHome.appendingPathComponent("swiftty/config")
+    configHome.appendingPathComponent("swiftty/config.jsonc")
   }
 
   static var configHome: URL {
@@ -303,8 +305,10 @@ public struct Configuration: Sendable, Equatable {
     Configuration.configHome.appendingPathComponent("ghostty/themes"),
   ]
 
-  /// Loads `url` (and its includes). A missing file yields the defaults.
-  public static func load(from url: URL = defaultURL) -> Configuration {
+  /// Loads JSONC or a legacy file (and its includes). Missing explicit JSONC
+  /// files report a diagnostic; missing legacy files yield legacy defaults.
+  public static func load(from url: URL) -> Configuration {
+    if usesJSONC(url) { return loadJSONC(from: url) }
     var config = Configuration()
     var includes = Includes()
     _ = includes.enqueue(url, optional: true)

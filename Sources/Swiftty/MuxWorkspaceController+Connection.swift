@@ -11,9 +11,16 @@ struct WorkspaceListing: Sendable {
 }
 
 extension MuxWorkspaceController {
-  static func makeWorkspaceWindow() -> NSWindow {
+  static func makeWorkspaceWindow(
+    configuration: Configuration = Configuration()
+  ) -> NSWindow {
     let window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+      contentRect: NSRect(
+        x: 0,
+        y: 0,
+        width: configuration.windowWidth ?? 900,
+        height: configuration.windowHeight ?? 600
+      ),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
       backing: .buffered,
       defer: false

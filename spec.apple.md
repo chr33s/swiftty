@@ -50,18 +50,27 @@ no silent overwriting of unrelated advanced options.
   on ⇧⌘,. Controls are standard SwiftUI `Form` controls, so VoiceOver and
   Full Keyboard Access work without custom handling.
 - Each change goes through `ConfigurationEditor`
-  (`Sources/SwifttyCore/Config/ConfigurationEditor.swift`): it validates the
-  value with `Configuration.set`, replaces only that key's line(s) in the
-  root file, keeps comments, includes, key bindings and unknown keys byte
-  for byte, writes atomically to a symlink's target, then the app reloads
-  the file. The window shows the reloaded `Configuration`, so it and the
-  file share one model and one precedence; when an included file overrides
+  (`Sources/SwifttyCore/Config/ConfigurationEditor.swift`) and reloads the
+  selected file, including an explicit `--config` path. Discovery, defaults,
+  validation and serialization follow [the configuration contract](spec.md#configuration).
+- JSONC edits update the typed model, validate it and atomically save canonical
+  pretty-printed, sorted JSON. Supported unrelated settings and keybindings
+  survive; comments and formatting are replaced. Invalid input is reported
+  rather than silently overwritten. Writes resolve symlink targets so linked
+  dotfiles keep their links. Edit Configuration File creates a commented
+  template on demand when no file exists.
+- Legacy Ghostty edits validate with `Configuration.set` and replace only the
+  edited key's lines in the root file. Comments, includes, key bindings and
+  unknown keys remain byte for byte. Writes are atomic through symlink targets.
+  The window shows the reloaded `Configuration`; when an included file overrides
   a saved value the window says so.
-- Only single-line scalar keys are editable (`ConfigurationEditor.editableKeys`);
-  repeatable keys (`keybind`, `palette`, `config-file`, …) stay in the file.
+- Common scalar settings are editable (`ConfigurationEditor.editableKeys`);
+  legacy repeatable keys (`keybind`, `palette`, `config-file`, …) stay in the file.
 - The direct clients keep their existing native `SettingsView`
   (`Apps/Shared/SettingsView.swift`).
-- Tests: `ConfigurationEditorTests`, `SettingsModelTests`.
+- Tests: `ConfigurationEditorTests`, `SettingsModelTests`,
+  `JSONCConfigurationTests` and `SwifttyConfigTests`; cover selected-path writes,
+  canonical JSONC saves, invalid-input diagnostics and unrelated-setting retention.
 
 ## A02 — Scene lifecycle (SESSION-03, replacement)
 

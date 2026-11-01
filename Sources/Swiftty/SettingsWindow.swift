@@ -5,10 +5,11 @@ import SwifttyCore
 
 /// swiftty › Settings… (Command-Comma): the common preferences and the
 /// configuration's problems (spec.apple.md A01). The configuration file
-/// stays authoritative: each change rewrites only its own key through
+/// stays authoritative: each change updates its own setting through
 /// `ConfigurationEditor`, then the app reloads the file, so the window and
 /// the file share one typed model and one precedence. Everything else is
-/// edited in the file (Edit Configuration File…).
+/// edited in the file (Edit Configuration File…). JSONC saves canonical JSON;
+/// legacy files retain comments and unrelated lines.
 @MainActor
 @Observable
 final class SettingsModel {

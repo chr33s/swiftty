@@ -236,8 +236,11 @@ extension JavaScriptPaneTests {
       .appendingPathComponent(UUID().uuidString)
     let config = try JavaScriptConfiguration.provision(at: directory)
     defer { try? FileManager.default.removeItem(at: directory) }
+    try Data(#"{/* automation data */"badge":"ready",}"#.utf8)
+      .write(to: directory.appendingPathComponent("automation.jsonc"))
     try """
-    swiftty.ui.setBadge('ready');
+    const settings = swiftty.jsonc.read('automation.jsonc');
+    swiftty.ui.setBadge(settings.badge);
     swiftty.ui.registerStatusItem('left', {align: 'left', render: () => 'hello'});
     swiftty.events.bindKey('cmd+k', () => {
       const child = swiftty.currentPane.split('horizontal');

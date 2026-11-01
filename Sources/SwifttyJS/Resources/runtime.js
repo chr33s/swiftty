@@ -1,4 +1,6 @@
 (() => {
+  const jsonc = __jsonc;
+  delete globalThis.__jsonc;
   const environment = __environment;
   delete globalThis.__environment;
   const filters = {};
@@ -53,7 +55,22 @@
   function shortcut(value) {
     return String(value).toLowerCase().split('+').map(x => x.trim()).sort().join('+');
   }
+  function jsoncValue(operation, value) {
+    if (typeof value !== 'string') throw new TypeError('JSONC input must be a string');
+    const result = jsonc(operation, value);
+    if (result.error) {
+      const error = result.syntax ? new SyntaxError(result.error) : new Error(result.error);
+      if (result.line !== undefined) error.line = result.line;
+      if (result.column !== undefined) error.column = result.column;
+      throw error;
+    }
+    return JSON.parse(result.json);
+  }
   globalThis.swiftty = {
+    jsonc: Object.freeze({
+      parse(text) { return jsoncValue('parse', text); },
+      read(path) { return jsoncValue('read', path); }
+    }),
     get currentPane() {
       if (!activePane) throw new Error('No active terminal pane');
       return pane(activePane);
