@@ -29,11 +29,13 @@ struct MuxNativeTests {
     let workspace: WorkspaceID
   }
 
-  func open() async throws -> Fixture {
+  func open(javaScriptDirectory: URL? = nil) async throws -> Fixture {
     _ = NSApplication.shared
-    let service = try MuxService(
-      configuration: MuxServiceConfiguration(launcherPath: try Self.launcher())
+    var serviceConfiguration = MuxServiceConfiguration(
+      launcherPath: try Self.launcher()
     )
+    serviceConfiguration.javaScriptDirectory = javaScriptDirectory
+    let service = try MuxService(configuration: serviceConfiguration)
     let endpoint = service.listenAnonymously()
     let connection = try await MuxConnection.connect(
       endpoint: endpoint,

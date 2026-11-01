@@ -57,6 +57,8 @@ let package = Package(
     ),
   ],
   targets: [
+    .target(name: "SwifttyJS", resources: [.copy("Resources")]),
+    .testTarget(name: "SwifttyJSTests", dependencies: ["SwifttyJS"]),
     // Headless terminal engine: parser, state, history, input encoding
     // and PTY processes. No Metal, fonts or AppKit; the SwiftMux service
     // links only this.
@@ -81,7 +83,7 @@ let package = Package(
       name: "Swiftty",
       dependencies: [
         "SwifttyCore", "SwifttyMac", "SwiftMuxClient", "SwiftMuxBridge",
-        "MuxNavigation", "MuxNavigationSMX", "HostConnection",
+        "MuxNavigation", "MuxNavigationSMX", "HostConnection", "SwifttyJS",
       ],
       resources: [.process("Localizable.xcstrings")]
     ),
@@ -104,6 +106,7 @@ let package = Package(
       name: "SwiftMuxService",
       dependencies: [
         "SwifttyEngine", "SwiftMuxProtocol", "SwiftMuxExport", "MuxAttention",
+        "SwifttyJS",
       ]
     ),
     // The one PTY owner: local XPC and, when configured, roaming RST/1.

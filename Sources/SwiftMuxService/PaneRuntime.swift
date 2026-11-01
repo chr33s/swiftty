@@ -5,6 +5,7 @@ import MuxAttention
 import SwiftMuxExport
 import SwiftMuxProtocol
 import SwifttyEngine
+import SwifttyJS
 import Synchronization
 
 /// Events a pane reports to the service, on the pane queue.
@@ -76,6 +77,7 @@ final class PaneRuntime: @unchecked Sendable {
   private var parser = Parser()
   private var writer: PaneWriter
   private let observePaneIO: (@Sendable (PaneID, PaneIOObservation) -> Void)?
+  private let javaScriptRuntime: JavaScriptRuntime?
   private var master: Int32 = -1
   private var slave: Int32 = -1
   /// Set once at spawn on `queue`; read on the service queue too.
@@ -141,11 +143,13 @@ final class PaneRuntime: @unchecked Sendable {
     innerTerm: String = SMX.fallbackInnerTerm,
     limits: MuxLimits,
     scrollbackCompression: Bool = true,
+    javaScriptRuntime: JavaScriptRuntime? = nil,
     observingIO: (@Sendable (PaneID, PaneIOObservation) -> Void)? = nil,
   ) {
     self.id = id
     self.workspace = workspace
     self.limits = limits
+    self.javaScriptRuntime = javaScriptRuntime
     observePaneIO = observingIO
     queue = DispatchQueue(
       label: "swiftmux.pane.\(id.short)",
@@ -158,6 +162,15 @@ final class PaneRuntime: @unchecked Sendable {
       scrollbackLimitBytes: historyBytes,
       scrollbackLimitRows: limits.historyRowsPerPane,
     )
+    if let javaScriptRuntime {
+      state.onShellCommandFinished = { command, code in
+        javaScriptRuntime.commandFinished(
+          command: command,
+          exitCode: code ?? -1,
+          pane: id.description
+        )
+      }
+    }
     // The inner identity matches the TERM panes run under; enhanced
     // keyboard reporting and clipboard writes are not offered.
     state.terminalVersion =
@@ -317,7 +330,24 @@ final class PaneRuntime: @unchecked Sendable {
             .read,
             bytes: UnsafeRawBufferPointer(rebasing: readBuffer[..<n])
           )
-          bufferedRead = 0 ..< n
+          if let javaScriptRuntime {
+            let filtered = javaScriptRuntime.filter(
+              Data(bytes: readBuffer.baseAddress!, count: n),
+              stream: .stdout,
+              pane: id.description,
+              maximumBytes: readBuffer.count
+            )
+            _ = filtered.copyBytes(to: readBuffer.bindMemory(to: UInt8.self))
+            bufferedRead = 0 ..< filtered.count
+            // Parsing charges the replacement bytes below. Charge discarded
+            // bytes too so shrinking filters cannot extend a PTY read turn.
+            budget -= max(0, n - filtered.count)
+            if filtered.isEmpty {
+              continue
+            }
+          } else {
+            bufferedRead = 0 ..< n
+          }
         } else {
           if n < 0, errno == EINTR { continue }
           if n < 0, errno == EAGAIN { break }
@@ -416,7 +446,9 @@ final class PaneRuntime: @unchecked Sendable {
         // Cleaned once here for every client's chrome.
         onEvent?(.title(DisplayText.sanitize(raw)))
       case .bell: onEvent?(.bell)
-      case let .workingDirectory(d): onEvent?(.workingDirectory(d))
+      case let .workingDirectory(d):
+        onEvent?(.workingDirectory(d))
+        javaScriptRuntime?.directoryChanged(d, pane: id.description)
       default: break  // OSC 52 clipboard writes are disabled
       }
     }
@@ -456,21 +488,69 @@ final class PaneRuntime: @unchecked Sendable {
     var epochChanged = false
     for change in journal.changes {
       switch change {
-      case let .report(record): batch.append(.report(Self.status(record)))
-      case let .removed(ids): batch.append(.removed(ids))
+      case let .report(record):
+        batch.append(.report(Self.status(record)))
+        if javaScriptRuntime != nil {
+          emitJavaScriptStatus(.report, record: Self.javaScriptStatus(record))
+        }
+      case let .removed(ids):
+        batch.append(.removed(ids))
+        emitJavaScriptStatus(.removed, ids: ids)
       case .reset:
         if !batch.isEmpty { onEvent?(.status(terminalEpoch, batch)) }
         batch = []
         terminalEpoch = TerminalEpochID()
+        emitJavaScriptStatus(.reset)
         epochChanged = true
       }
     }
     if journal.truncated {
       batch.append(.sync(journal.snapshot.records.map(Self.status)))
+      if javaScriptRuntime != nil {
+        emitJavaScriptStatus(
+          .sync,
+          records: journal.snapshot.records.map(Self.javaScriptStatus)
+        )
+      }
     }
     if !batch.isEmpty || epochChanged {
       onEvent?(.status(terminalEpoch, batch))
     }
+  }
+
+  private func emitJavaScriptStatus(
+    _ type: JavaScriptStatusChange.Kind,
+    record: JavaScriptProgramStatus? = nil,
+    ids: [String]? = nil,
+    records: [JavaScriptProgramStatus]? = nil
+  ) {
+    javaScriptRuntime?
+      .statusChanged(
+        JavaScriptStatusChange(
+          type: type,
+          paneId: id.description,
+          terminalEpoch: terminalEpoch.description,
+          record: record,
+          ids: ids,
+          records: records
+        )
+      )
+  }
+
+  private static func javaScriptStatus(
+    _ record: ProgramStatusRecord
+  ) -> JavaScriptProgramStatus {
+    let value = status(record)
+    return JavaScriptProgramStatus(
+      id: record.id,
+      state: value.state.rawValue,
+      kind: value.kind?.rawValue,
+      progress: record.progress,
+      app: record.app,
+      title: record.title,
+      message: record.message,
+      revision: String(record.revision)
+    )
   }
 
   static func status(_ r: ProgramStatusRecord) -> StatusRecord {
@@ -556,7 +636,22 @@ final class PaneRuntime: @unchecked Sendable {
         advanceViewport()
         noteChange()
       }
-      adjust(by: bytes.count - estimate)
+      var reserved = estimate
+      if let javaScriptRuntime {
+        let filtered = javaScriptRuntime.filter(
+          Data(bytes),
+          stream: .stdin,
+          pane: id.description,
+          maximumBytes: limits.inputBytesPerPane
+        )
+        if filtered.count <= estimate {
+          bytes = Array(filtered)
+        } else if reserve(filtered.count - estimate) {
+          reserved = filtered.count
+          bytes = Array(filtered)
+        }
+      }
+      adjust(by: bytes.count - reserved)
       guard !bytes.isEmpty else { return }
       writer.appendInput(bytes)
       flush()
@@ -642,9 +737,27 @@ final class PaneRuntime: @unchecked Sendable {
         release(estimate)
         return
       }
+      var payload = text
+      var reserved = estimate
+      if let javaScriptRuntime {
+        let filtered = javaScriptRuntime.filter(
+          Data(text.utf8),
+          stream: .stdin,
+          pane: self.id.description,
+          maximumBytes: limits.inputBytesPerPane / 2
+        )
+        let estimateAfterFilter =
+          filtered.count + filtered.reduce(0) { $0 + ($1 == 0x0A ? 1 : 0) }
+        if estimateAfterFilter <= estimate {
+          payload = String(decoding: filtered, as: UTF8.self)
+        } else if reserve(estimateAfterFilter - reserved) {
+          reserved = estimateAfterFilter
+          payload = String(decoding: filtered, as: UTF8.self)
+        }
+      }
       let before = writer.pendingInputBytes
-      writer.appendPaste(id: id, text: text)
-      adjust(by: (writer.pendingInputBytes - before) - estimate)
+      writer.appendPaste(id: id, text: payload)
+      adjust(by: (writer.pendingInputBytes - before) - reserved)
       flush()
     }
   }

@@ -26,6 +26,7 @@ public actor MuxService {
   )
   private let startedAt = Date()
 
+  var automation = ServiceAutomation()
   var workspaces: [Workspace] = []
   var panes: [PaneID: PaneRecord] = [:]
   var clients: [UUID: Client] = [:]
@@ -171,6 +172,7 @@ public actor MuxService {
       if !exitRequested { quiescing = false }
     }
     attention.unsubscribe(id)
+    automation.subscribers.remove(id)
     if let ws = clientLeases[id] {
       // Connection loss: nobody owns the remaining input any more, so it
       // is fenced like a takeover. Observers and PTYs stay.
@@ -364,6 +366,17 @@ public actor MuxService {
     let ok = { reply(.success(.ok)) }
     let fail = { (e: MuxError) in reply(.failure(e)) }
     switch command {
+    case let .subscribeAutomation(on):
+      guard !client.remote, hello.frontend == .native else {
+        return fail(
+          MuxError(
+            .unauthorized,
+            "automation UI requires a local native client"
+          )
+        )
+      }
+      subscribeAutomation(client.id, enabled: on)
+      ok()
     case .status: reply(.success(.status(status)))
     case .listWorkspaces: reply(.success(.workspaces(summaries)))
     case let .newWorkspace(request): newWorkspace(request, reply: reply)
@@ -755,6 +768,32 @@ public actor MuxService {
     let ok = { reply(.success(.ok)) }
     let fail = { (e: MuxError) in reply(.failure(e)) }
     switch command {
+    case let .automationKey(pane, shortcut):
+      guard clients[client]?.remote == false, shortcut.utf8.count <= 128,
+        locate(pane: pane, in: leased) != nil
+      else {
+        return fail(
+          MuxError(
+            .unauthorized,
+            "automation requires a locally controlled pane"
+          )
+        )
+      }
+      _ = automation.runtime?.handleKey(shortcut, pane: pane.description)
+      ok()
+    case let .automationFocus(pane):
+      guard clients[client]?.remote == false,
+        locate(pane: pane, in: leased) != nil
+      else {
+        return fail(
+          MuxError(
+            .unauthorized,
+            "automation focus requires a locally controlled pane"
+          )
+        )
+      }
+      automation.runtime?.setActivePane(pane.description)
+      ok()
     case let .newTab(name, launch):
       if let name, !validName(name) { return fail(invalidName) }
       newTab(name: name, launch: launch, in: leased, reply: reply)
@@ -863,8 +902,8 @@ public actor MuxService {
     case .status, .listWorkspaces, .newWorkspace, .endWorkspace,
       .renameWorkspace, .detachActive, .endAllWorkspaces, .attach, .detach,
       .switchWorkspace, .quiesce, .setTheme, .takeover, .observeWorkspaces,
-      .subscribeInbox, .inbox, .locateAttention, .markSeen, .snooze,
-      .markReviewed:
+      .subscribeAutomation, .subscribeInbox, .inbox, .locateAttention,
+      .markSeen, .snooze, .markReviewed:
       ok()  // handled by `handle`
     }
   }

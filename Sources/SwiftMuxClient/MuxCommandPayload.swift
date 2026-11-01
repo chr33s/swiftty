@@ -102,6 +102,8 @@ private struct MuxCommandPayload {
     case let .setSubscriptions(panes):
       try add(count: panes.count, stride: MemoryLayout<PaneID>.stride)
     case .setViewport: try add(MemoryLayout<ViewportRequest>.stride)
+    case let .automationKey(_, shortcut): try text(shortcut)
+    case .subscribeAutomation, .automationFocus: break
     case let .search(_, query): try text(query)
     case let .clipboardReadResult(_, _, .success(available, contents, _)):
       try add(count: available.count, stride: MemoryLayout<String>.stride)

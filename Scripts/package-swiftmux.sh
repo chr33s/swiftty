@@ -62,7 +62,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" \
 for exe in swiftty swiftmux-agent swmux-launcher swmux; do
   cp "$bin/$exe" "$app/Contents/MacOS/$exe"
 done
-for bundle in SwifttyCore Swiftty MuxNavigation; do
+for bundle in SwifttyCore Swiftty SwifttyJS MuxNavigation; do
   cp -R "$bin/swiftty_$bundle.bundle" "$app/Contents/Resources/"
 done
 

@@ -44,6 +44,7 @@ extension MuxService {
 
   private func spawnPane(
     workspace: WorkspaceID,
+    id: PaneID = PaneID(),
     columns: Int,
     rows: Int,
     launch: LaunchSpec,
@@ -65,13 +66,14 @@ extension MuxService {
         )
       )
     }
-    let id = PaneID()
     let columns = min(max(columns, limits.minPaneColumns), limits.maxColumns)
     let rows = min(max(rows, limits.minPaneRows), limits.maxRows)
     let historyBytes: Int
     do throws(MuxError) { historyBytes = try nextHistoryShare() } catch {
       return completion(self, .failure(error))
     }
+    prepareAutomation(initialPane: id, environment: launch.environment)
+    automation.starting.insert(id)
     let runtime = PaneRuntime(
       id: id,
       workspace: workspace,
@@ -81,6 +83,7 @@ extension MuxService {
       innerTerm: configuration.innerTerm,
       limits: limits,
       scrollbackCompression: configuration.scrollbackCompression,
+      javaScriptRuntime: automation.runtime ?? configuration.javaScriptRuntime,
       observingIO: configuration.observePaneIO
     )
     if let theme { runtime.setTheme(theme) }
@@ -118,6 +121,7 @@ extension MuxService {
             if service.quiescing || service.endAllEpoch != epoch {
               service.panes[id]?.detachedFromLayout = true
               runtime.terminate()
+              service.automationPaneStarted(id, succeeded: false)
               return completion(
                 service,
                 .failure(
@@ -126,6 +130,7 @@ extension MuxService {
               )
             }
             completion(service, .success(id))
+            service.automationPaneStarted(id, succeeded: true)
             // Output read before the record existed posted a change that
             // found no pane; take it now, which also re-arms `onChange`.
             service.paneChanged(id, reportActivity: false)
@@ -135,6 +140,7 @@ extension MuxService {
               runtime.terminate()
             }
           case let .failure(error):
+            service.automationPaneStarted(id, succeeded: false)
             completion(service, .failure(error))
             service.checkIdle()
           }
@@ -224,6 +230,7 @@ extension MuxService {
     axis: SplitAxis,
     launch: LaunchSpec?,
     in leased: WorkspaceID,
+    newPaneID: PaneID = PaneID(),
     reply: @escaping Reply
   ) {
     guard let (w, _) = locate(pane: pane, in: leased), let record = panes[pane]
@@ -239,6 +246,7 @@ extension MuxService {
     }
     spawnPane(
       workspace: ws.id,
+      id: newPaneID,
       columns: columns,
       rows: rows,
       launch: launch
@@ -310,6 +318,7 @@ extension MuxService {
     guard let layout = workspaces[w].tabs[t].layout.removing(pane) else {
       // Last pane of the tab.
       let tabID = workspaces[w].tabs[t].id
+      automation.presentation.removeValue(forKey: "icon:" + tabID.description)
       workspaces[w].tabs.remove(at: t)
       if workspaces[w].tabs.isEmpty {
         workspaces.remove(at: w)

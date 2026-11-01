@@ -170,9 +170,11 @@ public struct ServiceFeatures: OptionSet, Codable, Sendable, Equatable {
   /// `PaneFrame.dropTarget` and `MuxInput.drag`.
   public static let dropTargets = ServiceFeatures(rawValue: 1 << 6)
 
+  public static let javaScript = ServiceFeatures(rawValue: 1 << 7)
+
   public static let supported: ServiceFeatures = [
     .mouseReporting, .historyJumps, .terminalControl, .shellIntegration,
-    .keypadKeys, .kittyClipboard, .dropTargets,
+    .keypadKeys, .kittyClipboard, .dropTargets, .javaScript,
   ]
 }
 
@@ -628,6 +630,10 @@ public enum MuxCommand: Codable, Sendable, Equatable {
   /// Workspace list and lease changes as `workspaces` events.
   case observeWorkspaces(Bool)
   case subscribeInbox(Bool)
+  /// Local native automation UI; events only follow an explicit subscription.
+  case subscribeAutomation(Bool)
+  case automationKey(pane: PaneID, shortcut: String)
+  case automationFocus(PaneID)
   case inbox(InboxQuery)
   case locateAttention(AttentionReference)
   /// Marks exactly this occurrence seen; never resolves it.
@@ -693,8 +699,9 @@ public enum MuxCommand: Codable, Sendable, Equatable {
       .endAllWorkspaces, .quiesce, .endPane, .endTab, .setGeometry,
       .setSubscriptions, .setViewport, .scroll, .searchStep, .endSearch,
       .clearScreen, .resetTerminal, .link, .commandOutput, .setTheme,
-      .observeWorkspaces, .subscribeInbox, .inbox, .locateAttention, .markSeen,
-      .snooze, .markReviewed, .clipboardReadResult, .clipboardWriteResult:
+      .observeWorkspaces, .subscribeAutomation, .subscribeInbox, .inbox,
+      .locateAttention, .markSeen, .snooze, .markReviewed, .clipboardReadResult,
+      .clipboardWriteResult:
       true
     default: false
     }
@@ -703,9 +710,10 @@ public enum MuxCommand: Codable, Sendable, Equatable {
   /// Read-only viewer commands. Everything else is refused to an observer.
   public var allowedForObserver: Bool {
     switch self {
-    case .status, .listWorkspaces, .detach, .observeWorkspaces, .subscribeInbox,
-      .inbox, .locateAttention, .setSubscriptions, .setViewport, .scroll,
-      .search, .searchStep, .endSearch:
+    case .status, .listWorkspaces, .detach, .observeWorkspaces,
+      .subscribeAutomation, .subscribeInbox, .inbox, .locateAttention,
+      .setSubscriptions, .setViewport, .scroll, .search, .searchStep,
+      .endSearch:
       true
     default: false
     }
@@ -716,8 +724,9 @@ public enum MuxCommand: Codable, Sendable, Equatable {
     switch self {
     case .status, .listWorkspaces, .newWorkspace, .endWorkspace,
       .renameWorkspace, .detachActive, .endAllWorkspaces, .quiesce, .attach,
-      .setTheme, .takeover, .observeWorkspaces, .subscribeInbox, .inbox,
-      .locateAttention, .markSeen, .snooze, .markReviewed:
+      .setTheme, .takeover, .observeWorkspaces, .subscribeAutomation,
+      .subscribeInbox, .inbox, .locateAttention, .markSeen, .snooze,
+      .markReviewed:
       false
     default: true
     }
@@ -935,6 +944,8 @@ public enum ClientMessage: Codable, Sendable {
 }
 
 public enum MuxEvent: Codable, Sendable {
+  /// JSON-encoded automation presentation value, never executable code.
+  case automation(Data)
   case frame(PaneFrame)
   case layout(WorkspaceSnapshot)
   /// `truncated`: an explicit end had to force-kill the processes, so

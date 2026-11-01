@@ -663,6 +663,53 @@ tables retain their generator's layout. CI and release builds use the Namespace
 The shared macOS setup action verifies the toolchain and installs ripgrep and
 tmux for native tests.
 
+## JavaScript automation (macOS)
+
+At launch, Swiftty provisions `~/.config/swiftty/config.js`, `jsconfig.json`
+and `swiftty.d.ts`. The declaration file updates with the app; existing scripts
+and editor configuration are preserved. Open this directory in a JavaScript /
+TypeScript-aware editor for completion and inline type checks. Node.js and npm
+are not required by the application.
+
+The persistent SwiftMux service evaluates the script once before its first
+pane starts. Script edits take effect in the next service process; closing and
+reopening a window does not restart that service or reload JavaScript. The
+ordinary configuration reload command below applies to `config`, not `config.js`.
+
+The global `swiftty` provides stdin/stdout filters, environment lookup, managed
+pane writes/splits/closes, shortcuts, dock badges, tab labels, native notifications
+and left/right status items. Status renderers run once when registered, on manual
+refresh, and optionally at a polling interval. Native notifications use macOS
+notification permission and require the packaged application.
+
+Lifecycle hooks have separate protocol sources:
+
+- `events.onCommandFinished`: OSC 133 completion, with the command text when
+  available and `-1` for an unavailable exit status.
+- `events.onDirectoryChanged`: OSC 7 directory changes.
+- `events.onStatusChanged`: validated OSC 7501 reports, removals, resets and
+  authoritative resync snapshots from the same journal as the attention inbox.
+  Each event identifies its pane and terminal epoch. `currentPane` refers to
+  the source pane during these callbacks.
+
+```js
+swiftty.events.onStatusChanged(change => {
+  if (change.type === "report" && change.record.state === "blocked") {
+    swiftty.ui.setTabIcon("⏳");
+    swiftty.ui.notify(change.record.title || "Program needs attention",
+      change.record.message || "Waiting for input");
+  }
+});
+```
+
+Filters operate on individual UTF-8 chunks, so a match spanning chunks requires
+state in the script. Invalid/incomplete UTF-8, throwing filters and results over
+host byte limits pass through unchanged. Streamed pastes filter their payload
+while preserving the writer's paste framing and sanitization. Script errors are
+logged; one failing event listener does not prevent the others from running.
+See [the JavaScript specification](spec.javascript.md) for the API and OSC
+7501 change semantics.
+
 ## Configuration
 
 Ghostty-style `key = value` files support whole-line `#` comments, repeatable

@@ -16,7 +16,12 @@ extension MuxPaneView {
 
   /// Key bindings run before the menu's key equivalents.
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
-    keyboard.keyEquivalent(
+    if window?.firstResponder === self, !hasMarkedText(),
+      controller?.handleAutomationKey(event, pane: pane) == true
+    {
+      return true
+    }
+    return keyboard.keyEquivalent(
       in: self,
       composing: hasMarkedText(),
       binding: binding(for: event),

@@ -183,6 +183,11 @@ public struct TerminalState: ~Copyable {
   public internal(set) var lastExitCode: Int?
   /// A command finished since the last `takeEvents()`.
   var commandFinished = false
+  /// Optional shell automation observer, invoked for every OSC 133 D marker.
+  /// The command is reconstructed from the marked input cells at OSC 133 C.
+  /// Empty when the shell did not provide an input boundary.
+  public var onShellCommandFinished: (@Sendable (String, Int?) -> Void)?
+  var shellCommand = ""
   var titleStack: [[UInt8]] = []
   var penStack: [CellAttributes] = []
   /// Appearance the host reports for color-scheme queries (mode 2031).

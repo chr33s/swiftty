@@ -245,7 +245,8 @@ public final class TerminalClient {
       if state != .completed { show("paste \(state.rawValue)") }
     case let .frameUnavailable(_, error): show("frame unavailable: \(error)")
     // This frontend never asks for clipboard requests.
-    case .workspaces, .inbox, .clipboardRead, .clipboardWrite: break
+    case .automation, .workspaces, .inbox, .clipboardRead, .clipboardWrite:
+      break
     }
   }
 

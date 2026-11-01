@@ -97,6 +97,11 @@ guard FileManager.default.isExecutableFile(atPath: launcher) else {
 }
 
 var configuration = MuxServiceConfiguration(launcherPath: launcher)
+configuration.javaScriptDirectory = FileManager.default
+  .homeDirectoryForCurrentUser.appendingPathComponent(
+    ".config/swiftty",
+    isDirectory: true
+  )
 do {
   configuration.peerRequirement =
     try PeerSigningPolicy.requirementForCurrentProcess()

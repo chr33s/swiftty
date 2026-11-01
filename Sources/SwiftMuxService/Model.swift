@@ -2,8 +2,13 @@ import Dispatch
 import Foundation
 import SwiftMuxProtocol
 import SwifttyEngine
+import SwifttyJS
 
 public struct MuxServiceConfiguration: Sendable {
+  /// The shared automation VM. The host installs callbacks before creating the service.
+  public var javaScriptRuntime: JavaScriptRuntime?
+  /// Production config, evaluated once before the first pane starts.
+  public var javaScriptDirectory: URL?
   /// Private fixture observation; production callers leave this nil.
   var observePaneIO: (@Sendable (PaneID, PaneIOObservation) -> Void)?
   public var launcherPath: String

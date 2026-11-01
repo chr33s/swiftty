@@ -3,6 +3,7 @@ import MuxNavigation
 import SwiftMuxProtocol
 import SwifttyCore
 import SwifttyMac
+import SwifttyJS
 
 /// One window type: every terminal window is a service-backed workspace,
 /// and a plain shell is a workspace with one tab and one pane. Adding a
@@ -76,6 +77,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    do { _ = try JavaScriptConfiguration.provision() } catch {
+      NSLog("Swiftty JavaScript configuration: %@", String(describing: error))
+    }
     NSWorkspace.shared.notificationCenter.addObserver(
       self,
       selector: #selector(accommodationsChanged),

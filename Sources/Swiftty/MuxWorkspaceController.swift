@@ -33,6 +33,12 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   private(set) var views: [PaneID: MuxPaneView] = [:]
   private(set) var containers: [PaneID: MuxPaneContainer] = [:]
   let tabStrip = MuxTabStrip()
+  let automationStatus = JavaScriptStatusBar()
+  var automationKeys: Set<String> = []
+  var automationTabIcons: [TabID: String] = [:]
+  var automationFocusedPane: PaneID?
+  var automationNotify: @MainActor (String, String) -> Void =
+    JavaScriptNotifications.deliver
   /// Sanitized program titles, from snapshots and title events.
   private var titles: [PaneID: String] = [:]
   /// Panes with output the user has not seen (hidden tabs, bells).
@@ -107,11 +113,17 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     layoutView.translatesAutoresizingMaskIntoConstraints = false
     layoutView.controller = self
     content.addSubview(layoutView)
+    content.addSubview(automationStatus)
     NSLayoutConstraint.activate([
       layoutView.topAnchor.constraint(equalTo: content.topAnchor),
       layoutView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
       layoutView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-      layoutView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+      layoutView.bottomAnchor.constraint(equalTo: automationStatus.topAnchor),
+      automationStatus.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+      automationStatus.trailingAnchor.constraint(
+        equalTo: content.trailingAnchor
+      ),
+      automationStatus.bottomAnchor.constraint(equalTo: content.bottomAnchor),
     ])
     TerminalWindowBackground.apply(
       to: window,
@@ -180,6 +192,9 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     controller.apply(ws, attached: true, attachment: attachment)
     controller.startEvents()
     controller.startInbox()
+    if controller.features.contains(.javaScript) {
+      controller.command(.subscribeAutomation(true))
+    }
     controller.sendTheme()
     controller.observeAppearance()
     do {
@@ -326,6 +341,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   /// Applies one non-frame event (internal for tests).
   func handle(_ event: MuxEvent) {
     switch event {
+    case let .automation(data): handleAutomation(data)
     case let .layout(ws): apply(ws)
     case let .title(pane, title):
       titles[pane] = DisplayText.sanitize(title)
@@ -468,7 +484,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   }
 
   /// Tab strip, pane headers and window title from the current snapshot.
-  private func refreshChrome() {
+  func refreshChrome() {
     guard !detached, let ws = workspace else { return }
     tabStrip.update(
       ws.tabs.map { tab in
@@ -478,7 +494,8 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
         let label = automatic ? title(of: tab.activePane) : name
         return MuxTabItem(
           id: tab.id,
-          title: label,
+          title: [automationTabIcons[tab.id], label].compactMap { $0 }
+            .filter { !$0.isEmpty }.joined(separator: " "),
           symbol: MuxIcons.symbol(for: title(of: tab.activePane)),
           isActive: tab.id == ws.activeTab,
           hasActivity: tab.id != ws.activeTab
@@ -502,7 +519,9 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
       )
     }
     let active = titles[tab.activePane].flatMap(\.nonEmpty)
-    window?.title = active ?? workspaceTitle
+    window?.title = [automationTabIcons[tab.id], active ?? workspaceTitle]
+      .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
+    updateAutomationFocus()
     showsTabs(ws.tabs.count > 1)
   }
 

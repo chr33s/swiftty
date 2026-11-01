@@ -420,6 +420,11 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
   }
 
   override func keyDown(with event: NSEvent) {
+    if !hasMarkedText(),
+      controller?.handleAutomationKey(event, pane: pane) == true
+    {
+      return
+    }
     display.resetBlink()
     if keyboard.consumesKeyDown(
       hideMouse: config.mouseHideWhileTyping,
