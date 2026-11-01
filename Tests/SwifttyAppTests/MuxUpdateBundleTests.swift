@@ -160,8 +160,8 @@ struct MuxUpdateBundleTests {
   }
 
   @Test(arguments: [
-    "identifier", "executable", "agent", "launcher", "client", "plist", "same",
-    "nested", "oversized", "metadataLink",
+    "identifier", "executable", "agent", "launcher", "client", "shell", "plist",
+    "same", "nested", "oversized", "metadataLink",
   ])
   func rejectsInvalidOrOverlappingCandidates(_ fault: String) throws {
     let fixture = try Fixture()
@@ -169,12 +169,13 @@ struct MuxUpdateBundleTests {
     var source = fixture.candidate
     switch fault {
     case "identifier": try fixture.info("another.app", at: source)
-    case "executable", "agent", "launcher", "client":
+    case "executable", "agent", "launcher", "client", "shell":
       let name =
         switch fault {
         case "agent": "swiftmux-agent"
         case "launcher": "swmux-launcher"
         case "client": "swmux"
+        case "shell": "swsh"
         default: "swiftty"
         }
       try FileManager.default.removeItem(
@@ -324,7 +325,9 @@ struct MuxUpdateBundleTests {
         )
         try info("com.chr33s.swiftty", at: bundle)
       }
-      for name in ["swiftty", "swiftmux-agent", "swmux-launcher", "swmux"] {
+      for name in [
+        "swiftty", "swiftmux-agent", "swmux-launcher", "swmux", "swsh",
+      ] {
         let file = candidate.appendingPathComponent("Contents/MacOS/\(name)")
         try Data("#!/bin/sh\nexit 0\n".utf8).write(to: file)
         try FileManager.default.setAttributes(

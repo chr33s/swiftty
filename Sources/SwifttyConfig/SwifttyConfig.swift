@@ -160,6 +160,8 @@ public struct WindowConfig: Codable, Equatable, Sendable {
 
 public struct TerminalConfig: Codable, Equatable, Sendable {
   public var shell: String?
+  public var preferredShell: ShellKind? = nil
+  public var shellProfiles: [String: ShellLaunchProfile] = [:]
   public var scrollbackLimit: Int
   public static let `default` = Self()
   public init(shell: String? = nil, scrollbackLimit: Int = 10_000) {
@@ -169,10 +171,21 @@ public struct TerminalConfig: Codable, Equatable, Sendable {
   enum CodingKeys: String, CodingKey {
     case shell
     case scrollbackLimit = "scrollback_limit"
+    case preferredShell = "preferred_shell"
+    case shellProfiles = "shell_profiles"
   }
   public init(from decoder: any Decoder) throws {
     let values = try decoder.container(keyedBy: CodingKeys.self)
     shell = try values.decodeIfPresent(String.self, forKey: .shell)
+    preferredShell = try values.decodeIfPresent(
+      ShellKind.self,
+      forKey: .preferredShell
+    )
+    shellProfiles =
+      try values.decodeIfPresent(
+        [String: ShellLaunchProfile].self,
+        forKey: .shellProfiles
+      ) ?? [:]
     scrollbackLimit =
       values.contains(.scrollbackLimit)
       ? try values.decode(Int.self, forKey: .scrollbackLimit) : 10_000

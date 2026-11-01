@@ -69,7 +69,7 @@ def validate_app(app, expected_team):
     if not isinstance(info, dict) or info.get("CFBundleIdentifier") != "com.chr33s.swiftty" \
             or info.get("CFBundleExecutable") != "swiftty":
         raise ValueError("replacement must be the Swiftty app bundle")
-    for name in ("swiftty", "swiftmux-agent", "swmux-launcher", "swmux"):
+    for name in ("swiftty", "swiftmux-agent", "swmux-launcher", "swmux", "swsh"):
         executable = app / "Contents/MacOS" / name
         if not executable.is_file() or not os.access(executable, os.X_OK):
             raise ValueError(f"replacement executable missing or not executable: {name}")

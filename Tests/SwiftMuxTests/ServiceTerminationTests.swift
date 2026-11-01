@@ -9,6 +9,66 @@ import Testing
 
 @Suite(.serialized, .timeLimit(.minutes(1)))
 struct ServiceTerminationTests {
+  @Test
+  func paneCloseAllowsShellOwnedCleanupBeyondTwoSeconds() async throws {
+    let h = try Harness()
+    let c = try await h.connect()
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString
+    )
+    try FileManager.default.createDirectory(
+      at: root,
+      withIntermediateDirectories: false
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let marker = root.appendingPathComponent("ready")
+    var launch = shellLaunch()
+    launch.command = [
+      "/usr/bin/python3", "-c",
+      """
+      import os,signal,sys,time
+      stopped=False
+      def stop(signum,frame):
+          global stopped
+          signal.signal(signal.SIGHUP,signal.SIG_IGN)
+          stopped=True
+      signal.signal(signal.SIGHUP,stop)
+      with open(sys.argv[1],'w') as f: f.write('ready')
+      while not stopped: time.sleep(0.01)
+      time.sleep(3)
+      sys.exit(23)
+      """, marker.path,
+    ]
+    guard
+      case let .created(workspace) = try await c.execute(
+        .newWorkspace(NewWorkspaceRequest(launch: launch))
+      )
+    else { throw MuxError(.invalidRequest, "unexpected reply") }
+    let pane = workspace.tabs[0].activePane
+    try await c.attachAndShow(.id(workspace.id))
+    try await c.execute(.newTab(name: nil, launch: shellLaunch()))
+    let ready = ContinuousClock.now + .seconds(3)
+    while !FileManager.default.fileExists(atPath: marker.path),
+      ContinuousClock.now < ready
+    { try await Task.sleep(for: .milliseconds(10)) }
+    try #require(FileManager.default.fileExists(atPath: marker.path))
+    let started = ContinuousClock.now
+    try await c.execute(.endPane(pane))
+    let result = try await withTimeout(.seconds(8)) {
+      while let event = try await c.nextEvent() {
+        if case let .paneExited(id, status, forced) = event, id == pane {
+          return (status, forced)
+        }
+      }
+      throw MuxError(.connectionLost, "closed before cleanup")
+    }
+    #expect(result.0 == 23)
+    #expect(!result.1)
+    #expect(ContinuousClock.now - started >= .seconds(3))
+    try await c.execute(.endAllWorkspaces)
+    await c.close()
+  }
+
   private func retire(
     _ service: MuxService,
     finished: Bool,
@@ -17,13 +77,13 @@ struct ServiceTerminationTests {
   ) {
     if !finished {
       service.prepareToExit(ready)
-      #expect(done.wait(timeout: .now() + 5) == .success)
+      #expect(done.wait(timeout: .now() + 8) == .success)
     }
   }
 
   private func wait(
     _ semaphore: DispatchSemaphore,
-    seconds: Double = 5,
+    seconds: Double = 8,
   ) async -> Bool {
     await withCheckedContinuation { continuation in
       DispatchQueue.global()
@@ -88,7 +148,7 @@ struct ServiceTerminationTests {
       Issue.record("shutdown admission reopened")
     } catch let error as MuxError { #expect(error.code == .quiescing) }
     #expect(await wait(done))
-    #expect(ContinuousClock.now - started >= .seconds(2))
+    #expect(ContinuousClock.now - started >= .seconds(5))
     #expect(!duplicate.withLock { $0 })
     #expect(await h.service.isEmpty)
     var info = siginfo_t()
@@ -170,7 +230,7 @@ struct ServiceTerminationTests {
     _ = try await c.frame(of: pane) {
       $0.lines.contains("descendant-final") && $0.lines.contains("leader-final")
     }
-    let exit = try await withTimeout(.seconds(5)) {
+    let exit = try await withTimeout(.seconds(9)) {
       while let event = try await c.nextEvent() {
         if case let .paneExited(id, status, forced) = event, id == pane {
           return (status, forced)

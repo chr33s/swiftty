@@ -3,6 +3,7 @@ import Foundation
 import SwiftMuxClient
 import SwiftMuxProtocol
 @testable import Swiftty
+import SwifttyConfig
 import SwifttyCore
 import Testing
 import TestSupport
@@ -10,6 +11,24 @@ import TestSupport
 /// Configuration to launch spec, matching the direct-window rules.
 @Suite
 struct WorkspaceLaunchTests {
+  @Test
+  func profileEnvironmentOverridesFrontendAndLaunchIsSnapshot() {
+    var config = Configuration()
+    config.preferredShell = .bash
+    config.shellProfiles["bash"] = ShellLaunchProfile(
+      arguments: ["--login"],
+      environment: ["A": "profile"]
+    )
+    let before = WorkspaceLaunch.spec(
+      config,
+      environment: ["A": "frontend", "B": "kept"]
+    )
+    config.preferredShell = .zsh
+    let after = WorkspaceLaunch.spec(config)
+    #expect(before.command == ["/bin/bash", "--login"])
+    #expect(before.environment == ["A": "profile", "B": "kept"])
+    #expect(after.command == ["/bin/zsh"])
+  }
 
   @Test
   func `no command runs the login shell from the frontend's directory`() {

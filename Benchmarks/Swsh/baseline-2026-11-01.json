@@ -1,0 +1,5362 @@
+{
+  "schema": 2,
+  "recorded_utc": "2026-11-01T15:23:10.378539+00:00",
+  "host": {
+    "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2\nBuildVersion:\t\t26B123",
+    "architecture": "arm64",
+    "model": "Mac17,7",
+    "cpu": "Apple M5 Max",
+    "memory_bytes": 137438953472
+  },
+  "build": {
+    "configuration": "release",
+    "swift": "swift-driver version: 1.168.6 Apple Swift version 6.4.2 (swiftlang-6.4.2.1.9 clang-2100.4.1.1)\nTarget: arm64-apple-macosx27.2.0",
+    "xcode": "Xcode 27.2\nBuild version 27B52",
+    "sdk": "27.2",
+    "revision": "042f39f5c361cc40a6334dd4dd06bf4bc54852b2",
+    "worktree_dirty": true,
+    "source_sha256": "660e52f514234a2fc9a6198f03acaacb7017c9259377b833546dbb430ba50d6d",
+    "binary_sha256": "bebeacb9f49e8c0f885396c8cbc9c1011b828d82abf4a1aec4d403269c340026",
+    "instrumented_binary_sha256": "3b95d2777b4d845bcfad5802630f4cc212ea351153457dd2dd34355284cb3456",
+    "measurement_script_sha256": "346bc90a03faecf5e868b15a8d4242b46ce4c61e941718e434afa06d3770936f",
+    "allocation_probe_sha256": "960a4a58ece519b6a69aab3ad08aaa67a3ef346b19d04d9a0c7a93628d045c03",
+    "allocation_counter_sha256": "a66c61429ae03e6971577e3b1ef558705220f43cc2a4d5c4ce398c28363c292c",
+    "allocation_probe_flags": [
+      "-O3",
+      "-mmacosx-version-min=27.0",
+      "-dynamiclib"
+    ],
+    "dependencies": {
+      "originHash": "293929154c8adf358d22efab7a600917cf9e590cea2e9ff5ac9578506a795748",
+      "pins": [
+        {
+          "identity": "swift-asn1",
+          "kind": "remoteSourceControl",
+          "location": "https://github.com/apple/swift-asn1.git",
+          "state": {
+            "revision": "3b6410f7dee09eb33cdd26260c5fd47fda19b0e2",
+            "version": "1.7.3"
+          }
+        },
+        {
+          "identity": "swift-atomics",
+          "kind": "remoteSourceControl",
+          "location": "https://github.com/apple/swift-atomics.git",
+          "state": {
+            "revision": "0442cb5a3f98ab802acb777929fdb446bda11a34",
+            "version": "1.3.1"
+          }
+        },
+        {
+          "identity": "swift-certificates",
+          "kind": "remoteSourceControl",
+          "location": "https://github.com/apple/swift-certificates.git",
+          "state": {
+            "revision": "ff86b924ead66f853b8baf91f3c41926a8f36177",
+            "version": "1.21.0"
+          }
+        },
+        {
+          "identity": "swift-collections",
+          "kind": "remoteSourceControl",
+          "location": "https://github.com/apple/swift-collections.git",
+          "state": {
+            "revision": "844289ac455816e193f1dbbe014f3c4dbe429410",
+            "version": "1.7.4"
+          }
+        },
+        {
+          "identity": "swift-crypto",
+          "kind": "remoteSourceControl",
+          "location": "https://github.com/apple/swift-crypto.git",
+          "state": {
+            "revision": "da9d28d69ebe3894b18376c8f2395c2f37b8448f",
+            "version": "4.5.2"
+          }
+        },
+        {
+          "identity": "swift-nio",
+          "kind": "remoteSourceControl",
+          "location": "https://github.com/apple/swift-nio.git",
+          "state": {
+            "revision": "6db9d9abd92ad7399b8a564cafbb87d3507245fa",
+            "version": "2.104.0"
+          }
+        },
+        {
+          "identity": "swift-nio-ssh",
+          "kind": "remoteSourceControl",
+          "location": "https://github.com/apple/swift-nio-ssh.git",
+          "state": {
+            "revision": "3ec281496f28a3b6581afd946b759e2642f5cd8d",
+            "version": "0.15.0"
+          }
+        },
+        {
+          "identity": "swift-nio-transport-services",
+          "kind": "remoteSourceControl",
+          "location": "https://github.com/apple/swift-nio-transport-services.git",
+          "state": {
+            "revision": "67787bb645a5e67d2edcdfbe48a216cc549222d5",
+            "version": "1.28.0"
+          }
+        },
+        {
+          "identity": "swift-system",
+          "kind": "remoteSourceControl",
+          "location": "https://github.com/apple/swift-system.git",
+          "state": {
+            "revision": "869129b7bf4ecc57b97d0193ad29690ca2134750",
+            "version": "1.8.1"
+          }
+        }
+      ],
+      "version": 3
+    }
+  },
+  "method": [
+    "Two warmups precede each wall-time workload; samples are warm-cache spawn-to-exit latency, not cold startup.",
+    "Interactive startup includes Python PTY/home-directory fixture setup, ending at the first prompt.",
+    "Latency and throughput use an uninstrumented release build and include Python pipe transfer/verification overhead.",
+    "Allocation/RSS runs use a separate linked measurement library; timing from that build is not reported.",
+    "Allocations count malloc allocation events from constructor to destructor, separately on the initial thread and across all threads (including the session executor); pre-constructor and post-destructor allocations are excluded.",
+    "RSS is Darwin getrusage(RUSAGE_SELF).ru_maxrss in bytes, separately for each shell process; it is not summed concurrent tree memory.",
+    "Private worker startup uses an exact-build, prewritten unlinked payload; it excludes payload creation but includes process startup, decoding and builtin execution.",
+    "Worker overhead estimates subtract median empty invocation from median multi-command latency; parsing, payload I/O, pipes and reaping remain included.",
+    "These are local observations, not regression thresholds or evidence of an ownership-feature speedup."
+  ],
+  "timing": {
+    "startup": {
+      "wall_ns": [
+        7683959,
+        5957708,
+        5635750,
+        5366417,
+        4895584,
+        4939375,
+        4802625,
+        4732458,
+        4833584,
+        4533917,
+        4517250,
+        4387291,
+        4365292,
+        4334334,
+        4077458,
+        4047667,
+        4760917,
+        4029042,
+        3973375,
+        4180167,
+        3953167,
+        4405958,
+        4469375,
+        4216083,
+        4158917,
+        4177584,
+        4358791,
+        3925458,
+        3996333,
+        4219916
+      ],
+      "summary_ns": {
+        "count": 30,
+        "minimum": 3925458,
+        "median": 4376291.5,
+        "p95": 5957708,
+        "maximum": 7683959
+      }
+    },
+    "parent_builtins_1000": {
+      "wall_ns": [
+        16667459,
+        16411417,
+        16388667,
+        16486666,
+        15312292,
+        14955250,
+        15269167,
+        15618875,
+        16515792,
+        16522041,
+        16920917,
+        16739292,
+        17049542,
+        16756708,
+        16921708,
+        16862500,
+        16820833,
+        16415375,
+        16003500,
+        16818583,
+        16396667,
+        16172000,
+        16366834,
+        16924541,
+        16587458,
+        15812542,
+        16822584,
+        16111917,
+        16655708,
+        17125291
+      ],
+      "summary_ns": {
+        "count": 30,
+        "minimum": 14955250,
+        "median": 16518916.5,
+        "p95": 17049542,
+        "maximum": 17125291
+      },
+      "amortized_incremental_ns_per_operation": 12142.625
+    },
+    "builtin_workers_100": {
+      "wall_ns": [
+        193209625,
+        192542250,
+        191254458,
+        191092709,
+        193178583,
+        193849458,
+        192869959,
+        193996459,
+        192078583,
+        192535250,
+        192555750,
+        192355292,
+        191570666,
+        191816125,
+        191648875,
+        192400208,
+        190961583,
+        190658750,
+        189400500,
+        190890041,
+        192923500,
+        191974584,
+        191622291,
+        189767500,
+        190431459,
+        192219709,
+        192737708,
+        189806333,
+        192237834,
+        189931250
+      ],
+      "summary_ns": {
+        "count": 30,
+        "minimum": 189400500,
+        "median": 192026583.5,
+        "p95": 193849458,
+        "maximum": 193996459
+      },
+      "amortized_incremental_ns_per_operation": 1876502.92
+    },
+    "redirect_helpers_50": {
+      "wall_ns": [
+        171989750,
+        169315417,
+        168552417,
+        179682959,
+        173146417,
+        171493584,
+        171227542,
+        173027875,
+        170628875,
+        169706500,
+        169391416,
+        169259750,
+        168334667,
+        178810416,
+        169326458,
+        167594458,
+        167911209,
+        176048791,
+        171978042,
+        167985208,
+        167729875,
+        166781292,
+        168586708,
+        168939791,
+        167829083,
+        167362417,
+        168179042,
+        167653959,
+        167387584,
+        169134209
+      ],
+      "summary_ns": {
+        "count": 30,
+        "minimum": 166781292,
+        "median": 169196979.5,
+        "p95": 178810416,
+        "maximum": 179682959
+      },
+      "amortized_incremental_ns_per_operation": 3296413.76
+    },
+    "external_commands_100": {
+      "wall_ns": [
+        74923166,
+        75053750,
+        74660958,
+        74407750,
+        74307416,
+        74002000,
+        75280333,
+        75249834,
+        75341917,
+        74112625,
+        74301917,
+        75101584,
+        74710375,
+        75090667,
+        74703542,
+        74706167,
+        74568583,
+        74819125,
+        74020792,
+        75694042,
+        74730375,
+        75163166,
+        74672500,
+        74529541,
+        74957375,
+        75009375,
+        74652125,
+        74729125,
+        74388834,
+        74779084
+      ],
+      "summary_ns": {
+        "count": 30,
+        "minimum": 74002000,
+        "median": 74719750.0,
+        "p95": 75341917,
+        "maximum": 75694042
+      },
+      "amortized_incremental_ns_per_operation": 703434.585
+    },
+    "private_worker_startup": {
+      "wall_ns": [
+        4167708,
+        4296542,
+        4119666,
+        4154458,
+        3802834,
+        3995500,
+        4052500,
+        3796083,
+        4085709,
+        3923583,
+        4238666,
+        4055667,
+        3777958,
+        3874667,
+        3904500,
+        4020208,
+        3962708,
+        3946375,
+        3949500,
+        3891541,
+        3887500,
+        3859333,
+        3809625,
+        3788708,
+        3910750,
+        4045292,
+        3942542,
+        3985958,
+        3903792,
+        3811583
+      ],
+      "summary_ns": {
+        "count": 30,
+        "minimum": 3777958,
+        "median": 3944458.5,
+        "p95": 4238666,
+        "maximum": 4296542
+      },
+      "payload_bytes": 549
+    },
+    "interactive_startup": {
+      "wall_ns": [
+        6820375,
+        7010625,
+        7409541,
+        7781208,
+        8137542,
+        8175958,
+        8602792,
+        9473417,
+        9922791,
+        9526584,
+        9565417,
+        10074125,
+        9754500,
+        9584000,
+        9573125,
+        9789125,
+        9383458,
+        9426666,
+        9172917,
+        9331084,
+        9399625,
+        9599125,
+        9767000,
+        9844125,
+        9793041,
+        9131208,
+        9091833,
+        9006625,
+        9142791,
+        9520541
+      ],
+      "summary_ns": {
+        "count": 30,
+        "minimum": 6820375,
+        "median": 9413145.5,
+        "p95": 9922791,
+        "maximum": 10074125
+      }
+    },
+    "binary_pipeline_16MiB": {
+      "wall_ns": [
+        110392083,
+        110892875,
+        109733166,
+        110051208,
+        107526250,
+        107929000,
+        107719333,
+        107867416,
+        107610708,
+        107460000,
+        107828667,
+        107302458,
+        107095250,
+        107910666,
+        109342417,
+        110447583,
+        109263334,
+        109084084,
+        108172750,
+        108877375,
+        108128166,
+        108501583,
+        108063709,
+        107484875,
+        108809417,
+        108620291,
+        108264875,
+        108470500,
+        108751750,
+        108931042
+      ],
+      "summary_ns": {
+        "count": 30,
+        "minimum": 107095250,
+        "median": 108367687.5,
+        "p95": 110447583,
+        "maximum": 110892875
+      },
+      "bytes": 16777216,
+      "median_MiB_per_second": 147.64548703689925
+    },
+    "stderr_16MiB": {
+      "wall_ns": [
+        15466833,
+        15440917,
+        15728250,
+        14937791,
+        14583625,
+        15011792,
+        14941250,
+        14914250,
+        14831417,
+        14765834,
+        14992167,
+        14484208,
+        15275167,
+        15082542,
+        14776334,
+        14532375,
+        15171500,
+        15716916,
+        16637542,
+        16497791,
+        15584125,
+        15446459,
+        16220750,
+        14952250,
+        15575209,
+        15527084,
+        15134375,
+        15168959,
+        14736417,
+        14647417
+      ],
+      "summary_ns": {
+        "count": 30,
+        "minimum": 14484208,
+        "median": 15108458.5,
+        "p95": 16497791,
+        "maximum": 16637542
+      },
+      "bytes": 16777216,
+      "median_MiB_per_second": 1059.009428394035
+    }
+  },
+  "instrumentation": {
+    "startup": {
+      "samples": [
+        {
+          "root": {
+            "pid": 78251,
+            "main_thread_allocations": 927,
+            "all_thread_allocations": 1265,
+            "peak_rss_bytes": 6979584
+          },
+          "workers": []
+        },
+        {
+          "root": {
+            "pid": 78253,
+            "main_thread_allocations": 927,
+            "all_thread_allocations": 1265,
+            "peak_rss_bytes": 6979584
+          },
+          "workers": []
+        },
+        {
+          "root": {
+            "pid": 78254,
+            "main_thread_allocations": 927,
+            "all_thread_allocations": 1265,
+            "peak_rss_bytes": 6979584
+          },
+          "workers": []
+        },
+        {
+          "root": {
+            "pid": 78255,
+            "main_thread_allocations": 927,
+            "all_thread_allocations": 1265,
+            "peak_rss_bytes": 6979584
+          },
+          "workers": []
+        },
+        {
+          "root": {
+            "pid": 78256,
+            "main_thread_allocations": 927,
+            "all_thread_allocations": 1265,
+            "peak_rss_bytes": 6979584
+          },
+          "workers": []
+        }
+      ],
+      "summary": {
+        "root": {
+          "main_thread_allocations": {
+            "count": 5,
+            "minimum": 927,
+            "median": 927,
+            "p95": 927,
+            "maximum": 927
+          },
+          "all_thread_allocations": {
+            "count": 5,
+            "minimum": 1265,
+            "median": 1265,
+            "p95": 1265,
+            "maximum": 1265
+          },
+          "peak_rss_bytes": {
+            "count": 5,
+            "minimum": 6979584,
+            "median": 6979584,
+            "p95": 6979584,
+            "maximum": 6979584
+          }
+        }
+      }
+    },
+    "parent_builtins_1000": {
+      "samples": [
+        {
+          "root": {
+            "pid": 78289,
+            "main_thread_allocations": 928,
+            "all_thread_allocations": 12266,
+            "peak_rss_bytes": 7389184
+          },
+          "workers": []
+        },
+        {
+          "root": {
+            "pid": 78290,
+            "main_thread_allocations": 928,
+            "all_thread_allocations": 12266,
+            "peak_rss_bytes": 7389184
+          },
+          "workers": []
+        },
+        {
+          "root": {
+            "pid": 78291,
+            "main_thread_allocations": 928,
+            "all_thread_allocations": 12266,
+            "peak_rss_bytes": 7389184
+          },
+          "workers": []
+        },
+        {
+          "root": {
+            "pid": 78292,
+            "main_thread_allocations": 928,
+            "all_thread_allocations": 12266,
+            "peak_rss_bytes": 7389184
+          },
+          "workers": []
+        },
+        {
+          "root": {
+            "pid": 78293,
+            "main_thread_allocations": 928,
+            "all_thread_allocations": 12266,
+            "peak_rss_bytes": 7389184
+          },
+          "workers": []
+        }
+      ],
+      "summary": {
+        "root": {
+          "main_thread_allocations": {
+            "count": 5,
+            "minimum": 928,
+            "median": 928,
+            "p95": 928,
+            "maximum": 928
+          },
+          "all_thread_allocations": {
+            "count": 5,
+            "minimum": 12266,
+            "median": 12266,
+            "p95": 12266,
+            "maximum": 12266
+          },
+          "peak_rss_bytes": {
+            "count": 5,
+            "minimum": 7389184,
+            "median": 7389184,
+            "p95": 7389184,
+            "maximum": 7389184
+          }
+        }
+      }
+    },
+    "builtin_workers_100": {
+      "samples": [
+        {
+          "root": {
+            "pid": 81527,
+            "main_thread_allocations": 928,
+            "all_thread_allocations": 10186,
+            "peak_rss_bytes": 7569408
+          },
+          "workers": [
+            {
+              "pid": 81528,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81529,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81530,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81531,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81532,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81533,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81534,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81535,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81536,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81537,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81538,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81539,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81540,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81541,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81542,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81543,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81544,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81545,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81546,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81547,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 81549,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 81548,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81550,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81551,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81552,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81553,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81555,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81554,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81556,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81557,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81558,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81559,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81560,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81561,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81562,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81563,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81564,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81565,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81566,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81567,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81569,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81568,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81571,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81570,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81573,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81572,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81574,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81575,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81576,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81577,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 81579,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81578,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81580,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 81581,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81582,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81583,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81584,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81585,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81586,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81587,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81588,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81589,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81590,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81591,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81592,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81593,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81595,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81594,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81597,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81596,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81599,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81598,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81600,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81601,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81603,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81602,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81604,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81605,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81607,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81606,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81609,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81608,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81610,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81611,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81612,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81613,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81614,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81615,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81616,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81617,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81618,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81619,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81621,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81620,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81622,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81623,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81624,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81625,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81626,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81627,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            }
+          ]
+        },
+        {
+          "root": {
+            "pid": 81628,
+            "main_thread_allocations": 928,
+            "all_thread_allocations": 10209,
+            "peak_rss_bytes": 7536640
+          },
+          "workers": [
+            {
+              "pid": 81629,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81630,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81632,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81631,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81633,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81634,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81636,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81635,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81638,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81637,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81639,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81640,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81641,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81642,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81643,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81644,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81645,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81646,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81647,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81648,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81649,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81650,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81651,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 81652,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81653,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81654,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81655,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81656,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81657,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81658,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81659,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 81660,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81662,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 81661,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81663,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81664,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81665,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81666,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81667,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81668,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81670,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81669,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81671,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81672,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81673,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81674,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81675,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81676,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81677,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81678,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81679,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81680,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81681,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81682,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81683,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81684,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81685,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81686,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81687,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81688,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81689,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81690,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81691,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81692,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81693,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81694,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81695,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81696,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81697,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81698,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81699,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81700,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81702,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81701,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81703,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81704,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81705,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81706,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81707,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81708,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81709,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81710,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81711,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81712,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81713,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81714,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81715,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81716,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81717,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81718,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81719,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81720,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81721,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81722,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81723,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81724,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81725,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81726,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81727,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81728,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            }
+          ]
+        },
+        {
+          "root": {
+            "pid": 81729,
+            "main_thread_allocations": 928,
+            "all_thread_allocations": 10199,
+            "peak_rss_bytes": 7569408
+          },
+          "workers": [
+            {
+              "pid": 81730,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81731,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81732,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81733,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81734,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81735,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81737,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81736,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81739,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81738,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81740,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81741,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81742,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81743,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81745,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81744,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81746,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81747,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81748,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81749,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81750,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81751,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81753,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81752,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81755,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81754,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81757,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81756,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81759,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81758,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81761,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81760,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81762,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81763,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81764,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81765,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81767,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81766,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81768,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81769,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81770,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81771,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81772,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81773,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81774,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81775,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81777,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81776,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81779,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81778,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81780,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81781,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81782,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81783,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81784,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81785,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81786,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81787,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81788,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81789,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 81790,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81791,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81792,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81793,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81794,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81795,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81796,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81797,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81798,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81799,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81800,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81801,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81802,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81803,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81805,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81804,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81806,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81807,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81809,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81808,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81810,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81811,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81812,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81813,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81814,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81815,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81816,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81817,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81818,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81819,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81820,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81821,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81822,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81823,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81824,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81825,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81826,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81827,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81828,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81829,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            }
+          ]
+        },
+        {
+          "root": {
+            "pid": 81830,
+            "main_thread_allocations": 928,
+            "all_thread_allocations": 10215,
+            "peak_rss_bytes": 7536640
+          },
+          "workers": [
+            {
+              "pid": 81831,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81832,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81833,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81834,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81835,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81836,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81837,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81838,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81839,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81840,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81841,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81842,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81843,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81844,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81845,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81846,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81847,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81848,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81850,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81849,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81852,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81851,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81853,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81854,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81855,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81856,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81858,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81857,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81859,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81860,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81861,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81862,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81863,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81864,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81865,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81866,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81867,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81868,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81870,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81869,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81871,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81872,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81873,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81874,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81875,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81876,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81877,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81878,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81879,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81880,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81881,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81882,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81884,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81883,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81885,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81886,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81887,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81888,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81889,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81890,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81891,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81892,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81893,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81894,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81895,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81896,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81897,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81898,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81899,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81900,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81901,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81902,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81903,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81904,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81906,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81905,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81908,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81907,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81909,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81910,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81911,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81912,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81913,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81914,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81916,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81915,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81918,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81917,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81920,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81919,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81921,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81922,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81923,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81924,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81925,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81926,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81927,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81928,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81929,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81930,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            }
+          ]
+        },
+        {
+          "root": {
+            "pid": 81931,
+            "main_thread_allocations": 928,
+            "all_thread_allocations": 9914,
+            "peak_rss_bytes": 7553024
+          },
+          "workers": [
+            {
+              "pid": 81932,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81933,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81934,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81935,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81936,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81937,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 81938,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81939,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81940,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81941,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81943,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81942,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81944,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81945,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81947,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81946,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81948,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81949,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81950,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81951,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81952,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81953,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81954,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81955,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81956,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81957,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81958,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81959,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81960,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81961,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81962,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81963,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81964,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81965,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81967,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81966,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81968,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81969,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81970,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81971,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81972,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81973,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81974,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81975,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81976,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81977,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81978,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 81979,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81980,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81981,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81982,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81983,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81984,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81985,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81986,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81987,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81988,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81989,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81990,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81991,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81992,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81993,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81994,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81995,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81996,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81997,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81999,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 81998,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82001,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82000,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82002,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82003,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82005,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82006,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82007,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82008,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82009,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82010,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82011,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82012,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82013,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82014,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82015,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82016,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82017,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82018,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82019,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82020,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82021,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82022,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82023,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82024,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82025,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82026,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82028,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82027,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82029,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82030,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82032,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            },
+            {
+              "pid": 82031,
+              "main_thread_allocations": 1320,
+              "all_thread_allocations": 1320,
+              "peak_rss_bytes": 6832128
+            }
+          ]
+        }
+      ],
+      "summary": {
+        "root": {
+          "main_thread_allocations": {
+            "count": 5,
+            "minimum": 928,
+            "median": 928,
+            "p95": 928,
+            "maximum": 928
+          },
+          "all_thread_allocations": {
+            "count": 5,
+            "minimum": 9914,
+            "median": 10199,
+            "p95": 10215,
+            "maximum": 10215
+          },
+          "peak_rss_bytes": {
+            "count": 5,
+            "minimum": 7536640,
+            "median": 7553024,
+            "p95": 7569408,
+            "maximum": 7569408
+          }
+        },
+        "workers": {
+          "main_thread_allocations": {
+            "count": 500,
+            "minimum": 1320,
+            "median": 1320.0,
+            "p95": 1320,
+            "maximum": 1320
+          },
+          "all_thread_allocations": {
+            "count": 500,
+            "minimum": 1320,
+            "median": 1320.0,
+            "p95": 1320,
+            "maximum": 1320
+          },
+          "peak_rss_bytes": {
+            "count": 500,
+            "minimum": 6815744,
+            "median": 6832128.0,
+            "p95": 6832128,
+            "maximum": 6832128
+          }
+        }
+      }
+    },
+    "redirect_helpers_50": {
+      "samples": [
+        {
+          "root": {
+            "pid": 83670,
+            "main_thread_allocations": 928,
+            "all_thread_allocations": 7001,
+            "peak_rss_bytes": 7684096
+          },
+          "workers": [
+            {
+              "pid": 83671,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83672,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83673,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83674,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83675,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83676,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83677,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83678,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83679,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83680,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83681,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83682,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83683,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83684,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83685,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83686,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83687,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83688,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83689,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83690,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83691,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83692,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83693,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83694,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83695,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83696,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83697,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83698,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83699,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83700,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83701,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83702,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83703,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83704,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83705,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83706,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83707,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83708,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83709,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83710,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83711,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83712,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83713,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83714,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83715,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83716,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83717,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83718,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83719,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83720,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            }
+          ]
+        },
+        {
+          "root": {
+            "pid": 83721,
+            "main_thread_allocations": 928,
+            "all_thread_allocations": 6924,
+            "peak_rss_bytes": 7667712
+          },
+          "workers": [
+            {
+              "pid": 83722,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83723,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83724,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83725,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83726,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83727,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83728,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83729,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83730,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83731,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83732,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83733,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83734,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83735,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83736,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83737,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83738,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83739,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83740,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83741,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83742,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83743,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83744,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83745,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83746,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83747,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83748,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83749,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83750,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83751,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83752,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83753,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83754,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83755,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83756,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83757,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83758,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83759,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83760,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83761,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83762,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83763,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83764,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83765,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83766,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83767,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83768,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83769,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83770,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83771,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            }
+          ]
+        },
+        {
+          "root": {
+            "pid": 83772,
+            "main_thread_allocations": 928,
+            "all_thread_allocations": 6926,
+            "peak_rss_bytes": 7667712
+          },
+          "workers": [
+            {
+              "pid": 83773,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83774,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83775,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83776,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83777,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83778,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83779,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83780,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83781,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6799360
+            },
+            {
+              "pid": 83782,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83783,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83784,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83785,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83786,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83787,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83788,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83789,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83790,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83791,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83792,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83793,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83794,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83795,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83796,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6799360
+            },
+            {
+              "pid": 83797,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83798,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83799,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83800,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83801,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83802,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6799360
+            },
+            {
+              "pid": 83803,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83804,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83805,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83806,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83807,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83808,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83809,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83810,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83811,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83812,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83813,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83814,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83815,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83816,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83817,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83818,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83819,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83820,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83821,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83822,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            }
+          ]
+        },
+        {
+          "root": {
+            "pid": 83823,
+            "main_thread_allocations": 928,
+            "all_thread_allocations": 7049,
+            "peak_rss_bytes": 7700480
+          },
+          "workers": [
+            {
+              "pid": 83824,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83825,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83826,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83827,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83828,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83829,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83830,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83831,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6799360
+            },
+            {
+              "pid": 83832,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83833,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83834,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83835,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83836,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83837,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83838,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83839,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83840,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83841,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83842,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83843,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83844,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6799360
+            },
+            {
+              "pid": 83845,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83846,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83847,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83848,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83849,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83850,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83851,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83852,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83853,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83854,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83855,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83856,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83857,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83858,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83859,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6799360
+            },
+            {
+              "pid": 83860,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83861,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83862,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83863,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83864,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83865,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83866,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83867,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83868,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83869,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83870,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83871,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83872,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83873,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            }
+          ]
+        },
+        {
+          "root": {
+            "pid": 83874,
+            "main_thread_allocations": 928,
+            "all_thread_allocations": 6980,
+            "peak_rss_bytes": 7667712
+          },
+          "workers": [
+            {
+              "pid": 83875,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83876,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83877,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83878,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83879,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83880,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83881,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83882,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83883,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83884,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83885,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83886,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83887,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83888,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83889,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83890,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83891,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6799360
+            },
+            {
+              "pid": 83892,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83893,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83894,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83895,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83896,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83897,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83898,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83899,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83900,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83901,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83902,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83903,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83904,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83905,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83906,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83907,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83908,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83909,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83910,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83911,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83912,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83913,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83914,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83915,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83916,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83917,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83918,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83919,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83920,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83921,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83922,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83923,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            },
+            {
+              "pid": 83924,
+              "main_thread_allocations": 1356,
+              "all_thread_allocations": 1356,
+              "peak_rss_bytes": 6815744
+            }
+          ]
+        }
+      ],
+      "summary": {
+        "root": {
+          "main_thread_allocations": {
+            "count": 5,
+            "minimum": 928,
+            "median": 928,
+            "p95": 928,
+            "maximum": 928
+          },
+          "all_thread_allocations": {
+            "count": 5,
+            "minimum": 6924,
+            "median": 6980,
+            "p95": 7049,
+            "maximum": 7049
+          },
+          "peak_rss_bytes": {
+            "count": 5,
+            "minimum": 7667712,
+            "median": 7667712,
+            "p95": 7700480,
+            "maximum": 7700480
+          }
+        },
+        "workers": {
+          "main_thread_allocations": {
+            "count": 250,
+            "minimum": 1356,
+            "median": 1356.0,
+            "p95": 1356,
+            "maximum": 1356
+          },
+          "all_thread_allocations": {
+            "count": 250,
+            "minimum": 1356,
+            "median": 1356.0,
+            "p95": 1356,
+            "maximum": 1356
+          },
+          "peak_rss_bytes": {
+            "count": 250,
+            "minimum": 6799360,
+            "median": 6815744.0,
+            "p95": 6815744,
+            "maximum": 6815744
+          }
+        }
+      }
+    }
+  }
+}

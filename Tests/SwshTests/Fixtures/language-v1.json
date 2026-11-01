@@ -1,0 +1,10 @@
+[
+  {"source":"printf '<%s>\\n' $name", "variables":{"name":"two words"}, "argv":["printf","<%s>\\n","two words"]},
+  {"source":"printf '<%s>\\n' \"$name\"", "variables":{"name":"two words"}, "argv":["printf","<%s>\\n","two words"]},
+  {"source":"printf '%s' $unset ''", "variables":{}, "argv":["printf","%s","",""]},
+  {"source":"printf '%s' pre${name}post", "variables":{"name":"* ?"}, "argv":["printf","%s","pre* ?post"]},
+  {"source":"printf '%s' '*' \"?\" \\*", "variables":{}, "argv":["printf","%s","*","?","*"]},
+  {"source":"printf '%s' \\\n value", "variables":{}, "argv":["printf","%s","value"]},
+  {"source":"printf '%s' \"a\\qb\"", "variables":{}, "argv":["printf","%s","a\\qb"]},
+  {"source":"printf '%s' a\\ b", "variables":{}, "argv":["printf","%s","a b"]}
+]

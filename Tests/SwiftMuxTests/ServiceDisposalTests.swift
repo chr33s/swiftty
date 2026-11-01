@@ -24,7 +24,7 @@ struct ServiceDisposalTests {
     // A waitable child is still service-owned; the fixture must not collect
     // it or signal a PID/group that the service could release concurrently.
     service = nil
-    let deadline = ContinuousClock.now + .seconds(4)
+    let deadline = ContinuousClock.now + .seconds(7)
     while !reaped(pid), ContinuousClock.now < deadline { usleep(10000) }
     #expect(reaped(pid))
   }
@@ -101,7 +101,7 @@ struct ServiceDisposalTests {
     #expect(weakService == nil)
     #expect(weakRuntime == nil)
     #expect(ContinuousClock.now - started < .seconds(1))
-    let deadline = ContinuousClock.now + .seconds(4)
+    let deadline = ContinuousClock.now + .seconds(7)
     while !reaped(pid) || descendant.map({ kill($0, 0) == 0 }) == true,
       ContinuousClock.now < deadline
     { try await Task.sleep(for: .milliseconds(10)) }
@@ -113,7 +113,7 @@ struct ServiceDisposalTests {
     if child == .cooperative {
       #expect(ContinuousClock.now - started < .seconds(1))
     } else {
-      #expect(ContinuousClock.now - started >= .seconds(2))
+      #expect(ContinuousClock.now - started >= .seconds(5))
     }
   }
 
@@ -192,12 +192,12 @@ struct ServiceDisposalTests {
     { try await Task.sleep(for: .milliseconds(10)) }
     let pid = try #require(pid_t(String(contentsOf: pidFile, encoding: .utf8)))
     defer { cleanup(pid, service: &service) }
-    let retired = ContinuousClock.now + .seconds(4)
+    let retired = ContinuousClock.now + .seconds(7)
     while !reaped(pid), ContinuousClock.now < retired {
       try await Task.sleep(for: .milliseconds(10))
     }
     #expect(reaped(pid))
-    #expect(ContinuousClock.now - released >= .seconds(2))
+    #expect(ContinuousClock.now - released >= .seconds(5))
     #expect(replies.withLock { $0 } == 0)
   }
 }

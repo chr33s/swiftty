@@ -141,7 +141,7 @@ class InstallTests(unittest.TestCase):
     def create_app(self, path, marker):
         executables = path / "Contents/MacOS"
         executables.mkdir(parents=True)
-        for name in ["swiftty", "swiftmux-agent", "swmux-launcher", "swmux"]:
+        for name in ["swiftty", "swiftmux-agent", "swmux-launcher", "swmux", "swsh"]:
             file = executables / name
             file.write_text(APP.replace("/PYTHON", sys.executable))
             file.chmod(0o700)
@@ -463,11 +463,11 @@ class InstallTests(unittest.TestCase):
                                   input="int main(void) { return 0; }\n", text=True,
                                   capture_output=True, timeout=20)
         self.assertEqual(compiled.returncode, 0, compiled.stderr)
-        for name in ["swiftty", "swiftmux-agent", "swmux-launcher", "swmux"]:
+        for name in ["swiftty", "swiftmux-agent", "swmux-launcher", "swmux", "swsh"]:
             target = self.built / "Contents/MacOS" / name
             shutil.copyfile(executable, target)
             target.chmod(0o700)
-        for name in ["swiftmux-agent", "swmux-launcher", "swmux"]:
+        for name in ["swiftmux-agent", "swmux-launcher", "swmux", "swsh"]:
             target = self.built / "Contents/MacOS" / name
             signed = subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-",
                                      "--timestamp=none", str(target)], capture_output=True,

@@ -29,19 +29,46 @@ jobs:
         shell: bash
         run: |
           case '${{ matrix.configuration }}' in
-            debug) Scripts/test-native.sh ;;
-            release) Scripts/test-native.sh -c release ;;
-            internal-checks) Scripts/test-native.sh -Xswiftc -DSWIFTTY_INTERNAL_CHECKS ;;
+            debug) Scripts/test-native.sh --disable-automatic-resolution ;;
+            release) Scripts/test-native.sh --disable-automatic-resolution -c release ;;
+            internal-checks) Scripts/test-native.sh --disable-automatic-resolution -Xswiftc -DSWIFTTY_INTERNAL_CHECKS ;;
           esac
       - name: Build production products
         if: matrix.configuration == 'release'
-        run: swift build -c release
+        run: swift build --disable-automatic-resolution -c release
+      - name: Check native shell process and PTY behavior
+        if: matrix.configuration == 'release'
+        run: python3 Scripts/test-swsh.py "$(swift build -c release --show-bin-path)/swsh"
       - name: Check formatting and documentation
         if: matrix.configuration == 'debug'
         run: Scripts/format-swift.sh check
       - name: Check unchecked Sendable documentation
         if: matrix.configuration == 'debug'
         run: Scripts/check-unchecked-sendable.sh
+  shell-baseline:
+    runs-on: namespace-profile-mac
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-macos
+        with:
+          test-tools: 'true'
+      - name: Extract pinned Swift 6.4.1
+        run: |
+          curl --fail --location --retry 3 \
+            https://download.swift.org/swift-6.4.1-release/xcode/swift-6.4.1-RELEASE/swift-6.4.1-RELEASE-osx.pkg \
+            -o "$RUNNER_TEMP/swift.pkg"
+          echo "c34e7e5fb0be4bcd61decfd40db1766434d8952d68e37aed90bcff4e8547951c  $RUNNER_TEMP/swift.pkg" | shasum -a 256 -c -
+          pkgutil --check-signature "$RUNNER_TEMP/swift.pkg"
+          pkgutil --expand-full "$RUNNER_TEMP/swift.pkg" "$RUNNER_TEMP/swift-expanded"
+          toolchain="$RUNNER_TEMP/swift-expanded/swift-6.4.1-RELEASE-osx-package.pkg/Payload"
+          echo "SWSH_BASELINE_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+          echo "$toolchain/usr/bin" >> "$GITHUB_PATH"
+      - name: Test pinned baseline
+        run: |
+          swift --version | head -1 | grep -Fx 'Apple Swift version 6.4.1 (swift-6.4.1-RELEASE)'
+          Scripts/test-native.sh --toolchain "$SWSH_BASELINE_TOOLCHAIN" \
+            --sdk "$(xcrun --sdk macosx --show-sdk-path)" --disable-automatic-resolution
+          python3 Scripts/test-swsh.py "$(swift build --show-bin-path)/swsh"
   frontends:
     runs-on: namespace-profile-mac
     strategy:
@@ -58,4 +85,4 @@ jobs:
         run: >-
           xcodebuild -scheme SwifttyMobile -configuration Release
           -destination '${{ matrix.destination }}'
-          CODE_SIGNING_ALLOWED=NO build
+          -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=NO build

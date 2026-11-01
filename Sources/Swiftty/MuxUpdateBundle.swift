@@ -76,7 +76,9 @@ enum MuxUpdateBundle {
           "The selected bundle is not an update for this Swiftty app."
       )
     }
-    for name in ["swiftty", "swiftmux-agent", "swmux-launcher", "swmux"] {
+    for name in [
+      "swiftty", "swiftmux-agent", "swmux-launcher", "swmux", "swsh",
+    ] {
       let file = source.appendingPathComponent("Contents/MacOS/\(name)")
         .resolvingSymlinksInPath()
       guard file.pathComponents.starts(with: source.pathComponents),

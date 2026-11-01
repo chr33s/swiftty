@@ -17,6 +17,7 @@ public enum ConfigurationEditor {
   public static let editableKeys: Set<String> = [
     "font-family", "font-size", "theme", "background-opacity", "cursor-style",
     "cursor-style-blink", "copy-on-select", "mouse-hide-while-typing",
+    "shell-profile",
   ]
 
   /// Values are literal control values, not quoted configuration expressions.
@@ -34,6 +35,8 @@ public enum ConfigurationEditor {
       }
     }
     switch key {
+    case "shell-profile":
+      config.terminal.preferredShell = value.flatMap(ShellKind.init(rawValue:))
     case "font-family":
       config.font.family =
         value.flatMap { $0.isEmpty ? nil : $0 } ?? FontConfig.default.family

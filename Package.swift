@@ -16,6 +16,8 @@ let package = Package(
     .tvOS("27.0"), .watchOS("27.0"),
   ],
   products: [
+    .library(name: "Swsh", targets: ["Swsh"]),
+    .executable(name: "swsh", targets: ["SwshCLI"]),
     .library(name: "SwifttyConfig", targets: ["SwifttyConfig"]),
     .library(name: "SwifttyEngine", targets: ["SwifttyEngine"]),
     .library(name: "SwifttyCore", targets: ["SwifttyCore"]),
@@ -58,6 +60,17 @@ let package = Package(
     ),
   ],
   targets: [
+    .target(
+      name: "Swsh",
+      dependencies: ["CSwshSupport"],
+      swiftSettings: [.enableUpcomingFeature("NonisolatedNonsendingByDefault")]
+    ),
+    .testTarget(
+      name: "SwshTests",
+      dependencies: ["Swsh", "SwifttyEngine"],
+      resources: [.copy("Fixtures")]
+    ), .target(name: "CSwshSupport"),
+    .executableTarget(name: "SwshCLI", dependencies: ["Swsh"]),
     .target(name: "SwifttyConfig"),
     .testTarget(name: "SwifttyConfigTests", dependencies: ["SwifttyConfig"]),
     .target(

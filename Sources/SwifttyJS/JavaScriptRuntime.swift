@@ -3,6 +3,10 @@ import JavaScriptCore
 
 /// All JavaScript values, including callbacks, stay on one private queue.
 /// Hosts exchange only strings and bytes with the VM.
+///
+/// Sendable: context, failure, and timer operations are serialized on `queue`.
+/// Teardown cancels the timer and releases the VM context on that same queue;
+/// JavaScript values never escape into callers.
 public final class JavaScriptRuntime: @unchecked Sendable {
   private let queue = DispatchQueue(label: "com.chr33s.swiftty.javascript")
   private var context: JSContext!

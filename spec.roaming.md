@@ -174,6 +174,15 @@ did not produce matching package slices. Other Enhanced Security settings remain
 enabled, including Catalyst's hardened-process entitlements. Remove these
 overrides only after matching package builds are supported and validated.
 
+MobileClient and the local package's iOS Swift targets
+also pass `-Xfrontend -no-sign-class-ro`. Xcode 27.2 builds third-party packages
+at their own older deployment targets, producing unsigned Objective-C
+`class_ro_t` pointers; mixing those objects with our OS 27 defaults causes
+archive linker warnings. This override aligns that metadata ABI while retaining
+the other arm64e pointer-authentication protections. visionOS and watchOS keep
+their default class-metadata signing. Remove this override when all linked dependencies use
+the signed metadata ABI.
+
 **Deferred decisions:**
 
 - MobileClient's `ENABLE_HARDWARE_CHECKED_POINTER_ARITHMETIC_SLICE` and

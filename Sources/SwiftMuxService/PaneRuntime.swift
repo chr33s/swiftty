@@ -132,7 +132,7 @@ final class PaneRuntime: @unchecked Sendable {
   static let statusJournalLimit = 4096
 
   static let drainBound: DispatchTimeInterval = .seconds(1)
-  static let terminateGrace: DispatchTimeInterval = .seconds(2)
+  static let terminateGrace: DispatchTimeInterval = PTYProcessShutdown.grace
 
   init(
     id: PaneID,
@@ -342,9 +342,7 @@ final class PaneRuntime: @unchecked Sendable {
             // Parsing charges the replacement bytes below. Charge discarded
             // bytes too so shrinking filters cannot extend a PTY read turn.
             budget -= max(0, n - filtered.count)
-            if filtered.isEmpty {
-              continue
-            }
+            if filtered.isEmpty { continue }
           } else {
             bufferedRead = 0 ..< n
           }

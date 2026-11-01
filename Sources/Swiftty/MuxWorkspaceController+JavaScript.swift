@@ -14,8 +14,7 @@ extension MuxWorkspaceController {
     case .status:
       if let status = action.status { automationStatus.update(status) }
     case .tabIcon:
-      guard let raw = action.id, let tab = TabID(raw)
-      else { return }
+      guard let raw = action.id, let tab = TabID(raw) else { return }
       // Subscription replay includes tabs in workspaces we may show later.
       automationTabIcons[tab] = action.text
       refreshChrome()

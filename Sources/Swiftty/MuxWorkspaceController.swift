@@ -20,6 +20,9 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   /// What the service accepts beyond the original profile.
   let features: ServiceFeatures
   private(set) var config: Configuration
+  /// Once a profile is selected, clearing it must resolve the configuration
+  /// default rather than revive the service's original launch snapshot.
+  private var resolvesShellPreference: Bool
   /// Manual zoom for this window's panes, or nil for the configured size.
   private var fontSize: Double?
   let workspaceContent = NSView()
@@ -39,10 +42,9 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   var automationFocusedPane: PaneID?
   var automationNotify: @MainActor (String, String) -> Void =
     JavaScriptNotifications.deliver
-  /// Sanitized program titles, from snapshots and title events.
-  private var titles: [PaneID: String] = [:]
+  let displayState = WorkspaceDisplayState()
   /// Panes with output the user has not seen (hidden tabs, bells).
-  private(set) var activity: Set<PaneID> = []
+  var activity: Set<PaneID> { displayState.activity }
   /// A divider drag shown locally before the service commits it.
   private var ratioProposal: RatioProposal?
   private var ratioSending = false
@@ -98,6 +100,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     limits = welcome.limits
     features = welcome.features
     config = configuration
+    resolvesShellPreference = configuration.preferredShell != nil
     let window = Self.makeWorkspaceWindow(configuration: configuration)
     super.init(window: window)
     window.delegate = self
@@ -344,7 +347,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     case let .automation(data): handleAutomation(data)
     case let .layout(ws): apply(ws)
     case let .title(pane, title):
-      titles[pane] = DisplayText.sanitize(title)
+      displayState.titles[pane] = DisplayText.sanitize(title)
       refreshChrome()
     case let .bell(pane):
       guard !detached else { return }
@@ -419,7 +422,9 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
         subscribed = []
         sentGeometry = nil
       }
-      if let current = workspace, current.id != ws.id { activity = [] }
+      if let current = workspace, current.id != ws.id {
+        displayState.activity = []
+      }
       show(ws)
     }
   }
@@ -429,12 +434,13 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
 
   private func show(_ ws: WorkspaceSnapshot) {
     workspace = ws
-    for pane in ws.panes where titles[pane.id] == nil || !pane.title.isEmpty {
-      titles[pane.id] = DisplayText.sanitize(pane.title)
+    for pane in ws.panes
+    where displayState.titles[pane.id] == nil || !pane.title.isEmpty {
+      displayState.titles[pane.id] = DisplayText.sanitize(pane.title)
     }
     let known = Set(ws.panes.map(\.id))
-    titles = titles.filter { known.contains($0.key) }
-    activity.formIntersection(known)
+    displayState.titles = displayState.titles.filter { known.contains($0.key) }
+    displayState.activity.formIntersection(known)
     guard let tab = ws.activeTabSnapshot else {
       refreshChrome()
       return
@@ -462,7 +468,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     }
     for (id, view) in views { view.isActivePane = id == tab.activePane }
     // Shown panes are seen.
-    activity.subtract(visible)
+    displayState.activity.subtract(visible)
     if let proposal = ratioProposal, proposal.tab != tab.id {
       ratioProposal = nil
     }
@@ -480,7 +486,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   // MARK: Chrome
 
   func title(of pane: PaneID) -> String {
-    titles[pane].flatMap(\.nonEmpty) ?? "shell"
+    displayState.titles[pane].flatMap(\.nonEmpty) ?? "shell"
   }
 
   /// Tab strip, pane headers and window title from the current snapshot.
@@ -518,7 +524,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
         )
       )
     }
-    let active = titles[tab.activePane].flatMap(\.nonEmpty)
+    let active = displayState.titles[tab.activePane].flatMap(\.nonEmpty)
     window?.title = [automationTabIcons[tab.id], active ?? workspaceTitle]
       .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
     updateAutomationFocus()
@@ -538,7 +544,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   private func markActivity(_ pane: PaneID) {
     guard !detached else { return }
     guard pane != activePane || !subscribed.contains(pane) else { return }
-    guard activity.insert(pane).inserted else { return }
+    guard displayState.activity.insert(pane).inserted else { return }
     refreshChrome()
   }
 
@@ -1054,12 +1060,26 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     tabStrip.buttons.first { $0.item?.isActive == true }?.beginRename()
   }
 
-  /// The service starts it with the workspace's launch spec.
-  func newTab() { command(.newTab(name: nil, launch: nil)) }
+  func newTab() {
+    let launch = resolvesShellPreference ? WorkspaceLaunch.spec(config) : nil
+    command(.newTab(name: nil, launch: launch))
+  }
 
   func split(_ axis: SplitAxis, pane: PaneID? = nil) {
     guard let pane = pane ?? activePane else { return }
-    command(.split(pane: pane, axis: axis, launch: nil))
+    var splitConfig = config
+    if splitConfig.workingDirectory == nil {
+      splitConfig.workingDirectory = "inherit"
+    }
+    let launch =
+      !resolvesShellPreference
+      ? nil
+      : WorkspaceLaunch.spec(
+        splitConfig,
+        currentDirectory: workspace?.pane(pane)?.workingDirectory
+          ?? FileManager.default.currentDirectoryPath
+      )
+    command(.split(pane: pane, axis: axis, launch: launch))
   }
 
   func toggleZoom(pane: PaneID? = nil) {
@@ -1297,6 +1317,8 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
 
   /// A configuration reload: new colours reach the engines.
   func apply(_ configuration: Configuration) {
+    resolvesShellPreference =
+      resolvesShellPreference || configuration.preferredShell != nil
     config = configuration
     for view in views.values { view.apply(paneConfiguration) }
     if let window {

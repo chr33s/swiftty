@@ -247,6 +247,8 @@ public struct Configuration: Sendable, Equatable {
   public var scrollbackCompression = true
   /// Ghostty command syntax: shell expansion by default, or `direct:` arguments.
   public var command: String?
+  public var preferredShell: ShellKind?
+  public var shellProfiles: [String: ShellLaunchProfile] = [:]
   public var workingDirectory: String?
   public var windowWidth: Double?
   public var windowHeight: Double?
@@ -398,6 +400,11 @@ public struct Configuration: Sendable, Equatable {
     case "scrollback-limit", "scrollback-limit-bytes", "scrollback-limit-lines",
       "scrollback-compression":
       return setScrollback(key, value)
+    case "shell-profile":
+      guard let kind = ShellKind(rawValue: value) else {
+        return "Unknown shell profile"
+      }
+      preferredShell = kind
     case "command": command = value.isEmpty ? nil : value
     case "working-directory":
       guard !value.utf8.contains(0) else { return invalid() }
@@ -673,7 +680,8 @@ public struct Configuration: Sendable, Equatable {
   }
 
   public func sessionConfiguration(
-    scheme: ColorScheme = .dark
+    scheme: ColorScheme = .dark,
+    nativeShellPath: String? = nil
   ) -> SessionConfiguration {
     #if os(macOS)
     let defaultsToHome = !SessionConfiguration.isCommandLineLaunch
@@ -684,6 +692,7 @@ public struct Configuration: Sendable, Equatable {
       workingDirectory: resolvedWorkingDirectory(defaultsToHome: defaultsToHome)
     )
     if let command { s.command = Self.commandArguments(command) }
+    applyShellProfile(to: &s, nativeShellPath: nativeShellPath)
     s.scrollbackLimitBytes = scrollbackLimit
     s.scrollbackLimitRows = scrollbackLimitLines
     s.scrollbackCompression = scrollbackCompression

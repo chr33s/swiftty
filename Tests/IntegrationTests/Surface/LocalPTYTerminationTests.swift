@@ -89,7 +89,8 @@ struct LocalPTYTerminationTests {
       #expect(weakSession == nil)
     }
     #expect(ContinuousClock.now - disposalStarted < .seconds(1))
-    #expect(await eventually { reaped(pid) })
+    // Allow the five-second host grace plus scheduling/reaping latency.
+    #expect(await eventually(.seconds(7)) { reaped(pid) })
     if let descendant {
       #expect(await eventually { kill(descendant, 0) == -1 && errno == ESRCH })
     }
@@ -99,7 +100,7 @@ struct LocalPTYTerminationTests {
     if child == .cooperative {
       #expect(ContinuousClock.now - disposalStarted < .seconds(1))
     } else {
-      #expect(ContinuousClock.now - disposalStarted >= .seconds(2))
+      #expect(ContinuousClock.now - disposalStarted >= .seconds(5))
     }
   }
 }

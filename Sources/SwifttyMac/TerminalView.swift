@@ -88,6 +88,9 @@ public final class TerminalView: MTKView, MTKViewDelegate {
 
   public var onTitle: ((String) -> Void)?
   public var onExit: (() -> Void)?
+  /// Passive terminal events forwarded on the main actor after the view's
+  /// built-in handling. Programs may forge these; they are not execution receipts.
+  public var onTerminalEvent: ((TerminalEvent) -> Void)?
 
   public convenience init(configuration: Configuration) throws {
     let scheme = Self.scheme(of: NSApp.effectiveAppearance)
@@ -154,8 +157,14 @@ public final class TerminalView: MTKView, MTKViewDelegate {
   required init(coder: NSCoder) { fatalError() }
 
   public func start() throws {
+    try start(config.sessionConfiguration(scheme: colorScheme))
+  }
+
+  /// Starts an exact launch configuration through the complete view lifecycle.
+  /// The owner calls this once per session, outside repeated UI updates.
+  public func start(_ configuration: SessionConfiguration) throws {
     updateGrid()
-    try session.start(config.sessionConfiguration(scheme: colorScheme))
+    try session.start(configuration)
     display.isStopped = false
     Self.surfaces.add(self)
     session.mutate { $0.setColorScheme(colorScheme) }
@@ -206,6 +215,7 @@ public final class TerminalView: MTKView, MTKViewDelegate {
     case .exited: onExit?()
     default: break
     }
+    onTerminalEvent?(event)
   }
 
   // MARK: Configuration

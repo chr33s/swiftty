@@ -13,8 +13,10 @@ import SwifttyCore
 /// - Environment: this frontend's, snapshotted; the service still sets the
 ///   terminal variables it requires (`TERM`, `COLORTERM`, …) over it.
 ///
-/// New tabs reuse the workspace's spec and splits keep the split pane's
-/// directory and environment with a login shell (service-side rules).
+/// Until a window has used an explicit shell profile, new tabs reuse the
+/// workspace spec and splits keep the pane directory and environment with a
+/// login shell. Selected profiles, including a subsequent reset to the
+/// configuration default, supply a fresh spec for each future tab or split.
 /// `scrollback-limit` is not carried: the service applies its own history
 /// limits to every pane, whichever frontend created it.
 enum WorkspaceLaunch {
@@ -27,10 +29,17 @@ enum WorkspaceLaunch {
     currentDirectory: String = FileManager.default.currentDirectoryPath
   ) -> LaunchSpec {
     let session = configuration.sessionConfiguration()
+    var launchEnvironment = environment.merging(session.environment) {
+      _,
+      profile in profile
+    }
+    for key in session.removedEnvironment {
+      launchEnvironment.removeValue(forKey: key)
+    }
     return LaunchSpec(
       command: session.command,
       workingDirectory: session.workingDirectory ?? currentDirectory,
-      environment: environment
+      environment: launchEnvironment
     )
   }
 

@@ -96,8 +96,12 @@ public enum ConfigLoader {
         "cursor_style_blink",
       ], "font": ["family", "size", "line_height"],
       "window": ["opacity", "blur", "padding", "width", "height"],
-      "terminal": ["shell", "scrollback_limit"],
-      "keybinding": ["trigger", "action"],
+      "terminal": [
+        "shell", "scrollback_limit", "preferred_shell", "shell_profiles",
+      ], "shell_profiles": Set(ShellKind.allCases.map(\.rawValue)),
+      "shell_profile": [
+        "executable", "arguments", "environment", "working_directory",
+      ], "keybinding": ["trigger", "action"],
     ]
     for path in index.positions.keys.sorted(by: {
       index.offset(for: $0) < index.offset(for: $1)
@@ -108,11 +112,66 @@ public enum ConfigLoader {
         ? ""
         : parent.count == 1
           ? parent.first!
-          : parent.count == 2 && parent.first == "keybindings"
-            ? "keybinding" : nil
+          : parent.elementsEqual(["terminal", "shell_profiles"])
+            ? "shell_profiles"
+            : parent.count == 3
+              && parent.prefix(2).elementsEqual(["terminal", "shell_profiles"])
+              ? "shell_profile"
+              : parent.count == 2 && parent.first == "keybindings"
+                ? "keybinding" : nil
       if let group, let keys = allowed[group], !keys.contains(path.last!) {
         throw diagnostic(path, "Unknown configuration key '\(path.last!)'")
       }
+    }
+    for (name, profile) in config.terminal.shellProfiles {
+      let path = ["terminal", "shell_profiles", name]
+      if let executable = profile.executable,
+        executable.isEmpty || executable.utf8.contains(0)
+      {
+        throw diagnostic(
+          path + ["executable"],
+          "Executable must be nonempty and contain no NUL"
+        )
+      }
+      if profile.arguments.contains(where: { $0.utf8.contains(0) }) {
+        throw diagnostic(path + ["arguments"], "Arguments must contain no NUL")
+      }
+      if profile.workingDirectory?.utf8.contains(0) == true {
+        throw diagnostic(
+          path + ["working_directory"],
+          "Directory must contain no NUL"
+        )
+      }
+      for (key, value) in profile.environment {
+        if key.isEmpty || key.contains("=") || key.utf8.contains(0)
+          || value.utf8.contains(0)
+        {
+          throw diagnostic(path + ["environment"], "Invalid environment entry")
+        }
+      }
+      if name == "system",
+        profile.executable != nil || !profile.arguments.isEmpty
+      {
+        throw diagnostic(
+          path,
+          "The system profile preserves the default login-shell policy"
+        )
+      }
+      if name == "custom", profile.executable == nil {
+        throw diagnostic(
+          path + ["executable"],
+          "A custom profile requires an executable"
+        )
+      }
+    }
+    if config.terminal.preferredShell == .custom
+      && config.terminal.shellProfiles["custom"] == nil
+      && config.terminal.shell == nil
+    {
+      throw diagnostic(
+        ["terminal", "preferred_shell"],
+        "Configure a custom executable before selecting custom"
+      )
     }
     let checks: [([String], Bool, String)] = [
       (

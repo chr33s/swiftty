@@ -45,6 +45,8 @@ extension Configuration {
     windowPaddingX = jsonc.window.padding
     windowPaddingY = jsonc.window.padding
     scrollbackLimitLines = jsonc.terminal.scrollbackLimit
+    preferredShell = jsonc.terminal.preferredShell
+    shellProfiles = jsonc.terminal.shellProfiles
     if let shell = jsonc.terminal.shell {
       command =
         "shell:'" + shell.replacingOccurrences(of: "'", with: "'\\''") + "'"

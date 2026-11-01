@@ -174,6 +174,30 @@ struct SettingsView: View {
 
   var body: some View {
     Form {
+      Section("Shell") {
+        Picker(
+          "New Sessions",
+          selection: Binding(
+            get: { model.configuration.preferredShell?.rawValue ?? "" },
+            set: { model.set("shell-profile", $0.isEmpty ? nil : $0) }
+          )
+        ) {
+          Text("Configuration Default").tag("")
+          Text("System Login Shell").tag("system")
+          Text("Bash").tag("bash")
+          Text("Zsh").tag("zsh")
+          Text("swsh").tag("swsh")
+          if model.configuration.shellProfiles["custom"] != nil
+            || model.configuration.command != nil
+          {
+            Text("Custom").tag("custom")
+          }
+        }
+        Text(
+          "Applies to new sessions. Edit the configuration file to set each shell’s arguments, environment, and directory."
+        )
+        .font(.caption).foregroundStyle(.secondary)
+      }
       Section("Font") {
         TextField("Family", text: $family)
           .onSubmit { model.set("font-family", nonEmpty(family)) }

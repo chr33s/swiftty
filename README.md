@@ -59,12 +59,241 @@ Recorded `sh`, `vim`, `less`, `tmux` and `top` sessions live in
 `Tests/SwifttyMobileTests/Fixtures`; regenerate with
 `SWIFTTY_RECORD=1 swift test --filter SessionRecorder`.
 
+## Native shell development
+
+`spec.shell.md` defines the native `swsh` shell. Its current implementation has
+batch execution, scalar state and builtins, external and builtin pipelines,
+ordered redirects, interactive editing/history, Darwin job control, and literal
+`exec`, plus functions, subshells, command substitution, native programmable
+completion, app shell profiles, and bundled packaging. The spec records verification
+scope and deliberate language limits.
+
+```sh
+swift build --product swsh
+swift run swsh -c "name='two words'; /usr/bin/printf '<%s>\\n' \$name"
+swift test --filter SwshTests
+python3 Scripts/test-swsh.py "$(swift build --show-bin-path)/swsh"
+```
+
+The failure-focused tests are included in `Scripts/test-swsh.py`. They verify
+nested child cleanup and descriptor inventories, source-worker payload validation,
+function/subshell interactions, and completion-provider contracts. The latest
+verification scope is recorded in `spec.shell.md`, including the distinction
+between shell-specific tests and repository-wide integration totals.
+
+The batch CLI accepts `-c source`, one source-file path, or source on nonterminal
+stdin. Source must be UTF-8 without NUL. Single quotes preserve all bytes between
+them. Double quotes expand variables; a backslash escapes `$`, `"`, `\`, or a
+newline there, and remains literal before other characters. Outside quotes a
+backslash quotes the next character; backslash-newline continues a line. Unquoted
+`#` starts a comment at a word boundary. `$NAME`, `${NAME}`, and `$?` expand to one
+scalar argument, including an empty argument for an unset variable. Expansion
+never splits values or interprets their wildcard bytes. Only source-authored,
+unquoted `*` and `?` glob; unmatched patterns and ambiguous redirect targets are
+errors. Matches sort by byte order.
+
+Prefix `NAME=value` assignments see the pre-command state. Assignment-only
+commands commit together; external-command prefixes form temporary environment
+overlays. Builtin prefixes are errors. The fixed builtins are `cd`, `pwd`,
+`export`, `unset`, `exit`, `exec`, `return`, `complete`, `:`, `true`, `false`,
+`jobs`, `fg`, and `bg`.
+`cd` uses a physical cwd and defaults to `HOME`; `pwd` accepts no options. `export NAME` exports the current
+scalar (empty if unset); `export NAME=value` sets and exports it. `unset` removes
+both value and export status. `exit` accepts one optional integer from 0–255,
+defaulting to the last status. External commands resolve through `PATH`, or use
+an explicit path containing `/`. There is no executable-format fallback.
+
+`exec program args` replaces the current shell image through Darwin SETEXEC,
+preserving its PID, cwd, process group, and inherited descriptors. In a pipeline
+or background worker it replaces only that worker. This initial contract rejects
+prefix assignments, redirections, and exec without a program. Main-shell exec
+requires owned jobs to have finished first, so replacement cannot abandon their
+supervisor. Failed lookup or replacement returns 127/126 and allows subsequent
+commands; interactive failure restores the editor on the next prompt. Successful
+replacement resets child signal dispositions/masks and closes private descriptors.
+
+Lists support newline, `;`, `&&`, and `||`. Pipelines stream through kernel pipes
+and return the last stage's status, including 126/127 lookup failures. Signals map
+to `128 + signal`. Redirects `<`, `>`, `>>`, `<&`, and `>&` apply left to right
+after pipeline wiring; descriptor duplication accepts a number or `-` to close.
+Parse/expansion errors return 2, redirect-open failures 1. Redirects also apply
+to missing/inaccessible-command diagnostics; a redirect failure takes precedence
+over the pending lookup status. Private launch payloads
+are bounded to 8 MiB and validated against the exact executable hash. Shutdown
+signals owned children, escalates external processes after two seconds, and fails after five seconds
+if cleanup remains incomplete. Source workers retain their child-supervision lease
+while reaping descendants; the parent avoids killing those reapers prematurely.
+The lease closes on exec, so replacement programs remain subject to escalation. Batch mode keeps the inherited process group and
+never signals that shared group during cleanup. Direct terminal sessions and mux
+pane termination give the outer shell five seconds before forcing it to exit,
+allowing shell-owned job cleanup to finish. Closing a mux frontend window still
+detaches that frontend; explicitly ending a pane initiates shell shutdown.
+For direct PTY hosts that create a session without assigning its controlling
+terminal, interactive `swsh` claims the attached slave only when it is the session
+leader and has no controlling terminal. Nested shells retain the foreground-wait
+policy and cannot use this path to take another session’s terminal.
+
+With terminal stdin, or explicit `-i`, `swsh` reads `~/.swshrc` once and starts
+its editor. Ctrl-C cancels the edit, Ctrl-D at an empty prompt exits, Ctrl-U clears
+the line, Ctrl-W removes the last word, and up/down arrows browse history.
+Editor input uses a separate nonblocking terminal handle so Ctrl-C flushing
+cannot leave a stale readiness event blocked in read. Idle batch source input
+also checks shutdown while waiting for bytes. Bracketed paste inserts source
+without submitting embedded newlines. Tab completes
+simple unquoted command/path words; quoted or expanded words are left unchanged.
+History uses a separate mode-0600 `~/.swsh_history` JSON-lines file, bounded to
+1 MiB and 1,000 entries; individual submissions over 64 KiB are not persisted.
+
+### Functions and programmable completion
+
+Functions, subshells, command substitution, and native programmable completion are
+part of the current scope. They do not introduce Bash compatibility.
+
+- `name() { commands; }` defines or replaces a function, retaining its exact body
+  source. Definitions are standalone, without redirects or `&`, and cannot replace
+  fixed builtins. Lookup is explicit path, builtin, function, then PATH. A foreground
+  standalone call runs in the current shell: assignments, exports, function definitions,
+  completion registrations, and `cd` persist. Prefix assignments to functions are
+  rejected. `$1` through `$9` and `$#` are scalar parameters; nested calls restore the
+  caller's parameters. `return [0..255]` ends only the current function, defaulting
+  to the last status. `exit` retains its shell-exit meaning. Function recursion and
+  parsed compound nesting are limited to 16 levels, including the top parser level.
+- Function redirections use supervised descriptor handoff and explicitly scoped I/O;
+  they do not replace the shell process's standard descriptors. State still persists.
+  Parent function redirects support destinations 0, 1, and 2; other destinations
+  require a subshell or pipeline worker so they have a real process FD namespace.
+  `exec` inside a redirected function is rejected until descriptor replacement and
+  failure restoration have a separate proof. Pipeline/background function calls run
+  in source workers and cannot mutate parent state.
+- `( commands )` runs an isolated logical snapshot in a fresh source worker, preserving
+  the inherited cwd and ordered redirects. It supports pipelines, background execution,
+  nesting, and function lookup. The worker joins its outer job's process group; its
+  children inherit that group. It has its own sole reaper and retires its children on
+  exit. Terminal stop/continue signals therefore reach the compound job. No Swift
+  code runs between fork and exec. Worker nesting is bounded at 128 processes.
+- `$( commands )`, also inside double quotes, starts a separately supervised expansion
+  job. Each selected command expands assignments, words, and redirects once before
+  launch; short-circuited commands do not expand. Output is drained while the worker
+  runs, preserves arbitrary non-NUL bytes, removes trailing LF bytes, and contributes
+  one scalar without splitting or value-origin globbing. Empty output is an empty
+  scalar. A nonzero worker status, stopped substitution, NUL, or output above 1 MiB
+  is an expansion error (status 2); a stopped/oversized producer is aborted and reaped.
+  Completed substitution effects cannot be rolled back if a later expansion fails.
+- Source workers receive exact body bytes and a value snapshot through the existing
+  bounded, unlinked, exact-build payload file. They bypass startup/history/editor
+  initialization and evaluate that body directly, without replaying already-expanded
+  caller words. `exec` replaces the worker only and still refuses live owned jobs.
+- `complete command candidate ...` registers literal candidates (zero candidates
+  suppresses fallback). `complete --function command provider` registers an existing
+  function. The provider runs in an isolated worker with `$1` equal to the current
+  unquoted token and `$2` equal to the input line. It prints one full candidate per
+  LF-delimited line. Candidates are prefix-filtered, deduplicated, UTF-8 checked,
+  and escaped before insertion; they are never parsed as executable source. Providers
+  get `/dev/null` stdin/stderr, no terminal handoff, a one-second execution deadline,
+  a 1 MiB output limit, and bounded job cleanup. Failure offers no completion and
+  preserves the shell's status/state. Timeout terminates only the provider job.
+  Quoted/escaped/expanded input remains outside the initial editor completion contract.
+
+```sh
+greet() { /usr/bin/printf 'Hello, %s\n' $1; }
+greet 'two words'
+value=$(greet world)
+(cd /; pwd) | /bin/cat
+complete greet Alice Bob
+names() { /usr/bin/printf 'Alice\nBob\n'; }
+complete --function greet names
+```
+
+Pipeline and background builtins run in fresh process workers. Their variable and
+directory changes do not affect the parent, and worker `exit` ends only that stage.
+They receive expanded arguments and only the logical values the builtin reads;
+they do not load startup files, initialize history, or recursively launch workers.
+Job-control builtins (`jobs`, `fg`, `bg`) require the main session and are rejected
+as worker stages before any pipeline child starts. Standalone stateful builtins
+run in the parent with explicit I/O descriptors. A supervised private helper
+opens their redirects and transfers the resulting descriptors over a local socket;
+it never executes the builtin. The parent commits state only after setup succeeds,
+including for assignment-only commands with redirects. FIFO setup can be cancelled
+with Ctrl-C or session shutdown. Setup shares the parent shell’s terminal-stop
+policy; it is not a separately stoppable user job. `exec` still rejects redirects.
+
+`&` schedules pipelines. `jobs` displays live jobs; `fg` and `bg` accept
+an optional numeric job ID (with or without `%`) and default to the newest live job.
+Ctrl-Z returns a prompt once every live pipeline stage stops. A stop ends that
+submission: commands after it are not replayed by `fg`. Foreground resume restores
+the job's saved terminal modes before SIGCONT; background resume leaves editor
+modes alone. OSC 7 and OSC 133 are passive display metadata emitted only through
+the controlling-terminal handle; `SWSH_TERMINAL_METADATA=0` disables them.
+
+Implementation and review checks cover Swift 6.4.1 and Apple Swift 6.4.2 with
+Xcode 27.2 and macOS SDK 27.2. CI pins these versions and enforces
+`Package.resolved`. See the [spec's acceptance matrix](spec.shell.md#failure-focused-verification-matrix)
+and [implementation record](spec.shell.md#10-implementation-record) for test
+coverage, recorded run scope, benchmark provenance, and remaining test gaps.
+
+Isolated PTY fault probes cover later-stage spawn failure, shutdown immediately
+before group release, failed job-mode restoration before resume, and a simulated
+missed cleanup deadline. A missed deadline remains a failure on repeated shutdown
+calls. Batch stress checks cover completed-job retention, descriptor counts, and
+reaping across background jobs and pipelines with synthetic lookup failures.
+
+A session actor owns a dedicated serial executor; one synchronous command driver
+mutates language state. An awaited async `defer` shields only bounded shutdown
+and terminal restoration. Cleanup yields between nonblocking reaping checks and
+shares the launch-abort state machine and its original deadlines. Isolated tests
+cancel before and during cleanup, cancel a caller while its foreground job runs,
+reject a second evaluator during cleanup, and inject final terminal-restoration
+failure. Cleanup finishes before the caller receives its status, and restoration
+failure overrides a requested successful exit with status 1.
+
+Run `python3 Scripts/measure-swsh.py --output /tmp/swsh-measurements.json` for
+release measurements. It builds a separate instrumented executable for allocation
+counts and per-process peak RSS, keeping timing measurements uninstrumented.
+The [2 November language-growth baseline](Benchmarks/Swsh/baseline-2026-11-02.json)
+records 360 timing samples and allocation/RSS observations before the subsequent
+nested-cleanup and stop/resume hardening,
+including function calls, subshells, and command substitutions. Its hashes identify
+exactly what was measured; results are local observations, not regression thresholds.
+
+The [historical pre-review baseline](Benchmarks/Swsh/baseline-2026-11-01.json) contains raw samples,
+source/binary hashes, dependency revisions, and exact compiler/SDK/host metadata.
+On the recorded Apple M5 Max with 128 GiB RAM, 30 warm-cache timing samples gave:
+
+| Workload | Median |
+| --- | ---: |
+| CLI startup and `:` exit | 4.38 ms |
+| Private builtin worker startup, prewritten payload | 3.94 ms |
+| Interactive first prompt, including PTY fixture setup | 9.41 ms |
+| 16 MiB binary stream through three external pipeline stages | 147.6 MiB/s |
+| 16 MiB stderr stream | 1,059.0 MiB/s |
+
+After subtracting the median empty invocation, the measured amortized cost was
+12.1 µs per parent builtin, 1.88 ms per builtin pipeline worker, and 3.30 ms per
+parent-redirect helper. The worker figure includes two-stage concurrency and is
+not an individual worker's startup latency. Instrumented runs observed a median
+1,265 allocations across all threads and 6.66 MiB peak RSS for an empty invocation;
+builtin workers observed 1,320 allocations and 6.52 MiB each. The report retains
+initial-thread counts separately. Counts exclude allocations before the measurement
+constructor and after its destructor, and RSS is
+per process rather than the concurrent process-tree total. The measurements are
+local observations, not regression thresholds or proof of an ownership-feature
+speedup.
+
+
 ## Embedding
 
 On macOS, `TerminalSession.start(_:)` can launch a PTY child. External
 transports feed program output through `receive(_:)`, send encoded input from
 `onWrite`, and forward resize events to the remote program. Connection setup,
 authentication and reconnection belong to the embedding app.
+
+For a local macOS view, call `TerminalView.start(_:)` with an explicit
+`SessionConfiguration` to preserve exact executable arguments, environment, and
+cwd while retaining the view's grid and display lifecycle. Its parameterless
+`start()` still uses the view configuration. `onTerminalEvent` forwards passive
+events on the main actor after built-in handling, alongside `onTitle` and
+`onExit`. Metadata can be coalesced or forged by terminal programs; it is not an
+authoritative command-completion API.
 
 `TerminalUIView(session:configuration:fontSize:)` hosts a session. An iOS app
 target can use `SwifttyMobileAppDelegate` and `SwifttyMobileSceneDelegate` for
@@ -753,6 +982,35 @@ is an executable path, not a shell command. The optional `theme`,
 `cursor_style_blink` fields support Settings edits. Unknown keys, invalid types,
 and invalid ranges are reported with the original file, line, and one-based
 UTF-8 byte column (tabs count as one). Duplicate keys are rejected.
+
+Select a shell for new sessions in **Settings › Shell** or set
+`terminal.preferred_shell` to `system`, `bash`, `zsh`, `swsh`, or `custom`.
+Omitting it preserves the existing command and `terminal.shell` behavior.
+Profiles retain their settings when you change the selection:
+
+```json
+"terminal": {
+  "preferred_shell": "swsh",
+  "shell_profiles": {
+    "bash": { "arguments": ["--login"] },
+    "zsh": { "arguments": ["-l"] },
+    "swsh": { "environment": { "EDITOR": "vim" } },
+    "custom": {
+      "executable": "/opt/homebrew/bin/fish",
+      "arguments": ["--login"],
+      "working_directory": "/tmp"
+    }
+  }
+}
+```
+
+Arguments are passed literally. Set login or interactive flags explicitly;
+the `system` profile retains the default login-shell policy. Profile environment
+values override the frontend snapshot; SwiftMux still supplies terminal identity
+variables. A selected profile applies to future workspaces, tabs, and splits;
+running sessions keep their launch settings. The app bundle includes and signs
+`swsh` alongside its other executables.
+
 
 The dependency-free `SwifttyConfig` library provides `ConfigDiscovery`,
 `ConfigLoader`, `JSONCSanitizer`, and mutable Codable models. `ConfigLoader.save`

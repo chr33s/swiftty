@@ -4,8 +4,9 @@ import Darwin
 /// A child process attached to a pseudo-terminal.
 ///
 /// Spawned with `posix_spawn`: `POSIX_SPAWN_SETSID` makes the child a
-/// session leader and opening the slave by path then makes it the
-/// controlling terminal, so no fork-time code is needed.
+/// session leader and opens the slave for standard I/O. On Darwin, the
+/// interactive shell may still need to claim that slave with TIOCSCTTY.
+/// The mux host instead uses its fresh-process launcher for explicit tty setup.
 ///
 /// Sendable: none: immutable after init. The owned master and optional drain
 /// slave descriptors stay open for the process object's lifetime and close in

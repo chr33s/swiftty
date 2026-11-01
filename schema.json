@@ -92,6 +92,204 @@
           "maximum": 9223372036854775807,
           "default": 10000,
           "description": "Maximum history rows; the existing byte budget also applies."
+        },
+        "preferred_shell": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "system",
+            "bash",
+            "zsh",
+            "swsh",
+            "custom",
+            null
+          ],
+          "default": null,
+          "description": "Shell for new sessions; null retains the existing command or terminal.shell route."
+        },
+        "shell_profiles": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "system": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "executable": false,
+                "arguments": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "default": [],
+                  "maxItems": 0
+                },
+                "environment": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[^=\\u0000]*$"
+                  },
+                  "additionalProperties": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  }
+                },
+                "working_directory": {
+                  "type": "string",
+                  "pattern": "^[^\\u0000]*$"
+                }
+              }
+            },
+            "bash": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "executable": {
+                  "type": "string",
+                  "pattern": "^[^\\u0000]*$",
+                  "minLength": 1
+                },
+                "arguments": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "default": []
+                },
+                "environment": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[^=\\u0000]*$"
+                  },
+                  "additionalProperties": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  }
+                },
+                "working_directory": {
+                  "type": "string",
+                  "pattern": "^[^\\u0000]*$"
+                }
+              }
+            },
+            "zsh": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "executable": {
+                  "type": "string",
+                  "pattern": "^[^\\u0000]*$",
+                  "minLength": 1
+                },
+                "arguments": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "default": []
+                },
+                "environment": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[^=\\u0000]*$"
+                  },
+                  "additionalProperties": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  }
+                },
+                "working_directory": {
+                  "type": "string",
+                  "pattern": "^[^\\u0000]*$"
+                }
+              }
+            },
+            "swsh": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "executable": {
+                  "type": "string",
+                  "pattern": "^[^\\u0000]*$",
+                  "minLength": 1
+                },
+                "arguments": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "default": []
+                },
+                "environment": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[^=\\u0000]*$"
+                  },
+                  "additionalProperties": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  }
+                },
+                "working_directory": {
+                  "type": "string",
+                  "pattern": "^[^\\u0000]*$"
+                }
+              }
+            },
+            "custom": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "executable": {
+                  "type": "string",
+                  "pattern": "^[^\\u0000]*$",
+                  "minLength": 1
+                },
+                "arguments": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "default": []
+                },
+                "environment": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[^=\\u0000]*$"
+                  },
+                  "additionalProperties": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  }
+                },
+                "working_directory": {
+                  "type": "string",
+                  "pattern": "^[^\\u0000]*$"
+                }
+              },
+              "required": [
+                "executable"
+              ]
+            }
+          },
+          "description": "Saved launch settings. Arguments are passed literally; login and interactive flags are explicit."
         }
       }
     },

@@ -15,7 +15,10 @@ package final class PTYProcessShutdown: @unchecked Sendable {
     label: "swiftty.pty-shutdown",
     qos: .utility,
   )
-  private let killAfter = DispatchTime.now() + .seconds(2)
+  /// Shells such as swsh own descendant cleanup with a five-second deadline.
+  /// Hosts must allow that window before forcing the outer process to exit.
+  package static let grace: DispatchTimeInterval = .seconds(5)
+  private let killAfter = DispatchTime.now() + PTYProcessShutdown.grace
   private var exitSource: DispatchSourceProcess?
   private var timer: DispatchSourceTimer?
   private var finished = false

@@ -59,7 +59,7 @@ rm -rf -- "${app:?}"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" \
   "$app/Contents/Library/LaunchAgents"
 
-for exe in swiftty swiftmux-agent swmux-launcher swmux; do
+for exe in swiftty swiftmux-agent swmux-launcher swmux swsh; do
   cp "$bin/$exe" "$app/Contents/MacOS/$exe"
 done
 for bundle in SwifttyCore Swiftty SwifttyJS MuxNavigation; do
@@ -135,7 +135,7 @@ EOF
 if [ "$identity" = "-" ]; then timestamp=--timestamp=none; else timestamp=--timestamp; fi
 
 # Sign nested code first, then the app (no --deep).
-for exe in swiftmux-agent swmux-launcher swmux; do
+for exe in swiftmux-agent swmux-launcher swmux swsh; do
   codesign --force --options runtime "$timestamp" --sign "$identity" \
     --identifier "$bundle_id.$exe" "$app/Contents/MacOS/$exe"
 done

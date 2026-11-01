@@ -249,7 +249,7 @@ struct WorkspaceUITests {
       case "tab": try await c.execute(.endTab(tab))
       default: try await c.send(.text("exit\r"), to: pane)
       }
-      // Two seconds is the escalation grace, not the reaping bound.
+      // Five seconds is the escalation grace, not the reaping bound.
       // Use the forced-termination fixture's bound and observe completion.
       let deadline = ContinuousClock.now + .seconds(8)
       var exited = false
@@ -263,7 +263,7 @@ struct WorkspaceUITests {
             exited = true
             if removal == "forced" {
               #expect(truncated)
-              #expect(ContinuousClock.now - endedAt >= .seconds(2))
+              #expect(ContinuousClock.now - endedAt >= .seconds(5))
             }
             break
           }

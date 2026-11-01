@@ -80,7 +80,7 @@ struct LocalPTYNaturalExitTests {
   private func cleanup(session: TerminalSession, leader: pid_t, child: pid_t) {
     // The session owns signaling and collection, including failed tests.
     session.stop()
-    let leaderDeadline = ContinuousClock.now + .seconds(3)
+    let leaderDeadline = ContinuousClock.now + .seconds(7)
     while !reaped(leader), ContinuousClock.now < leaderDeadline {
       usleep(10000)
     }
@@ -155,7 +155,8 @@ struct LocalPTYNaturalExitTests {
       String(decoding: output.withLock { $0 }, as: UTF8.self).contains("FINAL")
     )
     let observed = ContinuousClock.now
-    let deadline = observed + .seconds(3)
+    // The host gives a shell five seconds to clean up before escalation.
+    let deadline = observed + .seconds(7)
     try await waitForRetirement(
       leader: leader,
       child: child,
@@ -171,7 +172,7 @@ struct LocalPTYNaturalExitTests {
           + "errno \(observation.error), reported PID \(observation.reportedPID)"
       ),
     )
-    #expect(ContinuousClock.now - started >= .seconds(2))
+    #expect(ContinuousClock.now - started >= .seconds(5))
     #expect(exits.withLock { $0 }.count == 1)
   }
 }

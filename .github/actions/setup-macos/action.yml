@@ -12,9 +12,9 @@ runs:
       run: |
         test "$(uname -m)" = arm64
         sw_vers -productVersion | grep -E '^27\.'
-        xcodebuild -version
-        swift --version | head -1 | grep -E 'Swift version 6\.4'
-        xcrun --sdk macosx --show-sdk-version | grep -E '^27\.'
+        test "$(xcodebuild -version)" = $'Xcode 27.2\nBuild version 27B52'
+        swift --version | head -1 | grep -F 'Apple Swift version 6.4.2 (swiftlang-6.4.2.1.9 clang-2100.4.1.1)'
+        test "$(xcrun --sdk macosx --show-sdk-version)" = 27.2
     - name: Install test tools
       if: inputs.test-tools == 'true'
       shell: bash
