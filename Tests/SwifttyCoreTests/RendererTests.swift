@@ -536,14 +536,14 @@ struct RendererTests {
   @Test(
     .enabled(if: device != nil),
     arguments: [
-      "adjust-cell-width = 1e308", "adjust-cell-height = 1e308",
-      "adjust-cell-height = 100000",
+      [("adjust-cell-width", "1e308")], [("adjust-cell-height", "1e308")],
+      [("adjust-cell-height", "100000")],
     ]
   )
   func `oversized cells cannot overflow glyph atlas coordinates`(
-    _ setting: String
+    _ setting: [(String, String)]
   ) throws {
-    let configuration = Configuration.parse(setting)
+    let configuration = Configuration.configured(setting)
     #expect(configuration.diagnostics.isEmpty)
     let manager = CoreTextFontManager()
     let font = manager.resolve(configuration.fontDescriptor(scale: 2))
@@ -556,7 +556,9 @@ struct RendererTests {
       font: font,
       manager: manager
     )
-    #expect((letter.size.x > 0) == setting.contains("width"))
+    #expect(
+      (letter.size.x > 0) == setting.contains(where: { $0.0.contains("width") })
+    )
   }
 
   @Test(.enabled(if: device != nil))

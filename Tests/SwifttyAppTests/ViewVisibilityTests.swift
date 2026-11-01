@@ -1,3 +1,4 @@
+import TestSupport
 import AppKit
 import MetalKit
 import SwiftMuxExport
@@ -97,7 +98,7 @@ struct ViewVisibilityTests {
     )
     window.isReleasedWhenClosed = false
     let view = try TerminalView(
-      configuration: Configuration.parse("command=/bin/sleep 30")
+      configuration: Configuration.configured([("command", "/bin/sleep 30")])
     )
     defer {
       view.stop();

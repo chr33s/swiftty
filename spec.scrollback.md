@@ -380,36 +380,34 @@ On memory pressure, first release reclaimable free backing and idle workspace. D
 
 ## 10. Configuration and compatibility
 
-Add canonical Ghostty-style names while preserving Swiftty's finite retention semantics.
+File configuration follows the JSONC contract in [spec.md](spec.md#configuration).
+`terminal.scrollback_limit` caps physical history rows (default 10,000 in the
+JSONC model). The internal history-cell byte budget and compression policy
+remain available to programmatic embedders and the SwiftMux service.
 
-| Setting | Proposed behavior |
-| --- | --- |
-| `scrollback-limit` | Existing byte-limit alias; remains accepted |
-| `scrollback-limit-bytes` | New canonical alias for the same logical history-cell budget |
-| `scrollback-limit-lines` | New finite physical-row limit; default 100,000 for direct sessions |
-| `scrollback-compression` | New boolean; default requested `true`, effective only on validated supported backends |
-
-Example:
-
-```ini
-scrollback-limit-bytes = 10000000
-scrollback-limit-lines = 100000
-scrollback-compression = true
+```jsonc
+{
+  "terminal": { "scrollback_limit": 100000, },
+}
 ```
 
 Rules:
 
-- Old and new byte keys write the same field in normal configuration/include order; the last valid assignment wins. Do not invent a separate priority rule.
+- Ghostty-style assignments, aliases, repeated keys and includes are not file
+  configuration syntax. Programmatic option setters can still address the
+  underlying byte, row and compression fields.
 - Zero bytes or zero lines disables history. Preserve programmatic nonpositive-limit behavior.
-- Negative config-file numbers, overflow, and `unlimited` are diagnosed and ignored under the existing invalid-value policy; they must not become zero silently.
-- Empty-value reset follows the existing configuration mechanism for the canonical field.
+- Negative JSONC limits, overflow and `unlimited` are validation errors; an
+  invalid document reports diagnostics and uses defaults, never silent zero.
+- Omitting `terminal.scrollback_limit` restores the JSONC default.
 - Keep the public `Configuration.scrollbackLimit` property compatible; add row/compression fields and map them into `SessionConfiguration`.
 - Retention limits apply when a terminal/pane is created; resize recomputes physical capacity from the same configured budgets. This feature does not introduce retroactive resizing of existing retention.
 - A live compression toggle may stop or resume maintenance. Turning it off does not eagerly decode existing history; those pages remain readable and restore on demand.
 - SwiftMux service limits and pane admission stay authoritative. Add compression policy through local `MuxServiceConfiguration` and `PaneRuntime`, rather than changing `MuxLimits` or SMX wire messages.
 - Presentation-only sessions force history off and cannot arm maintenance.
 
-The new aliases and boolean do not exist in the inspected config parser. They are proposed additions, not existing compatibility. [R11] [R12] [R25]
+The historical parser references describe the former line-oriented format;
+current file loading uses JSONC. [R11] [R12] [R25]
 
 ## 11. Accounting, failures, and invariants
 

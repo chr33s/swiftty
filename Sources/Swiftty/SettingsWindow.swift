@@ -9,7 +9,7 @@ import SwifttyCore
 /// `ConfigurationEditor`, then the app reloads the file, so the window and
 /// the file share one typed model and one precedence. Everything else is
 /// edited in the file (Edit Configuration File…). JSONC saves canonical JSON;
-/// legacy files retain comments and unrelated lines.
+/// comments and formatting are replaced.
 @MainActor
 @Observable
 final class SettingsModel {
@@ -65,8 +65,6 @@ final class SettingsModel {
   private(set) var themes: [String]
   /// Why the last change was not saved.
   private(set) var error: String?
-  /// Keys whose saved value an included file overrides.
-  private(set) var overridden: Set<String> = []
   @ObservationIgnored
   private let reload: @MainActor () -> Configuration
 
@@ -126,33 +124,8 @@ final class SettingsModel {
       return
     }
     configuration = reload()
-    // Parsed as the loader reads a line (quotes removed), alone.
-    let expected = Configuration.parse("\(key) = \(value ?? "")")
-    if value != nil,
-      Self.summary(of: key, in: expected)
-        != Self.summary(of: key, in: configuration)
-    {
-      overridden.insert(key)
-    } else {
-      overridden.remove(key)
-    }
   }
 
-  /// Comparable text for an editable key's effective value.
-  static func summary(of key: String, in c: Configuration) -> String {
-    switch key {
-    case "font-family": c.fontFamily
-    case "font-size": "\(c.fontSize)"
-    case "theme": c.theme?.configurationValue ?? ""
-    case "background-opacity": "\(c.backgroundOpacity)"
-    case "cursor-style":
-      "\(String(describing: c.cursorStyle)) \(c.cursorHollow)"
-    case "cursor-style-blink": String(describing: c.cursorStyleBlink)
-    case "copy-on-select": "\(c.copyOnSelect)"
-    case "mouse-hide-while-typing": "\(c.mouseHideWhileTyping)"
-    default: ""
-    }
-  }
 }
 
 // MARK: - Window
@@ -213,7 +186,6 @@ struct SettingsView: View {
           in: Configuration.fontSizeRange,
           step: 1
         ) { LabeledContent("Size", value: "\(Self.number(model.fontSize)) pt") }
-        footnote("font-family", "font-size")
       }
       Section("Appearance") {
         Picker(
@@ -238,7 +210,6 @@ struct SettingsView: View {
           .onChange(of: opacity) { if !draggingOpacity { commitOpacity() } }
           .accessibilityValue("\(Int((opacity * 100).rounded())) percent")
         }
-        footnote("theme", "background-opacity")
       }
       Section("Cursor") {
         Picker(
@@ -255,7 +226,6 @@ struct SettingsView: View {
             set: { model.set("cursor-style-blink", $0.value) }
           )
         ) { ForEach(SettingsModel.Blink.allCases) { Text($0.title).tag($0) } }
-        footnote("cursor-style", "cursor-style-blink")
       }
       Section("Mouse and Selection") {
         Toggle(
@@ -272,7 +242,6 @@ struct SettingsView: View {
             set: { model.set("mouse-hide-while-typing", $0 ? "true" : "false") }
           )
         )
-        footnote("copy-on-select", "mouse-hide-while-typing")
       }
       Section {
         LabeledContent("File", value: model.url.path(percentEncoded: false))
@@ -293,7 +262,7 @@ struct SettingsView: View {
         Text("Configuration")
       } footer: {
         Text(
-          "Key bindings and every other option are set in the configuration file (Ghostty syntax). Settings changes rewrite only their own lines."
+          "Key bindings and other options are set in the JSONC configuration file. Settings saves replace comments and formatting with canonical JSON."
         )
       }
     }
@@ -311,17 +280,6 @@ struct SettingsView: View {
   private func sync() {
     family = model.fontFamily
     opacity = model.backgroundOpacity
-  }
-
-  @ViewBuilder
-  private func footnote(_ keys: String...) -> some View {
-    if keys.contains(where: model.overridden.contains) {
-      Label(
-        "An included configuration file overrides this setting.",
-        systemImage: "info.circle"
-      )
-      .font(.footnote).foregroundStyle(.secondary)
-    }
   }
 
   private func nonEmpty(_ value: String) -> String? {

@@ -9,16 +9,17 @@ import UIKit
 ///                       NSStringFromClass(SwifttyMobileAppDelegate.self))
 @MainActor
 open class SwifttyMobileAppDelegate: UIResponder, UIApplicationDelegate {
-  /// `Documents/config` in Ghostty syntax (shared through the Files
+  /// `Documents/config.jsonc` in JSONC (shared through the Files
   /// app), with themes from `Documents/themes`; the defaults when absent.
   public static func loadConfiguration() -> Configuration {
     guard
       let documents = FileManager.default
         .urls(for: .documentDirectory, in: .userDomainMask).first
-    else { return Configuration() }
-    var configuration = Configuration.load(
-      from: documents.appendingPathComponent("config")
-    )
+    else { return Configuration.parse("{}") }
+    let file = documents.appendingPathComponent("config.jsonc")
+    var configuration =
+      FileManager.default.fileExists(atPath: file.path)
+      ? Configuration.load(from: file) : Configuration.parse("{}")
     configuration.themeDirectories.insert(
       documents.appendingPathComponent("themes"),
       at: 0

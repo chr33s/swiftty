@@ -299,7 +299,7 @@ extension RendererTests {
     "'liga' 2",
   ])
   func `font feature syntax reaches CoreText`(_ feature: String) throws {
-    let config = Configuration.parse("font-feature = \(feature)")
+    let config = Configuration.configured([("font-feature", "\(feature)")])
     let font = ResolvedFont(descriptor: config.fontDescriptor(scale: 2))
     #expect(font.shapes)
     let settings = try #require(
@@ -320,9 +320,10 @@ extension RendererTests {
   @Test(arguments: ["-liga", "liga off", "liga=0", "\"liga\" off"])
   func `later font features override earlier settings`(_ feature: String) throws
   {
-    let config = Configuration.parse(
-      "font-family = \(try Self.systemFontFamily())\nfont-feature = liga\nfont-feature = \(feature)"
-    )
+    let config = Configuration.configured([
+      ("font-family", "\(try Self.systemFontFamily())"),
+      ("font-feature", "liga"), ("font-feature", "\(feature)"),
+    ])
     let font = ResolvedFont(descriptor: config.fontDescriptor(scale: 2))
     #expect(!font.shapes)
     let settings = try #require(
@@ -336,11 +337,12 @@ extension RendererTests {
     #expect(values.first?[kCTFontOpenTypeFeatureValue as String] as? Int == 0)
   }
 
-  @Test(arguments: ["\"ss01\", \"cv01\"", "'ss01', 'cv01'", "\"ss01, cv01\""])
-  func `quoted feature lists preserve each tag`(_ list: String) throws {
-    let config = Configuration.parse(
-      "font-family = \(try Self.systemFontFamily())\nfont-feature = \(list)"
-    )
+  @Test(arguments: ["\"ss01\", \"cv01\"", "'ss01', 'cv01'", "ss01, cv01"])
+  func `feature lists preserve each tag`(_ list: String) throws {
+    let config = Configuration.configured([
+      ("font-family", "\(try Self.systemFontFamily())"),
+      ("font-feature", "\(list)"),
+    ])
     let font = ResolvedFont(descriptor: config.fontDescriptor(scale: 2))
     let settings = try #require(
       CTFontCopyAttribute(font.faces[0], kCTFontFeatureSettingsAttribute)
@@ -387,9 +389,10 @@ extension RendererTests {
 
   @Test
   func `named font styles select faces and disabled styles use regular`() {
-    let config = Configuration.parse(
-      "font-family = Menlo\nfont-style = Bold\nfont-style-italic = false"
-    )
+    let config = Configuration.configured([
+      ("font-family", "Menlo"), ("font-style", "Bold"),
+      ("font-style-italic", "false"),
+    ])
     let font = ResolvedFont(descriptor: config.fontDescriptor(scale: 2))
     #expect(
       CTFontCopyName(font.faces[0], kCTFontStyleNameKey) as String? == "Bold"
@@ -399,9 +402,9 @@ extension RendererTests {
 
   @Test
   func `disabling synthesis preserves native font styles`() {
-    let config = Configuration.parse(
-      "font-family = Menlo\nfont-synthetic-style = false"
-    )
+    let config = Configuration.configured([
+      ("font-family", "Menlo"), ("font-synthetic-style", "false"),
+    ])
     let font = ResolvedFont(descriptor: config.fontDescriptor(scale: 2))
     #expect(font.emboldened == [false, false, false, false])
     #expect(CTFontGetSymbolicTraits(font.faces[1]).contains(.traitBold))
@@ -416,9 +419,9 @@ extension RendererTests {
   func `synthetic bold italic is independent of the other styles`(
     _ setting: String
   ) {
-    let config = Configuration.parse(
-      "font-family = Monaco\nfont-synthetic-style = \(setting)"
-    )
+    let config = Configuration.configured([
+      ("font-family", "Monaco"), ("font-synthetic-style", "\(setting)"),
+    ])
     let font = ResolvedFont(descriptor: config.fontDescriptor(scale: 2))
     let regular = font.faces[0]
     for traits: CTFontSymbolicTraits in [

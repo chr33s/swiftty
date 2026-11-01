@@ -335,11 +335,11 @@ extension ViewBehaviorTests {
       view.hoveredLink?.url == "https://a.test"
         && view.renderer.options.underlinedSpan != nil
     )
-    view.apply(Configuration.parse("link-url=false"))
+    view.apply(Configuration.configured([("link-url", "false")]))
     #expect(
       view.hoveredLink == nil && view.renderer.options.underlinedSpan == nil
     )
-    view.apply(Configuration.parse("link-url=true"))
+    view.apply(Configuration.configured([("link-url", "true")]))
     #expect(view.hoveredLink?.url == "https://a.test")
     view.mouseExited(with: event)
     #expect(
@@ -657,9 +657,9 @@ extension ViewBehaviorTests {
     throws
   {
     let view = try makeView(
-      configuration: Configuration.parse(
-        "adjust-cell-height = 1e308\nwindow-padding-x = 1e308"
-      )
+      configuration: Configuration.configured([
+        ("adjust-cell-height", "1e308"), ("window-padding-x", "1e308"),
+      ])
     )
     let preferred = view.preferredSize(columns: 100, rows: 30)
     #expect(preferred.width.isFinite && preferred.height.isFinite)

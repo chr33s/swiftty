@@ -1,3 +1,4 @@
+import TestSupport
 @testable import SwifttyCore
 @testable import SwifttyEngine
 import Testing
@@ -89,11 +90,11 @@ struct RectangleChecksumTests {
   @Test
   func `rectangle-checksum-report enables replies for sessions`() {
     #expect(!Configuration().sessionConfiguration().rectangleChecksumsEnabled)
-    let on = Configuration.parse("rectangle-checksum-report = true")
+    let on = Configuration.configured([("rectangle-checksum-report", "true")])
     #expect(on.sessionConfiguration().rectangleChecksumsEnabled)
-    let reset = Configuration.parse(
-      "rectangle-checksum-report = true\nrectangle-checksum-report ="
-    )
+    let reset = Configuration.configured([
+      ("rectangle-checksum-report", "true"), ("rectangle-checksum-report", ""),
+    ])
     #expect(!reset.rectangleChecksumReport)
   }
 

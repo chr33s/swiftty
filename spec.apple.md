@@ -59,13 +59,10 @@ no silent overwriting of unrelated advanced options.
   rather than silently overwritten. Writes resolve symlink targets so linked
   dotfiles keep their links. Edit Configuration File creates a commented
   template on demand when no file exists.
-- Legacy Ghostty edits validate with `Configuration.set` and replace only the
-  edited key's lines in the root file. Comments, includes, key bindings and
-  unknown keys remain byte for byte. Writes are atomic through symlink targets.
-  The window shows the reloaded `Configuration`; when an included file overrides
-  a saved value the window says so.
 - Common scalar settings are editable (`ConfigurationEditor.editableKeys`);
-  legacy repeatable keys (`keybind`, `palette`, `config-file`, …) stay in the file.
+  keybindings and other JSONC fields stay in the file. Legacy line-oriented
+  configuration and includes are not supported. Settings values are literal
+  control values, not quoted configuration expressions.
 - The direct clients keep their existing native `SettingsView`
   (`Apps/Shared/SettingsView.swift`).
 - Tests: `ConfigurationEditorTests`, `SettingsModelTests`,

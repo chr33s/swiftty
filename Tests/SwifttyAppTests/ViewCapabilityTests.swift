@@ -135,7 +135,9 @@ final class ViewCapabilityTests {
   {
     _ = NSApplication.shared
     let view = try TerminalView(
-      configuration: Configuration.parse("keybind=ctrl+a=increase_font_size:1")
+      configuration: Configuration.configured([
+        ("keybind", "ctrl+a=increase_font_size:1")
+      ])
     )
     view.session.feed(Array("selected".utf8))
     view.selectAll(nil)
@@ -157,7 +159,8 @@ final class ViewCapabilityTests {
   ) throws {
     _ = NSApplication.shared
     let view = try makeView(
-      configuration: Configuration.parse("cursor-click-to-move=true")
+      configuration: Configuration.configured([("cursor-click-to-move", "true")]
+      )
     )
     view.setFrameSize(NSSize(width: 400, height: 200))
     let program =

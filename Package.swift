@@ -161,7 +161,7 @@ let package = Package(
     ),
     .target(
       name: "TestSupport",
-      dependencies: ["SessionCore"],
+      dependencies: ["SessionCore", "SwifttyCore"],
       path: "Tests/Support"
     ),
     .executableTarget(

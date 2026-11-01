@@ -727,9 +727,9 @@ trailing commas. File discovery checks, in order:
 2. `$XDG_CONFIG_HOME/swiftty/config.jsonc`, or `~/.config/swiftty/config.jsonc`.
 3. `~/.swiftty.jsonc`, then `~/.config/swiftty/config.json`.
 
-The existing extensionless Ghostty configuration remains a final compatibility
-fallback. With no file, JSONC defaults apply. **Edit Configuration File** creates
-a commented template on demand. Reload Configuration applies edits; Settings
+Ghostty-style files and includes are no longer supported. Existing extensionless
+configuration files are ignored by discovery. With no JSONC file, defaults apply.
+**Edit Configuration File** creates a commented template on demand. Reload Configuration applies edits; Settings
 writes to the selected file, including an explicit `--config` path.
 
 ```jsonc
@@ -761,89 +761,38 @@ Settings or the library replaces comments with canonical JSON; symlinked
 configuration files keep their links. `schema.json` provides editor completion;
 the `$schema` URL resolves from the repository's main branch once published.
 
-Ghostty-style `key = value` files support whole-line `#` comments, repeatable
-keys, empty-value resets and `config-file` includes. Unknown keys are reported
-and ignored. The legacy macOS fallback is `$XDG_CONFIG_HOME/swiftty/config` (default
-`~/.config/swiftty/config`). Settings (Cmd-,) edits the common options in
-place, rewriting only their own lines, and lists configuration problems;
-Edit Configuration File (Opt-Cmd-,) opens the file and Shift-Cmd-, reloads it.
-Reduce Motion, Reduce Transparency and Increase Contrast adjust how it is
-drawn without changing the file ([spec.apple.md](spec.apple.md)).
-iOS reads `Documents/config`.
+Settings (Cmd-,) edits the selected JSONC file and lists configuration problems.
+Edit Configuration File (Opt-Cmd-,) opens it; Shift-Cmd-, reloads it. iOS reads
+`Documents/config.jsonc`. Reduce Motion, Reduce Transparency and Increase
+Contrast adjust presentation without changing the file ([spec.apple.md](spec.apple.md)).
 
-Legacy terminal windows use Liquid Glass by default, with `background-opacity = 0.5`
-and `background-blur = true`. Set `background-opacity = 1` for an opaque
-terminal or `background-blur = false` for translucency without glass.
+Themes use JSONC too. Place a file such as `Night.jsonc` in
+`~/.config/swiftty/themes` and set `"theme": "Night.jsonc"`. Built-in themes are
+`Swiftty Dark` and `Swiftty Light`; omitting `theme` follows the system appearance.
+A theme can also be selected by an explicit path. The Ghostty themes directory
+is no longer searched.
 
-```text
-font-family = JetBrains Mono
-font-size = 14
-font-feature = calt
-font-variation = wght=500
-font-synthetic-style = no-bold
-adjust-cell-height = 10%
-theme = light:Swiftty Light,dark:Swiftty Dark
-background = #1e1e2e
-palette = 1=#f38ba8
-background-opacity = 0.9
-background-blur = true
-minimum-contrast = 3
-cursor-style = bar
-cursor-style-blink = false
-cursor-click-to-move = true
-rectangle-checksum-report = false
-copy-on-select = true
-link-url = true
-mouse-hide-while-typing = true
-window-padding-x = 6
-scrollback-limit-bytes = 20000000
-scrollback-limit-lines = 100000
-scrollback-compression = true
-command = /opt/homebrew/bin/fish
-keybind = super+shift+k=clear_screen
-keybind = ctrl+shift+arrow_up=jump_to_prompt:-1
+```jsonc
+{
+  "background": "#0C1021",
+  "foreground": "#F8F8F8",
+  "cursor": "#FFFFFF",
+  "cursor_text": "#0C1021",
+  "selection_background": "#253B76",
+  "palette": { "1": "#BF392A", "2": "#61CE3C", },
+}
 ```
 
-`scrollback-limit-bytes` (alias `scrollback-limit`; the last assignment wins)
-budgets uncompressed history cells per terminal (default 10,000,000);
-`scrollback-limit-lines` caps physical history rows (default 100,000). Zero
-disables history; negative, overflowing and `unlimited` values are rejected.
-`scrollback-compression` (default `true`) compresses idle history where
-supported; turning it off stops maintenance without decoding existing history.
-Limits apply when a terminal is created.
+Theme files must be regular UTF-8 files of at most 64 KiB; configuration files
+are limited to 1 MiB. Invalid themes fall through to the next lookup directory
+or built-in theme. Explicit unavailable themes use the standard palette.
+Configuration files are complete documents: there are no includes, repeated
+assignment keys, or `key = value` parsing. Invalid files report diagnostics and
+Settings will not overwrite them. Existing legacy files are left on disk;
+convert their supported settings to the JSONC model before using them.
 
-Style-specific font families use `-bold`, `-italic` and `-bold-italic` suffixes.
-`font-style` (and the same suffixes) selects a named face such as `Retina`;
-`false` uses the regular face for that style, and a name the family lacks is
-reported and falls back to the default face. `macos-icon` is accepted so a
-shared Ghostty config loads, but Swiftty has a single icon.
-Cell adjustments accept points or percentages. Foreground, cursor and selection
-colors can be configured separately. Themes are searched in
-`~/.config/swiftty/themes`, `~/.config/ghostty/themes`, then the built-in
-`Swiftty Dark` and `Swiftty Light` themes (Blackboard dark and light). Without
-`theme`, the palette follows the appearance as
-`light:Swiftty Light,dark:Swiftty Dark`.
-
-Includes load in declaration order and override earlier settings; nested includes
-join the end of the queue. Each file loads once. `config-file =` clears pending
-includes. Relative paths resolve against the declaring file; `?path` permits a
-missing include, while `"?path"` names a literal leading question mark.
-Theme files must be regular UTF-8 files of at most 64 KiB. Configuration files
-are limited to 1 MiB each and a shared 4 MiB read allowance across at most 128
-file attempts, including missing, repeated and invalid files. Size checks may
-read one extra byte per file to detect growth. Clearing pending includes keeps
-the work already charged. Rejected files leave earlier settings applied and
-report diagnostics; an optional include suppresses only missing-file errors.
-An unavailable theme uses the next lookup directory or built-in fallback;
-an unavailable explicit path uses the default palette plus configured colors.
-`palette =` clears indexed overrides and restores theme colors.
-
-`command` uses shell expansion, including quotes, variables and globs; `shell:`
-selects it explicitly. `direct:` splits arguments on spaces without expansion
-or quote processing. Programmatic `SessionConfiguration(command: [...])` passes
-arguments directly. `working-directory` accepts a path, `home` or `inherit`.
-Desktop launches default to the account shell and home directory; command-line
-launches inherit the directory and prefer a nonempty `SHELL`.
+Programmatic embedders can still set renderer/session properties directly,
+including font features, palette overrides, shader paths and command arguments.
 
 Keybinding actions include clipboard operations, font sizing, selection, scrolling,
 prompt jumps, search, clear/reset, `text:…`, `csi:…`, `esc:…`, `ignore` and `unbind`;

@@ -13,9 +13,9 @@ struct IntegrationTests {
     _ directory: String
   ) throws {
     let config =
-      Configuration.parse(
-        "command=direct:/bin/pwd\nworking-directory=\(directory)"
-      )
+      Configuration.configured([
+        ("command", "direct:/bin/pwd"), ("working-directory", "\(directory)"),
+      ])
       .sessionConfiguration()
     let expected = URL(
       fileURLWithPath: config.workingDirectory
@@ -51,9 +51,9 @@ struct IntegrationTests {
       direct ? "$SWIFTTY_REVIEW_VALUE" : "\"$SWIFTTY_REVIEW_VALUE\""
     let format = direct ? "<%s>" : "'<%s>'"
     let config =
-      Configuration.parse(
-        "command=\(prefix)/usr/bin/printf \(format) \(variable) *.review"
-      )
+      Configuration.configured([
+        ("command", "\(prefix)/usr/bin/printf \(format) \(variable) *.review")
+      ])
       .sessionConfiguration()
     let args = try #require(config.command)
     let harness = try Harness(

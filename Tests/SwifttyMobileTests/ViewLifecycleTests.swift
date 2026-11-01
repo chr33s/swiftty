@@ -73,7 +73,8 @@ struct ViewLifecycleTests {
     for change in ["configuration", "zoom", "layout"] {
       proposals.withLock { $0.removeAll() }
       switch change {
-      case "configuration": view.apply(Configuration.parse("font-size=18"))
+      case "configuration":
+        view.apply(Configuration.configured([("font-size", "18")]))
       case "zoom": try #require(view.perform(.increaseFontSize(4)))
       default:
         view.frame.size = CGSize(width: 640, height: 360)
@@ -350,7 +351,7 @@ struct ViewLifecycleTests {
     let session = TerminalSession(columns: 2, rows: 1)
     let view = try TerminalUIView(
       session: session,
-      configuration: Configuration.parse("background-opacity=0.5")
+      configuration: Configuration.configured([("background-opacity", "0.5")])
     )
     session.feed(Array("\u{1B}[?25l ".utf8))
     let cw = Int(view.renderer.cellSize.width)
@@ -406,7 +407,7 @@ struct ViewLifecycleTests {
     )
     #expect(view.fontSize == expected)
     #expect(view.renderer.font.descriptor.size == expected)
-    view.apply(Configuration.parse("font-size=20"))
+    view.apply(Configuration.configured([("font-size", "20")]))
     #expect(
       view.fontSize == expected
         && view.renderer.font.descriptor.size == expected
@@ -456,7 +457,7 @@ struct ViewLifecycleTests {
       view.fontSize == CGFloat(expected)
         && view.renderer.font.descriptor.size == CGFloat(expected)
     )
-    view.apply(Configuration.parse("font-size=20"))
+    view.apply(Configuration.configured([("font-size", "20")]))
     #expect(view.fontSize == 20 && view.renderer.font.descriptor.size == 20)
     view.apply(configuration)
     #expect(
@@ -469,7 +470,7 @@ struct ViewLifecycleTests {
   func `pinch zoom applies the first and final scale`() throws {
     let view = try TerminalUIView(
       session: TerminalSession(columns: 10, rows: 3),
-      configuration: Configuration.parse("font-size=20"),
+      configuration: Configuration.configured([("font-size", "20")]),
     )
     let pinch = ReviewPinchGesture()
     pinch.state = .began
@@ -494,7 +495,7 @@ struct ViewLifecycleTests {
   {
     let view = try TerminalUIView(
       session: TerminalSession(columns: 10, rows: 3),
-      configuration: Configuration.parse("font-size=\(size)"),
+      configuration: Configuration.configured([("font-size", "\(size)")]),
     )
     #expect(view.perform(.increaseFontSize(1)))
     #expect(view.fontSize == CGFloat(min(size + 1, 200)))
@@ -541,17 +542,23 @@ struct ViewLifecycleTests {
     view.applyColorScheme()
     session.feed(Array("\u{1B}]10;#123456\u{7}\u{1B}]4;1;#ABCDEF\u{7}".utf8))
     #expect(session.withState { $0.palette.foreground } == 0x123456)
-    view.apply(Configuration.parse("font-size=18"))
+    view.apply(Configuration.configured([("font-size", "18")]))
     #expect(session.withState { $0.palette.foreground } == 0x123456)
     #expect(session.withState { $0.palette.colors[1] } == 0xABCDEF)
     view.apply(
-      Configuration.parse("font-size=18\nforeground=#654321\npalette=1=#FEDCBA")
+      Configuration.configured([
+        ("font-size", "18"), ("foreground", "#654321"),
+        ("palette", "1=#FEDCBA"),
+      ])
     )
     #expect(session.withState { $0.palette.foreground } == 0x654321)
     #expect(session.withState { $0.palette.colors[1] } == 0xFEDCBA)
     session.feed(Array("\u{1B}]10;#123456\u{7}".utf8))
     view.apply(
-      Configuration.parse("font-size=20\nforeground=#654321\npalette=1=#FEDCBA")
+      Configuration.configured([
+        ("font-size", "20"), ("foreground", "#654321"),
+        ("palette", "1=#FEDCBA"),
+      ])
     )
     #expect(session.withState { $0.palette.foreground } == 0x123456)
   }
@@ -563,7 +570,7 @@ struct ViewLifecycleTests {
   {
     let session = TerminalSession(columns: 10, rows: 3)
     let view = try TerminalUIView(session: session)
-    view.apply(Configuration.parse("theme=Swiftty Dark"))
+    view.apply(Configuration.configured([("theme", "Swiftty Dark")]))
     view.traitOverrides.userInterfaceStyle = .dark
     view.updateTraitsIfNeeded()
     #expect(view.traitCollection.userInterfaceStyle == .dark)
@@ -580,9 +587,9 @@ struct ViewLifecycleTests {
       TestFixture(writes.withLock { $0 })
         == TestFixture([Array("\u{1B}[?997;2n".utf8)])
     )
-    let adaptive = Configuration.parse(
-      "theme=light:Swiftty Light,dark:Swiftty Dark"
-    )
+    let adaptive = Configuration.configured([
+      ("theme", "light:Swiftty Light,dark:Swiftty Dark")
+    ])
     view.apply(adaptive)
     session.feed(Array("\u{1B}]10;#123456\u{7}".utf8))
     writes.withLock { $0.removeAll() }
@@ -599,9 +606,9 @@ struct ViewLifecycleTests {
   @Test(.enabled(if: hasMetal))
   func `extreme cell sizes and padding remain safe during layout`() throws {
     let session = TerminalSession(columns: 10, rows: 2)
-    let configuration = Configuration.parse(
-      "adjust-cell-height = 1e308\nwindow-padding-x = 1e308"
-    )
+    let configuration = Configuration.configured([
+      ("adjust-cell-height", "1e308"), ("window-padding-x", "1e308"),
+    ])
     let view = try TerminalUIView(
       session: session,
       configuration: configuration

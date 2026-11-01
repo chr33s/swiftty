@@ -2,140 +2,84 @@ import Foundation
 @testable import SwifttyCore
 import Testing
 
-/// spec.apple.md A01: the Settings window's in-place key edits.
+/// Settings edits are JSONC-only, including files without an extension.
 struct ConfigurationEditorTests {
   @Test
-  func `replaces the last line and drops earlier overridden ones`() throws {
-    let text = """
-      # mine
-      font-size = 12
-      keybind = super+k=clear_screen
-      font-size = 14
-      unknown-key = kept
-
-      """
+  func settingsPreserveOtherFieldsAndRestoreDefaults() throws {
+    let source =
+      ##"{/* comment */"font":{"size":12},"keybindings":[{"trigger":"cmd+k","action":"clear_screen"}],}"##
     let edited = try ConfigurationEditor.setting(
       "font-size",
       to: "16",
-      in: text
-    )
-    #expect(
-      edited == """
-        # mine
-        keybind = super+k=clear_screen
-        font-size = 16
-        unknown-key = kept
-
-        """
+      in: source
     )
     #expect(Configuration.parse(edited).fontSize == 16)
-  }
-
-  @Test
-  func `appends a missing key and removes one restored to its default`() throws
-  {
-    let appended = try ConfigurationEditor.setting(
-      "copy-on-select",
-      to: "true",
-      in: "# comment\n"
-    )
-    #expect(appended == "# comment\ncopy-on-select = true\n")
-    let removed = try ConfigurationEditor.setting(
-      "copy-on-select",
-      to: nil,
-      in: appended
-    )
-    #expect(removed == "# comment\n")
-  }
-
-  @Test
-  func `comments mentioning the key are not edited`() throws {
-    let edited = try ConfigurationEditor.setting(
-      "font-size",
-      to: "9",
-      in: "# font-size = 99\n"
-    )
-    #expect(edited == "# font-size = 99\nfont-size = 9\n")
-  }
-
-  @Test
-  func `line endings are kept`() throws {
-    let crlf = try ConfigurationEditor.setting(
-      "font-size",
-      to: "10",
-      in: "# a\r\nfont-size = 12\r\nkeybind = super+k=clear_screen\r\n"
-    )
     #expect(
-      crlf == "# a\r\nfont-size = 10\r\nkeybind = super+k=clear_screen\r\n"
+      Configuration.parse(edited).keybindings.trigger(for: .clearScreen) != nil
     )
-    let appended = try ConfigurationEditor.setting(
-      "copy-on-select",
-      to: "true",
-      in: "# a\r\n"
-    )
-    #expect(appended == "# a\r\ncopy-on-select = true\r\n")
-  }
-
-  @Test
-  func `quoted values validate as the loader reads them`() throws {
-    let edited = try ConfigurationEditor.setting(
+    #expect(!edited.contains("/*"))
+    let reset = try ConfigurationEditor.setting(
       "font-size",
-      to: "\"14\"",
-      in: ""
+      to: nil,
+      in: edited
     )
-    #expect(Configuration.parse(edited).fontSize == 14)
+    #expect(Configuration.parse(reset).fontSize == 13)
   }
 
   @Test
-  func `invalid values and repeatable keys are refused`() {
-    #expect(throws: ConfigurationEditor.Failure.self) {
-      try ConfigurationEditor.setting("font-size", to: "huge", in: "")
+  func invalidInputAndLegacyDocumentsAreRejected() {
+    #expect(throws: (any Error).self) {
+      try ConfigurationEditor.setting("font-size", to: "huge", in: "{}")
     }
     #expect(throws: ConfigurationEditor.Failure.notEditable("keybind")) {
-      try ConfigurationEditor.setting("keybind", to: "a=ignore", in: "")
+      try ConfigurationEditor.setting("keybind", to: "a=ignore", in: "{}")
     }
-    #expect(throws: ConfigurationEditor.Failure.self) {
+    #expect(throws: (any Error).self) {
       try ConfigurationEditor.setting(
-        "font-family",
-        to: "A\nfont-size=1",
-        in: ""
+        "font-size",
+        to: "14",
+        in: "font-size = 12"
       )
+    }
+    #expect(throws: (any Error).self) {
+      try ConfigurationEditor.setting("font-size", to: "\"14\"", in: "{}")
     }
   }
 
   @Test
-  func `apply writes through a symlink and keeps it a link`() throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(
-      at: directory,
-      withIntermediateDirectories: true
+  func stringValuesAreLiteralJSONData() throws {
+    let name = "Quoted \"Font\"\nfont-size=1"
+    let edited = try ConfigurationEditor.setting(
+      "font-family",
+      to: name,
+      in: "{}"
     )
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let target = directory.appendingPathComponent("dotfile")
-    let link = directory.appendingPathComponent("config")
-    try "keybind = super+k=clear_screen\n"
-      .write(to: target, atomically: true, encoding: .utf8)
+    let config = Configuration.parse(edited)
+    #expect(config.fontFamily == name)
+    #expect(config.fontSize == 13)
+    #expect(config.diagnostics.isEmpty)
+  }
+
+  @Test
+  func applyCreatesMissingFilesAndKeepsSymlinks() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let target = root.appendingPathComponent("dotfile")
+    let link = root.appendingPathComponent("config.jsonc")
+    try ConfigurationEditor.apply([("theme", "Swiftty Dark")], to: target)
     try FileManager.default.createSymbolicLink(
       at: link,
       withDestinationURL: target
     )
     try ConfigurationEditor.apply([("font-size", "15")], to: link)
-    let attributes = try FileManager.default.attributesOfItem(atPath: link.path)
-    #expect(attributes[.type] as? FileAttributeType == .typeSymbolicLink)
-    let text = try String(contentsOf: target, encoding: .utf8)
-    #expect(text == "keybind = super+k=clear_screen\nfont-size = 15\n")
-  }
-
-  @Test
-  func `apply creates a missing file`() throws {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
-      UUID().uuidString
+    #expect(
+      try FileManager.default.attributesOfItem(atPath: link.path)[.type]
+        as? FileAttributeType == .typeSymbolicLink
     )
-    let url = root.appendingPathComponent("swiftty/config")
-    defer { try? FileManager.default.removeItem(at: root) }
-    try ConfigurationEditor.apply([("theme", "Swiftty Dark")], to: url)
-    #expect(Configuration.load(from: url).theme?.dark == "Swiftty Dark")
+    #expect(Configuration.load(from: target).fontSize == 15)
+    #expect(Configuration.load(from: target).theme?.dark == "Swiftty Dark")
   }
 
   @Test(arguments: [
@@ -143,7 +87,7 @@ struct ConfigurationEditorTests {
     ThemeSelection(light: "A", dark: "B"),
     ThemeSelection(light: "Odd, Name", dark: "Quote\"d\\x"),
   ])
-  func `theme values round-trip`(_ theme: ThemeSelection) {
+  func themeValuesRoundTrip(_ theme: ThemeSelection) {
     #expect(ThemeSelection(parsing: theme.configurationValue) == theme)
   }
 }

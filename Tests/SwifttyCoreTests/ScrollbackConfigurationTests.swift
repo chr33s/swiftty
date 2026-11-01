@@ -1,17 +1,14 @@
+import TestSupport
 @testable import SwifttyCore
 import Testing
 
 struct ScrollbackConfigurationTests {
   @Test
   func `scrollback aliases share one budget and validate finite values`() {
-    var config = Configuration.parse(
-      """
-      scrollback-limit = 2000000
-      scrollback-limit-bytes = 3000000
-      scrollback-limit-lines = 5000
-      scrollback-compression = false
-      """
-    )
+    var config = Configuration.configured([
+      ("scrollback-limit", "2000000"), ("scrollback-limit-bytes", "3000000"),
+      ("scrollback-limit-lines", "5000"), ("scrollback-compression", "false"),
+    ])
     #expect(config.diagnostics.isEmpty)
     #expect(config.scrollbackLimit == 3_000_000)
     #expect(config.scrollbackLimitLines == 5_000)

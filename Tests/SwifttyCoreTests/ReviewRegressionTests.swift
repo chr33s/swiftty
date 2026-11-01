@@ -175,45 +175,19 @@ struct ReviewRegressionTests {
 
   @Test
   func `empty booleans restore defaults`() {
-    var config = Configuration.parse(
-      "copy-on-select = true\nmouse-hide-while-typing = true\nlink-url = false\ncursor-click-to-move = false"
-    )
-    config.apply(
-      "copy-on-select =\nmouse-hide-while-typing =\nlink-url =\ncursor-click-to-move ="
-    )
+    var config = Configuration.configured([
+      ("copy-on-select", "true"), ("mouse-hide-while-typing", "true"),
+      ("link-url", "false"), ("cursor-click-to-move", "false"),
+    ])
+    config.configure([
+      ("copy-on-select", ""), ("mouse-hide-while-typing", ""), ("link-url", ""),
+      ("cursor-click-to-move", ""),
+    ])
     let defaults = Configuration()
     #expect(config.copyOnSelect == defaults.copyOnSelect)
     #expect(config.mouseHideWhileTyping == defaults.mouseHideWhileTyping)
     #expect(config.linkURL == defaults.linkURL)
     #expect(config.cursorClickToMove == defaults.cursorClickToMove)
-  }
-
-  @Test
-  func `tilde includes resolve from files`() throws {
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(
-      UUID().uuidString
-    )
-    try FileManager.default.createDirectory(
-      at: dir,
-      withIntermediateDirectories: true
-    )
-    defer { try? FileManager.default.removeItem(at: dir) }
-    let include = dir.appendingPathComponent("shared")
-    try "font-size = 19".write(to: include, atomically: true, encoding: .utf8)
-    let parents = String(
-      repeating: "/..",
-      count: FileManager.default.homeDirectoryForCurrentUser.pathComponents
-        .count - 1
-    )
-    let path = "~" + parents + include.path
-    for prefix in ["", "?"] {
-      let url = dir.appendingPathComponent("config")
-      try "config-file = \(prefix)\(path)"
-        .write(to: url, atomically: true, encoding: .utf8)
-      let config = Configuration.load(from: url)
-      #expect(config.diagnostics.isEmpty)
-      #expect(config.fontSize == 19)
-    }
   }
 
   @Test

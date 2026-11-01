@@ -3,7 +3,7 @@ import Foundation
 import SwifttyCore
 import Testing
 
-/// spec.apple.md A01: the Settings window edits the same file and model.
+/// Settings edits and reloads the selected JSONC document.
 @MainActor
 struct SettingsModelTests {
   private func temporaryConfig(_ text: String) throws -> URL {
@@ -13,17 +13,19 @@ struct SettingsModelTests {
       at: directory,
       withIntermediateDirectories: true
     )
-    let url = directory.appendingPathComponent("config")
+    let url = directory.appendingPathComponent("config.jsonc")
     try text.write(to: url, atomically: true, encoding: .utf8)
     return url
   }
 
   @Test
-  func `changes rewrite only their own key and reload`() throws {
+  func changesPreserveOtherSettingsAndReload() throws {
     let url = try temporaryConfig(
-      "keybind = super+k=clear_screen\nfont-size = 12\n"
+      ##"{"font":{"size":12},"keybindings":[{"trigger":"cmd+k","action":"clear_screen"}]}"##
     )
-    defer { try? FileManager.default.removeItem(at: url) }
+    defer {
+      try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+    }
     var reloads = 0
     let model = SettingsModel(url: url, configuration: .load(from: url)) {
       reloads += 1
@@ -34,54 +36,40 @@ struct SettingsModelTests {
     #expect(reloads == 2)
     #expect(model.fontSize == 18)
     #expect(model.cursor == .hollowBlock)
-    #expect(model.overridden.isEmpty)
     #expect(model.error == nil)
-    let text = try String(contentsOf: url, encoding: .utf8)
     #expect(
-      text
-        == "keybind = super+k=clear_screen\nfont-size = 18\ncursor-style = block_hollow\n"
+      Configuration.load(from: url).keybindings.trigger(for: .clearScreen)
+        != nil
     )
   }
 
   @Test
-  func `an include that overrides a saved value is reported`() throws {
-    let url = try temporaryConfig("config-file = extra\n")
-    defer { try? FileManager.default.removeItem(at: url) }
-    try "font-size = 30\n"
-      .write(
-        to: url.deletingLastPathComponent().appendingPathComponent("extra"),
-        atomically: true,
-        encoding: .utf8
-      )
+  func fontNamesAreLiteralValues() throws {
+    let url = try temporaryConfig("{}")
+    defer {
+      try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+    }
     let model = SettingsModel(url: url, configuration: .load(from: url)) {
       .load(from: url)
     }
-    model.set("font-size", "11")
-    #expect(model.overridden == ["font-size"])
-    #expect(model.fontSize == 30)
-  }
-
-  @Test
-  func `a quoted value is not reported as overridden`() throws {
-    let url = try temporaryConfig("")
-    defer { try? FileManager.default.removeItem(at: url) }
-    let model = SettingsModel(url: url, configuration: .load(from: url)) {
-      .load(from: url)
-    }
-    model.set("font-family", "\"Fira Code\"")
+    model.set("font-family", "Fira Code")
     #expect(model.fontFamily == "Fira Code")
-    #expect(model.overridden.isEmpty)
+    #expect(model.error == nil)
   }
 
   @Test
-  func `invalid values are refused without touching the file`() throws {
-    let url = try temporaryConfig("font-size = 12\n")
-    defer { try? FileManager.default.removeItem(at: url) }
-    let model = SettingsModel(url: url, configuration: .load(from: url)) {
-      .load(from: url)
+  func invalidValuesAndLegacyFilesAreNotOverwritten() throws {
+    for source in [##"{"font":{"size":12}}"##, "font-size = 12\n"] {
+      let url = try temporaryConfig(source)
+      defer {
+        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+      }
+      let model = SettingsModel(url: url, configuration: .load(from: url)) {
+        .load(from: url)
+      }
+      model.set("font-size", "0")
+      #expect(model.error != nil)
+      #expect(try String(contentsOf: url, encoding: .utf8) == source)
     }
-    model.set("font-size", "0")
-    #expect(model.error != nil)
-    #expect(try String(contentsOf: url, encoding: .utf8) == "font-size = 12\n")
   }
 }

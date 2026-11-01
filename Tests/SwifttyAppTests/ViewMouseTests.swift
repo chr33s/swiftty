@@ -15,7 +15,7 @@ extension ViewBehaviorTests {
     _ change: String
   ) throws {
     let view = try makeView(
-      configuration: Configuration.parse("scrollback-limit=0")
+      configuration: Configuration.configured([("scrollback-limit", "0")])
     )
     view.setFrameSize(NSSize(width: 320, height: 200))
     view.session.resize(columns: 10, rows: 2)

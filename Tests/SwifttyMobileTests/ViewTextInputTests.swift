@@ -71,7 +71,7 @@ struct ViewTextInputTests {
     #expect(
       view.renderer.options.preeditSelection == NSRange(location: 0, length: 1)
     )
-    view.apply(Configuration.parse("font-size=20"))
+    view.apply(Configuration.configured([("font-size", "20")]))
     #expect(
       view.renderer.options.preeditSelection == NSRange(location: 0, length: 1)
     )

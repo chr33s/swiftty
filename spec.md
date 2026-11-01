@@ -218,7 +218,7 @@ custom Metal post-processing shaders.
 | 1: macOS      | Shell PTY, typing/IME, colors, cursor, reflow, history, alternate screen, mouse, selection/copy, search, clipboard, common prompts and TUIs                                                                                                                                                            |
 | 2: iOS/iPadOS | Metal `UIView`, `UITextInput` for keyboard/dictation/IME, hardware key press/release, Esc/Ctrl/Alt/Tab/arrows/symbol accessory bar, touch selection/handles/edit menu, momentum scrolling, touch/pointer mouse reporting, multitasking resize/keyboard avoidance, lifecycle pausing, local demo source |
 | 3: protocols  | Semantic prompt marks/jumps/output selection/redraw/click-to-move, underline colors/styles, blinking text, title/SGR stacks, pointer shapes, color-scheme and resize reports, alternate-key encoding and hyperlinks                                                                                    |
-| 4: embedding  | Ghostty-style supported configuration/themes, keybinding actions, font/render options, find controls and VoiceOver on both frontends                                                                                                                                                                   |
+| 4: embedding  | JSONC configuration/themes, keybinding actions, font/render options, find controls and VoiceOver on both frontends                                                                                                                                                                   |
 
 Milestones require behavioral tests and the performance gates below. Network
 clients and frontend window management remain embedder responsibilities.
@@ -268,8 +268,9 @@ Resolve configuration in this order:
    an error, not permission to select a fallback.
 2. `${XDG_CONFIG_HOME:-~/.config}/swiftty/config.jsonc`.
 3. `~/.swiftty.jsonc`, then `~/.config/swiftty/config.json`.
-4. The app's existing extensionless Ghostty configuration, for compatibility.
 
+Ghostty-style `key = value` files and includes are not supported. Discovery
+ignores extensionless legacy files. Explicit files are always parsed as JSONC.
 With no file, use internal JSONC defaults. Edit Configuration File can create a
 commented template on demand at the selected/default JSONC path; startup need
 not write a file. Reload and Settings edits MUST retain the selected path,
@@ -339,6 +340,14 @@ Example user configuration:
   ],
 }
 ```
+
+Theme files also use JSONC. Supported color keys are `foreground`, `background`,
+`cursor`, `cursor_text`, `selection_foreground` and `selection_background`;
+`palette` maps indexed-color numbers (0–255) to color strings. Look up names in
+Swiftty's theme directory, then the built-in light/dark themes; do not search
+Ghostty's directory. A name containing a slash selects an explicit path. Theme
+files must be regular UTF-8 files of at most 64 KiB. Reject invalid theme
+documents as a whole and continue to the next named-theme fallback.
 
 ### Serialization and required coverage
 

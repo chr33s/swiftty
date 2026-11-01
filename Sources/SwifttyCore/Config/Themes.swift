@@ -1,8 +1,8 @@
 import Foundation
+import SwifttyConfig
 
-/// Theme files: Ghostty's format, a configuration file containing only
-/// color keys. Looked up by name in the theme directories, then among the
-/// built-ins; a name with a `/` is a path.
+/// JSONC color themes, looked up by filename in the theme directories, then
+/// among the built-ins. A name containing `/` is an explicit path.
 public enum Themes {
   /// Maximum UTF-8 bytes read from one theme file.
   public static let maxFileBytes = 64 * 1024
@@ -10,52 +10,60 @@ public enum Themes {
   /// appearance.
   public static let builtIn: [String: String] = [
     "Swiftty Dark": """
-    background = #0C1021
-    foreground = #F8F8F8
-    cursor-color = #FFFFFF
-    cursor-text = #0C1021
-    selection-background = #253B76
-    selection-foreground = #F8F8F8
-    palette = 0=#0C1021
-    palette = 1=#BF392A
-    palette = 2=#61CE3C
-    palette = 3=#FBDE2D
-    palette = 4=#8DA6CE
-    palette = 5=#FF6400
-    palette = 6=#BECDE6
-    palette = 7=#F8F8F8
-    palette = 8=#7F90AA
-    palette = 9=#D74E41
-    palette = 10=#D8FA3C
-    palette = 11=#FBDE2D
-    palette = 12=#D5E0F3
-    palette = 13=#FF6400
-    palette = 14=#FFFFFF
-    palette = 15=#FFFFFF
+    {
+      "background": "#0C1021",
+      "foreground": "#F8F8F8",
+      "cursor": "#FFFFFF",
+      "cursor_text": "#0C1021",
+      "selection_background": "#253B76",
+      "selection_foreground": "#F8F8F8",
+      "palette": {
+        "0": "#0C1021",
+        "1": "#BF392A",
+        "2": "#61CE3C",
+        "3": "#FBDE2D",
+        "4": "#8DA6CE",
+        "5": "#FF6400",
+        "6": "#BECDE6",
+        "7": "#F8F8F8",
+        "8": "#7F90AA",
+        "9": "#D74E41",
+        "10": "#D8FA3C",
+        "11": "#FBDE2D",
+        "12": "#D5E0F3",
+        "13": "#FF6400",
+        "14": "#FFFFFF",
+        "15": "#FFFFFF"
+      }
+    }
     """,
     "Swiftty Light": """
-    background = #F8FAFD
-    foreground = #1E2840
-    cursor-color = #0C1021
-    cursor-text = #F8FAFD
-    selection-background = #C6D6EE
-    selection-foreground = #1E2840
-    palette = 0=#0C1021
-    palette = 1=#B03028
-    palette = 2=#2E7D1B
-    palette = 3=#8F6F00
-    palette = 4=#3D639C
-    palette = 5=#BF4D00
-    palette = 6=#35708E
-    palette = 7=#5B6B88
-    palette = 8=#5B6B88
-    palette = 9=#922921
-    palette = 10=#1F6410
-    palette = 11=#705700
-    palette = 12=#2A4E86
-    palette = 13=#9E3F00
-    palette = 14=#245B77
-    palette = 15=#1E2840
+    {
+      "background": "#F8FAFD",
+      "foreground": "#1E2840",
+      "cursor": "#0C1021",
+      "cursor_text": "#F8FAFD",
+      "selection_background": "#C6D6EE",
+      "selection_foreground": "#1E2840",
+      "palette": {
+        "0": "#0C1021",
+        "1": "#B03028",
+        "2": "#2E7D1B",
+        "3": "#8F6F00",
+        "4": "#3D639C",
+        "5": "#BF4D00",
+        "6": "#35708E",
+        "7": "#5B6B88",
+        "8": "#5B6B88",
+        "9": "#922921",
+        "10": "#1F6410",
+        "11": "#705700",
+        "12": "#2A4E86",
+        "13": "#9E3F00",
+        "14": "#245B77",
+        "15": "#1E2840"
+      }
+    }
     """,
   ]
 
@@ -67,7 +75,13 @@ public enum Themes {
         (try? FileManager.default.contentsOfDirectory(
           atPath: directory.path(percentEncoded: false)
         )) ?? []
-      names.formUnion(files.filter { !$0.hasPrefix(".") })
+      names.formUnion(
+        files.filter {
+          !$0.hasPrefix(".")
+            && ["jsonc", "json"]
+              .contains(URL(fileURLWithPath: $0).pathExtension)
+        }
+      )
     }
     return names.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
   }
@@ -76,45 +90,55 @@ public enum Themes {
     named name: String,
     searching directories: [URL]
   ) -> ColorSet? {
-    guard let text = text(named: name, searching: directories) else {
-      return nil
-    }
-    return parse(text)
-  }
-
-  static func text(named name: String, searching directories: [URL]) -> String?
-  {
-    guard !name.unicodeScalars.contains("\0") else { return nil }
+    guard !name.contains("\0") else { return nil }
     if name.unicodeScalars.contains("/") {
-      return try? ConfigurationFile.read(
-        URL(fileURLWithPath: (name as NSString).expandingTildeInPath),
-        maxBytes: maxFileBytes
-      )
+      return read(URL(fileURLWithPath: (name as NSString).expandingTildeInPath))
     }
     for directory in directories {
-      if let text = try? ConfigurationFile.read(
-        directory.appendingPathComponent(name),
-        maxBytes: maxFileBytes
-      ) {
-        return text
+      if let colors = read(directory.appendingPathComponent(name)) {
+        return colors
       }
     }
-    return builtIn[name]
+    return builtIn[name].flatMap(decode)
   }
 
-  /// The color keys of a theme file; anything else is ignored.
+  private static func read(_ url: URL) -> ColorSet? {
+    guard let text = try? ConfigurationFile.read(url, maxBytes: maxFileBytes)
+    else { return nil }
+    return decode(text)
+  }
+
+  /// Invalid JSONC or invalid colors produce no overrides.
   public static func parse(_ text: String) -> ColorSet {
+    decode(text) ?? ColorSet()
+  }
+
+  private static func decode(_ text: String) -> ColorSet? {
+    guard let data = try? JSONCParser.parse(text),
+      let object = try? JSONSerialization.jsonObject(with: data)
+        as? [String: Any]
+    else { return nil }
+    let keys = [
+      "foreground": "foreground", "background": "background",
+      "cursor": "cursor-color", "cursor_text": "cursor-text",
+      "selection_foreground": "selection-foreground",
+      "selection_background": "selection-background",
+    ]
     var colors = ColorSet()
-    for raw in text.split(whereSeparator: \.isNewline) {
-      let line = raw.trimmingCharacters(in: .whitespaces)
-      let scalars = line.unicodeScalars
-      guard scalars.first != "#", let eq = scalars.firstIndex(of: "=") else {
-        continue
+    for (key, value) in object {
+      if key == "palette" {
+        guard let palette = value as? [String: String] else { return nil }
+        for (index, color) in palette {
+          guard let number = Int(index), (0 ..< 256).contains(number),
+            let rgb = Configuration.parseColor(color)
+          else { return nil }
+          colors.palette[number] = rgb
+        }
+      } else {
+        guard let name = keys[key], let value = value as? String,
+          let result = colors.set(name, value), result == nil
+        else { return nil }
       }
-      let key = String(scalars[..<eq]).trimmingCharacters(in: .whitespaces)
-      let value = String(scalars[scalars.index(after: eq)...])
-        .trimmingCharacters(in: .whitespaces)
-      _ = colors.set(key, Configuration.unquote(value))
     }
     return colors
   }

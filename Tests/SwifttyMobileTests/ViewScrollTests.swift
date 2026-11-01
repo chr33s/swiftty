@@ -151,7 +151,7 @@ extension ViewLifecycleTests {
       let session = TerminalSession(columns: 10, rows: 3)
       let view = try TerminalUIView(
         session: session,
-        configuration: Configuration.parse("font-size=20")
+        configuration: Configuration.configured([("font-size", "20")])
       )
       defer { view.stopMomentum() }
       session.feed(Array("\u{1B}[?1002h\u{1B}[?1006h".utf8))

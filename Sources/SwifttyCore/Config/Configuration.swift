@@ -1,4 +1,5 @@
 import Foundation
+import SwifttyConfig
 
 /// Colors a theme or the configuration sets; nil leaves the color to the
 /// layer below (built-in defaults, then the theme, then the configuration).
@@ -182,18 +183,10 @@ public struct ThemeSelection: Sendable, Equatable {
   }
 }
 
-/// Frontend settings in Ghostty's configuration syntax: `key = value`
-/// lines, `#` comments, repeatable keys, an empty value restoring the
-/// default, and `config-file` includes (`?path` when optional).
-///
-/// Only the keys these frontends implement are recognised; others are
-/// reported in `diagnostics` and otherwise ignored, so a Ghostty config
-/// file can be shared.
+/// Frontend settings populated from JSONC or configured programmatically.
 public struct Configuration: Sendable, Equatable {
-  /// File-loading budgets, shared across a root file and its include queue.
+  /// Maximum UTF-8 bytes in a configuration file.
   public static let maxFileBytes = 1024 * 1024
-  public static let maxLoadedBytes = 4 * 1024 * 1024
-  public static let maxLoadedFiles = 128
   /// Fonts.
   /// Supported point sizes for configuration and interactive zoom.
   public static let fontSizeRange: ClosedRange<Double> = 1 ... 200
@@ -202,12 +195,6 @@ public struct Configuration: Sendable, Equatable {
     guard !size.isNaN else { return Configuration().fontSize }
     return min(max(size, fontSizeRange.lowerBound), fontSizeRange.upperBound)
   }
-
-  /// Ghostty's `macos-icon` values.
-  static let ghosttyIcons: Set = [
-    "official", "blueprint", "chalkboard", "microchip", "glass", "holographic",
-    "paper", "retro", "xray", "custom", "custom-style",
-  ]
 
   public var fontFamily = "Menlo"
   public var fontFamilyBold: String?
@@ -301,207 +288,20 @@ public struct Configuration: Sendable, Equatable {
 
   /// Where `theme` names are looked up, in order, before the built-ins.
   public var themeDirectories: [URL] = [
-    Configuration.configHome.appendingPathComponent("swiftty/themes"),
-    Configuration.configHome.appendingPathComponent("ghostty/themes"),
+    Configuration.configHome.appendingPathComponent("swiftty/themes")
   ]
 
-  /// Loads JSONC or a legacy file (and its includes). Missing explicit JSONC
-  /// files report a diagnostic; missing legacy files yield legacy defaults.
-  public static func load(from url: URL) -> Configuration {
-    if usesJSONC(url) { return loadJSONC(from: url) }
-    var config = Configuration()
-    var includes = Includes()
-    _ = includes.enqueue(url, optional: true)
-    config.loadIncludes(&includes)
-    return config
-  }
-
-  /// Parses configuration text; relative includes resolve against `directory`.
-  public static func parse(
-    _ text: String,
-    directory: URL? = nil
-  ) -> Configuration {
-    var config = Configuration()
-    config.apply(text, directory: directory)
-    return config
-  }
-
-  /// A queue shared by all files in one load. Clearing it drops only
-  /// pending includes; already applied settings remain in the configuration.
-  private struct Includes {
-    var files: [(url: URL, optional: Bool)] = []
-    var next = 0
-    var processed = 0
-    var bytesRead = 0
-    var reportedFileLimit = false
-
-    mutating func enqueue(_ url: URL, optional: Bool) -> Bool {
-      guard processed + files.count - next < Configuration.maxLoadedFiles else {
-        return false
-      }
-      files.append((url, optional))
-      return true
-    }
-
-    mutating func pop() -> (url: URL, optional: Bool)? {
-      guard next < files.count else { return nil }
-      defer {
-        next += 1
-        processed += 1
-      }
-      return files[next]
-    }
-
-    mutating func clear() {
-      files.removeAll(keepingCapacity: true)
-      next = 0
+  /// Parses a complete JSONC document. Invalid input yields defaults and diagnostics.
+  public static func parse(_ text: String) -> Configuration {
+    do { return Configuration(jsonc: try ConfigLoader.decode(text)) } catch {
+      var config = Configuration(jsonc: .default)
+      config.diagnostics = [error.localizedDescription]
+      return config
     }
   }
 
-  private mutating func loadIncludes(_ includes: inout Includes) {
-    var loaded: Set<URL> = []
-    while let file = includes.pop() {
-      guard ConfigurationFile.path(for: file.url) != nil else {
-        include(file.url, optional: file.optional, includes: &includes)
-        continue
-      }
-      let canonicalURL = file.url.standardizedFileURL.resolvingSymlinksInPath()
-      guard loaded.insert(canonicalURL).inserted else {
-        diagnostics.append("\(file.url.path): include cycle")
-        continue
-      }
-      include(file.url, optional: file.optional, includes: &includes)
-    }
-  }
-
-  private mutating func include(
-    _ url: URL,
-    optional: Bool,
-    includes: inout Includes
-  ) {
-    let text: String
-    let limit = min(
-      Self.maxFileBytes,
-      max(0, Self.maxLoadedBytes - includes.bytesRead)
-    )
-    do {
-      text = try ConfigurationFile.read(url, maxBytes: limit) {
-        includes.bytesRead += $0
-      }
-    } catch {
-      if case ConfigurationFile.Failure.tooLarge = error {
-        let reason =
-          limit < Self.maxFileBytes
-          ? "configuration byte budget exceeded (\(Self.maxLoadedBytes) bytes)"
-          : "file exceeds \(Self.maxFileBytes) bytes"
-        diagnostics.append("\(url.path): \(reason)")
-        return
-      }
-      let missing =
-        (error as? CocoaError)
-        .map { $0.code == .fileReadNoSuchFile || $0.code == .fileNoSuchFile }
-        ?? false
-      if !optional || !missing {
-        diagnostics.append("\(url.path): cannot read")
-      }
-      return
-    }
-    apply(
-      text,
-      name: url.path,
-      directory: url.deletingLastPathComponent(),
-      includes: &includes
-    )
-  }
-
-  /// Applies `text` on top of the current values.
-  public mutating func apply(
-    _ text: String,
-    name: String = "config",
-    directory: URL? = nil
-  ) {
-    var includes = Includes()
-    apply(text, name: name, directory: directory, includes: &includes)
-    loadIncludes(&includes)
-  }
-
-  private mutating func apply(
-    _ text: String,
-    name: String,
-    directory: URL?,
-    includes: inout Includes
-  ) {
-    for (i, raw)
-      in text.split(
-        omittingEmptySubsequences: false,
-        whereSeparator: \.isNewline
-      )
-      .enumerated()
-    {
-      let line = raw.trimmingCharacters(in: .whitespaces)
-      let scalars = line.unicodeScalars
-      guard !line.isEmpty, scalars.first != "#" else { continue }
-      guard let eq = scalars.firstIndex(of: "=") else {
-        diagnostics.append("\(name):\(i + 1): expected key = value")
-        continue
-      }
-      let key = String(scalars[..<eq]).trimmingCharacters(in: .whitespaces)
-      let rawValue = String(scalars[scalars.index(after: eq)...])
-        .trimmingCharacters(in: .whitespaces)
-      var value: String =
-        if key == "font-feature", rawValue.hasPrefix("\""),
-          let closingQuote = rawValue.dropFirst().firstIndex(of: "\""),
-          closingQuote != rawValue.index(before: rawValue.endIndex)
-        {
-          // CSS feature lists quote each tag rather than the whole value.
-          rawValue
-        } else { Self.unquote(rawValue) }
-      if key == "config-file" {
-        if value.isEmpty {
-          includes.clear()
-          continue
-        }
-        let optional =
-          !rawValue.hasPrefix("\"") && value.unicodeScalars.first == "?"
-        let path = optional ? String(value.unicodeScalars.dropFirst()) : value
-        let url = Self.fileURL(path, directory: directory)
-        if !includes.enqueue(url, optional: optional),
-          !includes.reportedFileLimit
-        {
-          includes.reportedFileLimit = true
-          diagnostics.append(
-            "\(name):\(i + 1): configuration file limit \(Self.maxLoadedFiles) exceeded"
-          )
-        }
-        continue
-      }
-      if key == "custom-shader", !value.isEmpty, let directory {
-        value = Self.fileURL(value, directory: directory).path
-      }
-      if let error = set(key, value) {
-        diagnostics.append("\(name):\(i + 1): \(key): \(error)")
-      }
-    }
-  }
-
-  private static func fileURL(_ path: String, directory: URL?) -> URL {
-    let expanded = (path as NSString).expandingTildeInPath
-    if expanded.unicodeScalars.first != "/", let directory {
-      return directory.appendingPathComponent(expanded)
-    }
-    return URL(fileURLWithPath: expanded)
-  }
-
-  /// Quoted values use the same syntax in configuration and theme files.
-  static func unquote(_ value: String) -> String {
-    let scalars = value.unicodeScalars
-    if scalars.first == "\"", scalars.last == "\"", scalars.count >= 2 {
-      return String(scalars.dropFirst().dropLast())
-    }
-    return value
-  }
-
-  /// Sets one key; returns an error message when it cannot be used.
+  /// Sets a programmatic option; returns an error when it cannot be used.
+  /// File loading and persistence use the JSONC model, not these option names.
   public mutating func set(_ key: String, _ value: String) -> String? {
     let defaults = Configuration()
     func bool(_ defaultValue: Bool = true) -> Bool? {
@@ -604,12 +404,6 @@ public struct Configuration: Sendable, Equatable {
       workingDirectory =
         value.isEmpty ? nil : (value as NSString).expandingTildeInPath
     case "window-padding-x", "window-padding-y": return setPadding(key, value)
-    case "macos-icon":
-      // Accepted so a shared Ghostty config loads cleanly; Swiftty has
-      // one icon.
-      guard value.isEmpty || Self.ghosttyIcons.contains(value) else {
-        return invalid()
-      }
     case "keybind":
       if value.isEmpty {
         keybindings = .defaults

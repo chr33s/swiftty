@@ -64,7 +64,7 @@ final class ViewBehaviorTests {
       view.fontSize == CGFloat(expected)
         && view.renderer.font.descriptor.size == CGFloat(expected)
     )
-    view.apply(Configuration.parse("font-size=20"))
+    view.apply(Configuration.configured([("font-size", "20")]))
     #expect(view.fontSize == 20 && view.renderer.font.descriptor.size == 20)
     view.apply(configuration)
     #expect(
@@ -105,7 +105,7 @@ final class ViewBehaviorTests {
   {
     _ = NSApplication.shared
     let controller = try TerminalWindowController(
-      configuration: Configuration.parse("command=/bin/sleep 30")
+      configuration: Configuration.configured([("command", "/bin/sleep 30")])
     )
     let window = try #require(controller.window)
     let view = controller.terminal
@@ -139,7 +139,7 @@ final class ViewBehaviorTests {
     throws
   {
     _ = NSApplication.shared
-    let config = Configuration.parse("command=/bin/sleep 30")
+    let config = Configuration.configured([("command", "/bin/sleep 30")])
     let controller = try TerminalWindowController(configuration: config)
     let window = try #require(controller.window)
     defer { window.close() }
@@ -220,7 +220,7 @@ final class ViewBehaviorTests {
   @Test(.enabled(if: hasMetal))
   func `detached blinking text stays visible through restart`() throws {
     let view = try makeView(
-      configuration: Configuration.parse("command=/bin/sleep 30")
+      configuration: Configuration.configured([("command", "/bin/sleep 30")])
     )
     view.removeFromSuperview()
     defer { view.stop() }
@@ -259,7 +259,7 @@ final class ViewBehaviorTests {
   func `detached animated shader frames stay suspended through restart`() throws
   {
     let view = try makeView(
-      configuration: Configuration.parse("command=/bin/sleep 30")
+      configuration: Configuration.configured([("command", "/bin/sleep 30")])
     )
     view.removeFromSuperview()
     defer { view.stop() }
@@ -286,7 +286,7 @@ final class ViewBehaviorTests {
     throws
   {
     let view = try makeView(
-      configuration: Configuration.parse("scrollback-limit=0")
+      configuration: Configuration.configured([("scrollback-limit", "0")])
     )
     view.session.resize(columns: 20, rows: 3)
     let prompt = "\u{1B}]133;A\u{7}$ \u{1B}]133;B\u{7}"
@@ -333,7 +333,7 @@ final class ViewBehaviorTests {
     ) throws
   {
     let view = try makeView(
-      configuration: Configuration.parse("scrollback-limit=0")
+      configuration: Configuration.configured([("scrollback-limit", "0")])
     )
     view.session.resize(columns: 20, rows: change == "evict" ? 5 : 8)
     let prompt = "\u{1B}]133;A\u{7}$ \u{1B}]133;B\u{7}"
@@ -451,7 +451,7 @@ final class ViewBehaviorTests {
     ) throws
   {
     let view = try makeView(
-      configuration: Configuration.parse("font-size=\(size)")
+      configuration: Configuration.configured([("font-size", "\(size)")])
     )
     view.perform(.increaseFontSize(1))
     #expect(view.fontSize == CGFloat(min(size + 1, 200)))
@@ -466,15 +466,21 @@ final class ViewBehaviorTests {
       _ zoomed: Bool
     ) throws
   {
-    let view = try makeView(configuration: Configuration.parse("font-size=14"))
+    let view = try makeView(
+      configuration: Configuration.configured([("font-size", "14")])
+    )
     if zoomed { view.perform(.increaseFontSize(5)) }
-    view.apply(Configuration.parse("font-size=20\nfont-feature=-liga"))
+    view.apply(
+      Configuration.configured([("font-size", "20"), ("font-feature", "-liga")])
+    )
     #expect(view.fontSize == (zoomed ? 19 : 20))
     #expect(view.renderer.font.descriptor.size == view.fontSize)
     #expect(view.renderer.font.descriptor.features == ["-liga"])
     view.perform(.resetFontSize)
     #expect(view.fontSize == 20)
-    view.apply(Configuration.parse("font-size=22\nfont-feature=-liga"))
+    view.apply(
+      Configuration.configured([("font-size", "22"), ("font-feature", "-liga")])
+    )
     #expect(view.fontSize == 22)
     #expect(view.renderer.font.descriptor.size == 22)
   }

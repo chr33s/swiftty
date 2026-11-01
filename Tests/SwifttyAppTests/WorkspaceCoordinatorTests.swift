@@ -10,12 +10,11 @@ import TestSupport
 /// Configuration to launch spec, matching the direct-window rules.
 @Suite
 struct WorkspaceLaunchTests {
-  func config(_ text: String) -> Configuration { Configuration.parse(text) }
 
   @Test
   func `no command runs the login shell from the frontend's directory`() {
     let spec = WorkspaceLaunch.spec(
-      config("working-directory = inherit"),
+      Configuration.configured([("working-directory", "inherit")]),
       environment: ["A": "1"],
       currentDirectory: "/var/frontend"
     )
@@ -27,12 +26,12 @@ struct WorkspaceLaunchTests {
   @Test
   func `explicit and home directories are kept`() {
     let home = WorkspaceLaunch.spec(
-      config("working-directory = home"),
+      Configuration.configured([("working-directory", "home")]),
       currentDirectory: "/var/frontend"
     )
     #expect(home.workingDirectory == NSHomeDirectory())
     let explicit = WorkspaceLaunch.spec(
-      config("working-directory = /tmp"),
+      Configuration.configured([("working-directory", "/tmp")]),
       currentDirectory: "/var/frontend"
     )
     #expect(explicit.workingDirectory == "/tmp")
@@ -40,9 +39,13 @@ struct WorkspaceLaunchTests {
 
   @Test
   func `configured commands keep shell and direct syntax`() {
-    let direct = WorkspaceLaunch.spec(config("command = direct:/bin/echo a b"))
+    let direct = WorkspaceLaunch.spec(
+      Configuration.configured([("command", "direct:/bin/echo a b")])
+    )
     #expect(direct.command == ["/bin/echo", "a", "b"])
-    let shell = WorkspaceLaunch.spec(config("command = vim ~/notes"))
+    let shell = WorkspaceLaunch.spec(
+      Configuration.configured([("command", "vim ~/notes")])
+    )
     #expect(
       shell.command == [
         "/bin/bash", "--noprofile", "--norc", "-c", "exec -l vim ~/notes",

@@ -4,6 +4,39 @@ import Testing
 
 struct ConfigTests {
   @Test
+  func legacyFilesAreNotDiscoveredOrDecoded() throws {
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString
+    )
+    let directory = home.appendingPathComponent(".config/swiftty")
+    try FileManager.default.createDirectory(
+      at: directory,
+      withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: home) }
+    let legacy = directory.appendingPathComponent("config")
+    try Data("font-size = 99\n".utf8).write(to: legacy)
+    #expect(
+      try ConfigDiscovery.resolve(arguments: [], environment: [:], home: home)
+        == nil
+    )
+    #expect(
+      try ConfigDiscovery.load(arguments: [], environment: [:], home: home)
+        == .default
+    )
+    #expect(throws: ConfigError.self) {
+      try ConfigDiscovery.load(
+        arguments: ["--config", legacy.path],
+        environment: [:],
+        home: home
+      )
+    }
+    #expect(
+      try String(contentsOf: legacy, encoding: .utf8) == "font-size = 99\n"
+    )
+  }
+
+  @Test
   func sanitizerPreservesBytesAndStrings() throws {
     let source =
       #"{"url":"https://github.com/a/*b*/", "quote":"\"//not a comment\"", /* 🦊é"#

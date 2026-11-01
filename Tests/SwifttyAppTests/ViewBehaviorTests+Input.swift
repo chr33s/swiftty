@@ -75,9 +75,9 @@ extension ViewBehaviorTests {
     `unavailable performable prompt navigation sends the key to the application`()
     throws
   {
-    let configuration = Configuration.parse(
-      "keybind=performable:ctrl+arrow_down=jump_to_prompt:1"
-    )
+    let configuration = Configuration.configured([
+      ("keybind", "performable:ctrl+arrow_down=jump_to_prompt:1")
+    ])
     let view = try makeView(configuration: configuration)
     let writes = Mutex<[UInt8]>([])
     view.session.onWrite = { bytes in
@@ -306,9 +306,9 @@ extension ViewBehaviorTests {
     throws
   {
     let first = try makeView(
-      configuration: Configuration.parse(
-        "keybind = all:unconsumed:ctrl+a=text:X"
-      )
+      configuration: Configuration.configured([
+        ("keybind", "all:unconsumed:ctrl+a=text:X")
+      ])
     )
     let second = try makeView()
     let firstWrites = Mutex<[UInt8]>([])
@@ -354,9 +354,9 @@ extension ViewBehaviorTests {
   @Test(.enabled(if: hasMetal))
   func `performable copy consumes the key when a selection exists`() throws {
     let view = try makeView(
-      configuration: Configuration.parse(
-        "keybind = performable:ctrl+c=copy_to_clipboard"
-      )
+      configuration: Configuration.configured([
+        ("keybind", "performable:ctrl+c=copy_to_clipboard")
+      ])
     )
     let clipboard = NSPasteboard.withUniqueName()
     view.pasteboard = clipboard
@@ -402,9 +402,9 @@ extension ViewBehaviorTests {
   func `unavailable performable copy bindings pass the key through`(
     _ keyEquivalent: Bool
   ) throws {
-    let config = Configuration.parse(
-      "keybind = performable:ctrl+c=copy_to_clipboard"
-    )
+    let config = Configuration.configured([
+      ("keybind", "performable:ctrl+c=copy_to_clipboard")
+    ])
     let view = try makeView(configuration: config)
     let window = NSWindow(
       contentRect: .zero,
@@ -448,9 +448,9 @@ extension ViewBehaviorTests {
     _ keyEquivalent: Bool,
     _ control: Bool
   ) throws {
-    let config = Configuration.parse(
-      "keybind = unconsumed:\(control ? "ctrl+" : "")a=text:X"
-    )
+    let config = Configuration.configured([
+      ("keybind", "unconsumed:\(control ? "ctrl+" : "")a=text:X")
+    ])
     let view = try makeView(configuration: config)
     let window = NSWindow(
       contentRect: .zero,

@@ -9,19 +9,20 @@ struct ConfigurationTests {
   @Test
   func `working directory modes resolve at session creation`() {
     #expect(
-      Configuration.parse("working-directory=home").sessionConfiguration()
-        .workingDirectory == NSHomeDirectory()
+      Configuration.configured([("working-directory", "home")])
+        .sessionConfiguration().workingDirectory == NSHomeDirectory()
     )
     #expect(
-      Configuration.parse("working-directory=inherit").sessionConfiguration()
-        .workingDirectory == nil
+      Configuration.configured([("working-directory", "inherit")])
+        .sessionConfiguration().workingDirectory == nil
     )
     #expect(
-      Configuration.parse("working-directory=~/folder").sessionConfiguration()
-        .workingDirectory == NSHomeDirectory() + "/folder"
+      Configuration.configured([("working-directory", "~/folder")])
+        .sessionConfiguration().workingDirectory == NSHomeDirectory()
+        + "/folder"
     )
     #expect(
-      Configuration.parse("working-directory=/tmp/folder")
+      Configuration.configured([("working-directory", "/tmp/folder")])
         .sessionConfiguration().workingDirectory == "/tmp/folder"
     )
   }
@@ -34,12 +35,12 @@ struct ConfigurationTests {
     _ path: TestFixture<String>
   ) {
     let path = path.value
-    var config = Configuration.parse("working-directory=/tmp")
+    var config = Configuration.configured([("working-directory", "/tmp")])
     #expect(config.set("working-directory", path) != nil)
     #expect(config.workingDirectory == "/tmp")
-    let parsed = Configuration.parse(
-      "working-directory=/tmp\nworking-directory=\(path)"
-    )
+    let parsed = Configuration.configured([
+      ("working-directory", "/tmp"), ("working-directory", "\(path)"),
+    ])
     #expect(parsed.diagnostics.count == 1)
     #expect(parsed.sessionConfiguration().workingDirectory == "/tmp")
   }
@@ -120,21 +121,6 @@ struct ConfigurationTests {
     #expect(config.fontDescriptor(scale: 2, size: 30).size == 30)
   }
 
-  @Test(arguments: ["\u{300}name", "name\u{600}"])
-  func `configuration delimiters preserve combining and prepend scalars`(
-    _ value: String
-  ) {
-    for line in ["command=\(value)", "command=\"\(value)\""] {
-      let config = Configuration.parse("#\u{300}comment\n" + line)
-      #expect(config.diagnostics.isEmpty)
-      #expect(config.command == value)
-    }
-    #expect(Configuration.unquote("\"\(value)\"") == value)
-    let selection = ThemeSelection(parsing: "light:\(value),dark:\(value)")
-    #expect(selection?.light == value)
-    #expect(selection?.dark == value)
-  }
-
   @Test(arguments: [
     " light : Swiftty Light , dark : Swiftty Dark ",
     "dark: Swiftty Dark, light: Swiftty Light",
@@ -142,7 +128,7 @@ struct ConfigurationTests {
     "light:Swiftty Dark,light:Swiftty Light,dark:Swiftty Dark",
   ])
   func `appearance theme names trim whitespace and resolve`(_ value: String) {
-    let config = Configuration.parse("theme=" + value)
+    let config = Configuration.configured([("theme", value)])
     #expect(config.diagnostics.isEmpty)
     #expect(config.theme?.light == "Swiftty Light")
     #expect(config.theme?.dark == "Swiftty Dark")
@@ -156,11 +142,13 @@ struct ConfigurationTests {
     "light:A,dark:\"B", "light:A,dark:B\\", #"light:A,dark:"B""C""#,
   ])
   func `invalid theme pairs preserve the configured theme`(_ value: String) {
-    var config = Configuration.parse("theme=Swiftty Dark")
+    var config = Configuration.configured([("theme", "Swiftty Dark")])
     let original = config
     #expect(config.set("theme", value) != nil)
     #expect(config == original)
-    let parsed = Configuration.parse("theme=Swiftty Dark\ntheme=" + value)
+    let parsed = Configuration.configured([
+      ("theme", "Swiftty Dark"), ("theme", value),
+    ])
     #expect(parsed.theme == original.theme)
     #expect(parsed.diagnostics.count == 1)
   }
@@ -177,21 +165,21 @@ struct ConfigurationTests {
     defer { try? FileManager.default.removeItem(at: directory) }
     let light = "Day, Bright"
     let dark = "Night, \"Dark\""
-    try "background=#123456"
+    try ##"{"background":"#123456"}"##
       .write(
         to: directory.appendingPathComponent(light),
         atomically: true,
         encoding: .utf8
       )
-    try "background=#654321"
+    try ##"{"background":"#654321"}"##
       .write(
         to: directory.appendingPathComponent(dark),
         atomically: true,
         encoding: .utf8
       )
-    var config = Configuration.parse(
-      #"theme=light:"Day, Bright",dark:"Night, \"Dark\"""#
-    )
+    var config = Configuration.configured([
+      (#"theme"#, #"light:"Day, Bright",dark:"Night, \"Dark\"""#)
+    ])
     config.themeDirectories = [directory]
     #expect(config.diagnostics.isEmpty)
     #expect(config.theme?.light == light)
@@ -204,419 +192,31 @@ struct ConfigurationTests {
   }
 
   @Test
-  func `optional include paths preserve a leading combining mark`() throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(
-      at: directory,
-      withIntermediateDirectories: true
-    )
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let filename = "\u{300}settings"
-    try "font-size=19"
-      .write(
-        to: directory.appendingPathComponent(filename),
-        atomically: true,
-        encoding: .utf8
-      )
-    var config = Configuration()
-    config.apply("config-file=?" + filename, directory: directory)
-    #expect(config.diagnostics.isEmpty)
-    #expect(config.fontSize == 19)
-    config.apply("config-file=?\u{300}missing", directory: directory)
-    #expect(config.diagnostics.isEmpty)
-  }
-
-  @Test
-  func `includes override their parent in order after parsing`() throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(
-      at: directory,
-      withIntermediateDirectories: true
-    )
-    defer { try? FileManager.default.removeItem(at: directory) }
-    try "font-size=21\nconfig-file=nested\nfont-size=22"
-      .write(
-        to: directory.appendingPathComponent("first"),
-        atomically: true,
-        encoding: .utf8,
-      )
-    try "font-size=23"
-      .write(
-        to: directory.appendingPathComponent("nested"),
-        atomically: true,
-        encoding: .utf8
-      )
-    try "font-size=24"
-      .write(
-        to: directory.appendingPathComponent("second"),
-        atomically: true,
-        encoding: .utf8
-      )
-    var config = Configuration.parse(
-      "config-file=first\nfont-size=19",
-      directory: directory
-    )
-    #expect(config.diagnostics.isEmpty)
-    #expect(config.fontSize == 23)
-    config.apply(
-      "config-file=first\nconfig-file=second\nfont-size=20",
-      directory: directory
-    )
-    #expect(config.fontSize == 23)
-  }
-
-  @Test
-  func `quoted question mark includes are required literal filenames`() throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(
-      at: directory,
-      withIntermediateDirectories: true
-    )
-    defer { try? FileManager.default.removeItem(at: directory) }
-    try "font-size=27"
-      .write(
-        to: directory.appendingPathComponent("?settings"),
-        atomically: true,
-        encoding: .utf8
-      )
-    let config = Configuration.parse(
-      "config-file=\"?settings\"\nconfig-file=\"?missing\"",
-      directory: directory
-    )
-    #expect(config.fontSize == 27)
-    #expect(
-      config.diagnostics == [
-        directory.appendingPathComponent("?missing").path + ": cannot read"
-      ]
-    )
-  }
-
-  @Test(.enabled(if: geteuid() != 0))
-  func `root configuration reports an inaccessible parent directory`() throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString)
-    let root = directory.appendingPathComponent("config")
-    try FileManager.default.createDirectory(
-      at: directory,
-      withIntermediateDirectories: true
-    )
-    defer {
-      try? FileManager.default.setAttributes(
-        [.posixPermissions: 0o700],
-        ofItemAtPath: directory.path
-      )
-      try? FileManager.default.removeItem(at: directory)
-    }
-    try "font-size=22".write(to: root, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes(
-      [.posixPermissions: 0],
-      ofItemAtPath: directory.path
-    )
-    #expect(!FileManager.default.fileExists(atPath: root.path))
-    let config = Configuration.load(from: root)
-    #expect(config.fontSize == Configuration().fontSize)
-    #expect(config.diagnostics == [root.path + ": cannot read"])
-  }
-
-  @Test(arguments: ["missing", "invalid", "folder"])
-  func `root configuration suppresses only missing file errors`(
-    _ kind: String
-  ) throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(
-      at: directory,
-      withIntermediateDirectories: true
-    )
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let root = directory.appendingPathComponent("config")
-    if kind == "invalid" {
-      try Data([0xFF]).write(to: root)
-    } else if kind == "folder" {
-      try FileManager.default.createDirectory(
-        at: root,
-        withIntermediateDirectories: true
-      )
-    }
-    let config = Configuration.load(from: root)
-    #expect(config.fontSize == Configuration().fontSize)
-    #expect(
-      config.diagnostics
-        == (kind == "missing" ? [] : [root.path + ": cannot read"])
-    )
-  }
-
-  @Test
-  func `optional includes only suppress missing file errors`() throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(
-      at: directory,
-      withIntermediateDirectories: true
-    )
-    defer { try? FileManager.default.removeItem(at: directory) }
-    try Data([0xFF]).write(to: directory.appendingPathComponent("invalid"))
-    try FileManager.default.createDirectory(
-      at: directory.appendingPathComponent("folder"),
-      withIntermediateDirectories: true
-    )
-    let config = Configuration.parse(
-      "config-file=?missing\nconfig-file=?invalid\nconfig-file=?folder",
-      directory: directory
-    )
-    #expect(
-      config.diagnostics
-        == ["invalid", "folder"]
-        .map { directory.appendingPathComponent($0).path + ": cannot read" }
-    )
-  }
-
-  @Test
-  func `include cycles and repeated files stop before reapplying a file`()
-    throws
-  {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(
-      at: directory,
-      withIntermediateDirectories: true
-    )
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let root = directory.appendingPathComponent("root")
-    try "config-file=child\nfont-family=Menlo"
-      .write(to: root, atomically: true, encoding: .utf8)
-    try "config-file=alias\nfont-family=Courier"
-      .write(
-        to: directory.appendingPathComponent("child"),
-        atomically: true,
-        encoding: .utf8
-      )
-    try FileManager.default.createSymbolicLink(
-      at: directory.appendingPathComponent("alias"),
-      withDestinationURL: root
-    )
-    let config = Configuration.load(from: root)
-    #expect(config.fontFamily == "Courier")
-    #expect(config.diagnostics.count == 1)
-    #expect(config.diagnostics.first?.contains("include cycle") == true)
-    try "font-feature=liga"
-      .write(
-        to: directory.appendingPathComponent("repeat"),
-        atomically: true,
-        encoding: .utf8
-      )
-    let repeated = Configuration.parse(
-      "config-file=repeat\nconfig-file=repeat",
-      directory: directory
-    )
-    #expect(repeated.diagnostics.count == 1)
-    #expect(repeated.diagnostics.first?.contains("include cycle") == true)
-    #expect(repeated.fontFeatures == ["liga"])
-  }
-
-  @Test
   func
     `empty palette values restore theme colors without resetting other colors`()
   {
-    var config = Configuration.parse(
-      "theme=Swiftty Light\nbackground=#123456\npalette=1=#010203\npalette=255=#040506"
-    )
+    var config = Configuration.configured([
+      ("theme", "Swiftty Light"), ("background", "#123456"),
+      ("palette", "1=#010203"), ("palette", "255=#040506"),
+    ])
     #expect(config.colors.palette.count == 2)
     #expect(config.set("palette", "") == nil)
     #expect(config.colors.palette.isEmpty)
     #expect(config.colors.background == 0x123456)
-    var expected = Configuration.parse("theme=Swiftty Light").palette()
+    var expected = Configuration.configured([("theme", "Swiftty Light")])
+      .palette()
     expected.background = 0x123456
     #expect(config.palette() == expected)
-    config.apply("palette=2=#112233\npalette=\"\"\npalette=3=#445566")
+    config.configure([
+      ("palette", "2=#112233"), ("palette", ""), ("palette", "3=#445566"),
+    ])
     #expect(config.diagnostics.isEmpty)
     #expect(config.colors.palette == [3: 0x445566])
     #expect(
       TestFixture(
-        Themes.parse("palette=1=#010203\npalette=\nforeground=#123456").palette
+        Themes.parse(##"{"palette":{},"foreground":"#123456"}"##).palette
           .isEmpty
       ) == TestFixture(true)
-    )
-  }
-
-  @Test
-  func `empty include values clear pending files and allow later includes`()
-    throws
-  {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(
-      at: directory,
-      withIntermediateDirectories: true
-    )
-    defer { try? FileManager.default.removeItem(at: directory) }
-    try "font-size=22"
-      .write(
-        to: directory.appendingPathComponent("new"),
-        atomically: true,
-        encoding: .utf8
-      )
-    let config = Configuration.parse(
-      "config-file=missing\nconfig-file=\"\"\nfont-size=19\nconfig-file=new",
-      directory: directory
-    )
-    #expect(config.diagnostics.isEmpty)
-    #expect(config.fontSize == 22)
-    try "config-file=\nconfig-file=new"
-      .write(
-        to: directory.appendingPathComponent("clear"),
-        atomically: true,
-        encoding: .utf8
-      )
-    let nested = Configuration.parse(
-      "config-file=clear\nconfig-file=missing",
-      directory: directory
-    )
-    #expect(nested.diagnostics.isEmpty)
-    #expect(nested.fontSize == 22)
-  }
-
-  @Test
-  func `nested includes join the end of the pending file queue`() throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(
-      at: directory,
-      withIntermediateDirectories: true
-    )
-    defer { try? FileManager.default.removeItem(at: directory) }
-    try "font-feature=liga\nconfig-file=nested"
-      .write(
-        to: directory.appendingPathComponent("first"),
-        atomically: true,
-        encoding: .utf8
-      )
-    try "font-feature=calt"
-      .write(
-        to: directory.appendingPathComponent("second"),
-        atomically: true,
-        encoding: .utf8
-      )
-    try "font-feature=ss01"
-      .write(
-        to: directory.appendingPathComponent("nested"),
-        atomically: true,
-        encoding: .utf8
-      )
-    let config = Configuration.parse(
-      "config-file=first\nconfig-file=second",
-      directory: directory
-    )
-    #expect(config.diagnostics.isEmpty)
-    #expect(config.fontFeatures == ["liga", "calt", "ss01"])
-  }
-
-  @Test
-  func `long include chains load without recursion and still detect cycles`()
-    throws
-  {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(
-      at: directory,
-      withIntermediateDirectories: true
-    )
-    defer { try? FileManager.default.removeItem(at: directory) }
-    for i in 0 ..< 20 {
-      let next = i == 19 ? 0 : i + 1
-      try "font-size=\(i + 10)\nconfig-file=\(next)"
-        .write(
-          to: directory.appendingPathComponent(String(i)),
-          atomically: true,
-          encoding: .utf8,
-        )
-    }
-    let config = Configuration.load(from: directory.appendingPathComponent("0"))
-    #expect(config.fontSize == 29)
-    #expect(
-      config.diagnostics == [
-        directory.appendingPathComponent("0").path + ": include cycle"
-      ]
-    )
-  }
-
-  @Test
-  func `shader paths resolve against the declaring configuration file`() throws
-  {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString)
-    let nested = directory.appendingPathComponent("nested")
-    try FileManager.default.createDirectory(
-      at: nested,
-      withIntermediateDirectories: true
-    )
-    defer { try? FileManager.default.removeItem(at: directory) }
-    try "custom-shader=effect.metal"
-      .write(
-        to: nested.appendingPathComponent("config"),
-        atomically: true,
-        encoding: .utf8
-      )
-    try "shader source"
-      .write(
-        to: nested.appendingPathComponent("effect.metal"),
-        atomically: true,
-        encoding: .utf8
-      )
-    try "config-file=nested/config\ncustom-shader=root.metal"
-      .write(
-        to: directory.appendingPathComponent("config"),
-        atomically: true,
-        encoding: .utf8,
-      )
-    var config = Configuration.load(
-      from: directory.appendingPathComponent("config")
-    )
-    #expect(config.diagnostics.isEmpty)
-    #expect(
-      config.customShader == nested.appendingPathComponent("effect.metal").path
-    )
-    let shader = try #require(config.customShader)
-    #expect(
-      try String(contentsOfFile: shader, encoding: .utf8) == "shader source"
-    )
-    config.apply("font-size=17", directory: directory)
-    #expect(config.customShader == shader)
-    config.apply("custom-shader=next.metal", directory: directory)
-    #expect(
-      config.customShader == directory.appendingPathComponent("next.metal").path
-    )
-    config.apply("custom-shader=", directory: directory)
-    #expect(config.customShader == nil)
-  }
-
-  @Test
-  func `shader path parsing preserves absolute home and context free paths`() {
-    let directory = URL(fileURLWithPath: "/tmp/swiftty-config")
-    for path in ["/tmp/effect.metal", "~/effect.metal"] {
-      let config = Configuration.parse(
-        "custom-shader=" + path,
-        directory: directory
-      )
-      #expect(config.customShader == (path as NSString).expandingTildeInPath)
-    }
-    #expect(
-      Configuration.parse("custom-shader=effect.metal").customShader
-        == "effect.metal"
-    )
-    var config = Configuration()
-    #expect(config.set("custom-shader", "effect.metal") == nil)
-    #expect(config.customShader == "effect.metal")
-    #expect(
-      Configuration.parse(
-        "custom-shader=\"effect file.metal\"",
-        directory: directory
-      )
-      .customShader
-        == directory.appendingPathComponent("effect file.metal").path
     )
   }
 
@@ -634,7 +234,7 @@ struct ConfigurationTests {
     )
     defer { try? FileManager.default.removeItem(at: directory) }
     let filename = "\u{300}theme"
-    try "background=#123456"
+    try ##"{"background":"#123456"}"##
       .write(
         to: directory.appendingPathComponent(filename),
         atomically: true,
@@ -721,14 +321,11 @@ struct ConfigurationTests {
 
   @Test
   func `font styles parse and reach the font descriptor`() {
-    var config = Configuration.parse(
-      """
-      font-style = Retina
-      font-style-bold = false
-      font-style-italic = default
-      font-style-bold-italic = Heavy Italic
-      """
-    )
+    var config = Configuration.configured([
+      ("font-style", "Retina"), ("font-style-bold", "false"),
+      ("font-style-italic", "default"),
+      ("font-style-bold-italic", "Heavy Italic"),
+    ])
     #expect(config.diagnostics.isEmpty)
     let d = config.fontDescriptor(scale: 2)
     #expect(d.regularStyle == .named("Retina"))
@@ -743,18 +340,11 @@ struct ConfigurationTests {
 
   @Test
   func `missing font styles are reported`() {
-    let config = Configuration.parse(
-      "font-family = Menlo\nfont-style = Ret\nfont-style-bold = Bold"
-    )
+    let config = Configuration.configured([
+      ("font-family", "Menlo"), ("font-style", "Ret"),
+      ("font-style-bold", "Bold"),
+    ])
     #expect(config.missingFontStyles == ["Ret (Menlo)"])
-  }
-
-  @Test
-  func `macos-icon accepts Ghostty's values`() {
-    var config = Configuration()
-    #expect(config.set("macos-icon", "glass") == nil)
-    #expect(config.set("macos-icon", "") == nil)
-    #expect(config.set("macos-icon", "bogus") != nil)
   }
 
   @Test
@@ -783,52 +373,6 @@ struct ConfigurationTests {
     }
   }
 
-  @Test(arguments: ["\n", "\r\n", "\r"].map(TestFixture.init))
-  func `configuration and themes accept common line endings`(
-    _ newline: TestFixture<String>
-  ) {
-    let newline = newline.value
-    let lines = [
-      "# Settings", "", "font-family = \"JetBrains Mono\"", "font-size = 17",
-      "cursor-style-blink = false", "not a setting", "background = \"#102030\"",
-      "palette = \"2=#abcdef\"", "",
-    ]
-    let text = lines.joined(separator: newline)
-    let config = Configuration.parse(text)
-    #expect(
-      TestFixture(config)
-        == TestFixture(Configuration.parse(lines.joined(separator: "\n")))
-    )
-    #expect(config.fontFamily == "JetBrains Mono")
-    #expect(config.fontSize == 17)
-    #expect(config.cursorStyleBlink == false)
-    #expect(config.diagnostics == ["config:6: expected key = value"])
-    #expect(Themes.parse(text) == config.colors)
-    #expect(config.colors.background == 0x102030)
-    #expect(config.colors.palette[2] == 0xABCDEF)
-  }
-
-  @Test
-  func `themes accept quoted values like configuration files`() {
-    let text = """
-      # A theme may quote its values.
-      background = "#123456"
-      foreground = "abc"
-      cursor-color = "red"
-      palette = "1=#987654"
-      selection-background = "#111111"
-      selection-background = ""
-      font-size = 19
-      """
-    let colors = Themes.parse(text)
-    #expect(colors == Configuration.parse(text).colors)
-    #expect(colors.background == 0x123456)
-    #expect(colors.foreground == 0xAABBCC)
-    #expect(colors.cursor == 0xFF0000)
-    #expect(colors.palette[1] == 0x987654)
-    #expect(colors.selectionBackground == nil)
-  }
-
   @Test
   func `font size bindings reject nonfinite numbers`() {
     var bindings = Keybindings.defaults
@@ -848,9 +392,10 @@ struct ConfigurationTests {
 
   @Test
   func `invalid layout and font numbers leave settings unchanged`() {
-    var config = Configuration.parse(
-      "window-padding-x = 4\nadjust-cell-height = 10%\nfont-variation = wght=500"
-    )
+    var config = Configuration.configured([
+      ("window-padding-x", "4"), ("adjust-cell-height", "10%"),
+      ("font-variation", "wght=500"),
+    ])
     for value in ["nan", "inf", "-inf", "1e999"] {
       #expect(config.set("window-padding-x", value) != nil)
       #expect(config.set("adjust-cell-height", value) != nil)
@@ -879,12 +424,12 @@ struct ConfigurationTests {
     _ tag: TestFixture<String>
   ) {
     let tag = tag.value
-    var config = Configuration.parse("font-variation = wght=500")
+    var config = Configuration.configured([("font-variation", "wght=500")])
     #expect(config.set("font-variation", tag + "=600") != nil)
     #expect(config.fontVariations == ["wght": 500])
-    let parsed = Configuration.parse(
-      "font-variation = wght=500\nfont-variation = \(tag)=600"
-    )
+    let parsed = Configuration.configured([
+      ("font-variation", "wght=500"), ("font-variation", "\(tag)=600"),
+    ])
     #expect(parsed.diagnostics.count == 1)
     #expect(parsed.fontVariations == ["wght": 500])
   }
@@ -902,134 +447,6 @@ struct ConfigurationTests {
     #expect(config.fontDescriptor(scale: 1).variations == config.fontVariations)
     #expect(config.set("font-variation", "") == nil)
     #expect(config.fontVariations.isEmpty)
-  }
-
-  @Test
-  func `parses Ghostty syntax`() {
-    let config = Configuration.parse(
-      """
-      # comment
-      font-family = "JetBrains Mono"
-      font-size = 15
-      font-feature = calt, -liga
-      font-feature = ss01
-      font-variation = wght=600
-      font-synthetic-style = no-bold
-      adjust-cell-height = 10%
-      adjust-cell-width = 1
-      background = #102030
-      foreground = fff
-      palette = 1=#ff0000
-      selection-background = #333333
-      background-opacity = 0.9
-      background-blur = true
-      minimum-contrast = 3
-      cursor-style = block_hollow
-      cursor-style-blink = false
-      scrollback-limit = 2000000
-      window-padding-x = 2,6
-      copy-on-select = clipboard
-      """
-    )
-    #expect(config.diagnostics.isEmpty)
-    #expect(config.fontFamily == "JetBrains Mono" && config.fontSize == 15)
-    #expect(config.fontFeatures == ["calt", "-liga", "ss01"])
-    #expect(config.fontVariations == ["wght": 600])
-    #expect(!config.fontSyntheticBold && config.fontSyntheticItalic)
-    #expect(
-      config.adjustCellHeight.fraction == 0.1
-        && config.adjustCellWidth.points == 1
-    )
-    let palette = config.palette()
-    #expect(palette.background == 0x102030 && palette.foreground == 0xFFFFFF)
-    #expect(
-      palette.colors[1] == 0xFF0000 && palette.selectionBackground == 0x333333
-    )
-    #expect(
-      config.backgroundOpacity == 0.9 && config.backgroundBlur == 20
-        && config.minimumContrast == 3
-    )
-    #expect(
-      config.cursorStyle == .block && config.cursorHollow
-        && config.cursorStyleBlink == false
-    )
-    #expect(
-      config.scrollbackLimit == 2_000_000 && config.windowPaddingX == 6
-        && config.copyOnSelect
-    )
-    let font = config.fontDescriptor(scale: 2)
-    #expect(
-      font.family == "JetBrains Mono" && font.size == 15
-        && font.cellHeightAdjust == 0.1 && !font.synthesizeBold
-    )
-    #expect(config.renderOptions(scale: 2).paddingX == 12)
-    #expect(config.sessionConfiguration().scrollbackLimitBytes == 2_000_000)
-  }
-
-  @Test
-  func `reports problems and resets with empty values`() {
-    let config = Configuration.parse(
-      """
-      font-size = huge
-      no-such-key = 1
-      just text
-      font-size = 20
-      font-size =
-      """
-    )
-    #expect(config.diagnostics.count == 3)
-    #expect(config.diagnostics[0].hasPrefix("config:1: font-size"))
-    #expect(config.fontSize == 13)
-  }
-
-  @Test(arguments: ["\n", "\r\n"].map(TestFixture.init))
-  func `includes and themes`(_ newline: TestFixture<String>) throws {
-    let newline = newline.value
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(
-      UUID().uuidString
-    )
-    try FileManager.default.createDirectory(
-      at: dir.appendingPathComponent("themes"),
-      withIntermediateDirectories: true
-    )
-    defer { try? FileManager.default.removeItem(at: dir) }
-    try "background = #000011\npalette = 2=#00aa00\nfont-size = 99\n"
-      .replacingOccurrences(of: "\n", with: newline)
-      .write(
-        to: dir.appendingPathComponent("themes/Night"),
-        atomically: true,
-        encoding: .utf8,
-      )
-    try "foreground = #eeeeee\n".replacingOccurrences(of: "\n", with: newline)
-      .write(
-        to: dir.appendingPathComponent("extra"),
-        atomically: true,
-        encoding: .utf8,
-      )
-    try """
-    config-file = extra
-    config-file = ?missing
-    theme = light:Swiftty Light,dark:Night
-    palette = 2=#00ff00
-    """
-    .replacingOccurrences(of: "\n", with: newline)
-    .write(
-      to: dir.appendingPathComponent("config"),
-      atomically: true,
-      encoding: .utf8
-    )
-    var config = Configuration.load(from: dir.appendingPathComponent("config"))
-    config.themeDirectories = [dir.appendingPathComponent("themes")]
-    #expect(config.diagnostics.isEmpty)
-    let dark = config.palette(for: .dark)
-    #expect(dark.background == 0x000011)
-    #expect(dark.foreground == 0xEEEEEE)
-    #expect(dark.colors[2] == 0x00FF00)  // the config overrides the theme
-    #expect(config.fontSize == 13)  // themes only carry colors
-    #expect(config.palette(for: .light).background == 0xF8FAFD)
-    #expect(config.missingThemes.isEmpty)
-    config.theme = ThemeSelection(parsing: "Nope")
-    #expect(config.missingThemes == ["Nope"])
   }
 
   @Test(arguments: [
@@ -1145,15 +562,11 @@ struct ConfigurationTests {
 
   @Test
   func `keybindings parse and match`() {
-    var config = Configuration.parse(
-      """
-      keybind = ctrl+shift+t=text:hi\\n
-      keybind = super+c=unbind
-      keybind = performable:super+arrow_up=scroll_page_lines:-3
-      keybind = super+bogus_key=reset
-      keybind = global:super+x=reset
-      """
-    )
+    var config = Configuration.configured([
+      ("keybind", "ctrl+shift+t=text:hi\\n"), ("keybind", "super+c=unbind"),
+      ("keybind", "performable:super+arrow_up=scroll_page_lines:-3"),
+      ("keybind", "super+bogus_key=reset"), ("keybind", "global:super+x=reset"),
+    ])
     #expect(config.diagnostics.count == 2)
     let b = config.keybindings
     #expect(
@@ -1278,13 +691,13 @@ struct ConfigurationTests {
       _ value: String
     )
   {
-    var config = Configuration.parse(
-      "font-size=17\npalette=2=#abcdef\n\(key)=#123456"
-    )
+    var config = Configuration.configured([
+      ("font-size", "17"), ("palette", "2=#abcdef"), ("\(key)", "#123456"),
+    ])
     let original = config
     #expect(config.set(key, value) != nil)
     #expect(config == original)
-    config.apply("\(key)=\(value)", name: "override")
+    config.configure([("\(key)", "\(value)")])
     #expect(config.diagnostics.count == 1)
     #expect(config.diagnostics.first?.contains(key) == true)
     #expect(config.diagnostics.first?.contains(value) == true)
@@ -1299,13 +712,14 @@ struct ConfigurationTests {
   func `invalid palette overrides preserve all earlier color settings`(
     _ value: String
   ) {
-    var config = Configuration.parse(
-      "foreground=#123456\npalette=2=#abcdef\npalette=7=#fedcba"
-    )
+    var config = Configuration.configured([
+      ("foreground", "#123456"), ("palette", "2=#abcdef"),
+      ("palette", "7=#fedcba"),
+    ])
     let original = config
     #expect(config.set("palette", value) != nil)
     #expect(config == original)
-    config.apply("palette=\(value)", name: "override")
+    config.configure([("palette", "\(value)")])
     #expect(config.diagnostics.count == 1)
     config.diagnostics.removeAll()
     #expect(config == original)
