@@ -62,6 +62,9 @@ settings:
     # Extract the app targets' localizable literals into their String
     # Catalogs (Apps/WatchCompanion/Localizable.xcstrings) on build.
     SWIFT_EMIT_LOC_STRINGS: YES
+    # These apps declare no App Intents. Skip the extractor instead of
+    # invoking it without an AppIntents.framework dependency.
+    LM_SKIP_METADATA_EXTRACTION: YES
     # With iOSPackagesShouldBuildARM64e (postGenCommand) Xcode builds the
     # package products for arm64 only on the simulator, so an app slice
     # for x86_64 cannot import them. macOS 27 runs only on Apple silicon,
@@ -132,6 +135,9 @@ targets:
         <<: *directClientSettings
         INFOPLIST_FILE: Config/Generated/AttentionLinks.plist
         PRODUCT_BUNDLE_IDENTIFIER: dev.chr33s.swiftty
+        # Match the Objective-C class metadata ABI used by our SwiftPM
+        # dependencies (see Package.swift); keep arm64e authentication on.
+        OTHER_SWIFT_FLAGS: "$(inherited) -Xfrontend -no-sign-class-ro"
         # Scan Mac Code; the only target that uses the camera.
         INFOPLIST_KEY_NSCameraUsageDescription: >-
           Scan the connection code displayed by your Mac.
@@ -192,8 +198,11 @@ targets:
         # IDE has the Metal toolchain installed it puts that toolchain first,
         # so TOOLCHAIN_DIR resolves to Metal.xctoolchain, which has no Swift
         # libraries, and every link step warns "Search path ... not found".
-        # Pin the Swift toolchain; this target compiles no Metal shaders.
+        # TOOLCHAINS alone does not change the resolved TOOLCHAIN_DIR in
+        # Xcode 27.2. Pin the directory used by the linker as well; this
+        # target compiles no Metal shaders.
         TOOLCHAINS: com.apple.dt.toolchain.XcodeDefault
+        TOOLCHAIN_DIR: "$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain"
         # Pointer authentication off for this target only: Xcode builds
         # package products as arm64e only for the iOS-family SDKs it covers
         # with iOSPackagesShouldBuildARM64e, not for Mac Catalyst, so an arm64e

@@ -343,3 +343,24 @@ let package = Package(
     ),
   ],
 )
+
+// arm64e requires a consistent Objective-C class_ro_t signing ABI across
+// every linked object. Xcode builds third-party packages at their own older
+// deployment targets, where class_ro_t signing is off, even though our apps
+// require OS 27. Match that ABI for iOS until the dependencies adopt
+// it. This leaves return-address and other arm64e pointer authentication on.
+// MobileClient uses the same flag in Apps/project.yml. visionOS dependencies
+// already use signed metadata; watchOS has no third-party dependencies.
+// Both keep their default class_ro_t signing.
+for target in package.targets
+where target.type != .system && target.name != "CScrollbackChecksum"
+  && target.name != "CAllocCounter"
+{
+  target.swiftSettings =
+    (target.swiftSettings ?? []) + [
+      .unsafeFlags(
+        ["-Xfrontend", "-no-sign-class-ro"],
+        .when(platforms: [.iOS])
+      )
+    ]
+}
