@@ -218,7 +218,7 @@ public struct Configuration: Sendable, Equatable {
   /// nil uses `ThemeSelection.default`.
   public var theme: ThemeSelection?
   public var colors = ColorSet()
-  public var backgroundOpacity = 0.5
+  public var backgroundOpacity = 0.95
   /// Glass behind a translucent background; zero disables it.
   public var backgroundBlur = 20
   public var minimumContrast = 1.0

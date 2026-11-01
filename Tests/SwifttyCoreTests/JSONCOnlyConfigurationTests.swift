@@ -58,7 +58,7 @@ struct JSONCOnlyConfigurationTests {
     try Data("background=#123456".utf8).write(to: file)
     #expect(
       Themes.colors(named: "Swiftty Dark", searching: [directory])?.background
-        == 0x0C1021
+        == Themes.colors(named: "Swiftty Dark", searching: [])?.background
     )
     #expect(Themes.colors(named: file.path, searching: []) == nil)
   }

@@ -124,6 +124,12 @@ public final class TerminalView: MTKView, MTKViewDelegate {
       }
     }
     Self.surfaces.add(self)
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(systemColorsChanged),
+      name: NSColor.systemColorsDidChangeNotification,
+      object: nil
+    )
     installKittyClipboard()
     NSWorkspace.shared.notificationCenter.addObserver(
       self,
@@ -131,6 +137,13 @@ public final class TerminalView: MTKView, MTKViewDelegate {
       name: DisplayAccommodations.didChangeNotification,
       object: nil
     )
+  }
+
+  @objc
+  private func systemColorsChanged() {
+    let palette = config.palette(for: colorScheme)
+    session.mutate { $0.setDefaultPalette(palette) }
+    needsDisplay = true
   }
 
   /// Reduce Motion, Reduce Transparency or Increase Contrast changed.

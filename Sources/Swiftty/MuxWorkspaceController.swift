@@ -1258,7 +1258,16 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     )
   }
 
+  @objc
+  private func systemColorsChanged() { sendTheme() }
+
   func observeAppearance() {
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(systemColorsChanged),
+      name: NSColor.systemColorsDidChangeNotification,
+      object: nil
+    )
     appearanceObservation = NSApp.observe(\.effectiveAppearance) {
       [weak self] _, _ in
       DispatchQueue.main.async {

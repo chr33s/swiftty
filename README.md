@@ -769,6 +769,10 @@ Contrast adjust presentation without changing the file ([spec.apple.md](spec.app
 Themes use JSONC too. Place a file such as `Night.jsonc` in
 `~/.config/swiftty/themes` and set `"theme": "Night.jsonc"`. Built-in themes are
 `Swiftty Dark` and `Swiftty Light`; omitting `theme` follows the system appearance.
+On macOS these use native system text, background, selection and ANSI colors,
+including the system selection accent. Other platforms use an Apple-colored
+light/dark palette. The terminal defaults to 95% opacity over native glass;
+Reduce Transparency makes it fully opaque.
 A theme can also be selected by an explicit path. The Ghostty themes directory
 is no longer searched.
 

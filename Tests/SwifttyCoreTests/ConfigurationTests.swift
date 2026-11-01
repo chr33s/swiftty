@@ -133,8 +133,14 @@ struct ConfigurationTests {
     #expect(config.theme?.light == "Swiftty Light")
     #expect(config.theme?.dark == "Swiftty Dark")
     #expect(config.missingThemes.isEmpty)
-    #expect(config.palette(for: .light).background == 0xF8FAFD)
-    #expect(config.palette(for: .dark).background == 0x0C1021)
+    #expect(
+      config.palette(for: .light).background
+        == Themes.colors(named: "Swiftty Light", searching: [])?.background
+    )
+    #expect(
+      config.palette(for: .dark).background
+        == Themes.colors(named: "Swiftty Dark", searching: [])?.background
+    )
   }
 
   @Test(arguments: [

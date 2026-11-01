@@ -6,62 +6,62 @@ import SwifttyConfig
 public enum Themes {
   /// Maximum UTF-8 bytes read from one theme file.
   public static let maxFileBytes = 64 * 1024
-  /// Built-in themes, as theme-file text: Blackboard, forked for each
-  /// appearance.
+  /// Portable fallbacks for the native Apple light and dark palettes.
+  /// On macOS the built-ins resolve semantic AppKit colors at runtime.
   public static let builtIn: [String: String] = [
     "Swiftty Dark": """
     {
-      "background": "#0C1021",
-      "foreground": "#F8F8F8",
+      "background": "#1E1E1E",
+      "foreground": "#FFFFFF",
       "cursor": "#FFFFFF",
-      "cursor_text": "#0C1021",
-      "selection_background": "#253B76",
-      "selection_foreground": "#F8F8F8",
+      "cursor_text": "#1E1E1E",
+      "selection_background": "#3F638B",
+      "selection_foreground": "#FFFFFF",
       "palette": {
-        "0": "#0C1021",
-        "1": "#BF392A",
-        "2": "#61CE3C",
-        "3": "#FBDE2D",
-        "4": "#8DA6CE",
-        "5": "#FF6400",
-        "6": "#BECDE6",
-        "7": "#F8F8F8",
-        "8": "#7F90AA",
-        "9": "#D74E41",
-        "10": "#D8FA3C",
-        "11": "#FBDE2D",
-        "12": "#D5E0F3",
-        "13": "#FF6400",
-        "14": "#FFFFFF",
+        "0": "#1C1C1E",
+        "1": "#FF453A",
+        "2": "#32D74B",
+        "3": "#FFD60A",
+        "4": "#0A84FF",
+        "5": "#BF5AF2",
+        "6": "#64D2FF",
+        "7": "#D1D1D6",
+        "8": "#8E8E93",
+        "9": "#FF6961",
+        "10": "#6EE787",
+        "11": "#FFE570",
+        "12": "#70B7FF",
+        "13": "#DA8FFF",
+        "14": "#9DE4FF",
         "15": "#FFFFFF"
       }
     }
     """,
     "Swiftty Light": """
     {
-      "background": "#F8FAFD",
-      "foreground": "#1E2840",
-      "cursor": "#0C1021",
-      "cursor_text": "#F8FAFD",
-      "selection_background": "#C6D6EE",
-      "selection_foreground": "#1E2840",
+      "background": "#FFFFFF",
+      "foreground": "#000000",
+      "cursor": "#000000",
+      "cursor_text": "#FFFFFF",
+      "selection_background": "#B3D7FF",
+      "selection_foreground": "#000000",
       "palette": {
-        "0": "#0C1021",
-        "1": "#B03028",
-        "2": "#2E7D1B",
-        "3": "#8F6F00",
-        "4": "#3D639C",
-        "5": "#BF4D00",
-        "6": "#35708E",
-        "7": "#5B6B88",
-        "8": "#5B6B88",
-        "9": "#922921",
-        "10": "#1F6410",
-        "11": "#705700",
-        "12": "#2A4E86",
-        "13": "#9E3F00",
-        "14": "#245B77",
-        "15": "#1E2840"
+        "0": "#1C1C1E",
+        "1": "#FF3B30",
+        "2": "#28CD41",
+        "3": "#FFCC00",
+        "4": "#007AFF",
+        "5": "#AF52DE",
+        "6": "#55BEF0",
+        "7": "#C7C7CC",
+        "8": "#8E8E93",
+        "9": "#FF6259",
+        "10": "#4CD964",
+        "11": "#FFD60A",
+        "12": "#409CFF",
+        "13": "#BF5AF2",
+        "14": "#70D7FF",
+        "15": "#FFFFFF"
       }
     }
     """,
@@ -99,6 +99,9 @@ public enum Themes {
         return colors
       }
     }
+    #if os(macOS)
+    if let colors = NativeTheme.colors(named: name) { return colors }
+    #endif
     return builtIn[name].flatMap(decode)
   }
 
