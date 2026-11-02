@@ -250,12 +250,15 @@ struct HostSessionTests {
         )
       )
       try await client.send(input(1, 2, .key(SemanticKey(.enter))))
-      _ = try await client.snapshot("output") {
+      let output = try await client.snapshot("output") {
         $0.textLines.contains("hist-199")
       }
-      // Scroll this attachment back through the pane's history.
+      // Scroll this attachment back through the pane's history. Frames
+      // retained from mid-output also lack hist-199, so only frames newer
+      // than the completed output count.
       try await client.send(.viewport(epoch: 1, lines: 100))
-      let window = try await client.snapshot("history window") { shot in
+      let window = try await client.snapshot("history window", after: output) {
+        shot in
         shot.textLines.contains { $0.hasPrefix("hist-") }
           && !shot.textLines.contains("hist-199")
       }
@@ -315,7 +318,8 @@ struct HostSessionTests {
       let newest = try #require(rows(live).max())
       // Twenty small steps, as a swipe sends them, without waiting.
       for _ in 0 ..< 20 { try await client.send(.viewport(epoch: 1, lines: 5)) }
-      let window = try await client.snapshot("moved 100 lines") { shot in
+      let window = try await client.snapshot("moved 100 lines", after: live) {
+        shot in
         guard let top = rows(shot).min() else { return false }
         return top <= newest - 100
       }

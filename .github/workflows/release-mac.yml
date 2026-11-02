@@ -10,7 +10,8 @@ name: Release Swiftty.app
 # mac-v<version>-<build> prerelease at the selected commit, even when it
 # is started from a tag.
 #
-# The Namespace profile "mac" must use arm64 macOS 27 with Xcode 27 / Swift 6.4.
+# The Namespace profile "mac" must use arm64 macOS 27 with Xcode 27.2 / Swift 6.4.2
+# or newer installed; setup-macos selects the newest Xcode on the image.
 # Signing uses a temporary keychain, removed even when a later step fails.
 #   vars.DEVELOPER_ID_IDENTITY  e.g. "Developer ID Application: Name (TEAMID)"
 #   secrets.MACOS_CERTIFICATE_P12       base64 certificate AND private key (.p12)

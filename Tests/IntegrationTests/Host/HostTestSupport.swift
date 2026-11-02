@@ -223,13 +223,22 @@ final class TestClient: @unchecked Sendable {
     }
   }
 
+  /// The newest retained snapshot matching `predicate`. With `after`, only
+  /// snapshots captured later than it count, so a retained frame from
+  /// before a request cannot stand in for the request's result.
   func snapshot(
     _ what: String,
+    after: ScreenSnapshot? = nil,
     timeout: Duration = .seconds(10),
     where predicate: (ScreenSnapshot) -> Bool
   ) async throws -> ScreenSnapshot {
-    try await hostEventually(what, timeout: timeout) {
-      state.withLock { $0.snapshots.last(where: predicate) }
+    let floor = after?.screenRevision
+    return try await hostEventually(what, timeout: timeout) {
+      state.withLock { state in
+        state.snapshots.last { shot in
+          (floor.map { shot.screenRevision > $0 } ?? true) && predicate(shot)
+        }
+      }
     }
   }
 

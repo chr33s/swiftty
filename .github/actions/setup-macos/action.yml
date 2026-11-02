@@ -1,20 +1,61 @@
 name: Set up macOS
-description: Verify the Apple toolchain and install optional native test tools.
+description: Select the newest installed Xcode, verify the Apple toolchain and install optional native test tools.
 inputs:
   test-tools:
     description: Install ripgrep and tmux for native tests and formatting.
     default: 'false'
+  minimum-xcode:
+    description: Oldest acceptable Xcode version.
+    default: '27.2'
+  minimum-swift:
+    description: Oldest acceptable Apple Swift version.
+    default: '6.4.2'
+  minimum-sdk:
+    description: Oldest acceptable macOS SDK version.
+    default: '27.2'
 runs:
   using: composite
   steps:
-    - name: Verify toolchain
+    - name: Select newest Xcode
       shell: bash
       run: |
         test "$(uname -m)" = arm64
         sw_vers -productVersion | grep -E '^27\.'
-        test "$(xcodebuild -version)" = $'Xcode 27.2\nBuild version 27B52'
-        swift --version | head -1 | grep -F 'Apple Swift version 6.4.2 (swiftlang-6.4.2.1.9 clang-2100.4.1.1)'
-        test "$(xcrun --sdk macosx --show-sdk-version)" = 27.2
+        # Namespace images install several Xcodes under /Applications; the
+        # default xcode-select target may be older than the newest one.
+        newest=''
+        newest_version=''
+        for app in /Applications/Xcode*.app; do
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/version.plist")"
+          build="$(/usr/libexec/PlistBuddy -c 'Print :ProductBuildVersion' "$app/Contents/version.plist")"
+          echo "installed: $app (Xcode $version, build $build)"
+          if [ "$(printf '%s\n%s\n' "$newest_version" "$version" | sort -V | tail -1)" = "$version" ]; then
+            newest="$app"
+            newest_version="$version"
+          fi
+        done
+        test -n "$newest"
+        echo "selected: $newest"
+        echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
+    - name: Verify toolchain
+      shell: bash
+      env:
+        MINIMUM_XCODE: ${{ inputs.minimum-xcode }}
+        MINIMUM_SWIFT: ${{ inputs.minimum-swift }}
+        MINIMUM_SDK: ${{ inputs.minimum-sdk }}
+      run: |
+        at_least() { # at_least <actual> <minimum>
+          test "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$2"
+        }
+        xcodebuild -version
+        swift --version
+        xcrun --sdk macosx --show-sdk-version
+        xcode="$(xcodebuild -version | awk 'NR == 1 { print $2 }')"
+        swift="$(swift --version 2>&1 | head -1 | sed -E 's/.*Apple Swift version ([0-9.]+).*/\1/')"
+        sdk="$(xcrun --sdk macosx --show-sdk-version)"
+        at_least "$xcode" "$MINIMUM_XCODE" || { echo "::error::Xcode $xcode is older than $MINIMUM_XCODE; update the Namespace runner image"; exit 1; }
+        at_least "$swift" "$MINIMUM_SWIFT" || { echo "::error::Apple Swift $swift is older than $MINIMUM_SWIFT; update the Namespace runner image"; exit 1; }
+        at_least "$sdk" "$MINIMUM_SDK" || { echo "::error::macOS SDK $sdk is older than $MINIMUM_SDK; update the Namespace runner image"; exit 1; }
     - name: Install test tools
       if: inputs.test-tools == 'true'
       shell: bash
