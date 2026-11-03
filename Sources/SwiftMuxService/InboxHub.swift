@@ -12,6 +12,8 @@ import SwiftMuxProtocol
 /// one `resync` update telling it to refetch.
 struct InboxHub {
   struct Subscriber {
+    var requiresToken = false
+    var pendingTokens: [UUID: UInt64] = [:]
     var unacknowledged = 0
     var needsResync = false
   }
@@ -67,7 +69,10 @@ struct InboxHub {
 
   /// Produces the initial snapshot before committing a subscription.
   /// Failed admission leaves the subscriber state unchanged.
-  mutating func subscribe(_ client: UUID) throws(MuxError) -> InboxPage {
+  mutating func subscribe(
+    _ client: UUID,
+    requiresToken: Bool = false
+  ) throws(MuxError) -> InboxPage {
     guard
       subscribers[client] != nil || subscribers.count < limits.inboxSubscribers
     else {
@@ -77,7 +82,8 @@ struct InboxHub {
       )
     }
     let snapshot = try page(InboxQuery())
-    subscribers[client] = subscribers[client] ?? Subscriber()
+    subscribers[client] =
+      subscribers[client] ?? Subscriber(requiresToken: requiresToken)
     return snapshot
   }
 
@@ -93,7 +99,13 @@ struct InboxHub {
         s.needsResync = true
       } else {
         s.unacknowledged += 1
-        out.append((id, update))
+        var delivery = update
+        if s.requiresToken {
+          let token = UUID()
+          delivery.acknowledgementToken = token
+          s.pendingTokens[token] = update.revision
+        }
+        out.append((id, delivery))
       }
       subscribers[id] = s
     }
@@ -102,19 +114,34 @@ struct InboxHub {
 
   /// A subscriber took one update; returns a resync update to send when
   /// it had fallen behind and has now caught up.
-  mutating func acknowledge(_ client: UUID) -> InboxUpdate? {
+  mutating func acknowledge(
+    _ client: UUID,
+    revision: UInt64? = nil,
+    token: UUID? = nil
+  ) -> InboxUpdate? {
     guard var s = subscribers[client] else { return nil }
+    if s.requiresToken {
+      guard let token, let revision, s.pendingTokens[token] == revision else {
+        return nil
+      }
+      s.pendingTokens.removeValue(forKey: token)
+    } else if token != nil {
+      return nil
+    }
     s.unacknowledged = max(0, s.unacknowledged - 1)
     var resync: InboxUpdate?
     if s.needsResync, s.unacknowledged < limits.inboxPendingUpdates {
       s.needsResync = false
       s.unacknowledged += 1
+      let token = s.requiresToken ? UUID() : nil
+      if let token { s.pendingTokens[token] = inbox.revision }
       resync = InboxUpdate(
         revision: inbox.revision,
         counts: inbox.counts(at: Date()),
         changed: [],
         removed: [],
-        resync: true
+        resync: true,
+        acknowledgementToken: token
       )
     }
     subscribers[client] = s

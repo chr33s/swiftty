@@ -52,6 +52,9 @@ let package = Package(
     .executable(name: "swmux", targets: ["SwiftMuxCLI"]),
     .executable(name: "swroam", targets: ["SwRoamCLI"]),
     .executable(name: "swiftmux-agent", targets: ["SwiftMuxAgent"]),
+    .executable(name: "swiftmux-worker", targets: ["SwiftMuxWorker"]),
+    .executable(name: "swiftmux-guardian", targets: ["SwiftMuxGuardianDaemon"]),
+    .executable(name: "swiftmux-gateway", targets: ["SwiftMuxGatewayDaemon"]),
     .executable(name: "swmux-launcher", targets: ["SwiftMuxLauncher"]),
     .executable(name: "swiftmux-bench", targets: ["SwiftMuxBench"]),
     .executable(name: "swifttyd", targets: ["Swifttyd"]),
@@ -107,9 +110,9 @@ let package = Package(
     // links only this.
     .target(
       name: "SwifttyEngine",
-      dependencies: ["Checksum"],
+      dependencies: ["Checksum", "TerminalProcess"],
       swiftSettings: core
-    ),
+    ), .target(name: "TerminalProcess"),
     // CRC-32C instructions for verifying compressed scrollback.
     .target(name: "CScrollbackChecksum"),
     // CRC-32C with those instructions or a portable fallback: scrollback
@@ -130,6 +133,7 @@ let package = Package(
       dependencies: [
         "SwifttyCore", "SwifttyMac", "SwiftMuxClient", "SwiftMuxBridge",
         "MuxNavigation", "MuxNavigationSMX", "HostConnection", "SwifttyJS",
+        "SwiftMuxGuardian",
       ],
       resources: [.process("Localizable.xcstrings")]
     ),
@@ -139,6 +143,11 @@ let package = Package(
     .target(name: "SwiftMuxProtocol", dependencies: ["Checksum"]),
     // The local XPC channel and launchd job description; macOS only.
     .target(name: "SwiftMuxXPC", dependencies: ["SwiftMuxProtocol"]),
+    // Process/I/O ownership, deliberately independent of terminal emulation.
+    .target(
+      name: "SwiftMuxGuardian",
+      dependencies: ["TerminalProcess", "SwiftMuxProtocol", "SwiftMuxXPC"]
+    ),
     // OSC 7501 attention reducer (spec.inbox.md §3): pure, no I/O.
     .target(name: "MuxAttention", dependencies: ["SwiftMuxProtocol"]),
     // Frame export needs only the engine; import needs the renderer.
@@ -155,7 +164,7 @@ let package = Package(
       name: "SwiftMuxService",
       dependencies: [
         "SwifttyEngine", "SwiftMuxProtocol", "SwiftMuxXPC", "SwiftMuxExport",
-        "MuxAttention", "SwifttyJS",
+        "MuxAttention", "SwifttyJS", "SwiftMuxGuardian",
       ]
     ),
     // The one PTY owner: local XPC and, when configured, roaming RST/1.
@@ -163,11 +172,39 @@ let package = Package(
       name: "SwiftMuxAgent",
       dependencies: ["SwiftMuxService", "SwiftMuxProtocol", "TerminalHost"]
     ),
+    .executableTarget(
+      name: "SwiftMuxWorker",
+      dependencies: ["SwiftMuxService", "SwiftMuxGuardian", "SwiftMuxProtocol"]
+    ),
+    .executableTarget(
+      name: "SwiftMuxGuardianDaemon",
+      dependencies: ["SwiftMuxGuardian", "SwiftMuxProtocol"]
+    ),
+    .executableTarget(
+      name: "SwiftMuxGatewayDaemon",
+      dependencies: ["SwiftMuxGateway", "SwiftMuxGuardian", "SwiftMuxProtocol"]
+    ),
     // Fresh-process terminal setup: login_tty, then exec the shell in place.
     .executableTarget(name: "SwiftMuxLauncher"),
+    // Isolated signed lifecycle, worker and build-registry qualification.
+    // Fixture jobs never replace the user's installed SwiftMux registration.
+    .executableTarget(
+      name: "GuardianLifecycleProbe",
+      dependencies: [
+        "SwiftMuxService", "SwiftMuxClient", "SwiftMuxProtocol", "SwiftMuxXPC",
+        "SwiftMuxGuardian", "SwiftMuxGateway",
+      ],
+      path: "Tests/GuardianLifecycleProbe"
+    ),
     .target(
       name: "SwiftMuxClient",
       dependencies: ["SwiftMuxProtocol", "SwiftMuxXPC"]
+    ),
+    .target(
+      name: "SwiftMuxGateway",
+      dependencies: [
+        "SwiftMuxGuardian", "SwiftMuxClient", "SwiftMuxProtocol", "SwiftMuxXPC",
+      ]
     ),
     // Deep links (spec.inbox.md §4): typed destinations, the
     // opaque locator, URL validation and the navigation state machine.
@@ -207,6 +244,7 @@ let package = Package(
       name: "SwiftMuxCLI",
       dependencies: [
         "SwiftMuxTerminal", "SwiftMuxClient", "SwiftMuxProtocol", "SwiftMuxXPC",
+        "SwiftMuxGuardian",
       ]
     ),
     // UIKit views are conditional; shared frontend tests also run on macOS.
@@ -409,7 +447,7 @@ let package = Package(
       dependencies: [
         "SwiftMuxProtocol", "SwiftMuxXPC", "SwiftMuxBridge", "SwiftMuxService",
         "SwiftMuxClient", "SwiftMuxTerminal", "TTYKit", "SwifttyCore",
-        "MuxAttention", "TestSupport",
+        "MuxAttention", "TestSupport", "SwiftMuxGuardian", "SwiftMuxGateway",
       ]
     ),
     .testTarget(
@@ -441,7 +479,7 @@ let package = Package(
         "CoreTestSupport", "Swiftty", "SwifttyMac", "SwifttyCore",
         "TestSupport", "SwiftMuxService", "SwiftMuxClient", "SwiftMuxProtocol",
         "SwiftMuxXPC", "SwiftMuxExport", "MuxNavigation", "MuxNavigationSMX",
-        "HostConnection",
+        "HostConnection", "SwiftMuxGateway", "SwiftMuxGuardian",
       ]
     ),
     .testTarget(

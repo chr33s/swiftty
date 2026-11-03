@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var config: Configuration
   let workspaces: WorkspaceCoordinator
   private let muxUpdate = MuxUpdateController()
+  private let gatewayApplication: MuxGatewayApplication?
   /// Connect a Device… (one panel; it owns the Bonjour registration).
   private var connectPanel: ConnectDevicePanelController?
   /// swiftty › Settings… (one window).
@@ -29,6 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   )
 
   init(
+    gatewayApplication: MuxGatewayApplication? = nil,
+    workspaceDefaults: UserDefaults = .standard,
     listMuxWorkspaces:
       @escaping @MainActor () async throws -> WorkspaceListing = {
         try await MuxWorkspaceController.listing()
@@ -45,12 +48,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   ) {
     let config = Configuration.load()
     self.config = config
+    self.gatewayApplication = gatewayApplication
+    let list: @MainActor () async throws -> WorkspaceListing
+    let open: WorkspaceCoordinator.Open
+    if let owner = gatewayApplication {
+      list = { try await owner.listing() }
+      open = { try await owner.open($0, configuration: $1, takeover: $2) }
+    } else {
+      list = listMuxWorkspaces
+      open = openMuxWorkspace
+    }
     workspaces = WorkspaceCoordinator(
       configuration: config.accommodating(.current),
-      listWorkspaces: listMuxWorkspaces,
-      openWorkspace: openMuxWorkspace,
+      listWorkspaces: list,
+      openWorkspace: open,
       reportListError: reportMuxAttachError,
-      reportOpenError: reportMuxOpenError
+      reportOpenError: reportMuxOpenError,
+      defaults: workspaceDefaults,
+      usesGateway: gatewayApplication != nil
     )
     super.init()
   }
@@ -60,7 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// contacting anything.
   func application(_ application: NSApplication, open urls: [URL]) {
     // A burst of links: only the newest navigates.
-    guard let url = urls.last else { return }
+    guard let url = urls.last,
+      supportsLegacyOperation("External attention links")
+    else { return }
     attentionLinks.handle(url)
   }
 
@@ -69,7 +86,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     continue userActivity: NSUserActivity,
     restorationHandler: @escaping ([any NSUserActivityRestoring]) -> Void
   ) -> Bool {
-    guard userActivity.activityType == NSUserActivityTypeBrowsingWeb,
+    guard supportsLegacyOperation("External attention links"),
+      userActivity.activityType == NSUserActivityTypeBrowsingWeb,
       let url = userActivity.webpageURL
     else { return false }
     attentionLinks.handle(url)
@@ -105,6 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     connectPanel?.model.close()
     Task {
       await workspaces.terminate()
+      await gatewayApplication?.close()
       sender.reply(toApplicationShouldTerminate: true)
     }
     return .terminateLater
@@ -123,25 +142,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   // MARK: SwiftMux service
 
   @objc
-  func muxStageUpdate(_ sender: Any?) { muxUpdate.stage() }
+  func muxStageUpdate(_ sender: Any?) {
+    guard supportsLegacyOperation("App updates") else { return }
+    muxUpdate.stage()
+  }
 
   @objc
   func muxInstallUpdate(_ sender: Any?) {
+    guard supportsLegacyOperation("App updates") else { return }
     muxUpdate.install { [weak self] in
       await self?.workspaces.detachAll(closing: true)
     }
   }
 
   @objc
-  func muxCancelUpdate(_ sender: Any?) { muxUpdate.cancel() }
+  func muxCancelUpdate(_ sender: Any?) {
+    guard supportsLegacyOperation("App updates") else { return }
+    muxUpdate.cancel()
+  }
 
   /// Connection details, pairing code and foreground discovery for
   /// phones and tablets (spec.connection-setup.md D2).
   @objc
   func connectDevice(_ sender: Any?) {
+    guard supportsLegacyOperation("Device connections") else { return }
     let panel = connectPanel ?? ConnectDevicePanelController()
     connectPanel = panel
     panel.present()
+  }
+
+  private func supportsLegacyOperation(_ operation: String) -> Bool {
+    guard gatewayApplication != nil else { return true }
+    let alert = NSAlert()
+    alert.messageText = "\(operation) are not available for this gateway yet"
+    alert.informativeText = "Your workspaces remain running."
+    alert.runModal()
+    return false
   }
 
   // MARK: Configuration

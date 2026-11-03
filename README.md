@@ -200,6 +200,35 @@ validation, lifecycle and reply provenance.
 
 ## SwiftMux
 
+[spec.durability.md](spec.durability.md) proposes session survival across
+app/gateway updates and restarts, followed by planned live worker replacement.
+Exact worker-crash recovery is a deferred extension; saved layouts after reboot
+are Capability C (spec.durability.md §12.2). A separate `swiftmux-gateway` executable now composes native control,
+continuous discovery and worker routing for the durable topology. It requires
+explicit launchd service arguments and team signing; the app installer does not
+yet register or select it. The behavior below describes the current production
+implementation.
+
+For an explicitly installed durable gateway, `swmux --gateway-service NAME`
+selects its native control service. This supports `list`, `status`, `new`,
+`attach`, targeted `end`, and interactive workspace switching. Listings include
+retained unavailable workspaces and their IDs. Use an ID with `end -t ID` when
+name metadata is unavailable. `detach` as a global command, `end-all` and `agent`
+management are not yet implemented for this topology; interactive prefix detach
+is supported. An attached terminal automatically reconnects after gateway transport
+loss when its retained worker is available and its lease is free. Input typed
+during recovery is discarded; prefix then `d` still detaches. Without this option, `swmux` keeps using the existing agent.
+
+`swiftty --gateway-service NAME` selects the same explicitly installed topology
+for the native app's startup, New Workspace, chooser and windows. It does not
+install the helpers. Quit detaches windows and closes app control without ending
+sessions. Attached windows automatically seek a fresh attachment after gateway
+transport loss, preserving retained terminal state. Recovery stops if another
+controller holds the lease or the worker is unavailable; it never replays input
+or creates a replacement shell. App-managed updates, device pairing and external attention links are
+not yet available in this mode; the app does not send those operations to the
+legacy agent. Normal app launch continues to use the existing registration.
+
 [spec.multiplexer.md](spec.multiplexer.md) describes SwiftMux, the persistent
 session service: a per-user LaunchAgent (`swiftmux-agent`) owns the shells,
 PTYs, terminal engines, history and workspace layouts, and frontends connect

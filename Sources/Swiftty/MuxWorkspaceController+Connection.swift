@@ -8,6 +8,9 @@ import SwifttyCore
 struct WorkspaceListing: Sendable {
   var server: ServerInstanceID?
   var workspaces: [WorkspaceSummary]
+  /// Gateway inventory retains entries even without usable worker metadata.
+  /// There is no single worker server identity for an aggregate listing.
+  var gatewayRecords: [GatewayWorkspaceRecord]? = nil
 }
 
 extension MuxWorkspaceController {
@@ -59,6 +62,62 @@ extension MuxWorkspaceController {
       await connection.close()
       throw error
     }
+  }
+
+  /// Explicit durable topology. Never registers or connects to the legacy agent,
+  /// and never creates a workspace as a side effect of a failed route selection.
+  static func open(
+    _ selector: WorkspaceSelector,
+    configuration: Configuration,
+    gateway: MuxGatewayConnection,
+    takeover expectedLease: UInt64? = nil
+  ) async throws -> MuxWorkspaceController {
+    let routed = try await gateway.openWorkspace(
+      selector,
+      role: .controller,
+      capabilities: clientCapabilities
+    )
+    do {
+      let controller = try await open(
+        .id(routed.workspace),
+        configuration: configuration,
+        connection: routed.connection,
+        takeover: expectedLease
+      )
+      controller.gateway = gateway
+      return controller
+    } catch {
+      await routed.connection.close()
+      throw error
+    }
+  }
+
+  /// Prepare the destination window first, then retire the source. A refused
+  /// lease/takeover keeps the previous window and its connection intact.
+  static func replace(
+    _ current: MuxWorkspaceController?,
+    with selector: WorkspaceSelector,
+    configuration: Configuration,
+    gateway: MuxGatewayConnection,
+    takeover expectedLease: UInt64? = nil
+  ) async throws -> MuxWorkspaceController {
+    try Task.checkCancellation()
+    guard current?.isClosed != true else { throw CancellationError() }
+    let routed = try await gateway.openWorkspace(
+      selector,
+      role: .controller,
+      capabilities: clientCapabilities
+    )
+    let controller = try await replace(
+      current,
+      with: .id(routed.workspace),
+      configuration: configuration,
+      connection: routed.connection,
+      takeover: expectedLease
+    )
+    if current?.gateway !== gateway { controller.reconnectGateway = nil }
+    controller.gateway = gateway
+    return controller
   }
 
   // MARK: Service connection
@@ -141,6 +200,17 @@ extension MuxWorkspaceController {
     }
   }
 
+  static func listing(
+    gateway: MuxGatewayConnection
+  ) async throws -> WorkspaceListing {
+    let records = try await gateway.listWorkspaces()
+    return WorkspaceListing(
+      server: nil,
+      workspaces: records.compactMap(\.summary),
+      gatewayRecords: records
+    )
+  }
+
   /// Workspaces known to the service (no lease needed).
   static func listWorkspaces(
     createConnection: @MainActor () async throws -> MuxConnection = {
@@ -199,6 +269,8 @@ extension MuxWorkspaceController {
       await connection.close()
       throw error
     }
+    controller.gateway = current?.gateway
+    controller.reconnectGateway = current?.reconnectGateway
     do {
       try Task.checkCancellation()
       if let current {

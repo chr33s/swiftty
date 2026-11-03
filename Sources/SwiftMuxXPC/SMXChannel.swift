@@ -28,7 +28,9 @@ public final class SMXChannel: @unchecked Sendable {
   private let connection: xpc_connection_t
   /// `activate` runs once: its writes precede every event.
   private let activated = Atomic(false)
+  private let peerRequirement = Mutex<(value: String, accepted: Bool)?>(nil)
   private var handler: (@Sendable (Event) -> Void)?
+  private var endpointHandler: (@Sendable (Data, SMXEndpoint) -> Void)?
   private var closed = false
   private var recordLimit: @Sendable () -> Int = {
     SMXCodec.serverRecordLimit(.standard)
@@ -67,8 +69,21 @@ public final class SMXChannel: @unchecked Sendable {
 
   /// Requires the peer to satisfy a code-signing requirement string.
   public func requirePeer(codeSigning requirement: String) -> Bool {
-    xpc_connection_set_peer_code_signing_requirement(connection, requirement)
-      == 0
+    // libxpc traps if a signing requirement is assigned twice. Layered routing
+    // may verify the same policy; preserve that policy without reassigning it.
+    peerRequirement.withLock { installed in
+      if let installed {
+        return installed.value == requirement && installed.accepted
+      }
+      guard !activated.load(ordering: .acquiring) else { return false }
+      let accepted =
+        xpc_connection_set_peer_code_signing_requirement(
+          connection,
+          requirement
+        ) == 0
+      installed = (requirement, accepted)
+      return accepted
+    }
   }
 
   /// Checks the current receive limit before copying an XPC payload into Data.
@@ -77,6 +92,7 @@ public final class SMXChannel: @unchecked Sendable {
     recordLimit: @escaping @Sendable () -> Int = {
       SMXCodec.serverRecordLimit(.standard)
     },
+    endpointHandler: (@Sendable (Data, SMXEndpoint) -> Void)? = nil,
     _ handler: @escaping @Sendable (Event) -> Void
   ) {
     let (first, _) = activated.compareExchange(
@@ -87,6 +103,7 @@ public final class SMXChannel: @unchecked Sendable {
     precondition(first, "an SMXChannel is activated once")
     self.recordLimit = recordLimit
     self.handler = handler
+    self.endpointHandler = endpointHandler
     xpc_connection_set_event_handler(connection) { [weak self] object in
       self?.receive(object)
     }
@@ -105,7 +122,19 @@ public final class SMXChannel: @unchecked Sendable {
         finish("record exceeds \(limit) bytes")
         return
       }
-      handler?(.message(Data(bytes: bytes, count: length)))
+      if let endpoint = xpc_dictionary_get_value(object, "e") {
+        guard xpc_get_type(endpoint) == XPC_TYPE_ENDPOINT, let endpointHandler
+        else {
+          finish("unexpected or invalid XPC endpoint")
+          return
+        }
+        endpointHandler(
+          Data(bytes: bytes, count: length),
+          SMXEndpoint(endpoint: endpoint)
+        )
+      } else {
+        handler?(.message(Data(bytes: bytes, count: length)))
+      }
       return
     }
     let reason =
@@ -122,6 +151,7 @@ public final class SMXChannel: @unchecked Sendable {
     xpc_connection_cancel(connection)
     let h = handler
     handler = nil
+    endpointHandler = nil
     h?(.closed(reason))
   }
 
@@ -130,6 +160,18 @@ public final class SMXChannel: @unchecked Sendable {
     data.withUnsafeBytes { buffer in
       xpc_dictionary_set_data(message, "d", buffer.baseAddress!, buffer.count)
     }
+    xpc_connection_send_message(connection, message)
+  }
+
+  /// Transfer a live anonymous listener endpoint with one bounded record.
+  /// Receivers must explicitly opt in and authenticate the publishing peer;
+  /// possession of an endpoint is routing information, not writer authority.
+  public func send(_ data: Data, endpoint: SMXEndpoint) {
+    let message = xpc_dictionary_create_empty()
+    data.withUnsafeBytes { buffer in
+      xpc_dictionary_set_data(message, "d", buffer.baseAddress!, buffer.count)
+    }
+    xpc_dictionary_set_value(message, "e", endpoint.endpoint)
     xpc_connection_send_message(connection, message)
   }
 

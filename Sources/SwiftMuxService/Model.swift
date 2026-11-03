@@ -1,3 +1,4 @@
+import SwiftMuxGuardian
 import Dispatch
 import Foundation
 import SwiftMuxProtocol
@@ -27,6 +28,18 @@ public struct MuxServiceConfiguration: Sendable {
   public var scrollbackCompression = true
   /// Runs on the pane queue before each launch (tests hold a launch open).
   package var beforeLaunch: (@Sendable () -> Void)?
+  /// Internal process adapter selected by the workspace host. Nil keeps the
+  /// current local guardian owner; it is not a frontend-selected option.
+  var paneProcessFactory:
+    (
+      @Sendable (PaneID, WorkspaceID, DispatchQueue, MuxLimits) throws ->
+        any PaneProcess
+    )?
+
+  /// Guardian worker mode: one lifetime workspace identity, provisioned by
+  /// its supervisor. Ordinary local services continue allocating identities.
+  var workerWorkspace: WorkspaceID?
+  var requiresGatewayBinding = false
 
   public init(launcherPath: String) { self.launcherPath = launcherPath }
 }
@@ -107,6 +120,8 @@ final class Client {
   var hello: Hello?
   /// Receives `workspaces` events (metadata only, no lease).
   var observesWorkspaces = false
+  var observesWorkspaceGraph = false
+  var workspaceGraphOutstanding = false
   /// Receives `inbox` events.
   var subscribesInbox = false
   /// Bridged from the roaming transport rather than local XPC.

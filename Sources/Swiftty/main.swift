@@ -2,11 +2,21 @@ import AppKit
 import Foundation
 import ServiceManagement
 import SwiftMuxClient
+import SwiftMuxGuardian
 import SwiftMuxProtocol
 
 // `swiftty --swiftmux-agent register|unregister|status` manages the bundled
 // SwiftMux LaunchAgent without opening windows (packaging checks, scripts).
 let arguments = CommandLine.arguments
+let gatewayService: String?
+do {
+  gatewayService = try GatewayLaunchOptions.service(
+    arguments: Array(arguments.dropFirst())
+  )
+} catch {
+  FileHandle.standardError.write(Data("swiftty: \(error)\n".utf8))
+  exit(64)
+}
 // Query before replacing the bundle: another copy or a command-line process
 // with the same executable name must not suppress opening this installation.
 if arguments.dropFirst().first == "--running-app" {
@@ -66,7 +76,15 @@ if let i = arguments.firstIndex(of: "--swiftmux-agent") {
 }
 
 let app = NSApplication.shared
-let delegate = AppDelegate()
+let gatewayApplication = gatewayService.map { service in
+  MuxGatewayApplication(connect: {
+    try await MuxGatewayConnection.connect(
+      peerRequirement: GuardianPeerSigningPolicy.requirementForCurrentProcess(),
+      channel: { .connect(machService: service, queue: $0) }
+    )
+  })
+}
+let delegate = AppDelegate(gatewayApplication: gatewayApplication)
 app.delegate = delegate
 app.setActivationPolicy(.regular)
 app.run()

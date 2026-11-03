@@ -8,7 +8,7 @@ import Testing
 
 @Suite(.serialized, .timeLimit(.minutes(1)))
 struct PaneReplyPressureTests {
-  private static let program = #"""
+  static let program = #"""
     import os,sys,time,tty,threading,select
     tty.setraw(0)
     gate,result,mode=sys.argv[1:]

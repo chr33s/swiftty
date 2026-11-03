@@ -5,11 +5,15 @@ import SwiftMuxProtocol
 extension MuxService {
   // MARK: Pane creation
 
-  var paneCount: Int { panes.count + pendingLaunches }
+  var paneCount: Int { panes.count + retiringPanes.count + pendingLaunches }
 
   /// Logical history committed to live and starting panes.
   var allocatedHistoryBytes: Int {
-    panes.values.reduce(pendingHistoryBytes) {
+    let retiringBytes = retiringPanes.values.reduce(pendingHistoryBytes) {
+      let (sum, overflow) = $0.addingReportingOverflow($1.historyBytes)
+      return overflow ? Int.max : sum
+    }
+    return panes.values.reduce(retiringBytes) {
       let (sum, overflow) = $0.addingReportingOverflow($1.runtime.historyBytes)
       return overflow ? Int.max : sum
     }
@@ -72,6 +76,26 @@ extension MuxService {
     do throws(MuxError) { historyBytes = try nextHistoryShare() } catch {
       return completion(self, .failure(error))
     }
+    let processOwner: (any PaneProcess)?
+    let processQueue: DispatchQueue?
+    if let factory = configuration.paneProcessFactory {
+      let queue = DispatchQueue(
+        label: "swiftmux.pane.\(id.short)",
+        qos: .userInitiated
+      )
+      do {
+        processOwner = try factory(id, workspace, queue, limits)
+        processQueue = queue
+      } catch {
+        let failure =
+          error as? MuxError
+          ?? MuxError(.connectionLost, "pane process adapter unavailable")
+        return completion(self, .failure(failure))
+      }
+    } else {
+      processOwner = nil
+      processQueue = nil
+    }
     prepareAutomation(initialPane: id, environment: launch.environment)
     automation.starting.insert(id)
     let runtime = PaneRuntime(
@@ -84,7 +108,9 @@ extension MuxService {
       limits: limits,
       scrollbackCompression: configuration.scrollbackCompression,
       javaScriptRuntime: automation.runtime ?? configuration.javaScriptRuntime,
-      observingIO: configuration.observePaneIO
+      observingIO: configuration.observePaneIO,
+      processOwner: processOwner,
+      processQueue: processQueue
     )
     if let theme { runtime.setTheme(theme) }
     runtime.onChange = { [weak self] in self?.onQueue { $0.paneChanged(id) } }
@@ -98,53 +124,51 @@ extension MuxService {
     let epoch = endAllEpoch
     runtime.queue.async { [weak self] in
       beforeLaunch?()
-      let result: Result<Void, MuxError>
-      do throws(MuxError) {
-        try runtime.launch(launch, launcher: launcher)
-        result = .success(())
-      } catch { result = .failure(error) }
-      self?
-        .onQueue { service in
-          service.pendingLaunches -= 1
-          service.pendingHistoryBytes -= historyBytes
-          switch result {
-          case .success:
-            service.panes[id] = PaneRecord(
-              runtime: runtime,
-              workspace: workspace,
-              columns: columns,
-              rows: rows,
-              workingDirectory: launch.workingDirectory
-            )
-            // The update barrier (or end-all) arrived while this pane was
-            // starting: it never joins the frozen graph.
-            if service.quiescing || service.endAllEpoch != epoch {
-              service.panes[id]?.detachedFromLayout = true
-              runtime.terminate()
-              service.automationPaneStarted(id, succeeded: false)
-              return completion(
-                service,
-                .failure(
-                  MuxError(.quiescing, "service is preparing to update", )
-                )
+      runtime.launch(launch, launcher: launcher) { [weak self] result in
+        self?
+          .onQueue { service in
+            service.pendingLaunches -= 1
+            service.pendingHistoryBytes -= historyBytes
+            switch result {
+            case .success:
+              service.panes[id] = PaneRecord(
+                runtime: runtime,
+                workspace: workspace,
+                columns: columns,
+                rows: rows,
+                workingDirectory: launch.workingDirectory
               )
+              // The update barrier (or end-all) arrived while this pane was
+              // starting: it never joins the frozen graph.
+              if service.quiescing || service.endAllEpoch != epoch {
+                service.panes[id]?.detachedFromLayout = true
+                runtime.terminate()
+                service.automationPaneStarted(id, succeeded: false)
+                return completion(
+                  service,
+                  .failure(
+                    MuxError(.quiescing, "service is preparing to update", )
+                  )
+                )
+              }
+              completion(service, .success(id))
+              service.automationPaneStarted(id, succeeded: true)
+              // Output read before the record existed posted a change that
+              // found no pane; take it now, which also re-arms `onChange`.
+              service.paneChanged(id, reportActivity: false)
+              // Creation generation: the target may have ended meanwhile.
+              if service.locate(pane: id) == nil {
+                service.panes[id]?.detachedFromLayout = true
+                runtime.terminate()
+              }
+            case let .failure(error):
+              service.retirePane(runtime)
+              service.automationPaneStarted(id, succeeded: false)
+              completion(service, .failure(error))
+              service.checkIdle()
             }
-            completion(service, .success(id))
-            service.automationPaneStarted(id, succeeded: true)
-            // Output read before the record existed posted a change that
-            // found no pane; take it now, which also re-arms `onChange`.
-            service.paneChanged(id, reportActivity: false)
-            // Creation generation: the target may have ended meanwhile.
-            if service.locate(pane: id) == nil {
-              service.panes[id]?.detachedFromLayout = true
-              runtime.terminate()
-            }
-          case let .failure(error):
-            service.automationPaneStarted(id, succeeded: false)
-            completion(service, .failure(error))
-            service.checkIdle()
           }
-        }
+      }
     }
   }
 
@@ -158,7 +182,17 @@ extension MuxService {
         .failure(MuxError(.invalidRequest, "workspace \"\(name)\" exists"))
       )
     }
-    let wsID = WorkspaceID()
+    if configuration.workerWorkspace != nil {
+      guard !workerWorkspaceClaimed else {
+        return reply(
+          .failure(
+            MuxError(.invalidRequest, "worker workspace already claimed")
+          )
+        )
+      }
+      workerWorkspaceClaimed = true
+    }
+    let wsID = configuration.workerWorkspace ?? WorkspaceID()
     spawnPane(
       workspace: wsID,
       columns: request.columns,
@@ -166,7 +200,13 @@ extension MuxService {
       launch: request.launch
     ) { service, result in
       switch result {
-      case let .failure(error): reply(.failure(error))
+      case let .failure(error):
+        // An uncertain launch can have a retained child. A new request must
+        // never repair that state by launching another workspace shell.
+        if error.code != .connectionLost {
+          service.workerWorkspaceClaimed = false
+        }
+        reply(.failure(error))
       case let .success(pane):
         let tab = Tab(name: "1", layout: .pane(pane), activePane: pane)
         var name = request.name ?? "\(service.workspaces.count)"
@@ -184,6 +224,7 @@ extension MuxService {
           launch: request.launch
         )
         service.workspaces.append(ws)
+        service.publishWorkspaces()
         reply(.success(.created(service.snapshot(ws))))
       }
     }
@@ -281,7 +322,7 @@ extension MuxService {
     panes[pane]?.detachedFromLayout = true
     if let record = panes[pane] {
       if record.exitStatus != nil {
-        panes.removeValue(forKey: pane)
+        retirePaneRecord(pane)
       } else {
         record.runtime.terminate()
       }
@@ -405,6 +446,7 @@ extension MuxService {
       current.frames[pane]?.supersededThrough = nextCapture
     }
     leases[wsID] = current
+    publishWorkspaces()
     for index in (viewers[wsID] ?? []).indices {
       for (pane, generation) in resized {
         viewers[wsID]![index].readiness.resized(pane, to: generation)

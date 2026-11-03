@@ -1,3 +1,4 @@
+import Darwin
 import Dispatch
 import Foundation
 import SwiftMuxProtocol
@@ -32,6 +33,14 @@ public actor MuxConnection {
     queue.asUnownedSerialExecutor()
   }
 
+  private let relaysAcknowledgements: Bool
+  private var relayedFrames: [PaneID: FrameIdentity] = [:]
+  private struct InboxCredit: Equatable {
+    let revision: UInt64
+    let token: UUID?
+  }
+  private var relayedInbox: [InboxCredit] = []
+  private var relayInboxChange: (id: UInt64, on: Bool)?
   private let channel: SMXChannel
   private nonisolated let inputAdmission = MuxInputAdmission()
   private nonisolated let commandAdmission = MuxCommandAdmission()
@@ -150,8 +159,10 @@ public actor MuxConnection {
   private init(
     channel: SMXChannel,
     queue: DispatchSerialQueue,
-    capabilities: ClientCapabilities
+    capabilities: ClientCapabilities,
+    relaysAcknowledgements: Bool = false
   ) {
+    self.relaysAcknowledgements = relaysAcknowledgements
     self.channel = channel
     self.queue = queue
     self.capabilities = Self.negotiable(capabilities)
@@ -246,6 +257,57 @@ public actor MuxConnection {
     )
   }
 
+  /// Connects to a guardian-discovered worker, validating its OS identity and
+  /// service incarnation before exposing the connection to a gateway caller.
+  package static func connectWorker(
+    endpoint: SMXEndpoint,
+    expectedPID: Int32,
+    expectedServer: ServerInstanceID,
+    peerRequirement: String?,
+    frontend: FrontendKind,
+    terminalProfile: String? = nil,
+    capabilities: ClientCapabilities = .supported,
+    forwardedTransport: LeaseHolder.Transport? = nil,
+    relaysAcknowledgements: Bool = false
+  ) async throws -> MuxConnection {
+    try Task.checkCancellation()
+    guard expectedPID > 0 else {
+      throw MuxError(.unauthorized, "invalid worker PID")
+    }
+    let queue = DispatchSerialQueue(
+      label: "swiftmux.worker.client",
+      qos: .userInitiated
+    )
+    let channel = SMXChannel.connect(endpoint: endpoint, queue: queue)
+    guard peerRequirement.map({ channel.requirePeer(codeSigning: $0) }) ?? true
+    else {
+      channel.cancel()
+      throw MuxError(.unauthorized, "worker signing requirement rejected")
+    }
+    let connection = try await start(
+      channel,
+      queue,
+      frontend,
+      terminalProfile,
+      capabilities: capabilities,
+      forwardedTransport: forwardedTransport,
+      relaysAcknowledgements: relaysAcknowledgements
+    )
+    do {
+      guard channel.peerEUID == geteuid(), channel.peerPID == expectedPID,
+        await connection.welcome?.server == expectedServer
+      else {
+        throw MuxError(.unauthorized, "discovered worker identity changed")
+      }
+      try await connection.checkOpen()
+      try Task.checkCancellation()
+      return connection
+    } catch {
+      await connection.close()
+      throw error
+    }
+  }
+
   /// Connects to an in-process anonymous listener (tests).
   public static func connect(
     endpoint: SMXEndpoint,
@@ -294,6 +356,8 @@ public actor MuxConnection {
     _ frontend: FrontendKind,
     _ profile: String?,
     capabilities: ClientCapabilities = .supported,
+    forwardedTransport: LeaseHolder.Transport? = nil,
+    relaysAcknowledgements: Bool = false,
     beforeHandshakeTimeoutForTesting: (@Sendable () async -> Void)? = nil,
     beforeReturnForTesting: (@Sendable (MuxConnection) async throws -> Void)? =
       nil
@@ -301,17 +365,27 @@ public actor MuxConnection {
     let connection = MuxConnection(
       channel: channel,
       queue: queue,
-      capabilities: capabilities
+      capabilities: capabilities,
+      relaysAcknowledgements: relaysAcknowledgements
     )
     do {
       try await connection.open(
         Hello(
           frontend: frontend,
           terminalProfile: profile,
-          capabilities: capabilities
+          capabilities: capabilities,
+          forwardedTransport: forwardedTransport
         ),
         beforeHandshakeTimeoutForTesting: beforeHandshakeTimeoutForTesting
       )
+      if let forwardedTransport,
+        await connection.welcome?.forwardedTransport != forwardedTransport
+      {
+        throw MuxError(
+          .incompatibleVersion,
+          "worker did not acknowledge forwarded transport"
+        )
+      }
       try await beforeReturnForTesting?(connection)
       try await connection.checkOpen()
       try Task.checkCancellation()
@@ -474,6 +548,18 @@ public actor MuxConnection {
       // with the first reply. Unknown or duplicate replies cannot mutate
       // the attachment or retire input belonging to the current lease.
       guard commandAdmissions.removeValue(forKey: id) != nil else { return }
+      if let change = relayInboxChange, change.id == id {
+        relayInboxChange = nil
+        if !change.on, case .success = result {
+          relayedInbox.removeAll()
+          events = events.dropFirst(eventHead)
+            .filter {
+              if case .inbox = $0 { return false };
+              return true
+            }
+          eventHead = 0
+        }
+      }
       // The new workspace's panes get their own Ready.
       if switchRequests.remove(id) != nil, case .success = result {
         readiness = nil
@@ -491,6 +577,7 @@ public actor MuxConnection {
         // lease ID must not reuse acknowledged or outstanding input IDs.
         if self.attachment != attachment {
           failPendingInputs(MuxError(.notAttached))
+          relayedFrames.removeAll()
           nextInput = 1
           // Frames and Ready of an earlier attachment do not gate this one.
           readiness = nil
@@ -537,9 +624,10 @@ public actor MuxConnection {
         else { return }
         readiness = notice
       case let .layout(snapshot):
-        installation.retain(panes: Set(snapshot.panes.map(\.id)))
-        let shown = Set(snapshot.panes.map(\.id))
-        deltaBases = deltaBases.filter { shown.contains($0.key) }
+        let panes = Set(snapshot.panes.map(\.id))
+        installation.retain(panes: panes)
+        deltaBases = deltaBases.filter { panes.contains($0.key) }
+        relayedFrames = relayedFrames.filter { panes.contains($0.key) }
       case let .frameDelta(delta):
         if let frame = resolve(delta) {
           dispatch(.event(.frame(frame)), validated: true)
@@ -579,6 +667,7 @@ public actor MuxConnection {
       default: break
       }
       if case .detached = event {
+        relayedFrames.removeAll()
         attachment = nil
         readiness = nil
         installation = FrameInstallation()
@@ -607,9 +696,43 @@ public actor MuxConnection {
   private func take(_ event: MuxEvent) {
     switch event {
     case let .frame(frame):
-      guard !suppressesFrameAcknowledgement else { return }
-      acknowledgeFrame(frame.identity)
-    case let .inbox(update): transmit(.inboxAck(revision: update.revision))
+      if relaysAcknowledgements {
+        guard frame.identity.attachment == attachment else { return }
+        guard relayedFrames[frame.identity.pane] == nil,
+          relayedFrames.count
+            < (welcome?.limits.maxPanes ?? MuxLimits.standard.maxPanes)
+        else {
+          fail(MuxError(.resourceLimit, "relay frame credit exceeded"));
+          return
+        }
+        relayedFrames[frame.identity.pane] = frame.identity
+      } else if !suppressesFrameAcknowledgement {
+        acknowledgeFrame(frame.identity)
+      }
+    case let .inbox(update):
+      if relaysAcknowledgements {
+        guard
+          relayedInbox.count
+            < (welcome?.limits.inboxPendingUpdates
+              ?? MuxLimits.standard.inboxPendingUpdates)
+        else {
+          fail(MuxError(.resourceLimit, "relay inbox credit exceeded"));
+          return
+        }
+        relayedInbox.append(
+          InboxCredit(
+            revision: update.revision,
+            token: update.acknowledgementToken
+          )
+        )
+      } else {
+        transmit(
+          .inboxAck(
+            revision: update.revision,
+            token: update.acknowledgementToken
+          )
+        )
+      }
     default: break
     }
   }
@@ -621,6 +744,8 @@ public actor MuxConnection {
     guard !isClosed else { return }
     isClosed = true
     closedError = error
+    relayedFrames.removeAll()
+    relayedInbox.removeAll()
     attachment = nil
     handshake?.resume(throwing: error)
     handshake = nil
@@ -635,6 +760,7 @@ public actor MuxConnection {
     clearRequestTimeouts()
     commandAdmissions = [:]
     switchRequests = []
+    relayInboxChange = nil
     for c in requests.values { c.resume(throwing: error) }
     requests = [:]
     for c in callbacks.values { c(.failure(error)) }
@@ -811,6 +937,30 @@ public actor MuxConnection {
 
   /// Releases one frame's credit. Tests call it to release a frame without
   /// taking the buffered event.
+  /// A relay consumes an event without granting transport credit. Only the
+  /// downstream consumer's exact acknowledgement releases the held record.
+  package func acknowledgeRelayedFrame(_ identity: FrameIdentity) throws {
+    try checkOpen()
+    guard relaysAcknowledgements, identity.server == welcome?.server,
+      identity.attachment == attachment,
+      relayedFrames[identity.pane] == identity
+    else { throw MuxError(.staleAttachment, "no matching relayed frame") }
+    relayedFrames.removeValue(forKey: identity.pane)
+    acknowledgeFrame(identity)
+  }
+
+  package func acknowledgeRelayedInbox(
+    revision: UInt64,
+    token: UUID? = nil
+  ) throws {
+    try checkOpen()
+    guard relaysAcknowledgements,
+      relayedInbox.first == InboxCredit(revision: revision, token: token)
+    else { throw MuxError(.staleRevision, "no matching relayed inbox update") }
+    relayedInbox.removeFirst()
+    transmit(.inboxAck(revision: revision, token: token))
+  }
+
   package func acknowledgeFrame(_ identity: FrameIdentity) {
     transmit(
       .frameAck(
@@ -824,11 +974,28 @@ public actor MuxConnection {
   /// Sends one request. A request too large to encode is refused alone;
   /// the connection stays up.
   private func request(_ id: UInt64, _ command: MuxCommand) -> MuxError? {
-    do {
+    do throws(MuxError) {
+      if relaysAcknowledgements, case let .subscribeInbox(on) = command {
+        guard relayInboxChange == nil else {
+          throw MuxError(.quiescing, "inbox subscription change is pending")
+        }
+        guard
+          !on
+            || (welcome?.features.contains(.inboxAcknowledgementTokens) == true
+              && capabilities.contains(.inboxAcknowledgementTokens))
+        else {
+          throw MuxError(
+            .incompatibleVersion,
+            "relay inbox requires acknowledgement tokens"
+          )
+        }
+        relayInboxChange = (id, on)
+      }
       channel.send(try encode(.request(id: id, command: wire(command))))
       if case .switchWorkspace = command { switchRequests.insert(id) }
       return nil
     } catch {
+      if relayInboxChange?.id == id { relayInboxChange = nil }
       commandAdmissions.removeValue(forKey: id)
       return error
     }
@@ -1424,6 +1591,8 @@ public actor MuxConnection {
     closedDeliberately = true
     let error = MuxError(.connectionLost, "closed")
     closedError = error
+    relayedFrames.removeAll()
+    relayedInbox.removeAll()
     attachment = nil
     failPending(error)
     if let waiter {

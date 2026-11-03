@@ -2,6 +2,7 @@ import Foundation
 import Security
 import Testing
 
+@testable import SwiftMuxGuardian
 @testable import SwiftMuxService
 
 struct PeerSigningPolicyTests {

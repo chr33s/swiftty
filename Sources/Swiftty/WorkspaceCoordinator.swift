@@ -34,6 +34,7 @@ final class WorkspaceCoordinator {
   var configuration: Configuration
   private let listWorkspaces: @MainActor () async throws -> WorkspaceListing
   private let openWorkspace: Open
+  private let usesGateway: Bool
   private let reportListError: @MainActor (any Error) -> Void
   private let reportOpenError: @MainActor (any Error) -> Void
   private let defaults: UserDefaults
@@ -51,11 +52,13 @@ final class WorkspaceCoordinator {
     openWorkspace: @escaping Open,
     reportListError: @escaping @MainActor (any Error) -> Void,
     reportOpenError: @escaping @MainActor (any Error) -> Void,
-    defaults: UserDefaults = .standard
+    defaults: UserDefaults = .standard,
+    usesGateway: Bool = false
   ) {
     self.configuration = configuration
     self.listWorkspaces = listWorkspaces
     self.openWorkspace = openWorkspace
+    self.usesGateway = usesGateway
     self.reportListError = reportListError
     self.reportOpenError = reportOpenError
     self.defaults = defaults
@@ -171,6 +174,22 @@ final class WorkspaceCoordinator {
       ?? controllers.first {
         !$0.isClosed && $0.attachedWorkspace == target.workspace
       }
+    if usesGateway, current == nil {
+      let controller = try await openWorkspace(
+        .id(target.workspace),
+        configuration,
+        lease
+      )
+      guard !terminating, !Task.isCancelled else {
+        await controller.detach()
+        controller.close()
+        throw CancellationError()
+      }
+      install(controller)
+      controller.showWindow(nil)
+      try await controller.revealAttention(pane: target.pane, tab: target.tab)
+      return
+    }
     _ = try await MuxWorkspaceController.reveal(
       target,
       in: current,
@@ -211,6 +230,10 @@ final class WorkspaceCoordinator {
   }
 
   private func present(_ result: WorkspaceListing) {
+    if let records = result.gatewayRecords {
+      presentGateway(records);
+      return
+    }
     let list = result.workspaces
     let alert = NSAlert()
     alert.informativeText = "Workspaces keep running after their windows close."
@@ -250,6 +273,65 @@ final class WorkspaceCoordinator {
     }
   }
 
+  private func presentGateway(_ records: [GatewayWorkspaceRecord]) {
+    guard !records.isEmpty else {
+      present(WorkspaceListing(server: nil, workspaces: []))
+      return
+    }
+    let alert = NSAlert()
+    alert.messageText = "Open Workspace"
+    alert.informativeText =
+      "Unavailable workspaces retain their processes. Creating a new workspace does not replace or end them."
+    let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 420, height: 26))
+    for record in records {
+      let state: String
+      switch record.state {
+      case .available:
+        state =
+          controller(holding: record.workspace) != nil
+          ? "open"
+          : record.summary?.isAttached == true
+            ? "in use elsewhere" : "available"
+      case .starting: state = "starting"
+      case .discovering: state = "discovering"
+      case .empty: state = "empty worker"
+      case .unavailable: state = "unavailable; processes retained"
+      }
+      let name =
+        record.summary.map { DisplayText.sanitize($0.name) }
+        ?? record.workspace.description
+      popup.addItem(withTitle: "\(name) — \(state)")
+    }
+    if let index = records.firstIndex(where: { $0.workspace == lastWorkspace })
+    {
+      popup.selectItem(at: index)
+    }
+    alert.accessoryView = popup
+    alert.addButton(withTitle: "Open")
+    alert.addButton(withTitle: "New Workspace")
+    alert.addButton(withTitle: "Cancel")
+    switch alert.runModal() {
+    case .alertFirstButtonReturn:
+      let record = records[popup.indexOfSelectedItem]
+      guard record.state == .available, let summary = record.summary else {
+        let error: MuxError
+        if case let .unavailable(reason) = record.state {
+          error = reason
+        } else {
+          error = MuxError(
+            .quiescing,
+            "workspace \(record.workspace) is not ready"
+          )
+        }
+        reportOpenError(error)
+        return
+      }
+      openChosen(summary, server: nil)
+    case .alertSecondButtonReturn: create()
+    default: break
+    }
+  }
+
   private func openChosen(_ ws: WorkspaceSummary, server: ServerInstanceID?) {
     guard controller(holding: ws.id) == nil, ws.isAttached else {
       return open(ws.id, server: server)
@@ -283,7 +365,7 @@ final class WorkspaceCoordinator {
         do {
           let result = try await listWorkspaces()
           guard !terminating else { return }
-          switch Self.launchAction(result.workspaces, last: lastWorkspace) {
+          switch Self.launchAction(result, last: lastWorkspace) {
           case .open(let id): open(id, server: result.server)
           case .create: create()
           case .choose: present(result)
@@ -298,6 +380,27 @@ final class WorkspaceCoordinator {
     case open(WorkspaceID)
     case create
     case choose
+  }
+
+  nonisolated static func launchAction(
+    _ listing: WorkspaceListing,
+    last: WorkspaceID?
+  ) -> LaunchAction {
+    guard let records = listing.gatewayRecords else {
+      return launchAction(listing.workspaces, last: last)
+    }
+    guard !records.isEmpty else { return .create }
+    let available = records.filter {
+      $0.state == .available && $0.summary?.isAttached == false
+    }
+    if let last, available.contains(where: { $0.workspace == last }) {
+      return .open(last)
+    }
+    // Unknown/unavailable records must not disappear from startup policy.
+    if records.count == 1, let only = available.first {
+      return .open(only.workspace)
+    }
+    return .choose
   }
 
   nonisolated static func launchAction(

@@ -100,6 +100,82 @@ struct WorkspaceLaunchActionTests {
   let a = WorkspaceID()
   let b = WorkspaceID()
 
+  @Test(arguments: [
+    GatewayWorkspaceRecord.State.starting, .discovering, .empty,
+    .unavailable(MuxError(.connectionLost)),
+  ])
+  func retainedGatewayEntriesNeverTriggerAutomaticCreation(
+    state: GatewayWorkspaceRecord.State
+  ) {
+    let retained = GatewayWorkspaceRecord(
+      workspace: a,
+      state: state,
+      summary: nil
+    )
+    let listing = WorkspaceListing(
+      server: nil,
+      workspaces: [],
+      gatewayRecords: [retained]
+    )
+    #expect(WorkspaceCoordinator.launchAction(listing, last: a) == .choose)
+    let healthy = GatewayWorkspaceRecord(
+      workspace: b,
+      state: .available,
+      summary: summary(b)
+    )
+    let mixed = WorkspaceListing(
+      server: nil,
+      workspaces: [summary(b)],
+      gatewayRecords: [retained, healthy]
+    )
+    #expect(WorkspaceCoordinator.launchAction(mixed, last: a) == .choose)
+    #expect(WorkspaceCoordinator.launchAction(mixed, last: nil) == .choose)
+    #expect(WorkspaceCoordinator.launchAction(mixed, last: b) == .open(b))
+  }
+
+  @Test
+  func gatewayStartupCreatesOnlyForAnEmptyInventory() {
+    let empty = WorkspaceListing(
+      server: nil,
+      workspaces: [],
+      gatewayRecords: []
+    )
+    #expect(WorkspaceCoordinator.launchAction(empty, last: a) == .create)
+    let attached = GatewayWorkspaceRecord(
+      workspace: a,
+      state: .available,
+      summary: summary(a, attached: true)
+    )
+    let busy = WorkspaceListing(
+      server: nil,
+      workspaces: [summary(a, attached: true)],
+      gatewayRecords: [attached]
+    )
+    #expect(WorkspaceCoordinator.launchAction(busy, last: a) == .choose)
+    let ready = WorkspaceListing(
+      server: nil,
+      workspaces: [summary(a)],
+      gatewayRecords: [
+        GatewayWorkspaceRecord(
+          workspace: a,
+          state: .available,
+          summary: summary(a)
+        )
+      ]
+    )
+    #expect(WorkspaceCoordinator.launchAction(ready, last: nil) == .open(a))
+    let missingSummary = WorkspaceListing(
+      server: nil,
+      workspaces: [],
+      gatewayRecords: [
+        GatewayWorkspaceRecord(workspace: a, state: .available, summary: nil)
+      ]
+    )
+    #expect(
+      WorkspaceCoordinator.launchAction(missingSummary, last: nil) == .choose
+    )
+  }
+
   @Test
   func `the last workspace reopens when free`() {
     let action = WorkspaceCoordinator.launchAction(

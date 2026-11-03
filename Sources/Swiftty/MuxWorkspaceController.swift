@@ -89,7 +89,13 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   /// Receives the window that replaced this one after it lost its lease
   /// (inbox "Open" reattaching); the app keeps one SwiftMux window.
   var onReplaced: ((MuxWorkspaceController) -> Void)?
-  /// Connects such a replacement (tests use an in-process service).
+  /// Shared native control for routed windows. Window closure releases only
+  /// its worker transport; the caller owns this control connection.
+  var gateway: MuxGatewayConnection?
+  /// Shared app control is refreshed only for a new explicit attachment attempt.
+  var reconnectGateway: (@MainActor () async throws -> MuxGatewayConnection)?
+  var gatewayRecovery: Task<Void, Never>?
+  /// Connects a legacy replacement (tests use an in-process service).
   var connectService: @MainActor () async throws -> MuxConnection = {
     try await MuxWorkspaceController.connect()
   }
@@ -273,11 +279,37 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
       }
     }
     guard current?.isClosed != true else { throw CancellationError() }
+    var selectedGateway = current?.gateway
+    let openConnection: @MainActor () async throws -> MuxConnection
+    if let reconnect = current?.reconnectGateway {
+      openConnection = {
+        let gateway = try await reconnect()
+        selectedGateway = gateway
+        return
+          try await gateway.openWorkspace(
+            .id(target.workspace),
+            role: .controller,
+            capabilities: clientCapabilities
+          )
+          .connection
+      }
+    } else if let gateway = selectedGateway {
+      openConnection = {
+        try await gateway.openWorkspace(
+          .id(target.workspace),
+          role: .controller,
+          capabilities: clientCapabilities
+        )
+        .connection
+      }
+    } else {
+      openConnection = connect
+    }
     let connection: MuxConnection
     if let current {
-      connection = try await current.connectionAttempts.connect(connect)
+      connection = try await current.connectionAttempts.connect(openConnection)
     } else {
-      connection = try await connect()
+      connection = try await openConnection()
     }
     let controller = try await replace(
       current,
@@ -291,6 +323,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
       controller.close()
       throw error
     }
+    controller.gateway = selectedGateway
     attached(controller)
     try await controller.revealAttention(pane: target.pane, tab: target.tab)
     return controller
@@ -353,9 +386,13 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
             }
           }
           if !Task.isCancelled {
-            await self?.connectionEnded("connection closed")
+            await self?.transportEnded("connection closed")
           }
-        } catch { await self?.connectionEnded(String(describing: error)) }
+        } catch {
+          if !Task.isCancelled {
+            await self?.transportEnded(String(describing: error))
+          }
+        }
       }
     )
   }
@@ -396,9 +433,16 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
       refreshInbox()
     case let .clipboardRead(request): handleClipboardRead(request)
     case let .clipboardWrite(request): handleClipboardWrite(request)
-    case .paste, .frameUnavailable, .frame, .frameDelta, .workspaces, .ready:
+    case .paste, .frameUnavailable, .frame, .frameDelta, .workspaces,
+      .workspaceGraph, .ready:
       break
     }
+  }
+
+  private func transportEnded(_ reason: String) {
+    let recover = holdsLease && reconnectGateway != nil
+    connectionEnded(reason)
+    if recover { recoverGatewayAttachment() }
   }
 
   private func connectionEnded(_ reason: String) {
@@ -1383,6 +1427,8 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   func detach() async {
     guard !closed else { return }
     closed = true
+    gatewayRecovery?.cancel()
+    gatewayRecovery = nil
     connectionAttempts.cancel()
     inboxReadID = UUID()
     detached = true
@@ -1572,6 +1618,8 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
 
   func windowWillClose(_ notification: Notification) {
     closeRequested = true
+    gatewayRecovery?.cancel()
+    gatewayRecovery = nil
     connectionAttempts.cancel()
     detached = true
     stopPipelines()

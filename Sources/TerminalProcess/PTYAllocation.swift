@@ -18,7 +18,7 @@ package enum PTYAllocation {
     }
   }
 
-  static func redrive(
+  package static func redrive(
     _ allocate: () -> (result: Int32, error: Int32)
   ) throws(POSIXError) {
     for attempt in 0 ..< 3 {

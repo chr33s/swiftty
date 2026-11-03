@@ -6,6 +6,94 @@ import Testing
 
 struct InboxHubTests {
   @Test
+  func deliveryTokensFenceStaleSubscriptionsAndDuplicateAcknowledgements()
+    throws
+  {
+    var limits = MuxLimits.standard
+    limits.inboxPendingUpdates = 1
+    var hub = InboxHub(serviceEpoch: ServerInstanceID(), limits: limits)
+    let client = UUID()
+    let pane = PaneID()
+    let epoch = TerminalEpochID()
+    let context = AttentionContext(workspace: WorkspaceID(), tab: nil)
+    _ = try hub.subscribe(client, requiresToken: true)
+    hub.apply(
+      [.report(StatusRecord(path: "a", state: .blocked))],
+      pane: pane,
+      epoch: epoch,
+      context: context
+    )
+    let old = try #require(hub.flush().first?.1)
+    let oldToken = try #require(old.acknowledgementToken)
+    hub.unsubscribe(client)
+    _ = try hub.subscribe(client, requiresToken: true)
+    hub.apply(
+      [.report(StatusRecord(path: "b", state: .blocked))],
+      pane: pane,
+      epoch: epoch,
+      context: context
+    )
+    let current = try #require(hub.flush().first?.1)
+    let token = try #require(current.acknowledgementToken)
+    #expect(token != oldToken)
+    hub.apply(
+      [.report(StatusRecord(path: "c", state: .blocked))],
+      pane: pane,
+      epoch: epoch,
+      context: context
+    )
+    #expect(hub.flush().isEmpty)
+    #expect(hub.acknowledge(client) == nil)
+    #expect(
+      hub.acknowledge(client, revision: old.revision, token: oldToken) == nil
+    )
+    #expect(
+      hub.acknowledge(client, revision: current.revision + 1, token: token)
+        == nil
+    )
+    #expect(hub.subscribers[client]?.unacknowledged == 1)
+    #expect(hub.subscribers[client]?.needsResync == true)
+    let acknowledged = hub.acknowledge(
+      client,
+      revision: current.revision,
+      token: token
+    )
+    let resync = try #require(acknowledged)
+    let resyncToken = try #require(resync.acknowledgementToken)
+    #expect(resync.resync)
+    #expect(resyncToken != token)
+    #expect(
+      hub.acknowledge(client, revision: current.revision, token: token) == nil
+    )
+    #expect(hub.subscribers[client]?.pendingTokens.count == 1)
+    #expect(
+      hub.acknowledge(client, revision: resync.revision, token: resyncToken)
+        == nil
+    )
+    #expect(hub.subscribers[client]?.unacknowledged == 0)
+    #expect(hub.subscribers[client]?.pendingTokens.isEmpty == true)
+  }
+
+  @Test
+  func legacyInboxAcknowledgementStillDecodes() throws {
+    let data = Data(#"{"inboxAck":{"revision":7}}"#.utf8)
+    guard
+      case let .inboxAck(revision, token) = try SMXCodec.decode(
+        ClientMessage.self,
+        from: data,
+        limit: 4096
+      )
+    else {
+      throw MuxError(
+        .invalidRequest,
+        "legacy inbox acknowledgement did not decode"
+      )
+    }
+    #expect(revision == 7)
+    #expect(token == nil)
+  }
+
+  @Test
   func `oversized reducer batches reach subscribers as resync notifications`()
     throws
   {

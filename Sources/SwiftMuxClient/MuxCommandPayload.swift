@@ -116,9 +116,10 @@ private struct MuxCommandPayload {
       try clipboard(contents)
     case .clipboardReadResult, .clipboardWriteResult: break
     case .status, .listWorkspaces, .detachActive, .endAllWorkspaces, .quiesce,
-      .detach, .observeWorkspaces, .subscribeInbox, .selectTab, .endTab,
-      .focusPane, .toggleZoom, .endPane, .scroll, .searchStep, .endSearch,
-      .clearScreen, .resetTerminal, .link, .commandOutput:
+      .detach, .observeWorkspaces, .observeWorkspaceGraph, .subscribeInbox,
+      .selectTab, .endTab, .focusPane, .toggleZoom, .endPane, .scroll,
+      .searchStep, .endSearch, .clearScreen, .resetTerminal, .link,
+      .commandOutput:
       break
     }
   }
@@ -128,4 +129,11 @@ extension MuxCommandAdmission {
   static func bytes(_ command: MuxCommand) throws(MuxError) -> Int {
     try MuxCommandPayload.bytes(command, limit: maxBytes)
   }
+}
+
+extension MuxConnection {
+  /// Shared preflight accounting for gateway work retained before connection.
+  package nonisolated static func commandPayloadBytes(
+    _ command: MuxCommand
+  ) throws(MuxError) -> Int { try MuxCommandAdmission.bytes(command) }
 }

@@ -227,6 +227,8 @@ public struct InboxPage: Codable, Sendable, Hashable {
 /// Coalesced inbox change, sent to subscribers after reduction.
 public struct InboxUpdate: Codable, Sendable, Hashable {
   public var revision: UInt64
+  /// Unique per delivery; negotiated clients must echo it to release credit.
+  public var acknowledgementToken: UUID?
   public var counts: InboxCounts
   public var changed: [AttentionItem]
   public var removed: [OccurrenceID]
@@ -239,9 +241,11 @@ public struct InboxUpdate: Codable, Sendable, Hashable {
     counts: InboxCounts,
     changed: [AttentionItem],
     removed: [OccurrenceID],
-    resync: Bool = false
+    resync: Bool = false,
+    acknowledgementToken: UUID? = nil
   ) {
     self.revision = revision
+    self.acknowledgementToken = acknowledgementToken
     self.counts = counts
     self.changed = changed
     self.removed = removed

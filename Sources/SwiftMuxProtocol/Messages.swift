@@ -88,8 +88,13 @@ public struct ClientCapabilities: OptionSet, Codable, Sendable, Equatable {
   /// The client applies frame deltas and sends `requestFullFrame`.
   public static let frameDeltas = ClientCapabilities(rawValue: 1 << 5)
 
+  public static let inboxAcknowledgementTokens = ClientCapabilities(
+    rawValue: 1 << 6
+  )
+
   public static let supported: ClientCapabilities = [
     .attachReadiness, .observers, .viewerViewport, .binaryFrames, .frameDeltas,
+    .inboxAcknowledgementTokens,
   ]
 }
 
@@ -106,23 +111,28 @@ public struct Hello: Codable, Sendable {
   public var terminalProfile: String?
   /// Empty when the peer omitted the field (single controller only).
   public var capabilities: ClientCapabilities
+  /// Accepted only from the currently authenticated gateway by a scoped worker.
+  public var forwardedTransport: LeaseHolder.Transport?
 
   public init(
     frontend: FrontendKind,
     terminalProfile: String? = nil,
     protocolVersion: Int = SMX.protocolVersion,
     build: String = SMX.build,
-    capabilities: ClientCapabilities = .supported
+    capabilities: ClientCapabilities = .supported,
+    forwardedTransport: LeaseHolder.Transport? = nil
   ) {
     self.protocolVersion = protocolVersion
     self.build = build
     self.frontend = frontend
     self.terminalProfile = terminalProfile
     self.capabilities = capabilities
+    self.forwardedTransport = forwardedTransport
   }
 
   private enum CodingKeys: String, CodingKey {
     case protocolVersion, build, frontend, terminalProfile, capabilities
+    case forwardedTransport
   }
 
   public init(from decoder: any Decoder) throws {
@@ -133,6 +143,10 @@ public struct Hello: Codable, Sendable {
     terminalProfile = try container.decodeIfPresent(
       String.self,
       forKey: .terminalProfile
+    )
+    forwardedTransport = try container.decodeIfPresent(
+      LeaseHolder.Transport.self,
+      forKey: .forwardedTransport
     )
     capabilities =
       try container.decodeIfPresent(
@@ -146,6 +160,10 @@ public struct Hello: Codable, Sendable {
     try container.encode(protocolVersion, forKey: .protocolVersion)
     try container.encode(build, forKey: .build)
     try container.encode(frontend, forKey: .frontend)
+    try container.encodeIfPresent(
+      forwardedTransport,
+      forKey: .forwardedTransport
+    )
     try container.encodeIfPresent(terminalProfile, forKey: .terminalProfile)
     if !capabilities.isEmpty {
       try container.encode(capabilities, forKey: .capabilities)
@@ -184,11 +202,17 @@ public struct ServiceFeatures: OptionSet, Codable, Sendable, Equatable {
   public static let frameDeltas = ServiceFeatures(rawValue: 1 << 9)
   /// Row versions in frames and `MuxCommand.copySelection`.
   public static let liveSelection = ServiceFeatures(rawValue: 1 << 10)
+  /// Authenticated gateway metadata subscription on a workspace-scoped worker.
+  public static let workspaceGraph = ServiceFeatures(rawValue: 1 << 11)
+
+  public static let inboxAcknowledgementTokens = ServiceFeatures(
+    rawValue: 1 << 12
+  )
 
   public static let supported: ServiceFeatures = [
     .mouseReporting, .historyJumps, .terminalControl, .shellIntegration,
     .keypadKeys, .kittyClipboard, .dropTargets, .javaScript, .binaryFrames,
-    .frameDeltas, .liveSelection,
+    .frameDeltas, .liveSelection, .inboxAcknowledgementTokens,
   ]
 }
 
@@ -201,6 +225,8 @@ public struct Welcome: Codable, Sendable {
   public var innerTerm: String
   /// Empty when the service omitted the field (an older build).
   public var features: ServiceFeatures
+  /// Echoes the accepted gateway declaration; absence means no forwarding support.
+  public var forwardedTransport: LeaseHolder.Transport?
 
   public init(
     protocolVersion: Int,
@@ -209,7 +235,8 @@ public struct Welcome: Codable, Sendable {
     acceptedProfile: String?,
     limits: MuxLimits,
     innerTerm: String,
-    features: ServiceFeatures = []
+    features: ServiceFeatures = [],
+    forwardedTransport: LeaseHolder.Transport? = nil
   ) {
     self.protocolVersion = protocolVersion
     self.build = build
@@ -218,11 +245,12 @@ public struct Welcome: Codable, Sendable {
     self.limits = limits
     self.innerTerm = innerTerm
     self.features = features
+    self.forwardedTransport = forwardedTransport
   }
 
   private enum CodingKeys: String, CodingKey {
     case protocolVersion, build, server, acceptedProfile, limits, innerTerm
-    case features
+    case features, forwardedTransport
   }
 
   public init(from decoder: any Decoder) throws {
@@ -236,6 +264,10 @@ public struct Welcome: Codable, Sendable {
     )
     limits = try container.decode(MuxLimits.self, forKey: .limits)
     innerTerm = try container.decode(String.self, forKey: .innerTerm)
+    forwardedTransport = try container.decodeIfPresent(
+      LeaseHolder.Transport.self,
+      forKey: .forwardedTransport
+    )
     features =
       try container.decodeIfPresent(ServiceFeatures.self, forKey: .features)
       ?? []
@@ -249,6 +281,10 @@ public struct Welcome: Codable, Sendable {
     try container.encodeIfPresent(acceptedProfile, forKey: .acceptedProfile)
     try container.encode(limits, forKey: .limits)
     try container.encode(innerTerm, forKey: .innerTerm)
+    try container.encodeIfPresent(
+      forwardedTransport,
+      forKey: .forwardedTransport
+    )
     if !features.isEmpty { try container.encode(features, forKey: .features) }
   }
 }
@@ -643,6 +679,9 @@ public enum MuxCommand: Codable, Sendable, Equatable {
   // Metadata observation (no lease, never resizes panes).
   /// Workspace list and lease changes as `workspaces` events.
   case observeWorkspaces(Bool)
+  /// Internal gateway discovery; never acquires an attachment or writer lease.
+  /// True returns the current graph and rearms one graph-event credit.
+  case observeWorkspaceGraph(Bool)
   case subscribeInbox(Bool)
   /// Local native automation UI; events only follow an explicit subscription.
   case subscribeAutomation(Bool)
@@ -716,9 +755,10 @@ public enum MuxCommand: Codable, Sendable, Equatable {
       .endAllWorkspaces, .quiesce, .endPane, .endTab, .setGeometry,
       .setSubscriptions, .setViewport, .scroll, .searchStep, .endSearch,
       .clearScreen, .resetTerminal, .link, .commandOutput, .setTheme,
-      .observeWorkspaces, .subscribeAutomation, .subscribeInbox, .inbox,
-      .locateAttention, .markSeen, .snooze, .markReviewed, .clipboardReadResult,
-      .clipboardWriteResult, .copySelection:
+      .observeWorkspaces, .observeWorkspaceGraph, .subscribeAutomation,
+      .subscribeInbox, .inbox, .locateAttention, .markSeen, .snooze,
+      .markReviewed, .clipboardReadResult, .clipboardWriteResult,
+      .copySelection:
       true
     default: false
     }
@@ -728,9 +768,9 @@ public enum MuxCommand: Codable, Sendable, Equatable {
   public var allowedForObserver: Bool {
     switch self {
     case .status, .listWorkspaces, .detach, .observeWorkspaces,
-      .subscribeAutomation, .subscribeInbox, .inbox, .locateAttention,
-      .setSubscriptions, .setViewport, .scroll, .search, .searchStep,
-      .endSearch, .copySelection:
+      .observeWorkspaceGraph, .subscribeAutomation, .subscribeInbox, .inbox,
+      .locateAttention, .setSubscriptions, .setViewport, .scroll, .search,
+      .searchStep, .endSearch, .copySelection:
       true
     default: false
     }
@@ -740,9 +780,9 @@ public enum MuxCommand: Codable, Sendable, Equatable {
     switch self {
     case .status, .listWorkspaces, .newWorkspace, .endWorkspace,
       .renameWorkspace, .detachActive, .endAllWorkspaces, .quiesce, .attach,
-      .setTheme, .takeover, .observeWorkspaces, .subscribeAutomation,
-      .subscribeInbox, .inbox, .locateAttention, .markSeen, .snooze,
-      .markReviewed:
+      .setTheme, .takeover, .observeWorkspaces, .observeWorkspaceGraph,
+      .subscribeAutomation, .subscribeInbox, .inbox, .locateAttention,
+      .markSeen, .snooze, .markReviewed:
       false
     default: true
     }
@@ -821,6 +861,8 @@ public enum MuxReply: Codable, Sendable, Equatable {
   case ok
   case status(ServiceStatus)
   case workspaces([WorkspaceSummary])
+  /// Complete scoped graph; nil means no published workspace.
+  case workspaceGraph(WorkspaceSnapshot?)
   case created(WorkspaceSnapshot)
   case attached(attachment: AttachmentID, workspace: WorkspaceSnapshot)
   case layout(WorkspaceSnapshot)
@@ -999,7 +1041,7 @@ public enum ClientMessage: Codable, Sendable {
   /// any other attachment releases nothing.
   case frameAck(pane: PaneID, revision: UInt64, attachment: AttachmentID)
   /// The consumer took one `inbox` event (inbox flow control).
-  case inboxAck(revision: UInt64)
+  case inboxAck(revision: UInt64, token: UUID? = nil)
   /// With `ServiceFeatures.frameDeltas`: a delta could not be applied, so
   /// the next frame of the pane must be complete.
   /// It also releases the credit of `revision`, the refused delta, in
@@ -1038,6 +1080,8 @@ public enum MuxEvent: Codable, Sendable {
   case frameUnavailable(PaneID, MuxError)
   /// Observers only (`observeWorkspaces`).
   case workspaces([WorkspaceSummary])
+  /// Complete scoped graph; nil means no published workspace.
+  case workspaceGraph(WorkspaceSnapshot?)
   /// Subscribers only (`subscribeInbox`), after reduction.
   case inbox(InboxUpdate)
   /// The controller only, with `ClientCapabilities.clipboardRequests`.

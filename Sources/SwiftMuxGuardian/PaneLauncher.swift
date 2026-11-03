@@ -1,28 +1,40 @@
 import Darwin
 import Foundation
 import SwiftMuxProtocol
-import SwifttyEngine
+import TerminalProcess
 
 /// A spawned pane process: the PTY master, a retained slave (Darwin drops
 /// unread output once the last slave closes) and the shell's pid.
-struct LaunchedProcess: Sendable {
-  var master: Int32
-  var slave: Int32
-  var pid: pid_t
-  var warnings: [String]
+package struct LaunchedProcess: Sendable {
+  package var master: Int32
+  package var slave: Int32
+  package var pid: pid_t
+  package var warnings: [String]
 }
 
 /// Starts pane processes through the fresh `swmux-launcher` executable.
 /// No Swift code runs in a forked child of the service.
-struct PaneLauncher: Sendable {
-  var launcherPath: String
-  var innerTerm: String
+package struct PaneLauncher: Sendable {
+  package var launcherPath: String
+  package var innerTerm: String
   /// Extra terminfo search directory for `innerTerm`, if installed there.
-  var terminfoDirectory: String?
-  var launchTimeout: Duration = .seconds(10)
+  package var terminfoDirectory: String?
+  package var launchTimeout: Duration = .seconds(10)
+
+  package init(
+    launcherPath: String,
+    innerTerm: String,
+    terminfoDirectory: String? = nil,
+    launchTimeout: Duration = .seconds(10)
+  ) {
+    self.launcherPath = launcherPath
+    self.innerTerm = innerTerm
+    self.terminfoDirectory = terminfoDirectory
+    self.launchTimeout = launchTimeout
+  }
 
   /// Resolves the program using its environment snapshot and pane directory.
-  static func resolve(
+  package static func resolve(
     _ spec: LaunchSpec,
     environment: [String: String],
     directory: String
@@ -57,7 +69,7 @@ struct PaneLauncher: Sendable {
     throw MuxError(.launchFailed, "\(program): command not found")
   }
 
-  static func loginShell(_ environment: [String: String]) -> String {
+  package static func loginShell(_ environment: [String: String]) -> String {
     if let pw = getpwuid(getuid()), let shell = pw.pointee.pw_shell,
       shell.pointee != 0
     {
@@ -67,7 +79,7 @@ struct PaneLauncher: Sendable {
   }
 
   /// The pane's environment: the creation snapshot plus inner identity.
-  func environment(
+  package func environment(
     for spec: LaunchSpec,
     pane: PaneID,
     workspace: WorkspaceID
@@ -104,7 +116,7 @@ struct PaneLauncher: Sendable {
 
   /// Allocates a PTY with deliberate cooked termios and spawns the
   /// launcher, which execs the program as session leader.
-  func launch(
+  package func launch(
     _ spec: LaunchSpec,
     pane: PaneID,
     workspace: WorkspaceID,
@@ -270,7 +282,7 @@ struct PaneLauncher: Sendable {
         arguments,
         copying: copyingCString,
         freeing: freeingCString
-      ) { cArgv throws(SwifttyEngine.POSIXError) in
+      ) { cArgv throws(TerminalProcess.POSIXError) in
         try CStringVector.withStrings(
           environment,
           copying: copyingCString,
@@ -374,7 +386,7 @@ struct PaneLauncher: Sendable {
   /// Requires exclusive child ownership. Peek without collecting so the PID
   /// stays reserved through group signaling; distinguish observed termination
   /// from the status collected after our cleanup signal.
-  static func stopFailedLauncher(_ pid: pid_t) -> String {
+  package static func stopFailedLauncher(_ pid: pid_t) -> String {
     var child = siginfo_t()
     var peek: Int32
     repeat {
@@ -461,7 +473,7 @@ struct PaneLauncher: Sendable {
 
   /// A close-on-exec duplicate of `fd` numbered 5 or higher (closing
   /// `fd`); `fd` itself when it already is. -1 on failure.
-  static func aboveChildDescriptors(_ fd: Int32) -> Int32 {
+  package static func aboveChildDescriptors(_ fd: Int32) -> Int32 {
     guard fd < 5 else { return fd }
     let moved = fcntl(fd, F_DUPFD_CLOEXEC, 5)
     let error = errno
@@ -471,7 +483,7 @@ struct PaneLauncher: Sendable {
   }
 
   /// Cooked interactive settings, matching the BSD `ttydefaults`.
-  static func interactiveTermios() -> termios {
+  package static func interactiveTermios() -> termios {
     var t = termios()
     t.c_iflag = tcflag_t(BRKINT | ICRNL | IMAXBEL | IXON | IXANY | IUTF8)
     t.c_oflag = tcflag_t(OPOST | ONLCR)

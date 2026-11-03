@@ -1,3 +1,4 @@
+import SwiftMuxGuardian
 import Dispatch
 import Foundation
 import SwiftMuxClient
@@ -53,15 +54,22 @@ struct JavaScriptPaneTests {
       launcherPath: try launcherPath(),
       innerTerm: SMX.fallbackInnerTerm
     )
-    try runtime.queue.sync {
-      try runtime.launch(
+    let launched = DispatchSemaphore(value: 0)
+    let launchResult = Mutex<Result<Void, MuxError>?>(nil)
+    runtime.queue.async {
+      runtime.launch(
         LaunchSpec(command: [
           "/usr/bin/python3", "-c",
           "import os,tty; tty.setraw(0); os.write(1,b'a'*4096)",
         ]),
         launcher: launcher
-      )
+      ) { result in
+        launchResult.withLock { $0 = result }
+        launched.signal()
+      }
     }
+    try #require(launched.wait(timeout: .now() + 5) == .success)
+    try #require(launchResult.withLock { $0 }).get()
     try #require(published.wait(timeout: .now() + 5) == .success)
     let firstRead = try #require(firstPublishedRead.withLock { $0 })
     #expect(firstRead > 0)

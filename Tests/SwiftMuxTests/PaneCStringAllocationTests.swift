@@ -1,3 +1,4 @@
+import SwiftMuxGuardian
 import Darwin
 import SwiftMuxProtocol
 @testable import SwiftMuxService

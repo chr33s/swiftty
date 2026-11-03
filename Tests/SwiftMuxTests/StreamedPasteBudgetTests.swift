@@ -1,3 +1,4 @@
+import SwiftMuxGuardian
 import Dispatch
 import Foundation
 import SwiftMuxClient

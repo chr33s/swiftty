@@ -45,8 +45,8 @@ public final class TerminalClient {
     case confirm(String, @MainActor () -> Void)
   }
 
-  let connection: MuxConnection
-  let attachment: AttachmentID
+  private(set) var connection: MuxConnection
+  private(set) var attachment: AttachmentID
   let tty: RawTTY
   let settings: Settings
   private var decoder: InputDecoder
@@ -72,7 +72,17 @@ public final class TerminalClient {
   private var signalDispositions: [(Int32, sigaction)] = []
   private var eventTask: Task<Void, Never>?
   private var running = false
-  private let limits: MuxLimits
+  private var limits: MuxLimits
+  private var gateway: MuxGatewayConnection?
+  private var gatewaySession: MuxGatewaySession?
+  private var gatewayRole: AttachmentRole = .controller
+  private var reconnectGateway:
+    (@MainActor () async throws -> MuxGatewayConnection)?
+  private var recovering = false
+  private var recoveryPrefix = false
+  private var eventGeneration = UUID()
+  private var switching = false
+  private var selectionTask: Task<Void, Never>?
 
   public init(
     connection: MuxConnection,
@@ -93,7 +103,98 @@ public final class TerminalClient {
     size = tty.size
   }
 
-  /// Runs until detach, cancellation or connection loss. A concurrent call
+  /// Takes ownership of the selected session; shared gateway control remains
+  /// caller-owned. Each worker supplies its own limits and attachment identity.
+  /// Supplying reconnect enables bounded automatic transport recovery; the
+  /// provider owns control lifetime, including connections returned after cancel.
+  public convenience init(
+    gateway: MuxGatewayConnection,
+    session: MuxGatewaySession,
+    selection: MuxGatewaySession.Selection,
+    reconnect: (@MainActor () async throws -> MuxGatewayConnection)? = nil,
+    tty: RawTTY = RawTTY(),
+    settings: Settings = Settings()
+  ) {
+    self.init(
+      connection: selection.connection,
+      attachment: selection.attachment,
+      workspace: selection.workspace,
+      limits: selection.welcome.limits,
+      tty: tty,
+      settings: settings
+    )
+    self.gateway = gateway
+    reconnectGateway = reconnect
+    gatewaySession = session
+    gatewayRole = selection.role
+    eventGeneration = selection.id
+  }
+
+  package func selectGatewayWorkspace(
+    _ selector: WorkspaceSelector
+  ) async throws {
+    guard let gatewaySession, outcome == nil else {
+      throw MuxError(.notAttached)
+    }
+    guard !switching else {
+      throw MuxError(.quiescing, "workspace switch in progress")
+    }
+    switching = true
+    show("switching workspace")
+    let previousGeneration = eventGeneration
+    eventGeneration = UUID()
+    let oldEvents = eventTask
+    oldEvents?.cancel()
+    eventTask = nil
+    escapeTimer?.cancel()
+    decoder = InputDecoder(maxPasteBytes: limits.maxPasteBytes)
+    defer { switching = false }
+    do {
+      await oldEvents?.value
+      try Task.checkCancellation()
+      guard outcome == nil else { throw CancellationError() }
+      let selected = try await gatewaySession.select(selector)
+      guard outcome == nil else {
+        await gatewaySession.close();
+        throw CancellationError()
+      }
+      install(selected)
+    } catch {
+      switching = false
+      if outcome == nil {
+        eventGeneration = previousGeneration
+        if running { startEvents() }
+        lastGeometry = nil
+        subscriptions = []
+        syncLayout()
+      }
+      throw error
+    }
+  }
+
+  private func install(_ selected: MuxGatewaySession.Selection) {
+    gatewayRole = selected.role
+    connection = selected.connection
+    attachment = selected.attachment
+    limits = selected.welcome.limits
+    eventGeneration = selected.id
+    decoder = InputDecoder(maxPasteBytes: limits.maxPasteBytes)
+    sequencer = LayoutSequencer()
+    frames = [:]
+    subscriptions = []
+    lastGeometry = nil
+    geometryGeneration = 0
+    pasteBuffer = nil
+    mode = .normal
+    message = nil
+    messageTimer?.cancel()
+    renderer.invalidate()
+    switching = false
+    apply(selected.workspace, attached: true)
+    if running { startEvents() }
+  }
+
+  /// Runs until detach, cancellation or unrecoverable connection loss. A concurrent call
   /// fails; after completion, later calls return the original outcome.
   /// The outer tty is restored before returning and before waiting on any
   /// service cleanup.
@@ -128,6 +229,7 @@ public final class TerminalClient {
     escapeTimer?.cancel()
     messageTimer?.cancel()
     eventTask?.cancel()
+    selectionTask?.cancel()
     let connection = self.connection
     Task {
       // Restore process signal state after the sources finish cancelling,
@@ -141,6 +243,7 @@ public final class TerminalClient {
       }
       signalDispositions = []
       eventTask = nil
+      await gatewaySession?.close()
       if detach { await connection.detach() }
       await connection.close()
       self.running = false
@@ -203,13 +306,68 @@ public final class TerminalClient {
 
   private func startEvents() {
     let connection = self.connection
+    let generation = eventGeneration
     eventTask = Task.detached { [weak self] in
       do {
         while let event = try await connection.nextEvent() {
-          await self?.handle(event)
+          await self?.handle(event, generation: generation)
         }
-        await self?.finish(.lost("connection closed"), detach: false)
-      } catch { await self?.finish(.lost("\(error)"), detach: false) }
+        await self?.lost("connection closed", generation: generation)
+      } catch { await self?.lost("\(error)", generation: generation) }
+    }
+  }
+
+  private func handle(_ event: MuxEvent, generation: UUID) {
+    guard generation == eventGeneration else { return }
+    handle(event)
+  }
+
+  private func lost(_ reason: String, generation: UUID) {
+    guard generation == eventGeneration, outcome == nil else { return }
+    guard let reconnectGateway, let gatewaySession, !switching else {
+      finish(.lost(reason), detach: false)
+      return
+    }
+    recovering = true
+    switching = true
+    recoveryPrefix = false
+    eventGeneration = UUID()
+    escapeTimer?.cancel()
+    decoder = InputDecoder(maxPasteBytes: limits.maxPasteBytes)
+    pasteBuffer = nil
+    mode = .normal
+    frames = [:]
+    renderer.invalidate()
+    show("reconnecting; prefix d detaches")
+    messageTimer?.cancel()
+    let oldEvents = eventTask
+    oldEvents?.cancel()
+    eventTask = nil
+    selectionTask = Task { [weak self] in
+      guard let self else { return }
+      defer {
+        recovering = false
+        switching = false
+        selectionTask = nil
+      }
+      do {
+        await oldEvents?.value
+        let control = try await MuxGatewayRecovery.waitForWorkspace(
+          workspace.id,
+          reconnect: reconnectGateway,
+          role: gatewayRole
+        )
+        try Task.checkCancellation()
+        guard outcome == nil else { return }
+        let selected = try await gatewaySession.reconnect(
+          using: control,
+          selection: generation
+        )
+        try Task.checkCancellation()
+        guard outcome == nil else { return }
+        gateway = control
+        install(selected)
+      } catch { if outcome == nil { finish(.lost("\(error)"), detach: false) } }
     }
   }
 
@@ -248,7 +406,8 @@ public final class TerminalClient {
     // MuxConnection applies deltas; consumers only see complete frames.
     case .frameDelta: break
     // This frontend never asks for clipboard requests.
-    case .automation, .workspaces, .inbox, .clipboardRead, .clipboardWrite:
+    case .automation, .workspaces, .workspaceGraph, .inbox, .clipboardRead,
+      .clipboardWrite:
       break
     }
   }
@@ -305,7 +464,7 @@ public final class TerminalClient {
   /// Sends a geometry batch for visible panes and subscribes to them.
   /// Panes whose area is empty keep their last valid size.
   func syncLayout() {
-    guard let tab = activeTab else { return }
+    guard !switching, let tab = activeTab else { return }
     let rects = compositor.frames(for: tab)
     let order = tab.layout.panes.filter { rects[$0] != nil }
     var entries: [GeometryBatch.Entry] = []
@@ -347,10 +506,14 @@ public final class TerminalClient {
     then: (@MainActor (MuxReply) -> Void)? = nil,
     failed: (@MainActor (MuxError) -> Void)? = nil
   ) {
+    guard !switching else { return }
+    let generation = eventGeneration
     connection.enqueue(command) { [weak self] result in
       DispatchQueue.main.async {
         MainActor.assumeIsolated {
-          guard let self, self.outcome == nil else { return }
+          guard let self, self.outcome == nil,
+            self.eventGeneration == generation
+          else { return }
           switch result {
           case let .success(reply):
             // A switch reply also names the attached workspace.
@@ -558,6 +721,22 @@ public final class TerminalClient {
   }
 
   func feed(_ bytes: [UInt8]) {
+    if recovering, outcome == nil {
+      for input in decoder.feed(bytes) {
+        if recoveryPrefix, case let .text(text) = input, text.hasPrefix("d") {
+          finish(.detached("detached during reconnect"), detach: false)
+          return
+        }
+        if case let .key(key, modifiers) = input {
+          recoveryPrefix =
+            key == settings.prefixKey.0 && modifiers == settings.prefixKey.1
+        } else {
+          recoveryPrefix = false
+        }
+      }
+      return
+    }
+    guard !switching, selectionTask == nil, outcome == nil else { return }
     for event in decoder.feed(bytes) { dispatch(event) }
     escapeTimer?.cancel()
     if decoder.hasPending {
@@ -596,6 +775,7 @@ public final class TerminalClient {
   }
 
   func handle(_ input: DecodedInput) {
+    guard !switching, selectionTask == nil, outcome == nil else { return }
     if message != nil {
       message = nil
       messageTimer?.cancel()
@@ -656,22 +836,32 @@ public final class TerminalClient {
     }
   }
 
-  private nonisolated var rejectedInput: @Sendable (MuxError) -> Void {
-    { [weak self] error in
+  private var rejectedInput: @Sendable (MuxError) -> Void {
+    let generation = eventGeneration
+    return { [weak self] error in
       DispatchQueue.main.async {
-        MainActor.assumeIsolated { self?.show("input rejected: \(error)") }
+        MainActor.assumeIsolated {
+          guard let self, self.eventGeneration == generation,
+            self.outcome == nil
+          else { return }
+          self.show("input rejected: \(error)")
+        }
       }
     }
   }
 
   private func paste(_ text: String, to pane: PaneID) {
+    let generation = eventGeneration
     connection.enqueuePaste(text, to: pane) { [weak self] result in
       DispatchQueue.main.async {
         MainActor.assumeIsolated {
+          guard let self, self.eventGeneration == generation,
+            self.outcome == nil
+          else { return }
           switch result {
           case let .success(state) where state != .completed:
-            self?.show("paste \(state.rawValue)")
-          case let .failure(error): self?.show("paste failed: \(error)")
+            self.show("paste \(state.rawValue)")
+          case let .failure(error): self.show("paste failed: \(error)")
           default: break
           }
         }
@@ -869,7 +1059,16 @@ public final class TerminalClient {
   private func chooseWorkspace() {
     let prompt = Prompt(label: "workspace: ") { [weak self] typed in
       guard let self, let name = DisplayText.plainName(typed) else { return }
-      self.command(.switchWorkspace(.name(name)))
+      if self.gatewaySession != nil {
+        self.selectionTask = Task { [weak self] in
+          defer { self?.selectionTask = nil }
+          do { try await self?.selectGatewayWorkspace(.name(name)) } catch {
+            self?.show("\(error)")
+          }
+        }
+      } else {
+        self.command(.switchWorkspace(.name(name)))
+      }
     }
     mode = .prompt(prompt)
     let id = prompt.id
@@ -883,6 +1082,20 @@ public final class TerminalClient {
       self.mode = .prompt(open)
       self.redraw()
       return true
+    }
+    if let gateway {
+      Task { [weak self] in
+        do {
+          let records = try await gateway.listWorkspaces()
+          let names = records.compactMap { $0.summary?.name }
+          _ = relabel("workspace (\(Self.listing(names))): ")
+        } catch {
+          if !relabel("workspace (no list: \(error)): ") {
+            self?.show("\(error)")
+          }
+        }
+      }
+      return
     }
     command(
       .listWorkspaces,

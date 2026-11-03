@@ -1,55 +1,55 @@
 /// The pane's one ordered writer: input, terminal replies and paste
-/// segments in admission order. Owned by the pane queue.
+/// segments in admission order. Confined to its owning I/O queue.
 ///
 /// While a paste envelope is open, replies and other input are deferred
 /// so nothing interleaves inside it; they follow the closing marker.
-struct PaneWriter {
+package struct PaneWriter {
   /// Reserve both six-byte markers before opening an envelope, including
   /// its closing marker while it has not yet been queued.
-  static let pasteMarkerBytes = 12
+  package static let pasteMarkerBytes = 12
 
-  enum Kind: Equatable {
+  package enum Kind: Equatable {
     case input
     case reply
     case paste(UInt64)
     case marker
   }
 
-  struct Segment {
-    var bytes: [UInt8]
-    var offset = 0
-    var kind: Kind
-    var remaining: Int { bytes.count - offset }
+  package struct Segment {
+    package var bytes: [UInt8]
+    package var offset = 0
+    package var kind: Kind
+    package var remaining: Int { bytes.count - offset }
   }
 
-  struct Paste {
-    var id: UInt64
-    var bracketed: Bool
-    var lastByte: UInt8 = 0
-    var started = false
+  package struct Paste {
+    package var id: UInt64
+    package var bracketed: Bool
+    package var lastByte: UInt8 = 0
+    package var started = false
     /// Some payload byte reached the descriptor.
-    var wrote = false
+    package var wrote = false
   }
 
-  private(set) var queue: [Segment] = []
+  package private(set) var queue: [Segment] = []
   private var head = 0
-  private(set) var deferred: [Segment] = []
-  private(set) var paste: Paste?
+  package private(set) var deferred: [Segment] = []
+  package private(set) var paste: Paste?
   /// Unwritten input and markers, including an open envelope's future
   /// closing marker (for credit release).
-  private(set) var pendingInputBytes = 0
-  private(set) var pendingReplyBytes = 0
-  private(set) var deferredReplyBytes = 0
-  let replyReserve: Int
+  package private(set) var pendingInputBytes = 0
+  package private(set) var pendingReplyBytes = 0
+  package private(set) var deferredReplyBytes = 0
+  package let replyReserve: Int
 
-  init(replyReserve: Int) { self.replyReserve = replyReserve }
+  package init(replyReserve: Int) { self.replyReserve = replyReserve }
 
-  var isEmpty: Bool { head == queue.count }
+  package var isEmpty: Bool { head == queue.count }
 
-  var hasOpenPaste: Bool { paste != nil }
+  package var hasOpenPaste: Bool { paste != nil }
 
   /// Ordinary input; deferred while a paste envelope is open.
-  mutating func appendInput(_ bytes: [UInt8]) {
+  package mutating func appendInput(_ bytes: [UInt8]) {
     guard !bytes.isEmpty else { return }
     let s = Segment(bytes: bytes, kind: .input)
     if paste != nil { deferred.append(s) } else { queue.append(s) }
@@ -58,7 +58,7 @@ struct PaneWriter {
 
   /// Terminal replies; bounded by the reserve. Returns false if dropped.
   @discardableResult
-  mutating func appendReply(_ bytes: [UInt8]) -> Bool {
+  package mutating func appendReply(_ bytes: [UInt8]) -> Bool {
     guard !bytes.isEmpty else { return true }
     guard pendingReplyBytes + deferredReplyBytes + bytes.count <= replyReserve
     else { return false }
@@ -73,7 +73,7 @@ struct PaneWriter {
     return true
   }
 
-  mutating func beginPaste(id: UInt64, bracketed: Bool) {
+  package mutating func beginPaste(id: UInt64, bracketed: Bool) {
     precondition(paste == nil)
     paste = Paste(id: id, bracketed: bracketed)
     if bracketed {
@@ -84,7 +84,7 @@ struct PaneWriter {
 
   /// Sanitized like xterm: controls that edit, signal or escape become
   /// spaces; unbracketed newlines become carriage returns.
-  mutating func appendPaste(id: UInt64, text: String) {
+  package mutating func appendPaste(id: UInt64, text: String) {
     guard var p = paste, p.id == id else { return }
     var out: [UInt8] = []
     out.reserveCapacity(text.utf8.count)
@@ -104,7 +104,7 @@ struct PaneWriter {
   }
 
   /// Closes the envelope normally, then releases deferred segments.
-  mutating func endPaste(id: UInt64) {
+  package mutating func endPaste(id: UInt64) {
     guard let p = paste, p.id == id else { return }
     if p.bracketed {
       queue.append(Segment(bytes: Array("\u{1B}[201~".utf8), kind: .marker))
@@ -120,7 +120,7 @@ struct PaneWriter {
   /// `discardDeferredInput` drops keystrokes queued behind the paste
   /// instead of releasing them. Lease loss uses that so the previous
   /// writer's pending input cannot run after the fence.
-  mutating func cancelPaste(
+  package mutating func cancelPaste(
     id: UInt64,
     discardDeferredInput: Bool = false
   ) -> (discarded: Int, wrote: Bool) {
@@ -157,7 +157,7 @@ struct PaneWriter {
   /// An open bracketed paste still receives its closing marker. Used when the
   /// writer lease ends, including after `pasteEnd` has retired the lease's
   /// paste record while bytes are still queued.
-  mutating func discardUnwrittenInput() -> Int {
+  package mutating func discardUnwrittenInput() -> Int {
     var discarded = 0
     var kept: [Segment] = []
     for (i, s) in queue.enumerated() where i >= head {
@@ -240,7 +240,8 @@ struct PaneWriter {
 
   /// Writes as much as the descriptor accepts. Returns input bytes
   /// completed (to release credit), or nil on a hard write error.
-  mutating func flush(_ write: (UnsafeRawBufferPointer) -> Int?) -> Int? {
+  package mutating func flush(_ write: (UnsafeRawBufferPointer) -> Int?) -> Int?
+  {
     var released = 0
     while head < queue.count {
       let s = queue[head]
@@ -275,7 +276,7 @@ struct PaneWriter {
   }
 
   /// Drops everything (the pane is gone). Returns input bytes dropped.
-  mutating func discardAll() -> Int {
+  package mutating func discardAll() -> Int {
     let dropped = pendingInputBytes
     queue = []
     head = 0
@@ -287,7 +288,7 @@ struct PaneWriter {
     return dropped
   }
 
-  static func sanitized(_ byte: UInt8) -> UInt8 {
+  package static func sanitized(_ byte: UInt8) -> UInt8 {
     switch byte {
     case 0x00, 0x03, 0x04, 0x05, 0x08, 0x0F, 0x11, 0x12, 0x13, 0x15, 0x16, 0x17,
       0x1A, 0x1B, 0x1C, 0x7F:

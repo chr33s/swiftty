@@ -1,3 +1,4 @@
+import SwiftMuxGuardian
 import Dispatch
 import Foundation
 import SwiftMuxProtocol
@@ -428,8 +429,17 @@ extension MuxService {
     guard let paste = leases[wsID]?.pastes.removeValue(forKey: pasteID),
       let runtime = panes[paste.pane]?.runtime
     else { return }
-    runtime.pasteCancel(id: pasteID, discardDeferredInput: discardDeferredInput)
-    { [weak self] state in
+    runtime.pasteCancel(
+      id: pasteID,
+      discardDeferredInput: discardDeferredInput,
+      failure: { [weak self] error in
+        guard let client else { return }
+        self?
+          .onQueue {
+            $0.send(.event(.frameUnavailable(paste.pane, error)), to: client)
+          }
+      }
+    ) { [weak self] state in
       guard let client else { return }
       self?
         .onQueue {

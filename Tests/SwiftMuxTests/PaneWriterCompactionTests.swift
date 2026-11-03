@@ -1,3 +1,4 @@
+import SwiftMuxGuardian
 @testable import SwiftMuxService
 import Testing
 

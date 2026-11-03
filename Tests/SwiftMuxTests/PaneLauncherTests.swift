@@ -1,3 +1,4 @@
+import SwiftMuxGuardian
 import Darwin
 import Foundation
 import SwiftMuxProtocol
