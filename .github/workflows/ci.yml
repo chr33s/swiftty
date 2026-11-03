@@ -14,9 +14,9 @@ defaults:
 
 jobs:
   tests:
-    # The package and native test bundles require macOS 27 and Xcode 27.2 / Swift 6.4.2
+    # The package and native test bundles require macOS 27 and Xcode 27 / Swift 6.4
     # or newer; setup-macos selects the newest Xcode installed on the image.
-    runs-on: namespace-profile-mac
+    runs-on: xcode-27
     strategy:
       fail-fast: false
       matrix:
@@ -47,7 +47,7 @@ jobs:
         if: matrix.configuration == 'debug'
         run: Scripts/check-unchecked-sendable.sh
   shell-baseline:
-    runs-on: namespace-profile-mac
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-macos
@@ -71,7 +71,7 @@ jobs:
             --sdk "$(xcrun --sdk macosx --show-sdk-path)" --disable-automatic-resolution
           python3 Scripts/test-swsh.py "$(swift build --show-bin-path)/swsh"
   frontends:
-    runs-on: namespace-profile-mac
+    runs-on: xcode-27
     strategy:
       fail-fast: false
       matrix:

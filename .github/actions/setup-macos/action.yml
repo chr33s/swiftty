@@ -6,13 +6,13 @@ inputs:
     default: 'false'
   minimum-xcode:
     description: Oldest acceptable Xcode version.
-    default: '27.2'
+    default: '27.0'
   minimum-swift:
     description: Oldest acceptable Apple Swift version.
-    default: '6.4.2'
+    default: '6.4'
   minimum-sdk:
     description: Oldest acceptable macOS SDK version.
-    default: '27.2'
+    default: '27.0'
 runs:
   using: composite
   steps:
@@ -21,7 +21,7 @@ runs:
       run: |
         test "$(uname -m)" = arm64
         sw_vers -productVersion | grep -E '^27\.'
-        # Namespace images install several Xcodes under /Applications; the
+        # GitHub macOS images install several Xcodes under /Applications; the
         # default xcode-select target may be older than the newest one.
         newest=''
         newest_version=''
@@ -53,9 +53,9 @@ runs:
         xcode="$(xcodebuild -version | awk 'NR == 1 { print $2 }')"
         swift="$(swift --version 2>&1 | head -1 | sed -E 's/.*Apple Swift version ([0-9.]+).*/\1/')"
         sdk="$(xcrun --sdk macosx --show-sdk-version)"
-        at_least "$xcode" "$MINIMUM_XCODE" || { echo "::error::Xcode $xcode is older than $MINIMUM_XCODE; update the Namespace runner image"; exit 1; }
-        at_least "$swift" "$MINIMUM_SWIFT" || { echo "::error::Apple Swift $swift is older than $MINIMUM_SWIFT; update the Namespace runner image"; exit 1; }
-        at_least "$sdk" "$MINIMUM_SDK" || { echo "::error::macOS SDK $sdk is older than $MINIMUM_SDK; update the Namespace runner image"; exit 1; }
+        at_least "$xcode" "$MINIMUM_XCODE" || { echo "::error::Xcode $xcode is older than $MINIMUM_XCODE; update the runner image"; exit 1; }
+        at_least "$swift" "$MINIMUM_SWIFT" || { echo "::error::Apple Swift $swift is older than $MINIMUM_SWIFT; update the runner image"; exit 1; }
+        at_least "$sdk" "$MINIMUM_SDK" || { echo "::error::macOS SDK $sdk is older than $MINIMUM_SDK; update the runner image"; exit 1; }
     - name: Install test tools
       if: inputs.test-tools == 'true'
       shell: bash

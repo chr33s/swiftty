@@ -227,7 +227,7 @@ the controlling-terminal handle; `SWSH_TERMINAL_METADATA=0` disables them.
 
 Implementation and review checks cover Swift 6.4.1 and Apple Swift 6.4.2 with
 Xcode 27.2 and macOS SDK 27.2. CI selects the newest Xcode installed on the
-runner image, requires at least these versions and enforces
+runner image, requires at least Xcode 27 / Swift 6.4 and enforces
 `Package.resolved`. See the [spec's acceptance matrix](spec.shell.md#failure-focused-verification-matrix)
 and [implementation record](spec.shell.md#10-implementation-record) for test
 coverage, recorded run scope, benchmark provenance, and remaining test gaps.
@@ -661,14 +661,13 @@ the Top Shelf images, `Apps/VisionClient/Assets.xcassets`); regenerate them
 from `icon.svg` with `xcrun swift Scripts/gen-platform-icons.swift`.
 
 Swiftty.app is unsandboxed (it owns local PTYs) and is distributed with
-Developer ID. `.github/workflows/release-mac.yml` runs on the Namespace
-`namespace-profile-mac` runner for a pushed `v<version>` tag (or manually, as a
+Developer ID. `.github/workflows/release-mac.yml` runs on the GitHub-hosted
+`xcode-27` runner for a pushed `v<version>` tag (or manually, as a
 `mac-v<version>-<build>` prerelease): `Scripts/package-swiftmux.sh` builds and
 signs it, then `Scripts/release-mac-github.sh` notarizes it (`Scripts/notarize.sh`,
 shared with the package and install scripts) and uploads a zip and SHA-256 to
-the release, or to an existing draft for the tag. The Namespace `mac` profile must
-provide Apple Silicon, macOS 27 and Xcode 27.2 / Swift 6.4.2 or newer (the
-`goldengate-edge` image until the stable image ships 27.2). The workflow imports
+the release, or to an existing draft for the tag. The `xcode-27` image must
+provide Apple Silicon, macOS 27 and Xcode 27 / Swift 6.4 or newer. The workflow imports
 the Developer ID certificate and private key into a temporary keychain from the
 base64 `MACOS_CERTIFICATE_P12` secret and its `MACOS_CERTIFICATE_PASSWORD` secret,
 then removes the keychain after the release, including on failure. It also needs
@@ -889,9 +888,9 @@ operation; run them in Release without internal checks.
 Swift formatting follows the pinned Swift Collections configuration: two-space
 indentation, 80-column wrapping, and unindented conditional-compilation bodies.
 `mise run format-check` also validates documentation comments. Generated Unicode
-tables retain their generator's layout. CI and release builds use the Namespace
-`namespace-profile-mac` runner with Apple Silicon, macOS 27 and Xcode 27.2 /
-Swift 6.4.2 or newer. The shared macOS setup action selects the newest installed
+tables retain their generator's layout. CI and release builds use the GitHub-hosted
+`xcode-27` runner with Apple Silicon, macOS 27 and Xcode 27 /
+Swift 6.4 or newer. The shared macOS setup action selects the newest installed
 Xcode, verifies the toolchain and installs ripgrep and tmux for native tests.
 
 ## JavaScript automation (macOS)

@@ -1,4 +1,4 @@
-# The Namespace label selects a managed runner profile, not a local runner.
+# GitHub-hosted Xcode image label, newer than actionlint's built-in label list.
 self-hosted-runner:
   labels:
-    - namespace-profile-mac
+    - xcode-27

@@ -8,13 +8,22 @@ cd "$repository_root"
 
 build_arguments=()
 skip_build=false
+sdk_path=""
+previous_argument=""
 for argument in "$@"; do
   if [ "$argument" = --skip-build ]; then
     skip_build=true
   else
     build_arguments+=("$argument")
+    if [ "$previous_argument" = --sdk ]; then
+      sdk_path="$argument"
+    fi
   fi
+  previous_argument="$argument"
 done
+# Standalone swiftc from a swift.org toolchain has no default SDK; use the
+# same SDK as swift build so the host can import AppKit.
+export SDKROOT="${sdk_path:-${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}}"
 if [ "$skip_build" = false ]; then
   # Release also imports internals through @testable; swift build alone does
   # not enable testability for that configuration.
