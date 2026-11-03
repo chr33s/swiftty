@@ -72,8 +72,9 @@ struct SwiftTestingHost {
       let bundle = dlopen(path, RTLD_NOW | RTLD_GLOBAL),
       let symbol = dlsym(bundle, "swt_abiv0_getEntryPoint")
     else {
+      let reason = dlerror().map { String(cString: $0) } ?? "SWIFTTY_TEST_BUNDLE is unset"
       fputs(
-        "Unable to load the Swift Testing bundle or ABI entry point\n",
+        "Unable to load the Swift Testing bundle or ABI entry point: \(reason)\n",
         stderr,
       )
       exit(1)

@@ -55,7 +55,15 @@ import json
 from pathlib import Path
 import sys
 
-print(":".join(json.loads(Path(sys.argv[1]).read_text())["paths"]["runtimeLibraryPaths"]))
+# swift.org toolchains ship Swift Testing as libTesting.dylib under each
+# runtime directory's testing/ subdirectory; Xcode uses Testing.framework.
+paths = []
+for path in json.loads(Path(sys.argv[1]).read_text())["paths"]["runtimeLibraryPaths"]:
+    testing = Path(path) / "testing"
+    if testing.is_dir():
+        paths.append(str(testing))
+    paths.append(path)
+print(":".join(paths))
 PY
 )
 export DYLD_FRAMEWORK_PATH="$platform_developer/Library/Frameworks:$platform_developer/Library/PrivateFrameworks${DYLD_FRAMEWORK_PATH:+:$DYLD_FRAMEWORK_PATH}"
