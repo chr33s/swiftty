@@ -22,6 +22,15 @@ class PtyShell:
             environment.pop("SWSH_TERMINAL_METADATA", None)
             if blocked_signals:
                 signal.pthread_sigmask(signal.SIG_BLOCK, blocked_signals)
+            # pty.fork keeps descriptors inherited from the test runner (CI
+            # runners leak some); close them as subprocess does, so a shell's
+            # `exec` sees only what the shell itself opened.
+            for fd in [int(name) for name in os.listdir("/dev/fd")]:
+                if fd > 2:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
             os.execve(executable, [executable, "-i"], environment)
         self.buffer = b""
         self.exited = False

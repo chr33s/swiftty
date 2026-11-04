@@ -114,8 +114,9 @@ extension SwiftMuxExtensionTests {
       throw MuxError(.invalidRequest, "switch")
     }
     try await c.execute(.setSubscriptions([pane]))
-    // The prompts of the comment lines wrap the output across rows.
-    let kept = try await c.frame(of: pane, timeout: .seconds(15), label: "kept")
+    // The prompts of the comment lines wrap the output across rows. Slow CI
+    // runners print the 2,500 prompts at ~150/s, so allow the full drain.
+    let kept = try await c.frame(of: pane, timeout: .seconds(60), label: "kept")
     { $0.lines.joined().contains("KEPT-KEYS-TOKEN") }
     #expect(kept.lines.joined().contains("KEPT-KEYS-TOKEN"))
     try await c.execute(.endWorkspace(.id(ws)))

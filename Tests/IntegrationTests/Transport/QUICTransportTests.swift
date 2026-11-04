@@ -1110,10 +1110,26 @@ struct QUICTransportTests {
     }
   }
 
-  @Test(arguments: [
-    5000, QUICOptions.snapshotStreamWindow + 5000,
-    2 * QUICOptions.snapshotStreamWindow + 5000,
-  ])
+  /// On macOS 27.0.1 (the GitHub xcode-27 runner) cancelling a partially
+  /// sent stream can abort the whole QUIC connection: the client sees a clean
+  /// FIN, then both control streams fail (ENOTCONN / ECONNABORTED) with no
+  /// application error. 27.2 resets only the stream, as this test requires.
+  @Test(
+    .enabled(
+      if: ProcessInfo.processInfo.isOperatingSystemAtLeast(
+        OperatingSystemVersion(
+          majorVersion: 27,
+          minorVersion: 2,
+          patchVersion: 0
+        )
+      ),
+      "Network framework before macOS 27.2 aborts the connection on stream reset"
+    ),
+    arguments: [
+      5000, QUICOptions.snapshotStreamWindow + 5000,
+      2 * QUICOptions.snapshotStreamWindow + 5000,
+    ]
+  )
   func `a reset partial stream is never delivered`(
     _ partialLength: Int
   ) async throws {
