@@ -1,5 +1,6 @@
 """Load the test probe only after creating an isolated controlling terminal."""
 import ctypes
+import json
 import os
 import pty
 import select
@@ -10,10 +11,19 @@ import time
 
 if len(sys.argv) == 3:
     developer = subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-platform-path"], text=True).strip() + "/Developer"
-    toolchain = subprocess.check_output(["xcrun", "--find", "swiftc"], text=True).strip().rsplit("/usr/bin/", 1)[0]
+    # SIP strips the runner's DYLD_* variables before /usr/bin/python3 starts,
+    # so rebuild them from the swiftc on PATH, as Scripts/test-native.sh does.
+    # A swift.org toolchain (unlike xcrun's Xcode one) ships Swift Testing as
+    # libTesting.dylib in each runtime directory's testing/ subdirectory.
+    target = json.loads(subprocess.check_output(["swiftc", "-print-target-info"], text=True))
+    libraries = []
+    for path in target["paths"]["runtimeLibraryPaths"]:
+        if os.path.isdir(path + "/testing"):
+            libraries.append(path + "/testing")
+        libraries.append(path)
     environment = dict(os.environ)
     environment["DYLD_FRAMEWORK_PATH"] = developer + "/Library/Frameworks:" + developer + "/Library/PrivateFrameworks"
-    environment["DYLD_LIBRARY_PATH"] = developer + "/usr/lib:" + toolchain + "/usr/lib/swift/macosx"
+    environment["DYLD_LIBRARY_PATH"] = ":".join([developer + "/usr/lib", *libraries])
     os.execve(sys.executable, [sys.executable, *sys.argv, "configured"], environment)
 
 pid, master = pty.fork()

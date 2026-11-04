@@ -213,7 +213,21 @@ struct MigrationTests {
     for fd in descriptors { #expect(fcntl(fd, F_GETFD) >= 0) }
   }
 
-  @Test
+  /// macOS 27.0.1 (the GitHub xcode-27 runner) drops the client's traffic
+  /// from its new address entirely; 27.2 delivers it. This asserts the OS
+  /// listener's behavior, so it only runs where that behavior exists.
+  @Test(
+    .enabled(
+      if: ProcessInfo.processInfo.isOperatingSystemAtLeast(
+        OperatingSystemVersion(
+          majorVersion: 27,
+          minorVersion: 2,
+          patchVersion: 0
+        )
+      ),
+      "Network framework before macOS 27.2 does not deliver migrated traffic"
+    )
+  )
   func `client traffic reaches the same connection after its address changes`()
     async throws
   {
