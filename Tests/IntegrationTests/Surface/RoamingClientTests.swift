@@ -27,7 +27,7 @@ struct RoamingClientTests {
   @Test
   func fakeHostDoesNotRetainItselfThroughAnAcceptedConnection() async throws {
     var host: FakeHost? = try FakeHost()
-    weak var observed = host
+    weak let observed = host
     let (client, server) = InMemoryRSTConnection.pair()
     defer { client.close() }
     await host?.accept(server)

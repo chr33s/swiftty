@@ -50,7 +50,7 @@ extension MainActorIntegrationTests {
     func pendingUpdateDoesNotRetainRelay() async {
       var received: [InputRefusal] = []
       var relay: InputRefusalRelay? = InputRefusalRelay { received.append($0) }
-      weak var weakRelay = relay
+      weak let weakRelay = relay
       relay?.report(.backpressure)
       relay = nil
       #expect(weakRelay == nil)

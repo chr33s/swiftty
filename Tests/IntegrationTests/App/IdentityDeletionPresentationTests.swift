@@ -10,7 +10,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     // SwiftUI nodes implement the selectors without declaring protocol conformance.
     if (root as AnyObject).accessibilityIdentifier?() == id { return root }
     for child in (root as AnyObject).accessibilityChildren?()
-      ?? root.accessibilityAttributeValue(.children) as? [Any] ?? []
+      ?? legacyAccessibilityValue(root, .children) as? [Any] ?? []
     {
       if let child = child as? NSObject, let found = keyElement(id, in: child) {
         return found
@@ -49,13 +49,8 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
       rootView: NavigationStack { SSHKeysView(model: model) }
     )
     window.makeKeyAndOrderFront(nil)
-    let enhancedUI = NSAccessibility.Attribute(
-      rawValue: "AXEnhancedUserInterface"
-    )
-    let previous =
-      NSApp.accessibilityAttributeValue(enhancedUI) as? Bool ?? false
-    NSApp.accessibilitySetValue(true, forAttribute: enhancedUI)
-    defer { NSApp.accessibilitySetValue(previous, forAttribute: enhancedUI) }
+    let restoreEnhancedUI = enableEnhancedUserInterface()
+    defer { restoreEnhancedUI() }
     let identifier = "keys.restoreAccount.\(original.id)"
     try #require(
       try await waitForKeyUI { keyElement(identifier, in: window) != nil }
@@ -95,13 +90,8 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
       rootView: NavigationStack { SSHKeysView(model: model) }
     )
     window.makeKeyAndOrderFront(nil)
-    let enhancedUI = NSAccessibility.Attribute(
-      rawValue: "AXEnhancedUserInterface"
-    )
-    let previous =
-      NSApp.accessibilityAttributeValue(enhancedUI) as? Bool ?? false
-    NSApp.accessibilitySetValue(true, forAttribute: enhancedUI)
-    defer { NSApp.accessibilitySetValue(previous, forAttribute: enhancedUI) }
+    let restoreEnhancedUI = enableEnhancedUserInterface()
+    defer { restoreEnhancedUI() }
     let buttonID = "keys.reviewRemoval.\(intent.id)"
     try #require(
       try await waitForKeyUI { keyElement(buttonID, in: window) != nil }

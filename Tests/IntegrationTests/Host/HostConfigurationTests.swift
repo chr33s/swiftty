@@ -176,7 +176,7 @@ struct HostConfigurationTests {
     let request = try BootstrapEnvelope.encode(
       BootstrapRequest(operation: .list)
     )
-    let received = try BootstrapService.forward(
+    let received = BootstrapService.forward(
       envelope: request,
       socketPath: helper
     )

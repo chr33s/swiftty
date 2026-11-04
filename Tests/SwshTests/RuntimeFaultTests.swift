@@ -125,7 +125,7 @@ private func runRuntimeFault(_ fault: String) throws {
       _ = kill(-leader, SIGKILL)
       let deadline = ContinuousClock.now.advanced(by: .seconds(1))
       while supervisor.hasLiveJobs && ContinuousClock.now < deadline {
-        try? supervisor.poll(milliseconds: 10)
+        _ = try? supervisor.poll(milliseconds: 10)
       }
     }
     try? terminal.restoreForExit()

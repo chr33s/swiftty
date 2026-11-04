@@ -36,7 +36,8 @@ struct RegistryFixtureCleanupTests {
                 screenText($0).contains("cleanup-ready")
               }
               let session = try #require(registry.session(grant.sessionID))
-              pid = try #require(await shellPID(registry, session))
+              // Pin the type: assigning to an optional would make #require a no-op.
+              pid = try #require(await shellPID(registry, session)) as Int32
               throw Probe.failedBody
             }
           )

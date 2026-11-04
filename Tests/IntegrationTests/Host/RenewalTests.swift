@@ -202,7 +202,7 @@ struct RenewalTests {
       )
     }
     let current = try #require(listener.callback.withLock { $0 })
-    weak var weakHost = host
+    weak let weakHost = host
     host = nil
     #expect(weakHost == nil)
     for callback in [initial, current] {
@@ -312,7 +312,7 @@ struct RenewalTests {
         (listener, certificate, now.addingTimeInterval(86400))
       }
     )
-    weak var weakHost = host
+    weak let weakHost = host
     #expect(host != nil)
     #expect(!listener.stopped.withLock { $0 })
     host = nil

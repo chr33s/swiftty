@@ -171,7 +171,7 @@ extension MainActorIntegrationTests {
       defer { try? FileManager.default.removeItem(at: directory) }
       do {
         var app: RoamingAppModel? = RoamingAppModel()
-        weak var observedApp = app
+        weak let observedApp = app
         let store = FileHostTrustStore(
           fileURL: directory.appendingPathComponent("keys.json")
         )

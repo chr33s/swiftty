@@ -58,12 +58,8 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     }
     window.contentView = NSHostingView(rootView: HostListView(model: model))
     window.makeKeyAndOrderFront(nil)
-    let enhanced = NSAccessibility.Attribute(
-      rawValue: "AXEnhancedUserInterface"
-    )
-    let previous = NSApp.accessibilityAttributeValue(enhanced) as? Bool ?? false
-    NSApp.accessibilitySetValue(true, forAttribute: enhanced)
-    defer { NSApp.accessibilitySetValue(previous, forAttribute: enhanced) }
+    let restoreEnhancedUI = enableEnhancedUserInterface()
+    defer { restoreEnhancedUI() }
     let identifier = "host.open.\(host.id)"
     try #require(
       try await waitForKeyUI { keyElement(identifier, in: window) != nil }

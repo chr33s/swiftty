@@ -63,7 +63,7 @@ struct ServiceDisposalTests {
       configuration: MuxServiceConfiguration(launcherPath: launcherPath()),
     )
     defer { service = nil }
-    weak var weakService = service
+    weak let weakService = service
     let c = try await MuxConnection.connect(
       endpoint: #require(service).listenAnonymously(),
       frontend: .control,
@@ -89,8 +89,8 @@ struct ServiceDisposalTests {
     let descendant =
       child == .descendant
       ? try #require(pid_t(String(contentsOf: childFile, encoding: .utf8, )))
-      : nil
-    weak var weakRuntime = await service?.runtime(ws.tabs[0].activePane)
+        as pid_t : nil
+    weak let weakRuntime = await service?.runtime(ws.tabs[0].activePane)
     await c.close()
     let started = ContinuousClock.now
     service = nil
@@ -166,7 +166,7 @@ struct ServiceDisposalTests {
     }
     var service: MuxService? = try MuxService(configuration: configuration)
     defer { service = nil }
-    weak var weakService = service
+    weak let weakService = service
     let replies = Mutex(0)
     var launch = shellLaunch()
     launch.command = ["/bin/true"]

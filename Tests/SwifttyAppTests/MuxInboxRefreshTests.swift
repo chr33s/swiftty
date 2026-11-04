@@ -16,7 +16,7 @@ struct MuxInboxRefreshTests {
   @Test
   func releasingInboxReplyServiceClosesItsPeer() async throws {
     var service: InboxReplyService? = InboxReplyService()
-    weak var weakService = service
+    weak let weakService = service
     defer { weakService?.listener.cancel() }
     let connection = try await MuxConnection.connect(
       endpoint: #require(service).listener.endpoint,

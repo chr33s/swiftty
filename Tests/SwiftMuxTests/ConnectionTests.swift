@@ -286,7 +286,7 @@ struct ConnectionTests {
   @Test
   func releasingSilentServiceClosesItsAcceptedConnections() async throws {
     var service: SilentService? = SilentService()
-    weak var weakService = service
+    weak let weakService = service
     defer { weakService?.stop() }
     let connection = try await MuxConnection.connect(
       endpoint: #require(service).listener.endpoint,

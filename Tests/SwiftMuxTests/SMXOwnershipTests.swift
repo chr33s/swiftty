@@ -38,7 +38,7 @@ struct SMXOwnershipTests {
       queue: queue,
     )
     defer { client?.cancel() }
-    weak var weakClient = client
+    weak let weakClient = client
     client?.activate { _ in }
     client?.send(Data([1]))
     try #require(await observe { received.withLock { $0 } })
@@ -51,7 +51,7 @@ struct SMXOwnershipTests {
   func releasingListenerReleasesItsNativeAcceptHandler() async throws {
     let queue = DispatchQueue(label: "smx-ownership-listener")
     var probe: ReleaseProbe? = ReleaseProbe()
-    weak var weakProbe = probe
+    weak let weakProbe = probe
     var listener: SMXListener? = SMXListener(anonymousOn: queue)
     defer { listener?.cancel() }
     listener?

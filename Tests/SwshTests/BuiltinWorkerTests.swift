@@ -81,7 +81,7 @@ struct BuiltinWorkerTests {
 
     payload.kind = .external
     let wrong = try payload.write()
-    wrong.withDescriptor { fd in
+    _ = wrong.withDescriptor { fd in
       #expect(throws: SystemFailure.self) {
         try LauncherPayload.read(descriptor: fd, build: "worker-test")
       }
@@ -104,7 +104,7 @@ struct BuiltinWorkerTests {
       state: ShellState()
     )
     let file = try payload.write()
-    file.withDescriptor { fd in
+    _ = file.withDescriptor { fd in
       #expect(throws: SystemFailure.self) {
         try LauncherPayload.read(descriptor: fd, build: "worker-test")
       }

@@ -29,7 +29,9 @@ struct InboxSnoozeTimerTests {
       let token = Token()
       captured = token
       var timer: InboxSnoozeTimer? = InboxSnoozeTimer(queue: queue) { [token] in
-        withExtendedLifetime(token) { Issue.record("Future timer fired early") }
+        _ = withExtendedLifetime(token) {
+          Issue.record("Future timer fired early")
+        }
       }
       owner = timer
       for index in 0 ..< 10_000 {

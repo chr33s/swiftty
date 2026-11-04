@@ -275,7 +275,7 @@ struct QUICTransportTests {
     defer { listener.stop() }
     let captured = Mutex<QUICRSTConnection?>(nil)
     defer { captured.withLock { $0 }?.close() }
-    await Task {
+    _ = await Task {
       await #expect(throws: RSTTransportError.canceled) {
         _ = try await connector()
           .connectQUIC(
@@ -606,7 +606,7 @@ struct QUICTransportTests {
     }
     release.withLock { $0 = true }
     await overflow.value
-    for send in sends { await send.value }
+    for send in sends { _ = await send.value }
     #expect(server.admittedSnapshotSendsForTesting == 0)
     if closeInstead {
       await #expect(throws: RSTTransportError.closed) {

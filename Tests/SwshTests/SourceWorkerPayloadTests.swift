@@ -82,7 +82,7 @@ struct SourceWorkerPayloadTests {
       )
     }
     let file = try invalid.write()
-    file.withDescriptor { fd in
+    _ = file.withDescriptor { fd in
       #expect(throws: SystemFailure.self) {
         try LauncherPayload.read(descriptor: fd, build: "source-test")
       }

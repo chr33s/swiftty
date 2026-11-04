@@ -61,7 +61,9 @@ struct LocalPTYTerminationTests {
     configuration.command = [
       "/usr/bin/python3", "-u", "-c", program, pidFile.path, child.rawValue,
       "import os,signal,sys,time; signal.signal(signal.SIGHUP,signal.SIG_IGN); "
-        + "open(sys.argv[1],'w').write(str(os.getpid())); time.sleep(8)",
+        // Publish atomically: the parent proceeds once the file exists.
+        + "open(sys.argv[1]+'.tmp','w').write(str(os.getpid())); "
+        + "os.replace(sys.argv[1]+'.tmp',sys.argv[1]); time.sleep(8)",
     ]
     if let backend {
       try backend.start(configuration)
@@ -75,10 +77,10 @@ struct LocalPTYTerminationTests {
       ? try #require(
         pid_t(String(contentsOfFile: pidFile.path + ".child", encoding: .utf8, )
         )
-      ) : nil
+      ) as pid_t : nil
     #expect(!reaped(pid))
     session?.withState { _ in }
-    weak var weakSession = session
+    weak let weakSession = session
     let disposalStarted = ContinuousClock.now
     if let backend {
       await backend.close()

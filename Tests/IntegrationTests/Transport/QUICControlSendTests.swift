@@ -69,7 +69,7 @@ struct QUICControlSendTests {
   @Test
   func handshakeSuccessCannotOverrideCancellationBeforeReturn() async {
     let latch = OneShot()
-    await Task {
+    _ = await Task {
       await #expect(throws: RSTTransportError.canceled) {
         try await latch.wait(timeout: .seconds(2)) {
           latch.resolve(nil)
@@ -129,7 +129,7 @@ struct QUICControlSendTests {
     defer { overflow.cancel() }
     #expect(try await eventually { overflowFinished.withLock { $0 } })
     sends[0].cancel()
-    await sends[0].value
+    _ = await sends[0].value
     #expect(server.pendingControlSendsForTesting == sends.count - 1)
     let replacement = Task {
       await #expect(throws: RSTTransportError.closed) {
@@ -143,8 +143,8 @@ struct QUICControlSendTests {
       }
     )
     server.close()
-    for send in sends { await send.value }
-    await replacement.value
+    for send in sends { _ = await send.value }
+    _ = await replacement.value
     await overflow.value
     #expect(server.pendingControlSendsForTesting == 0)
   }
@@ -186,7 +186,7 @@ struct QUICControlSendTests {
     } else {
       sends.forEach { $0.cancel() }
     }
-    for send in sends { await send.value }
+    for send in sends { _ = await send.value }
     #expect(server.pendingControlSendsForTesting == (close ? 0 : sends.count))
     if !close {
       await #expect(throws: RSTTransportError.resourceLimit) {
@@ -298,7 +298,7 @@ struct QUICControlSendTests {
     defer { first.cancel() }
     try #require(try await eventually { submitted.withLock { $0 } == [1] })
     first.cancel()
-    await first.value
+    _ = await first.value
     let second = Task { try await server.sendControl([2], write: write) }
     defer { second.cancel() }
     try #require(

@@ -81,12 +81,8 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
       defer: false
     )
     window.isReleasedWhenClosed = false
-    let enhanced = NSAccessibility.Attribute(
-      rawValue: "AXEnhancedUserInterface"
-    )
-    let previous = NSApp.accessibilityAttributeValue(enhanced) as? Bool ?? false
-    NSApp.accessibilitySetValue(true, forAttribute: enhanced)
-    defer { NSApp.accessibilitySetValue(previous, forAttribute: enhanced) }
+    let restoreEnhancedUI = enableEnhancedUserInterface()
+    defer { restoreEnhancedUI() }
     func close() async {
       let active = model.activeSession?.controller
       let first = screen.controller
