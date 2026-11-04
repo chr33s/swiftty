@@ -282,7 +282,9 @@ struct PTYProcessTests {
         ContinuousClock.now < writeDeadline
       { usleep(1000) }
       try #require(FileManager.default.fileExists(atPath: written.path))
-      let exitDeadline = ContinuousClock.now + processWait
+      // Darwin may keep the child unwaitable until its output drains, so this
+      // is a bounded pause rather than a wait for a state.
+      let exitDeadline = ContinuousClock.now + .seconds(2)
       while ContinuousClock.now < exitDeadline {
         var info = siginfo_t()
         try #require(
