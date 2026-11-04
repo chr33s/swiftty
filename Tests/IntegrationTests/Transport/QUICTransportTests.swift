@@ -1137,25 +1137,47 @@ struct QUICTransportTests {
       bodyLength: RSTLimits.maxSnapshotEncodedBytes,
       fill: 0x11
     )
-    let partial = try await server.sendRawStreamForTesting(
-      Array(full.prefix(partialLength)),
-      finish: false,
-    )
-    try await transportEventually {
-      client.snapshotReadBytesForTesting.contains(partialLength)
+    // Name the failing step: CI (macOS 27.0.1, release) has reported a bare
+    // ENOTCONN here that does not reproduce locally.
+    var stage = "partial send"
+    do {
+      let partial = try await server.sendRawStreamForTesting(
+        Array(full.prefix(partialLength)),
+        finish: false,
+      )
+      stage = "partial read"
+      try await transportEventually {
+        client.snapshotReadBytesForTesting.contains(partialLength)
+      }
+      partial.cancel()
+      // FIN after a truncated body is not a complete snapshot either.
+      stage = "truncated send"
+      _ = try await server.sendRawStreamForTesting(
+        Array(full.prefix(7000)),
+        finish: true,
+      )
+      stage = "good send"
+      let good = snapshotPayload(bodyLength: 50000, fill: 0x22)
+      try await server.sendSnapshot(good, stream: 1)
+      stage = "good delivery"
+      try #require(await eventually { !inbox.snapshots.isEmpty })
+      try await Task.sleep(for: .milliseconds(200))
+      #expect(inbox.snapshots == [good])
+      stage = "read release"
+      try await transportEventually {
+        client.snapshotReadBytesForTesting.isEmpty
+      }
+    } catch {
+      Issue.record(
+        """
+        reset scenario failed during \(stage): \(error); \
+        clientClosed=\(client.isClosed) serverClosed=\(server.isClosed) \
+        reads=\(client.snapshotReadBytesForTesting) \
+        diagnostics=\(client.snapshotDiagnosticsForTesting)
+        """
+      )
+      throw error
     }
-    partial.cancel()
-    // FIN after a truncated body is not a complete snapshot either.
-    _ = try await server.sendRawStreamForTesting(
-      Array(full.prefix(7000)),
-      finish: true,
-    )
-    let good = snapshotPayload(bodyLength: 50000, fill: 0x22)
-    try await server.sendSnapshot(good, stream: 1)
-    try #require(await eventually { !inbox.snapshots.isEmpty })
-    try await Task.sleep(for: .milliseconds(200))
-    #expect(inbox.snapshots == [good])
-    try await transportEventually { client.snapshotReadBytesForTesting.isEmpty }
   }
 
   @Test
