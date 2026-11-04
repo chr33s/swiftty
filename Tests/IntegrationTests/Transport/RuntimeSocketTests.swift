@@ -231,7 +231,9 @@ struct RuntimeSocketTests {
         var byte: UInt8 = 42
         let n = Darwin.send(fd, &byte, 1, 0)
         let failure = n < 0 ? errno : 0
-        if n < 0, failure == EPIPE || failure == ECONNRESET { return }
+        // The client closes at its deadline; Darwin reports that to a
+        // later send as EPIPE, ECONNRESET or ENOTCONN depending on timing.
+        if n < 0, [EPIPE, ECONNRESET, ENOTCONN].contains(failure) { return }
         try #require(n == 1, "drip-body send result \(n), errno \(failure)")
         sent.withLock { $0 += 1 }
         try await Task.sleep(for: .milliseconds(20))
