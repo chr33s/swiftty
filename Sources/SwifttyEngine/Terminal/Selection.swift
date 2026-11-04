@@ -309,6 +309,7 @@ extension TerminalState {
 
   /// Moving cells in place replaces their selected content. Selections
   /// elsewhere, including scrollback and cells outside margins, survive.
+  @inline(__always)
   package mutating func invalidateSelection(
     rows range: Range<Int>,
     from left: Int,
@@ -316,7 +317,17 @@ extension TerminalState {
   ) {
     guard left < right, !range.isEmpty else { return }
     markSearchDirty()
-    guard selection != nil else { return }
+    if selection != nil {
+      clearSelection(ifOverlapping: range, from: left, to: right)
+    }
+  }
+
+  @inline(never)
+  private mutating func clearSelection(
+    ifOverlapping range: Range<Int>,
+    from left: Int,
+    to right: Int
+  ) {
     for y in range {
       if let selected = selectedColumns(inScreenRow: y),
         selected.overlaps(left ..< right)

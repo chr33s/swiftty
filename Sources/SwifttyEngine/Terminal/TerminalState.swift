@@ -327,6 +327,25 @@ public struct TerminalState: ~Copyable {
   @inline(__always)
   mutating func resolveDeferredClears() { grid.resolveStaleRows() }
 
+  /// REP: printable ASCII takes the same bulk path as parsed text.
+  private mutating func repeatLastPrinted(_ count: Int) {
+    let c = lastPrinted
+    guard (0x20 ... 0x7E).contains(c) else {
+      for _ in 0 ..< count { print(c) }
+      return
+    }
+    withUnsafeTemporaryAllocation(of: UInt8.self, capacity: min(count, 256)) {
+      buffer in
+      buffer.initialize(repeating: UInt8(c))
+      var left = count
+      while left > 0 {
+        let n = min(left, buffer.count)
+        printASCII(UnsafeBufferPointer(rebasing: buffer[..<n]))
+        left -= n
+      }
+    }
+  }
+
   mutating func index() {
     cursor.pendingWrap = false
     if cursor.y < scrollTop || cursor.y > scrollBottom {
@@ -998,10 +1017,7 @@ public struct TerminalState: ~Copyable {
     case 0x58: eraseChars(n)  // ECH X
     case 0x5A: tabBackward(n)  // CBT Z
     case 0x62:  // REP b
-      if lastPrinted != 0 {
-        let c = lastPrinted
-        for _ in 0 ..< min(n, 65535) { print(c) }
-      }
+      if lastPrinted != 0 { repeatLastPrinted(min(n, 65535)) }
     case 0x63: if csi.value(0) == 0 { reply("\u{1B}[?62;22c") }  // DA1
     case 0x64: setCursorRow(n)  // VPA d
     case 0x67:  // TBC g

@@ -357,6 +357,14 @@ public struct Parser: ~Copyable {
           if i == n { break }
         }
       }
+      if state == .oscString {
+        let end = Self.scanNonControl(base, from: i, to: n)
+        if end > i {
+          appendOSC(base + i, count: end - i)
+          i = end
+          if i == n { break }
+        }
+      }
       if state == .ground, utf8Remaining == 0 {
         let end = Self.scanPrintableASCII(base, from: i, to: n)
         if end > i {
@@ -389,7 +397,15 @@ public struct Parser: ~Copyable {
         }
       }
       // Stale rows arise only in ground state.
-      if state == .ground { terminal.resolveDeferredClears() }
+      if state == .ground {
+        terminal.resolveDeferredClears()
+        if base[i] == 0x1B, utf8Remaining == 0,
+          let end = csiInline(base, from: i, to: n, &terminal)
+        {
+          i = end
+          continue
+        }
+      }
       step(base[i], &terminal)
       i += 1
     }
@@ -416,6 +432,34 @@ public struct Parser: ~Copyable {
       break
     }
     while i < end, p[i] &- 0x20 < 0x5F { i += 1 }
+    return i
+  }
+
+  /// Index of the first C0 control (< 0x20) in `from..<to`.
+  @inline(__always)
+  static func scanNonControl(
+    _ p: UnsafePointer<UInt8>,
+    from start: Int,
+    to end: Int
+  ) -> Int {
+    var i = start
+    let raw = UnsafeRawPointer(p)
+    let space = SIMD16<UInt8>(repeating: 0x20)
+    while i + 64 <= end {
+      let a = raw.loadUnaligned(fromByteOffset: i, as: SIMD16<UInt8>.self)
+      let b = raw.loadUnaligned(fromByteOffset: i + 16, as: SIMD16<UInt8>.self)
+      let c = raw.loadUnaligned(fromByteOffset: i + 32, as: SIMD16<UInt8>.self)
+      let d = raw.loadUnaligned(fromByteOffset: i + 48, as: SIMD16<UInt8>.self)
+      let low = pointwiseMin(pointwiseMin(a, b), pointwiseMin(c, d))
+      if any(low .< space) { break }
+      i += 64
+    }
+    while i + 16 <= end {
+      let v = raw.loadUnaligned(fromByteOffset: i, as: SIMD16<UInt8>.self)
+      if any(v .< space) { break }
+      i += 16
+    }
+    while i < end, p[i] >= 0x20 { i += 1 }
     return i
   }
 
@@ -691,6 +735,50 @@ public struct Parser: ~Copyable {
     }
   }
 
+  /// A complete, ordinary CSI at `p[start]` (ESC) parsed in one loop; returns
+  /// the index after it, or nil to leave the bytes to `step`.
+  @inline(__always)
+  private mutating func csiInline(
+    _ p: UnsafePointer<UInt8>,
+    from start: Int,
+    to end: Int,
+    _ t: inout TerminalState
+  ) -> Int? {
+    var j = start + 1
+    guard j < end, p[j] == 0x5B else { return nil }
+    enterCSI()
+    j += 1
+    if j < end, (0x3C ... 0x3F).contains(p[j]) {
+      csi.marker = p[j]
+      j += 1
+    }
+    var entry = csi.marker == 0
+    while j < end {
+      let b = p[j]
+      j += 1
+      switch b {
+      case 0x30 ... 0x39:
+        currentParam = min(currentParam &* 10 &+ UInt32(b - 0x30), 65535)
+        hasParam = true
+      case 0x3B: pushParam(colon: false)
+      case 0x3A where !entry: pushParam(colon: true)
+      case 0x40 ... 0x7E:
+        finishParams()
+        dispatchCSI(b, &t)
+        return j
+      case 0x20 ... 0x2F:
+        guard j < end, (0x40 ... 0x7E).contains(p[j]) else { return nil }
+        finishParams()
+        csi.intermediate = b
+        dispatchCSI(p[j], &t)
+        return j + 1
+      default: return nil
+      }
+      entry = false
+    }
+    return nil
+  }
+
   private mutating func dispatchCSI(_ final: UInt8, _ t: inout TerminalState) {
     // Colon-separated subparameters are supported only by SGR.
     if !parameterOverflow, final == 0x6D || csi.colonMask == 0 {
@@ -820,6 +908,37 @@ public struct Parser: ~Copyable {
     if oscCommandStart == oscCount, byte == 0x30 { oscCommandStart += 1 }
     osc[oscCount] = byte
     oscCount += 1
+  }
+
+  /// `appendOSC(_:)` for each of `count` non-control bytes.
+  private mutating func appendOSC(_ p: UnsafePointer<UInt8>, count: Int) {
+    var p = p
+    var count = count
+    // Byte by byte until the command prefix the limits depend on is fixed.
+    while count > 0, oscCount <= oscCommandStart + 3 || oscCount < 5 {
+      appendOSC(p.pointee)
+      p += 1
+      count -= 1
+    }
+    guard count > 0, !oscOverflow else { return }
+    var limit = Self.maxOSCBytes
+    if isColorOSC { limit = min(limit, Self.maxColorOSCBytes) }
+    if isProgramStatusOSC {
+      limit = min(limit, ProgramStatusCommand.maxBodyBytes)
+    }
+    let accepted = min(count, max(0, limit - oscCount))
+    if oscCount + accepted > oscCapacity {
+      var capacity = oscCapacity
+      while capacity < oscCount + accepted { capacity *= 2 }
+      let grown = UnsafeMutablePointer<UInt8>.allocate(capacity: capacity)
+      grown.update(from: osc, count: oscCount)
+      osc.deallocate()
+      osc = grown
+      oscCapacity = capacity
+    }
+    (osc + oscCount).update(from: p, count: accepted)
+    oscCount += accepted
+    if accepted < count { oscOverflow = true }
   }
 
   private var isColorOSC: Bool {

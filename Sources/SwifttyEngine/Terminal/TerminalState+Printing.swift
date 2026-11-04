@@ -219,7 +219,7 @@ extension TerminalState {
         clustering: clustering,
         widths: widths
       ) {
-        print(cp)
+        printJoiningExtend(cp)
         previous = scalarBeforeCursor()  // a selector may have been ignored
         i += 1
         continue
@@ -455,6 +455,35 @@ extension TerminalState {
       i += 4
     }
     return (i, previousClass)
+  }
+
+  /// `print`, with Extend appended directly: after a cell with text it never
+  /// starts a cluster and leaves the width unchanged. ZWJ keeps `print`,
+  /// whose recorded break state the emoji that follows needs.
+  @inline(never)
+  private mutating func printJoiningExtend(_ c: UInt32) {
+    let property = GraphemeBreak.Property(
+      rawValue: ScalarInfoTable.shared.lookup(c) & 0x1F
+    )
+    guard modes.contains(.graphemeCluster), cursor.singleShift == nil,
+      property?.isExtend == true, c != 0xFE0E, c != 0xFE0F,
+      GraphemeBreak.isZeroInGrapheme(c)
+    else { return print(c) }
+    // The cell `printJoining` would join.
+    let row = grid._unsafeRow(cursor.y)
+    let rightLimit = cursor.x > scrollRight ? columns : scrollRight + 1
+    var left: Int =
+      if modes.contains(.autowrap) {
+        cursor.pendingWrap ? 0 : 1
+      } else if cursor.x != rightLimit - 1 { 1 } else {
+        Self.hasText(row[cursor.x]) ? 0 : 1
+      }
+    guard cursor.x >= left else { return print(c) }
+    if Self.kind(of: row[cursor.x - left]) == .spacerTail { left += 1 }
+    guard cursor.x - left >= 0, Self.hasText(row[cursor.x - left]) else {
+      return print(c)
+    }
+    appendGrapheme(c, x: cursor.x - left, y: cursor.y)
   }
 
   /// General path for one printable scalar (Ghostty `Terminal.print`).

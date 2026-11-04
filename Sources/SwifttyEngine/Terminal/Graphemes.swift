@@ -4,8 +4,8 @@
 /// append-only; `TerminalState` compacts the table when garbage grows.
 /// Each entry contains a base scalar and at least one joined scalar.
 struct GraphemeTable: ~Copyable {
-  private(set) var scalars: [UInt32] = []
-  private(set) var entries: [UInt64] = []  // start << 32 | count
+  private(set) var scalars = GrowableBuffer<UInt32>()
+  private(set) var entries = GrowableBuffer<UInt64>()  // start << 32 | count
 
   /// Bound retained garbage in small terminals; live content raises the limit.
   static let compactionThreshold = 1 << 16
@@ -46,6 +46,12 @@ struct GraphemeTable: ~Copyable {
     return scalars.span.extracting(start ..< start + count)
   }
 
+  /// Scalars in `cell`'s content.
+  @inline(__always)
+  func scalarCount(ofCell cell: Cell) -> Int {
+    cell.isGrapheme ? scalarCount(cell.glyph) : 1
+  }
+
   /// Number of scalars in a cluster, without constructing a buffer view.
   func scalarCount(_ id: UInt32) -> Int { Int(entries[Int(id)] & 0xFFFF_FFFF) }
 
@@ -81,7 +87,7 @@ struct GraphemeTable: ~Copyable {
     precondition(cluster.count >= 2, "a grapheme entry joins scalars")
     exclusiveTail = .max
     let start = scalars.count
-    scalars.append(contentsOf: cluster)
+    for scalar in cluster { scalars.append(scalar) }
     entries.append(UInt64(start) << 32 | UInt64(cluster.count))
     return UInt32(entries.count - 1)
   }
@@ -101,7 +107,7 @@ struct GraphemeTable: ~Copyable {
     let lo = Int(entry >> 32)
     let n = Int(entry & 0xFFFF_FFFF)
     let start = scalars.count
-    scalars.append(contentsOf: old.scalars[lo ..< lo + n])
+    scalars.append(old.scalars, from: lo, count: n)
     entries.append(UInt64(start) << 32 | UInt64(n))
     cell.glyph = UInt32(entries.count - 1)
   }
@@ -111,5 +117,82 @@ struct GraphemeTable: ~Copyable {
     exclusiveTail = .max
     scalars.removeAll(keepingCapacity: true)
     entries.removeAll(keepingCapacity: true)
+  }
+}
+
+/// An append-only array without copy-on-write checks on each append.
+package struct GrowableBuffer<Element: BitwiseCopyable>: ~Copyable {
+  private var base: UnsafeMutablePointer<Element>?
+  private var capacity = 0
+  private(set) var count = 0
+
+  deinit { base?.deallocate() }
+
+  subscript(i: Int) -> Element {
+    @inline(__always)
+    get {
+      precondition(i >= 0 && i < count)
+      return base.unsafelyUnwrapped[i]
+    }
+    @inline(__always)
+    set {
+      precondition(i >= 0 && i < count)
+      base.unsafelyUnwrapped[i] = newValue
+    }
+  }
+
+  var span: Span<Element> {
+    @_lifetime(borrow self)
+    get {
+      let span = Span(
+        _unsafeStart: base ?? UnsafeMutablePointer(
+          bitPattern: MemoryLayout<Element>.alignment
+        )!,
+        count: count
+      )
+      return _overrideLifetime(span, borrowing: self)
+    }
+  }
+
+  @inline(__always)
+  mutating func append(_ element: Element) {
+    if count == capacity { grow(to: count + 1) }
+    base.unsafelyUnwrapped[count] = element
+    count += 1
+  }
+
+  /// Appends `n` elements of `other` starting at `start`.
+  mutating func append(
+    _ other: borrowing GrowableBuffer<Element>,
+    from start: Int,
+    count n: Int
+  ) {
+    precondition(start >= 0 && n >= 0 && start + n <= other.count)
+    guard n > 0 else { return }
+    if count + n > capacity { grow(to: count + n) }
+    (base.unsafelyUnwrapped + count)
+      .update(from: other.base.unsafelyUnwrapped + start, count: n)
+    count += n
+  }
+
+  mutating func removeAll(keepingCapacity: Bool) {
+    count = 0
+    if !keepingCapacity {
+      base?.deallocate()
+      base = nil
+      capacity = 0
+    }
+  }
+
+  @inline(never)
+  private mutating func grow(to minimum: Int) {
+    let grown = UnsafeMutablePointer<Element>
+      .allocate(capacity: max(16, capacity * 2, minimum))
+    if let base {
+      grown.update(from: base, count: count)
+      base.deallocate()
+    }
+    capacity = max(16, capacity * 2, minimum)
+    base = grown
   }
 }
