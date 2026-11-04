@@ -532,6 +532,9 @@ final class ViewBehaviorTests {
 
 @MainActor
 final class InteractionTestWindow: NSWindow {
+  // Interaction tests convert pixel coordinates at 2x. CI runners can have a
+  // 1x display, so pin the scale instead of inheriting the host's screen.
+  override var backingScaleFactor: CGFloat { 2 }
   override var isVisible: Bool { true }
   override var occlusionState: NSWindow.OcclusionState { [.visible] }
 }

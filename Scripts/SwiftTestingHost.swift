@@ -65,14 +65,52 @@ private final class RunEvidence: @unchecked Sendable {
   }
 }
 
+/// A bundle built by a swift.org toolchain links that toolchain's
+/// libTesting.dylib, while Xcode's XCTest can also load Testing.framework.
+/// Both copies export the ABI entry point, but each discovers only tests
+/// registered against its own types, so use the copy the bundle links.
+private func entryPointSymbol(
+  bundle: UnsafeMutableRawPointer
+) -> UnsafeMutableRawPointer? {
+  let environment = ProcessInfo.processInfo.environment
+  guard let library = environment["SWIFTTY_TESTING_LIBRARY"], !library.isEmpty
+  else { return dlsym(bundle, "swt_abiv0_getEntryPoint") }
+  // An @rpath install name resolves through DYLD_*_PATH, so match its tail.
+  // dyld reports absolute images by their resolved path.
+  func resolved(_ path: String) -> String {
+    guard let real = realpath(path, nil) else { return path }
+    defer { free(real) }
+    return String(cString: real)
+  }
+  let relative =
+    library.hasPrefix("@rpath/") ? String(library.dropFirst(7)) : nil
+  let absolute = resolved(library)
+  for index in 0 ..< _dyld_image_count() {
+    guard let name = _dyld_get_image_name(index).map({ String(cString: $0) }),
+      relative.map({ name.hasSuffix("/" + $0) })
+        ?? (resolved(name) == absolute),
+      let image = dlopen(name, RTLD_NOW | RTLD_NOLOAD)
+    else { continue }
+    if let symbol = dlsym(image, "swt_abiv0_getEntryPoint") { return symbol }
+  }
+  fputs(
+    "The test bundle's Swift Testing library \(library) is not loaded\n",
+    stderr
+  )
+  return nil
+}
+
 @main
 struct SwiftTestingHost {
   static func main() {
     guard let path = ProcessInfo.processInfo.environment["SWIFTTY_TEST_BUNDLE"],
       let bundle = dlopen(path, RTLD_NOW | RTLD_GLOBAL),
-      let symbol = dlsym(bundle, "swt_abiv0_getEntryPoint")
+      let symbol = entryPointSymbol(bundle: bundle)
     else {
-      let reason = dlerror().map { String(cString: $0) } ?? "SWIFTTY_TEST_BUNDLE is unset"
+      let reason =
+        dlerror().map { String(cString: $0) }
+        ?? (ProcessInfo.processInfo.environment["SWIFTTY_TEST_BUNDLE"] == nil
+          ? "SWIFTTY_TEST_BUNDLE is unset" : "entry point not found")
       fputs(
         "Unable to load the Swift Testing bundle or ABI entry point: \(reason)\n",
         stderr,

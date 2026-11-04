@@ -40,6 +40,20 @@ class TestOutputCompletionTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "8 started.*7 passing"):
                     MODULE.check_suite_completion(output, "suite")
 
+    def test_known_issue_runs_pass(self):
+        for count in ["1 known issue", "3 known issues"]:
+            with self.subTest(count=count):
+                MODULE.check_suite_completion(
+                    START + "\x1b[90m━\x1b[0m Test run with 1222 tests in 116 suites "
+                    f"passed after 89.960 seconds with {count}.\n",
+                    "suite",
+                )
+
+    def test_known_issue_marker_requires_known_issue_summary(self):
+        output = START + "━ Test run with 2 tests in 1 suite passed after 0.012 seconds.\n"
+        with self.assertRaises(RuntimeError):
+            MODULE.check_suite_completion(output, "suite")
+
     def test_missing_or_unmatched_reports_fail(self):
         for output in ["", "Build complete!\n", START, PASS, START + PASS + PASS]:
             with self.subTest(output=output), self.assertRaises(RuntimeError):

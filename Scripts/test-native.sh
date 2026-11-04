@@ -79,9 +79,18 @@ run_bundles() {
       continue
     fi
     echo "Running test bundle: $target"
+    # Name the Swift Testing image the bundle links so the host avoids a
+    # second copy loaded through XCTest (swift.org toolchain vs. Xcode).
+    local testing_library
+    testing_library=$({ otool -L "$bundle" 2>/dev/null || true; } | awk '
+      $1 ~ /\/libTesting\.dylib$/ { print $1; found = 1; exit }
+      $1 ~ /\/Testing\.framework\// && framework == "" { framework = $1 }
+      END { if (!found && framework != "") print framework }
+    ')
     # A silent zero exit can bypass the in-process ABI audit. Check each
     # bundle's raw output before another target can contribute completions.
-    SWIFTTY_TEST_BUNDLE="$bundle" "$workspace/host" 2>&1 \
+    SWIFTTY_TEST_BUNDLE="$bundle" SWIFTTY_TESTING_LIBRARY="$testing_library" \
+      "$workspace/host" 2>&1 \
       | tee "$workspace/bundle.log" || status=1
     if ! python3 Scripts/check-test-output.py --suite-log "$workspace/bundle.log"; then
       echo "Incomplete test bundle: $target" >&2

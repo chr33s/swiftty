@@ -33,8 +33,12 @@ def check_suite_completion(output: str, name: str) -> None:
         if line == "◇ Test run started.":
             pending += 1
             started += 1
+        # Runs whose only issues are expected (withKnownIssue) still pass,
+        # but Swift Testing marks their summary with ━ instead of ✔.
         elif re.fullmatch(
-            r"✔ Test run with \d+ tests?(?: in \d+ suites?)? passed after .+\.",
+            r"✔ Test run with \d+ tests?(?: in \d+ suites?)? passed after .+\."
+            r"|━ Test run with \d+ tests?(?: in \d+ suites?)? passed after .+"
+            r" with \d+ known issues?\.",
             line,
         ):
             if pending == 0:

@@ -99,6 +99,15 @@ public func getter() -> UnsafeRawPointer {
   return unsafeBitCast(function, to: UnsafeRawPointer.self)
 }
 '''
+DECOY = r'''
+import Darwin
+
+@_cdecl("swt_abiv0_getEntryPoint")
+public func getter() -> UnsafeRawPointer {
+  print("DECOY_ENTRY_POINT")
+  exit(3)
+}
+'''
 
 
 @unittest.skipUnless(sys.platform == "darwin", "native macOS ABI fixture")
@@ -112,22 +121,54 @@ class NativeTestHostTests(unittest.TestCase):
         cls.library = cls.path / "fixture.dylib"
         fixture = cls.path / "fixture.swift"
         fixture.write_text(FIXTURE)
+        # A second Swift Testing copy that exports the same ABI entry point,
+        # linked ahead of the real one, as XCTest does for swift.org bundles.
+        decoy = cls.path / "decoy.swift"
+        decoy.write_text(DECOY)
+        cls.decoy = cls.path / "decoy.dylib"
+        cls.two_copies = cls.path / "two-copies.dylib"
+        empty = cls.path / "empty.swift"
+        empty.write_text("")
         for command in [
             ["xcrun", "swiftc", "-swift-version", "6", "-parse-as-library", str(ROOT / "Scripts/SwiftTestingHost.swift"),
              "-o", str(cls.host)],
             ["xcrun", "swiftc", "-swift-version", "6", "-emit-library", str(fixture), "-o", str(cls.library)],
+            ["xcrun", "swiftc", "-swift-version", "6", "-emit-library", str(decoy), "-o", str(cls.decoy)],
+            ["xcrun", "swiftc", "-swift-version", "6", "-emit-library", str(empty), "-o", str(cls.two_copies),
+             "-Xlinker", str(cls.decoy), "-Xlinker", str(cls.library)],
         ]:
             result = subprocess.run(command, capture_output=True, text=True, timeout=60)
             if result.returncode != 0:
                 raise RuntimeError(result.stderr)
 
-    def run_host(self, scenario, library=None):
+    def run_host(self, scenario, library=None, testing_library=None):
+        environment = {**os.environ, "SWIFTTY_TEST_BUNDLE": str(library or self.library),
+                       "SWIFTTY_HOST_SCENARIO": scenario}
+        environment.pop("SWIFTTY_TESTING_LIBRARY", None)
+        if testing_library is not None:
+            environment["SWIFTTY_TESTING_LIBRARY"] = testing_library
         return subprocess.run(
-            [str(self.host)],
-            env={**os.environ, "SWIFTTY_TEST_BUNDLE": str(library or self.library),
-                 "SWIFTTY_HOST_SCENARIO": scenario},
-            capture_output=True, text=True, timeout=10,
+            [str(self.host)], env=environment, capture_output=True, text=True, timeout=10,
         )
+
+    def test_entry_point_comes_from_the_bundles_testing_library(self):
+        unselected = self.run_host("complete", self.two_copies)
+        self.assertIn("DECOY_ENTRY_POINT", unselected.stdout)
+        result = self.run_host("complete", self.two_copies, str(self.library))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("DECOY_ENTRY_POINT", result.stdout)
+        self.assertIn("FIXTURE_ENTRY_FINISHED", result.stdout)
+
+    def test_rpath_testing_library_matches_the_loaded_image_path(self):
+        result = self.run_host("complete", self.two_copies, "@rpath/fixture.dylib")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("FIXTURE_ENTRY_FINISHED", result.stdout)
+
+    def test_unloaded_testing_library_does_not_fall_back_to_another_copy(self):
+        result = self.run_host("complete", self.two_copies, "@rpath/libTesting.dylib")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("@rpath/libTesting.dylib is not loaded", result.stderr)
+        self.assertNotIn("DECOY_ENTRY_POINT", result.stdout)
 
     def test_complete_run_survives_two_main_loop_stops(self):
         result = self.run_host("complete")
