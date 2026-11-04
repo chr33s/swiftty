@@ -1085,55 +1085,79 @@ inputs missing their final `# EOF` or `#EOF` marker.
 
 ## Measured results
 
-These are Release measurements on Apple Silicon. Parser throughput, physical iPad
-frame time and the centered onscreen comparison were measured on 2026-10-10.
+These are Release measurements on Apple Silicon. Parser throughput was measured
+on 2026-11-04; physical iPad frame time and the centered onscreen comparison on
+2026-10-10.
 Earlier probes are identified below.
 
 ### Swiftty vs Ghostty
 
-Parser and terminal-state throughput on an Apple M5 Max (18 CPU cores): Ghostty
-`5dc28bb`, Zig 0.16.0 ReleaseFast, versus Swift 6.4 Release. Each binary read the
-same generated 100 MiB files in 64 KiB chunks at 120×80 with 10,000 bytes of
-history. Medians include startup and file I/O: two warmups and 20 serial,
-alternating measured runs per binary. Swiftty was faster on all 14 inputs by median.
+Parser and terminal-state throughput on an Apple M5 Max (18 CPU cores, 128 GiB),
+measured 2026-11-04: Ghostty `5dc28bb`, Zig 0.16.0 ReleaseFast, versus Swift
+6.4.2 Release. Each binary read the same 100 MiB files in 64 KiB chunks at
+120×80. Medians include startup and file I/O. Each input had two warmups and
+20 rounds running every variant in a seeded random order; intervals are paired
+bootstrap 95% intervals.
 
-Lower times are better. Relative throughput is `Ghostty time / Swiftty time`;
-100% means equal speed. This benchmark measures parsing and state updates;
-the onscreen comparison below measures a separate frontend endpoint.
+Ghostty's `terminal-stream` raises its 10,000-byte scrollback limit to two
+215-row pages, up to 350 history rows at 120×80; Swiftty applies 10,000 bytes
+literally (5 rows). "Matched" gives Swiftty 350 rows (672,000 bytes) and is the
+like-for-like comparison.
 
-| Input                |   Ghostty |   Swiftty | Relative throughput |
-| -------------------- | --------: | --------: | ------------------: |
-| ascii                |   99.0 ms |   93.8 ms |              105.6% |
-| cat-source           |  122.0 ms |  114.4 ms |              106.6% |
-| compiler-log         |  140.9 ms |  125.1 ms |              112.7% |
-| csi-heavy            |  477.5 ms |  357.4 ms |              133.6% |
-| ghostty-ascii        |   68.6 ms |   61.0 ms |              112.5% |
-| ghostty-osc          | 4104.0 ms | 1092.8 ms |              375.6% |
-| ghostty-styled       |  409.1 ms |  211.9 ms |              193.1% |
-| ghostty-utf8         |  687.9 ms |  536.7 ms |              128.2% |
-| osc-heavy            | 1111.7 ms |  541.4 ms |              205.3% |
-| scroll               |  406.4 ms |  303.9 ms |              133.7% |
-| unicode-joins        |  348.2 ms |  258.6 ms |              134.7% |
-| utf8 (mixed scripts) |  333.1 ms |  332.3 ms |              100.2% |
-| utf8-latin           |  129.2 ms |  122.5 ms |              105.4% |
-| utf8-cjk             |  100.6 ms |   92.4 ms |              108.9% |
+With matched history Swiftty was faster on 12 of 14 inputs, tied on
+`unicode-joins` and slower on mixed `utf8`. With the nominal limit it was
+faster on 13 and slower on `utf8`.
 
-Wide-cell batching cut CJK time by 17.7% versus the frozen previous build. CJK
-throughput relative to Ghostty has a 95% paired bootstrap interval of 108.1–110.0%.
-Other inputs changed by −1.0% to +1.9% in time. Larger eight-scalar UTF-8 decode
-batches were slower and were discarded. Mixed UTF-8 has little margin over Ghostty.
-The corpus combines nine Swiftty inputs, four Ghostty inputs (styled: seed 42,
-style rate 0.3; UTF-8: seed 42) and a combining/ZWJ/flag fixture.
+Lower times are better. Relative throughput is `Ghostty time / Swiftty time`.
 
-To compare the same workloads, build Ghostty's benchmark and use generated `.bin`
-inputs (`swiftty-bench gen <name>` or `ghostty-gen +<name>`):
+| Input                |   Ghostty |   Swiftty | Relative (95% CI)       |   Matched | Relative (95% CI)       |
+| -------------------- | --------: | --------: | ----------------------- | --------: | ----------------------- |
+| ascii                |   99.3 ms |   90.1 ms | 110.2% (109.5–112.4%)   |   92.3 ms | 107.6% (107.0–109.8%)   |
+| cat-source           |  150.1 ms |  143.8 ms | 104.3% (103.6–104.7%)   |  149.1 ms | 100.7% (100.1–101.3%)   |
+| compiler-log         |  142.2 ms |  134.8 ms | 105.5% (104.6–106.1%)   |  138.4 ms | 102.8% (102.1–103.8%)   |
+| csi-heavy            |  481.6 ms |  450.4 ms | 106.9% (105.5–111.5%)   |  435.4 ms | 110.6% (108.2–112.3%)   |
+| ghostty-ascii        |   69.6 ms |   63.9 ms | 109.0% (108.8–109.2%)   |   64.1 ms | 108.6% (108.4–108.7%)   |
+| ghostty-osc          | 4286.1 ms | 1192.5 ms | 359.4% (358.2–360.9%)   | 1190.4 ms | 360.1% (358.6–361.9%)   |
+| ghostty-styled       |  426.9 ms |  244.9 ms | 174.3% (173.4–177.7%)   |  243.1 ms | 175.6% (173.2–177.8%)   |
+| ghostty-utf8         |  776.8 ms |  564.3 ms | 137.7% (137.2–138.3%)   |  565.9 ms | 137.3% (136.7–137.8%)   |
+| osc-heavy            | 1206.1 ms |  621.3 ms | 194.1% (191.6–199.0%)   |  657.1 ms | 183.5% (179.5–189.6%)   |
+| scroll               |  415.4 ms |  319.7 ms | 129.9% (129.0–131.0%)   |  320.0 ms | 129.8% (129.2–130.4%)   |
+| unicode-joins        |  642.7 ms |  613.1 ms | 104.8% (104.5–105.0%)   |  643.7 ms | 99.8% (99.6–100.0%)     |
+| utf8 (mixed scripts) |  336.0 ms |  340.4 ms | 98.7% (98.1–99.2%)      |  341.4 ms | 98.4% (97.8–98.8%)      |
+| utf8-latin           |  129.5 ms |  126.5 ms | 102.3% (100.9–103.5%)   |  127.5 ms | 101.5% (100.6–102.2%)   |
+| utf8-cjk             |  101.1 ms |   95.5 ms | 105.9% (105.3–106.3%)   |   96.4 ms | 104.9% (104.4–105.6%)   |
+
+Caveats:
+
+- Upstream `ghostty-bench` logs warnings to stderr while timed. A build with
+  `log_level = .err` was 23.2% faster on `ghostty-utf8`, 15.4% on
+  `osc-heavy` and 0.6–4.8% on the rest. Against it, nominal-limit Swiftty is at
+  111.8% on `ghostty-utf8`, 168.2% on `osc-heavy` and 97.6% on `utf8`.
+- Final states are not compared. Swiftty ignores OSC 8 `id=`, drops URIs over
+  2,048 bytes and leaves links unlabelled once 255 slots are live, so part of
+  the OSC margin may be work Ghostty does and Swiftty skips.
+- `ghostty-gen +osc` is unseeded and `cat-source` concatenates this
+  repository's sources; compare input hashes across runs.
+- Median peak RSS: Swiftty 7.6–10.3 MiB, Ghostty 9.7–11.5 MiB.
+
+Since the 2026-10-10 run, Swiftty's medians rose on `csi-heavy`
+(357.4 → 450.4 ms), `compiler-log` (+7.8%) and `scroll` (+5.2%) while
+Ghostty's stayed within 2.2%. This needs a bisect.
+
+Raw samples, input and binary hashes and toolchain versions are in
+[Benchmarks/Ghostty/compare-2026-11-04.json](Benchmarks/Ghostty/compare-2026-11-04.json).
+To reproduce:
 
 ```sh
 # In the Ghostty checkout:
 zig build -Demit-bench -Doptimize=ReleaseFast -Demit-macos-app=false
 # In this repository (also builds swiftty-bench in Release):
-RUNS=20 mise run compare <ghostty-src> <corpus-dir>
+mise run compare <ghostty-src> <corpus-dir> --generate
 ```
+
+`--generate` writes ten `swiftty-bench gen` inputs and four `ghostty-gen` inputs
+(`+ascii`, `+osc`, `+styled --seed=42 --style-rate=0.3`, `+utf8 --seed=42`).
+`--ghostty-quiet <src>` adds the log-suppressed build.
 
 ### Memory and rendering
 

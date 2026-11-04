@@ -202,6 +202,25 @@ func scriptChunk(_ alphabet: [Character]) -> [UInt8] {
   return Array(s.utf8)
 }
 
+/// Combining marks, ZWJ sequences, modifiers, flags and variation selectors.
+func unicodeJoinsChunk() -> [UInt8] {
+  let clusters = [
+    "e\u{301}", "a\u{308}\u{304}", "n\u{303}", "o\u{302}\u{323}",
+    "\u{1100}\u{1161}\u{11A8}", "👨\u{200D}👩\u{200D}👧\u{200D}👦",
+    "🏳\u{FE0F}\u{200D}🌈", "👍🏽", "🧑\u{200D}💻", "🇯🇵", "🇺🇸", "❤\u{FE0F}", "☺\u{FE0E}",
+    "क्षि", "ﷺ", "word", "the", "x",
+  ]
+  var rng = LCG()
+  var s = ""
+  for _ in 0 ..< 20000 {
+    for _ in 0 ..< (6 + rng.next(14)) {
+      s += clusters[rng.next(clusters.count)] + " "
+    }
+    s += "\r\n"
+  }
+  return Array(s.utf8)
+}
+
 func compilerLogChunk() -> [UInt8] {
   var rng = LCG()
   var s = ""
@@ -683,7 +702,7 @@ func runGenerate(_ arguments: [String]) -> Never {
   let generators: [String: () -> [UInt8]] = [
     "ascii": asciiChunk, "utf8": utf8Chunk, "compiler-log": compilerLogChunk,
     "cat-source": sourceChunk, "csi-heavy": csiChunk, "osc-heavy": oscChunk,
-    "scroll": scrollChunk,
+    "scroll": scrollChunk, "unicode-joins": unicodeJoinsChunk,
     "utf8-cjk": { scriptChunk(Array("日本語中文字符한국어漢字東京大阪")) },
     "utf8-latin": { scriptChunk(Array("éèêëàâäôöûüçñßøåæœ")) },
   ]
@@ -734,6 +753,7 @@ runStream(
   "utf8-latin",
   stream(streamBytes) { scriptChunk(Array("éèêëàâäôöûüçñßøåæœ")) }
 )
+runStream("unicode-joins", stream(streamBytes, chunk: unicodeJoinsChunk))
 runStream("compiler-log", stream(streamBytes, chunk: compilerLogChunk))
 runStream("cat-source", stream(streamBytes, chunk: sourceChunk))
 runStream("csi-heavy", stream(streamBytes, chunk: csiChunk))

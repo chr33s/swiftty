@@ -24,6 +24,7 @@ extension TerminalState {
   /// Bulk path for printable ASCII (0x20...0x7E).
   mutating func printASCII(_ bytes: UnsafeBufferPointer<UInt8>) {
     if !printsFast {
+      resolveDeferredClears()
       for b in bytes { print(UInt32(b)) }
       return
     }
@@ -34,6 +35,7 @@ extension TerminalState {
       if cursor.pendingWrap {
         guard modes.contains(.autowrap) else {
           // No autowrap: the last column keeps being overwritten.
+          resolveDeferredClears()
           writeCell(UInt32(bytes[n - 1]), .narrow)
           break
         }
@@ -44,8 +46,10 @@ extension TerminalState {
       let chunk = min(columns - x, n - i)
       let end = x + chunk
       invalidateSelection(rows: cursor.y ..< cursor.y + 1, from: x, to: end)
+      grid.prepareWrite(cursor.y, from: x)
       // Cells before the extent may hold wide characters to split.
-      let checked = min(end, grid.extent(cursor.y))
+      let extent = grid.extent(cursor.y)
+      let checked = min(end, extent)
       if x < checked {
         // Overwriting the first half of a wide character at the
         // chunk's edge orphans its tail; other cells are rewritten.
@@ -59,7 +63,7 @@ extension TerminalState {
           x += 1
           i += 1
         }
-        if x < columns, row[x].width == 0 {
+        if x < extent, row[x].width == 0 {
           // The last write split a wide character.
           row[x] = eraseCell
         }
@@ -634,12 +638,14 @@ extension TerminalState {
   }
 
   /// Appends `c` to the cluster in cell (`x`, `y`).
-  mutating func appendGrapheme(_ c: UInt32, x: Int, y: Int) {
+  /// False once the cluster is at its length limit.
+  @discardableResult
+  mutating func appendGrapheme(_ c: UInt32, x: Int, y: Int) -> Bool {
     let row = grid._unsafeRow(y)
     if row[x].isGrapheme,
       graphemes.scalarCount(row[x].glyph) > Self.graphemeMaxLength
     {
-      return
+      return false
     }
     let id = graphemes.appending(c, to: row[x])
     invalidateSelection(rows: y ..< y + 1, from: x, to: x + 1)
@@ -649,6 +655,7 @@ extension TerminalState {
     // Entries are append-only, so the table only grows here; checking on
     // every append bounds it on either screen, scrolling or not.
     if graphemes.needsCompaction { compactGraphemes() }
+    return true
   }
 
   /// Ghostty's `grapheme_max_len`: scalars joined to a cell's base.

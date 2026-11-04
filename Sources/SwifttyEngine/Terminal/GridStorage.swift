@@ -18,6 +18,16 @@ struct GridStorage: ~Copyable {
   let marks: UnsafeMutablePointer<UInt8>
   static let inputLineBit: UInt8 = 0x80
   let extents: UnsafeMutablePointer<Int32>
+  /// Cells in `extents[id] ..< stale[id]` are leftovers that read as blank.
+  /// Nonzero only for screen rows during a parser batch.
+  let stale: UnsafeMutablePointer<Int32>
+  var hasStaleRows = false
+  /// Rows deferred since the last resolve; on overflow, resolving scans the screen.
+  let staleList: UnsafeMutablePointer<Int32>
+  var staleCount = 0
+  static let staleListCapacity = 8
+  /// Set during the parser's CR LF fast path.
+  var deferClears = false
   let free: UnsafeMutablePointer<Int32>
   var freeCount = 0
   var history: Scrollback
@@ -89,6 +99,9 @@ struct GridStorage: ~Copyable {
     #endif
     extents = .allocate(capacity: capacity)
     extents.initialize(repeating: 0, count: capacity)
+    stale = .allocate(capacity: capacity)
+    stale.initialize(repeating: 0, count: capacity)
+    staleList = .allocate(capacity: Self.staleListCapacity)
     // Screen-only pools gain nothing from reclaimable mappings.
     store = CellStore(
       columns: columns,
@@ -110,6 +123,8 @@ struct GridStorage: ~Copyable {
     wrapped.deallocate()
     marks.deallocate()
     extents.deallocate()
+    stale.deallocate()
+    staleList.deallocate()
     free.deallocate()
     #if SWIFTTY_INTERNAL_CHECKS
     checkOwners.deallocate()
@@ -214,9 +229,11 @@ struct GridStorage: ~Copyable {
     let allocated = min(capacity, chunkCount * Self.chunkRows)
     guard checkBounds() else { return false }
     func checkExtent(_ id: Int) -> Bool {
-      let end = Int(extents[id])
-      guard end >= 0 && end <= columns else { return false }
-      if store.owner(Int32(id)) == .uninitialized { return end == 0 }
+      let extent = Int(extents[id])
+      guard extent >= 0 && extent <= columns else { return false }
+      if store.owner(Int32(id)) == .uninitialized { return extent == 0 }
+      let end = max(extent, Int(stale[id]))
+      guard end <= columns else { return false }
       return store.withRow(Int32(id)) { row in
         for x in end ..< columns where !row[x].isBlank { return false }
         return true

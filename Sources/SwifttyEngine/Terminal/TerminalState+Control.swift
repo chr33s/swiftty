@@ -34,6 +34,7 @@ extension TerminalState {
   }
 
   mutating func dcsHook(_ csi: borrowing CSISequence) {
+    graphemes.releaseTail()
     dcsBuffer.removeAll(keepingCapacity: true)
     switch (csi.marker, csi.intermediate, csi.final) {
     case (0, 0, 0x70) where csi.value(0) == 1000:  // tmux -CC
@@ -75,6 +76,7 @@ extension TerminalState {
   }
 
   mutating func dcsUnhook() {
+    graphemes.releaseTail()
     switch dcsKind {
     case .tmux: endControlMode()
     case .termcap: replyTermcap()
@@ -87,6 +89,7 @@ extension TerminalState {
 
   /// Abandons a DCS without replying to an incomplete request.
   mutating func discardControlString() {
+    graphemes.releaseTail()
     if isControlMode { endControlMode() }
     dcsKind = .ignored
     dcsBuffer.removeAll(keepingCapacity: true)

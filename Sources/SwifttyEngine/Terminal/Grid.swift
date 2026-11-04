@@ -338,14 +338,72 @@ public struct Grid: ~Copyable {
       storage.dropped += min(count, bottom + 1)
       return
     }
+    let deferring = storage.deferClears && cell.isBlank
     for _ in 0 ..< min(count, bottom + 1) {
       let top = storage.rowMap[0]
+      // History never holds stale cells.
+      if storage.hasStaleRows { resolveStale(Int(top)) }
       let fresh = storage.pushHistory(top)
       if bottom > 0 {
         storage.rowMap.update(from: storage.rowMap + 1, count: bottom)
       }
       storage.rowMap[bottom] = fresh
-      clear(rows: bottom ..< bottom + 1, with: cell)
+      if deferring {
+        // The next line overwrites most old cells; the rest blank later.
+        let p = Int(fresh)
+        storage.stale[p] = max(storage.stale[p], storage.extents[p])
+        storage.extents[p] = 0
+        storage.hasStaleRows = true
+        if storage.staleCount < GridStorage.staleListCapacity {
+          storage.staleList[storage.staleCount] = fresh
+        }
+        storage.staleCount += 1
+        setWrapped(bottom, false)
+        clearMarks(bottom)
+      } else {
+        clear(rows: bottom ..< bottom + 1, with: cell)
+      }
+    }
+  }
+
+  @inline(__always)
+  mutating func resolveStaleRows() {
+    guard storage.hasStaleRows else { return }
+    resolveAllStale()
+  }
+
+  @inline(never)
+  private mutating func resolveAllStale() {
+    storage.hasStaleRows = false
+    let count = storage.staleCount
+    storage.staleCount = 0
+    if count <= GridStorage.staleListCapacity {
+      for i in 0 ..< count { resolveStale(Int(storage.staleList[i])) }
+    } else {
+      for y in 0 ..< rows { resolveStale(Int(storage.rowMap[y])) }
+    }
+  }
+
+  @inline(__always)
+  private func resolveStale(_ p: Int) {
+    let end = Int(storage.stale[p])
+    guard end != 0 else { return }
+    let extent = Int(storage.extents[p])
+    if end > extent {
+      Self.fill(physical(Int32(p)) + extent, end - extent, .blank)
+    }
+    storage.stale[p] = 0
+  }
+
+  /// Blanks stale cells a write from `x` would bring under the extent.
+  @inline(__always)
+  func prepareWrite(_ y: Int, from x: Int) {
+    guard storage.hasStaleRows else { return }
+    let p = Int(storage.rowMap[y])
+    let extent = Int(storage.extents[p])
+    let end = min(x, Int(storage.stale[p]))
+    if end > extent {
+      Self.fill(physical(Int32(p)) + extent, end - extent, .blank)
     }
   }
 

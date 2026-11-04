@@ -78,9 +78,9 @@ description = "Lint sources (swift-format, strict)"
 run = "Scripts/format-swift.sh check"
 
 [tasks.compare]
-description = "Compare against upstream ghostty-bench: mise run compare <ghostty-src> <corpus-dir>"
+description = "Compare against upstream ghostty-bench: mise run compare <ghostty-src> <corpus-dir> [--generate]"
 depends = ["release"]
-run = "Scripts/compare-ghostty.sh"
+run = "Scripts/compare-ghostty.py"
 
 [tasks.format-check]
 description = "Check Swift formatting and documentation"

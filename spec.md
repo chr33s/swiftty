@@ -778,7 +778,7 @@ Status and measurements for these are recorded in spec.multiplexer.md §11.
 | UIKit energy behavior                             | no rendering while idle or backgrounded |
 
 Parser throughput must reach ≥95% of upstream Ghostty for every comparison input,
-or ≥90% for wide-character-heavy inputs (`Scripts/compare-ghostty.sh`). Maintain
+or ≥90% for wide-character-heavy inputs (`Scripts/compare-ghostty.py`). Maintain
 100 MB ASCII/UTF-8, compiler-log, source-file, full-redraw, scroll, resize-stress,
 OSC-heavy and CSI-heavy benchmarks. Measure throughput, CPU time, allocations,
 peak RSS, frame time and p95 input-to-render latency on Apple Silicon Release

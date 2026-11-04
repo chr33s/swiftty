@@ -333,6 +333,7 @@ public struct Parser: ~Copyable {
   ) -> Int {
     guard let base = buffer.baseAddress, !buffer.isEmpty else { return 0 }
     defer {
+      terminal.resolveDeferredClears()
       terminal.refreshSearchIfNeeded()
       terminal._checkInvariants(screenOnly: true)
     }
@@ -347,6 +348,7 @@ public struct Parser: ~Copyable {
           end += 1
         }
         if end > i {
+          terminal.resolveDeferredClears()
           terminal.dcsPut(UnsafeBufferPointer(start: base + i, count: end - i))
           if state == .controlMode {
             controlModeLineStart = base[end - 1] == 0x0A
@@ -368,7 +370,7 @@ public struct Parser: ~Copyable {
         // pass through the parser's ground-state dispatch.
         if base[i] == 0x0D, i + 1 < n, base[i + 1] == 0x0A {
           terminal.execute(0x0D)
-          terminal.execute(0x0A)
+          terminal.lineFeedDeferringClears()
           i += 2
           continue
         }
@@ -377,6 +379,7 @@ public struct Parser: ~Copyable {
         if base[i] >= 0xC2 {
           let (count, end) = decodeRun(base, from: i, to: n)
           if count > 0 {
+            terminal.resolveDeferredClears()
             terminal.printScalars(
               UnsafeBufferPointer(start: scalars, count: count)
             )
@@ -385,6 +388,8 @@ public struct Parser: ~Copyable {
           }
         }
       }
+      // Stale rows arise only in ground state.
+      if state == .ground { terminal.resolveDeferredClears() }
       step(base[i], &terminal)
       i += 1
     }

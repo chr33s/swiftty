@@ -9,6 +9,7 @@ extension TerminalState {
     _ data: UnsafeBufferPointer<UInt8>,
     terminatedByBell: Bool
   ) {
+    graphemes.releaseTail()
     var command = 0
     var i = 0
     while i < data.count, data[i] != 0x3B {

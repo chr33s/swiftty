@@ -291,6 +291,7 @@ public struct TerminalState: ~Copyable {
   // MARK: C0 controls
 
   mutating func execute(_ byte: UInt8) {
+    graphemes.releaseTail()
     switch byte {
     case 0x07: events.append(.bell)
     case 0x08: cursorLeft(1)  // BS
@@ -312,6 +313,20 @@ public struct TerminalState: ~Copyable {
   }
 
   /// IND: move down, scrolling the region at its bottom margin.
+  /// LF for the parser's CR LF fast path: a recycled row is blanked lazily,
+  /// so the next line writes most cells once. Selections read cells while
+  /// scrolling, so they opt out.
+  mutating func lineFeedDeferringClears() {
+    guard selection == nil else { return execute(0x0A) }
+    grid.storage.deferClears = true
+    execute(0x0A)
+    grid.storage.deferClears = false
+  }
+
+  /// Required before anything but the ASCII and CR LF fast paths touches cells.
+  @inline(__always)
+  mutating func resolveDeferredClears() { grid.resolveStaleRows() }
+
   mutating func index() {
     cursor.pendingWrap = false
     if cursor.y < scrollTop || cursor.y > scrollBottom {
@@ -848,6 +863,7 @@ public struct TerminalState: ~Copyable {
   // MARK: CSI
 
   mutating func csiDispatch(_ csi: borrowing CSISequence) {
+    graphemes.releaseTail()
     let marker = csi.marker
     let inter = csi.intermediate
     if marker == 0, inter == 0 {
@@ -1299,6 +1315,7 @@ public struct TerminalState: ~Copyable {
   // MARK: ESC
 
   mutating func escDispatch(intermediate: UInt8, final: UInt8) {
+    graphemes.releaseTail()
     switch (intermediate, final) {
     case (0, 0x37): saveCursor()  // DECSC 7
     case (0, 0x38): restoreCursor()  // DECRC 8
@@ -1366,6 +1383,7 @@ public struct TerminalState: ~Copyable {
   // MARK: Resize
 
   public mutating func resize(columns newColumns: Int, rows newRows: Int) {
+    graphemes.releaseTail()
     let newColumns = max(1, newColumns)
     let newRows = max(1, newRows)
     if modes.contains(.synchronizedOutput) {
@@ -1487,6 +1505,7 @@ public struct TerminalState: ~Copyable {
     )
     swap(&graphemes, &fresh)
     swap(&fresh, &spareGraphemes)
+    graphemes.releaseTail()
   }
 
   // MARK: Tables

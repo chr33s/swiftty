@@ -24,7 +24,10 @@ extension TerminalState {
 
     var state = GraphemeBreak.State()
     var previous: UInt32
-    if cell.isGrapheme {
+    if cell.isGrapheme, let recorded = graphemes.breakState(after: cell.glyph) {
+      state = recorded
+      previous = graphemes.lastScalar(of: cell)
+    } else if cell.isGrapheme {
       let scalars = graphemes.scalars(cell.glyph)
       previous = scalars[0]
       let rest = scalars.extracting(droppingFirst: 1)
@@ -103,7 +106,9 @@ extension TerminalState {
       cursor.x = min(x + 1, rightLimit - 1)
     default: break
     }
-    appendGrapheme(c, x: x, y: cellY)
+    if appendGrapheme(c, x: x, y: cellY) {
+      graphemes.recordBreakState(state, after: grid._unsafeRow(cellY)[x].glyph)
+    }
     return true
   }
 
