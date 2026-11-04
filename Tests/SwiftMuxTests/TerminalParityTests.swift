@@ -25,10 +25,13 @@ struct TerminalParityTests {
   }
 
   /// Prompts P1…P3 (OSC 133 A), each followed by marked output 1…40.
+  // Every iteration ends in "40", so the title (invisible on screen) marks
+  // when all output has arrived; slow runners can otherwise act mid-loop.
   private static let prompts = """
     for p in 1 2 3; do printf '\\033]133;A\\007P%s\\n\\033]133;C\\007' $p; \
-    seq 1 40; done; exec sleep 30
+    seq 1 40; done; printf '\\033]2;\(promptsDone)\\007'; exec sleep 30
     """
+  private static let promptsDone = "prompts-done"
 
   @Test
   func welcomeListsTheFeatures() async throws {
@@ -86,7 +89,9 @@ struct TerminalParityTests {
     let h = try Harness()
     let c = try await h.connect()
     let (_, pane) = try await create(c, Self.prompts)
-    _ = try await c.frame(of: pane) { $0.lines.contains("40") }
+    _ = try await c.frame(of: pane) {
+      $0.title == Self.promptsDone && $0.lines.contains("40")
+    }
     try await c.execute(.scroll(pane: pane, .prompt(-1)))
     _ = try await c.frame(of: pane, label: "P3") { $0.text(row: 0) == "P3" }
     try await c.execute(.scroll(pane: pane, .prompt(-1)))
@@ -110,7 +115,9 @@ struct TerminalParityTests {
     let h = try Harness()
     let c = try await h.connect()
     let (_, pane) = try await create(c, Self.prompts)
-    let live = try await c.frame(of: pane) { $0.lines.contains("40") }
+    let live = try await c.frame(of: pane) {
+      $0.title == Self.promptsDone && $0.lines.contains("40")
+    }
     guard
       case let .commandOutput(found?) = try await c.execute(
         .commandOutput(pane: pane, at: nil)
@@ -195,7 +202,9 @@ struct TerminalParityTests {
     let h = try Harness()
     let c = try await h.connect()
     let (_, pane) = try await create(c, Self.prompts)
-    let before = try await c.frame(of: pane) { $0.lines.contains("40") }
+    let before = try await c.frame(of: pane) {
+      $0.title == Self.promptsDone && $0.lines.contains("40")
+    }
     try await c.execute(.clearScreen(pane))
     _ = try await c.frame(of: pane, label: "cleared") { frame in
       frame.lines.filter { !$0.isEmpty }.count <= 1

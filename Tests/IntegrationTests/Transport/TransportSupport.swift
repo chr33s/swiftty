@@ -17,6 +17,26 @@ let loopbackIdentity: HostIdentity = {
   } catch { fatalError("identity generation failed: \(error)") }
 }()
 
+/// Runs `body`, recording both ends' termination diagnostics if it throws.
+/// Release builds on CI have seen loopback connections close mid-transfer;
+/// this names which side ended the connection and why.
+func withConnectionDiagnostics<T>(
+  client: QUICRSTConnection,
+  server: QUICRSTConnection,
+  _ body: () async throws -> T
+) async throws -> T {
+  do { return try await body() } catch {
+    Issue.record(
+      """
+      failed: \(error)
+      client: \(client.snapshotDiagnosticsForTesting)
+      server: \(server.snapshotDiagnosticsForTesting)
+      """
+    )
+    throw error
+  }
+}
+
 /// Collects everything a connection delivers.
 final class Inbox: Sendable {
   private struct State {

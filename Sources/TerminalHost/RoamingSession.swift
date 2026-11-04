@@ -747,6 +747,7 @@ public final class RoamingSession: @unchecked Sendable {
       // Input returns a history window to live output, as typing does
       // in a local terminal.
       a.pendingViewportLines = 0
+      a.liveReturns &+= 1
       if a.historyTop != nil {
         a.historyTop = nil
         contentChanged()
@@ -801,6 +802,9 @@ public final class RoamingSession: @unchecked Sendable {
     a.pendingViewportLines = 0
     a.viewportMoveInFlight = true
     let current = a.historyTop
+    // Comparing `historyTop` alone misses input that arrives while a move
+    // from live output resolves: live stays nil, so the move would apply.
+    let liveReturns = a.liveReturns
     service.inspect(
       pane: pane,
       { ScreenExporter.historyTop($0, from: current, moving: lines) },
@@ -810,7 +814,9 @@ public final class RoamingSession: @unchecked Sendable {
             a.viewportMoveInFlight = false
             guard let self, a === self.attachment, a.isCurrent else { return }
             // Nil `resolved`: the pane is gone. Nil top: live output.
-            if let top = resolved, a.historyTop == current, top != current {
+            if let top = resolved, a.historyTop == current,
+              a.liveReturns == liveReturns, top != current
+            {
               a.historyTop = top
               self.contentChanged()
             }

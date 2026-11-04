@@ -47,6 +47,9 @@ final class HostAttachment: @unchecked Sendable {
   /// applied next rather than dropped (a swipe sends many in a row).
   var pendingViewportLines = 0
   var viewportMoveInFlight = false
+  /// Counts input returning this attachment to live output, so a move
+  /// that began before the input cannot reopen a window after it.
+  var liveReturns = 0
 
   init(connection: any RSTConnection, registry: SessionRegistry) {
     self.connection = connection

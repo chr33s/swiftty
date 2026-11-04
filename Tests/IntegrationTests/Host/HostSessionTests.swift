@@ -272,12 +272,12 @@ struct HostSessionTests {
       #expect(live.textLines.contains { $0.contains("$") })
       // Moving past the newest line returns to live output.
       try await client.send(.viewport(epoch: 1, lines: -1_000))
-      let backToLive = try await client.snapshot("back to live") { shot in
+      let backToLive = try await client.snapshot("back to live", after: window)
+      { shot in
         shot.cursor.visible && shot.textLines.contains { $0.contains("$") }
       }
-      // Input also returns a window to live output. Wait for a window newer
-      // than live output: the first history window would otherwise satisfy
-      // this, letting the input race ahead of the viewport request.
+      // Input also returns a window to live output. Each wait is bounded by
+      // the previous frame: snapshot() otherwise matches older frames.
       try await client.send(.viewport(epoch: 1, lines: 50))
       _ = try await client.snapshot("window again", after: backToLive) {
         !$0.cursor.visible

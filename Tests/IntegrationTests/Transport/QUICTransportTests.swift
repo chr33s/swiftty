@@ -472,16 +472,18 @@ struct QUICTransportTests {
       let stream = try #require(server.snapshotStreamForTesting(1))
       firstStream.withLock { $0.value = stream }
     }
-    try await sendAndCapture()
-    if cancel {
-      try await transportEventually { inbox.snapshots.count == 1 }
-      server.cancelSnapshot(stream: 1)
-    } else {
-      for id in 2 ... (QUICRSTConnection.maxTrackedOutbound + 1) {
-        try await server.sendSnapshot(payload, stream: UInt64(id))
-      }
-      try await transportEventually {
-        inbox.snapshots.count == QUICRSTConnection.maxTrackedOutbound + 1
+    try await withConnectionDiagnostics(client: client, server: server) {
+      try await sendAndCapture()
+      if cancel {
+        try await transportEventually { inbox.snapshots.count == 1 }
+        server.cancelSnapshot(stream: 1)
+      } else {
+        for id in 2 ... (QUICRSTConnection.maxTrackedOutbound + 1) {
+          try await server.sendSnapshot(payload, stream: UInt64(id))
+        }
+        try await transportEventually {
+          inbox.snapshots.count == QUICRSTConnection.maxTrackedOutbound + 1
+        }
       }
     }
     #expect(inbox.snapshots.allSatisfy { $0 == payload })
@@ -1172,8 +1174,9 @@ struct QUICTransportTests {
         """
         reset scenario failed during \(stage): \(error); \
         clientClosed=\(client.isClosed) serverClosed=\(server.isClosed) \
-        reads=\(client.snapshotReadBytesForTesting) \
-        diagnostics=\(client.snapshotDiagnosticsForTesting)
+        reads=\(client.snapshotReadBytesForTesting)
+        client: \(client.snapshotDiagnosticsForTesting)
+        server: \(server.snapshotDiagnosticsForTesting)
         """
       )
       throw error
