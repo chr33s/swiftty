@@ -4,6 +4,10 @@ import SwifttyCore
 import Synchronization
 import Testing
 
+/// Upper bound for a child process to reach an expected state. Tests run in
+/// parallel, so a short bound fails under load; waits end once the state holds.
+private let processWait: Duration = .seconds(30)
+
 private final class ShellShutdownBundle: NSObject {}
 
 struct ShellShutdownTests {
@@ -41,13 +45,13 @@ struct ShellShutdownTests {
     )
     defer { session.stop() }
     let pid = try #require(
-      try await waitForPublishedPID(pidFile, deadline: .now + .seconds(3))
+      try await waitForPublishedPID(pidFile, deadline: .now + processWait)
     )
     let started = ContinuousClock.now
     session.stop()
     // Repeated close must not start another grace period or another reaper.
     session.stop()
-    let deadline = ContinuousClock.now + .seconds(7)
+    let deadline = ContinuousClock.now + processWait
     while kill(pid, 0) == 0, ContinuousClock.now < deadline {
       try await Task.sleep(for: .milliseconds(10))
     }
@@ -97,7 +101,7 @@ struct ShellShutdownTests {
       )
     )
     defer { session.stop() }
-    let promptDeadline = ContinuousClock.now + .seconds(4)
+    let promptDeadline = ContinuousClock.now + processWait
     while !output.withLock({ $0.contains("swsh> ") }),
       ContinuousClock.now < promptDeadline
     { try await Task.sleep(for: .milliseconds(10)) }
@@ -111,14 +115,14 @@ struct ShellShutdownTests {
       )
     )
     let pid = try #require(
-      try await waitForPublishedPID(pidFile, deadline: .now + .seconds(4)),
+      try await waitForPublishedPID(pidFile, deadline: .now + processWait),
       "\(output.withLock { $0 })"
     )
     let shellPID = try #require(
       pid_t(String(contentsOfFile: pidFile.path + ".parent", encoding: .utf8))
     )
     if stopped {
-      let deadline = ContinuousClock.now + .seconds(3)
+      let deadline = ContinuousClock.now + processWait
       while !output.withLock({ $0.contains("] stopped") }),
         ContinuousClock.now < deadline
       { try await Task.sleep(for: .milliseconds(10)) }

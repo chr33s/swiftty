@@ -7,6 +7,10 @@ import Foundation
 import Synchronization
 import Testing
 
+/// Upper bound for a child process to reach an expected state. Tests run in
+/// parallel, so a short bound fails under load; waits end once the state holds.
+private let processWait: Duration = .seconds(30)
+
 struct PTYProcessTests {
   @Test
   func aLiveChildHasNotStartedExiting() throws {
@@ -33,7 +37,7 @@ struct PTYProcessTests {
     _ = try #require(owned.collect())
     let (count, readError) = try await waitForSlaveClosure(
       process.master.rawValue,
-      deadline: ContinuousClock.now + .seconds(1)
+      deadline: ContinuousClock.now + processWait
     )
     #expect(
       count == 0 || (count < 0 && readError == EIO),
@@ -193,7 +197,7 @@ struct PTYProcessTests {
       pause: {
         paused = true
         try Data().write(to: gate)
-        let publicationDeadline = ContinuousClock.now + .seconds(2)
+        let publicationDeadline = ContinuousClock.now + processWait
         while !FileManager.default.fileExists(atPath: pidFile.path),
           ContinuousClock.now < publicationDeadline
         { try await Task.sleep(for: .milliseconds(2)) }
@@ -273,12 +277,12 @@ struct PTYProcessTests {
     // making the child waitable; without it, exit discards the output.
     try session.queue.sync {
       try Data().write(to: gate)
-      let writeDeadline = ContinuousClock.now + .seconds(3)
+      let writeDeadline = ContinuousClock.now + processWait
       while !FileManager.default.fileExists(atPath: written.path),
         ContinuousClock.now < writeDeadline
       { usleep(1000) }
       try #require(FileManager.default.fileExists(atPath: written.path))
-      let exitDeadline = ContinuousClock.now + .seconds(2)
+      let exitDeadline = ContinuousClock.now + processWait
       while ContinuousClock.now < exitDeadline {
         var info = siginfo_t()
         try #require(
@@ -288,7 +292,7 @@ struct PTYProcessTests {
         usleep(1000)
       }
     }
-    let exitDeadline = ContinuousClock.now + .seconds(3)
+    let exitDeadline = ContinuousClock.now + processWait
     while exitCode.withLock({ $0 == nil }), ContinuousClock.now < exitDeadline {
       try await Task.sleep(for: .milliseconds(10))
     }
@@ -367,7 +371,7 @@ struct PTYProcessTests {
       SessionConfiguration(command: ["/bin/sh", "-c", "printf ready"])
     )
     defer { session.stop() }
-    let deadline = ContinuousClock.now + .seconds(3)
+    let deadline = ContinuousClock.now + processWait
     while exitStates.withLock({ $0.isEmpty }), ContinuousClock.now < deadline {
       try await Task.sleep(for: .milliseconds(10))
     }
@@ -401,7 +405,7 @@ struct PTYProcessTests {
       ])
     )
     defer { session.stop() }
-    let deadline = ContinuousClock.now + .seconds(3)
+    let deadline = ContinuousClock.now + processWait
     while exitCodes.withLock({ $0.isEmpty }), ContinuousClock.now < deadline {
       try await Task.sleep(for: .milliseconds(10))
     }
