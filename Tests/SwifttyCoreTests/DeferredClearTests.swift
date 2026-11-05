@@ -4,16 +4,29 @@ import Testing
 /// Byte-at-a-time feeding never takes the CR LF fast path, so it is the
 /// reference for deferred clears.
 struct DeferredClearTests {
-  private static func input(seed: UInt64, lines: Int) -> [UInt8] {
+  private static let mixedPieces = [
+    "x", "word ", "漢字", "e\u{301}", "👩\u{200D}💻", "\(CSI)41m", "\(CSI)0m",
+    "\(CSI)1;32m", "\t", "\(CSI)K",
+  ]
+
+  /// UTF-8 runs that write over recycled rows: long narrow and wide runs,
+  /// wide characters at the last column, Extend runs, and joins.
+  private static let utf8Pieces = [
+    "éèê", "漢字東京", "日", "a\u{300}\u{301}\u{302}", "e\u{301}", "ö ",
+    "👍🏽", "\u{200D}", "\u{FE0F}", "\u{301}", "\(CSI)41m", "\(CSI)0m",
+    String(repeating: "\u{300}", count: 70), "→│",
+  ]
+
+  private static func input(
+    seed: UInt64,
+    lines: Int,
+    pieces: [String] = mixedPieces
+  ) -> [UInt8] {
     var state = seed
     func next(_ bound: Int) -> Int {
       state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
       return Int((state >> 33) % UInt64(bound))
     }
-    let pieces = [
-      "x", "word ", "漢字", "e\u{301}", "👩\u{200D}💻", "\(CSI)41m", "\(CSI)0m",
-      "\(CSI)1;32m", "\t", "\(CSI)K",
-    ]
     var s = ""
     for _ in 0 ..< lines {
       for _ in 0 ..< next(14) {
@@ -84,6 +97,43 @@ struct DeferredClearTests {
     }
     for b in bytes { reference.feed(bytes: [b]) }
     Self.expectSame(actual, reference, columns: columns, rows: rows)
+  }
+
+  @Test(arguments: [0, 1, 2, 3, 5, 7, 64], [1, 7, 4096])
+  func `UTF-8 runs over recycled rows match byte-at-a-time output`(
+    chunk: Int,
+    seed: UInt64
+  ) {
+    let columns = 11
+    let rows = 4
+    let bytes = Self.input(seed: seed, lines: 300, pieces: Self.utf8Pieces)
+    var actual = VT(columns, rows, scrollback: 4096)
+    var reference = VT(columns, rows, scrollback: 4096)
+    if chunk == 0 {
+      actual.feed(bytes: bytes)
+    } else {
+      var i = 0
+      while i < bytes.count {
+        actual.feed(bytes: Array(bytes[i ..< min(i + chunk, bytes.count)]))
+        i += chunk
+      }
+    }
+    for b in bytes { reference.feed(bytes: [b]) }
+    Self.expectSame(actual, reference, columns: columns, rows: rows)
+  }
+
+  @Test
+  func `a shorter UTF-8 line over a recycled row leaves the rest blank`() {
+    var vt = VT(10, 2, scrollback: 4096)
+    for _ in 0 ..< 40 { vt.feed("漢字漢字漢字漢字漢字\r\n") }
+    vt.feed("éa\u{301}\r\n漢\r\n\n日x")
+    #expect(vt.lines == ["", "日x"])
+    #expect(vt.state.scrollbackText(vt.state.scrollbackCount - 1) == "漢")
+    #expect(
+      vt.state.scrollbackText(vt.state.scrollbackCount - 2) == "éa\u{301}"
+    )
+    for x in 3 ..< 10 { #expect(vt.cell(x, 1).isBlank) }
+    for x in 0 ..< 10 { #expect(vt.cell(x, 0).isBlank) }
   }
 
   @Test

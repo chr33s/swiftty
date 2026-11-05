@@ -19,10 +19,10 @@ struct Options: Sendable {
   var repeats = 1
 
   static let names: Set<String> = [
-    "ascii", "utf8", "utf8-cjk", "utf8-latin", "compiler-log", "cat-source",
-    "csi-heavy", "osc-heavy", "scroll", "redraw", "scroll-frames", "resize",
-    "latency", "storage", "scrollback-memory", "scrollback-compression",
-    "scrollback-resume",
+    "ascii", "utf8", "utf8-cjk", "utf8-latin", "unicode-joins", "combining",
+    "compiler-log", "cat-source", "csi-heavy", "osc-heavy", "scroll", "redraw",
+    "scroll-frames", "resize", "latency", "storage", "scrollback-memory",
+    "scrollback-compression", "scrollback-resume",
   ]
 
   static func parse(
@@ -219,6 +219,21 @@ func unicodeJoinsChunk() -> [UInt8] {
     s += "\r\n"
   }
   return Array(s.utf8)
+}
+
+/// One base letter and three combining marks per cell, all distinct
+/// clusters, as kitty's "unique multi-codepoint Unicode cells".
+func combiningChunk() -> [UInt8] {
+  var s = String.UnicodeScalarView()
+  for i in 0 ..< 256 * 1024 {
+    var q = i
+    s.append("a")
+    for _ in 0 ..< 3 {
+      s.append(Unicode.Scalar(UInt32(0x300 + q % 0x70))!)
+      q /= 0x70
+    }
+  }
+  return Array(String(s).utf8)
 }
 
 func compilerLogChunk() -> [UInt8] {
@@ -703,6 +718,7 @@ func runGenerate(_ arguments: [String]) -> Never {
     "ascii": asciiChunk, "utf8": utf8Chunk, "compiler-log": compilerLogChunk,
     "cat-source": sourceChunk, "csi-heavy": csiChunk, "osc-heavy": oscChunk,
     "scroll": scrollChunk, "unicode-joins": unicodeJoinsChunk,
+    "combining": combiningChunk,
     "utf8-cjk": { scriptChunk(Array("日本語中文字符한국어漢字東京大阪")) },
     "utf8-latin": { scriptChunk(Array("éèêëàâäôöûüçñßøåæœ")) },
   ]
@@ -754,6 +770,7 @@ runStream(
   stream(streamBytes) { scriptChunk(Array("éèêëàâäôöûüçñßøåæœ")) }
 )
 runStream("unicode-joins", stream(streamBytes, chunk: unicodeJoinsChunk))
+runStream("combining", stream(streamBytes, chunk: combiningChunk))
 runStream("compiler-log", stream(streamBytes, chunk: compilerLogChunk))
 runStream("cat-source", stream(streamBytes, chunk: sourceChunk))
 runStream("csi-heavy", stream(streamBytes, chunk: csiChunk))

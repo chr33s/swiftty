@@ -141,60 +141,32 @@ extension TerminalState {
   /// Batched path for a run of printable scalars (mixed ASCII/UTF-8).
   /// Narrow and wide scalars that cannot join the previous cluster are
   /// written inline; anything else defers to `print`.
+  ///
+  /// Like `printASCII`, sequential writes may run over rows whose deferred
+  /// clears are pending: the inline writer reads no cell at or past a row's
+  /// extent, and resolves the clears before any fallback reads cells.
   mutating func printScalars(_ scalars: UnsafeBufferPointer<UInt32>) {
-    // Small or narrow prefixes use the ordinary loop. The helper still
-    // validates every batched scalar's width and possible grapheme joins.
-    let batchesWide =
-      scalars.count >= 8 && scalars[0] >= 0x300 && scalars[3] >= 0x300
-      && scalars[4] >= 0x300 && scalars[7] >= 0x300
-      && ScalarInfoTable.shared.lookup(scalars[0]) >> 5 == 2
-    if batchesWide {
-      if selection != nil {
-        printScalars(
-          scalars,
-          tracksSelection: ScalarPrintingEnabled.self,
-          batch: ScalarPrintingEnabled.self
-        )
-      } else {
-        printScalars(
-          scalars,
-          tracksSelection: ScalarPrintingDisabled.self,
-          batch: ScalarPrintingEnabled.self
-        )
-      }
+    if selection != nil {
+      printScalars(scalars, tracksSelection: ScalarPrintingEnabled.self)
     } else {
-      if selection != nil {
-        printScalars(
-          scalars,
-          tracksSelection: ScalarPrintingEnabled.self,
-          batch: ScalarPrintingDisabled.self
-        )
-      } else {
-        printScalars(
-          scalars,
-          tracksSelection: ScalarPrintingDisabled.self,
-          batch: ScalarPrintingDisabled.self
-        )
-      }
+      printScalars(scalars, tracksSelection: ScalarPrintingDisabled.self)
     }
   }
 
-  /// Specialize selection bookkeeping and wide writes independently.
+  /// Specialize selection bookkeeping.
   @inline(__always)
-  private mutating func printScalars<
-    SelectionPolicy: ScalarPrintingPolicy,
-    BatchPolicy: ScalarPrintingPolicy
-  >(
+  private mutating func printScalars<SelectionPolicy: ScalarPrintingPolicy>(
     _ scalars: UnsafeBufferPointer<UInt32>,
-    tracksSelection _: SelectionPolicy.Type,
-    batch _: BatchPolicy.Type,
+    tracksSelection _: SelectionPolicy.Type
   ) {
     if !scalars.isEmpty { markSearchDirty() }
-    if !printsFast {
-      for cp in scalars { print(cp) }
-      return
+    if !printsFast || selection != nil {
+      resolveDeferredClears()
+      if !printsFast {
+        for cp in scalars { print(cp) }
+        return
+      }
     }
-    let (narrow, wide, tail) = Self.scalarCellTemplates(cursor.pen)
     let autowrap = modes.contains(.autowrap)
     let clustering = modes.contains(.graphemeCluster)
     let widths = widths
@@ -219,13 +191,15 @@ extension TerminalState {
         clustering: clustering,
         widths: widths
       ) {
-        printJoiningExtend(cp)
+        i += printJoiningExtend(scalars, at: i)
         previous = scalarBeforeCursor()  // a selector may have been ignored
-        i += 1
         continue
       }
       if cursor.pendingWrap {
-        guard autowrap else {
+        // Without autowrap the last column is overwritten. A scalar with
+        // no width never wraps the line: `print` attaches or drops it.
+        guard autowrap, cp < 0x300 || scalarInfo.lookup(cp) >> 5 != 0 else {
+          resolveDeferredClears()
           print(cp);
           previous = scalarBeforeCursor();
           previousKnown = true;
@@ -240,6 +214,7 @@ extension TerminalState {
       // before it need wide-character splitting.
       let row = grid._unsafeRow(cursor.y)
       let raw = UnsafeMutableRawPointer(row)
+      grid.prepareWrite(cursor.y, from: cursor.x)
       let clean = grid.extent(cursor.y)
       let selected =
         SelectionPolicy.enabled ? selectedColumns(inScreenRow: cursor.y) : nil
@@ -247,8 +222,27 @@ extension TerminalState {
       let start = i
       // Break class of the previous scalar in this run: below U+0300
       // every scalar behaves as Other for joining purposes.
-      var previousClass = 0
-      var canBatchWide = true
+      var previousClass = GraphemeBreak.noClass
+      // Index of the last scalar that started a cell.
+      var lastBase = -1
+      // The last scalar taken was a selector its cluster ignored.
+      var selectorIgnored = false
+      if x >= clean, x < columns - 1 {
+        (i, x, lastBase, selectorIgnored) = printFresh(
+          scalars,
+          from: i,
+          row: row,
+          column: x,
+          clustering: clustering,
+          previousClass: &previousClass
+        )
+      }
+      // Cells that hold content, and the last column.
+      let rewriteStart = i
+      let (narrow, wide, tail) =
+        i < n && x < columns
+        ? Self.scalarCellTemplates(cursor.pen)
+        : (SIMD4<UInt32>(), SIMD4<UInt32>(), SIMD4<UInt32>())
       while i < n, x < columns {
         let c = scalars[i]
         let w: Int
@@ -274,44 +268,32 @@ extension TerminalState {
           }
         }
         if w == 0 || (w == 2 && x + 1 >= columns) { break }
-        if BatchPolicy.enabled, canBatchWide, w == 2, x >= clean,
-          columns - x >= 8, n - i >= 4
-        {
-          let batch = Self.storeWideRun(
-            scalars.baseAddress! + i,
-            count: min(n - i, (columns - x) / 2),
-            into: raw + x * 16,
-            head: wide,
-            tail: tail,
-            clustering: clustering,
-          )
-          if batch.count > 0 {
-            previousClass = batch.lastClass
-            x += batch.count * 2
-            i += batch.count
-            continue
-          }
-          canBatchWide = false
-        }
         previousClass = cls
-        storeScalar(
-          c,
-          width: w,
-          column: x,
-          row: row,
-          clean: clean,
-          templates: (narrow, wide, tail)
-        )
+        if x < clean {
+          splitWide(beforeStoring: w, column: x, row: row, clean: clean)
+        }
+        var cell = w == 1 ? narrow : wide
+        cell[0] = c
+        raw.storeBytes(of: cell, toByteOffset: x &* 16, as: SIMD4<UInt32>.self)
+        if w == 2 {
+          raw.storeBytes(
+            of: tail,
+            toByteOffset: (x &+ 1) &* 16,
+            as: SIMD4<UInt32>.self
+          )
+        }
         x += w
         i += 1
       }
+      if i > rewriteStart { lastBase = i - 1 }
       if i > start {
         if let selected, selected.overlaps(cursor.x ..< x) { setSelection(nil) }
-        lastPrinted = scalars[i - 1]
+        lastPrinted = scalars[lastBase]
         previous = scalars[i - 1]
-        previousKnown = true
+        previousKnown = !selectorIgnored
       }
       if x == cursor.x, i < n, !cursor.pendingWrap {
+        resolveDeferredClears()
         print(scalars[i])  // wide scalar at the last column, or a joiner
         previous = scalarBeforeCursor()
         previousKnown = true
@@ -322,33 +304,361 @@ extension TerminalState {
     }
   }
 
-  @inline(__always)
-  private mutating func storeScalar(
-    _ scalar: UInt32,
-    width: Int,
-    column: Int,
+  /// Writes scalars from `start` onto the blank cells of `row` from
+  /// `column`, which is before the last column. Bases are stored without
+  /// reading the row. Scalars that join a base stored here are appended to
+  /// its cluster as a group, as `printJoining` would one at a time. Stops
+  /// at the last column, at a zero-width scalar that joins nothing, and at
+  /// a cluster at its length limit, which `print` handles.
+  ///
+  /// Returns the next scalar and column, the last base's index, and
+  /// whether a cluster ignored a selector. `previousClass` becomes the
+  /// break class the next scalar follows (`noClass`: it starts a cell).
+  @inline(never)
+  private mutating func printFresh(
+    _ scalars: UnsafeBufferPointer<UInt32>,
+    from start: Int,
     row: UnsafeMutablePointer<Cell>,
-    clean: Int,
-    templates: (SIMD4<UInt32>, SIMD4<UInt32>, SIMD4<UInt32>)
-  ) {
-    let (narrow, wide, tail) = templates
-    let (c, w, x) = (scalar, width, column)
+    column: Int,
+    clustering: Bool,
+    previousClass: inout Int
+  ) -> (i: Int, x: Int, lastBase: Int, selectorIgnored: Bool) {
+    let p = scalars.baseAddress.unsafelyUnwrapped
+    let n = scalars.count
     let raw = UnsafeMutableRawPointer(row)
-    if x < clean {
-      if row[x].width != 1 { splitWide(row, x, replacingWidth: w) }
-      if w == 2, row[x + 1].width != 1 {
-        splitWide(row, x + 1, replacingWidth: 0)
+    let info = ScalarInfoTable.shared
+    let tables = GraphemeBreak.tables
+    let masks = UnsafePointer(
+      (clustering ? tables.joinMask : tables.noJoinMask).baseAddress
+        .unsafelyUnwrapped
+    )
+    let limit = columns - 1
+    let pen = cursor.pen
+    var tailPen = pen
+    tailPen.flags.insert(.spacerTail)
+    let tailCell = Cell(glyph: 0, attributes: tailPen, width: 0)
+    let store = BaseStore(
+      info: info,
+      masks: masks,
+      limit: limit,
+      head: Self.cellWords(Cell(glyph: 0, attributes: pen, width: 0)),
+      tail: Self.cellWords(tailCell)
+    )
+    assert(Self.cellWords(.blank).1 == 1 << Self.cellWidthShift)
+    var i = start
+    var x = column
+    var lastBase = -1
+    // Column of the last base, and of the spacer a narrow base leaves in
+    // the next cell: the next base replaces it, or a blank at the end.
+    var baseColumn = column - 2
+    var stray = -1
+    var following = GraphemeBreak.noClass
+    var canBatchWide = true
+    var appended = false
+    var selectorIgnored = false
+    while i < n, x < limit {
+      let c = p[i]
+      let packed = info.lookup(c)
+      if masks[following] >> UInt32(packed & 0x1F) & 1 != 0, c > 0x7F {
+        let joined = joinFresh(
+          p,
+          from: i,
+          to: n,
+          base: row + baseColumn,
+          after: following,
+          tail: tailCell
+        )
+        i += joined.count
+        following = joined.nextClass
+        if joined.flags != 0 || row[baseColumn].isGrapheme {
+          appended = true
+          let width = Int(row[baseColumn].width)
+          if joined.flags & Self.joinNarrowed != 0 {
+            // The cell after the base held its tail: it stays in use.
+            grid.extend(cursor.y, to: baseColumn + 2)
+            invalidateSelection(
+              rows: cursor.y ..< cursor.y + 1,
+              from: baseColumn,
+              to: baseColumn + 2
+            )
+            stray = -1
+          }
+          if width == 2 { stray = -1 }
+          x = baseColumn + width
+          if joined.flags & Self.joinIgnoredSelector != 0 {
+            selectorIgnored = true
+          }
+          if joined.flags & Self.joinDeferred != 0 { break }
+        }
+        continue
       }
-    }
-    var cell = w == 1 ? narrow : wide
-    cell[0] = c
-    raw.storeBytes(of: cell, toByteOffset: x &* 16, as: SIMD4<UInt32>.self)
-    if w == 2 {
-      raw.storeBytes(
-        of: tail,
-        toByteOffset: (x &+ 1) &* 16,
-        as: SIMD4<UInt32>.self
+      let w = Int(packed >> 5)
+      if w == 0 { break }
+      if w == 2, canBatchWide, n - i >= 4, limit - x >= 7 {
+        let (_, wide, tail) = Self.scalarCellTemplates(pen)
+        let batch = Self.storeWideRun(
+          p + i,
+          count: min(n - i, (limit + 1 - x) / 2),
+          into: raw + x * 16,
+          head: wide,
+          tail: tail,
+          clustering: clustering,
+        )
+        if batch.count > 0 {
+          following = batch.lastClass
+          x += batch.count * 2
+          i += batch.count
+          lastBase = i - 1
+          baseColumn = x - 2
+          stray = -1
+          selectorIgnored = false
+          continue
+        }
+        canBatchWide = false
+      }
+      // Stores this scalar at least.
+      (i, x) = Self.storeBases(
+        p,
+        from: i,
+        to: n,
+        into: raw,
+        column: x,
+        batchingWide: canBatchWide,
+        store
       )
+      lastBase = i - 1
+      let last = info.lookup(p[lastBase])
+      following = Int(last & 0x1F)
+      baseColumn = x - Int(last >> 5)
+      stray = last >> 5 == 1 ? x : -1
+      selectorIgnored = false
+    }
+    if stray >= 0 { row[stray] = .blank }
+    if appended, graphemes.needsCompaction {
+      // Resolving clears blanks from the extent: cover this run first.
+      grid.extend(cursor.y, to: x)
+      resolveDeferredClears()
+      compactGraphemes()
+    }
+    previousClass = following
+    return (i, x, lastBase, selectorIgnored)
+  }
+
+  /// The pen and tables `storeBases` writes with.
+  private struct BaseStore {
+    let info: ScalarInfoTable
+    let masks: UnsafePointer<UInt32>
+    /// The last column.
+    let limit: Int
+    /// The pen's cell with no glyph and no width, and its spacer.
+    let head: (UInt64, UInt64)
+    let tail: (UInt64, UInt64)
+  }
+
+  /// Where `Cell.width`, the cell's last byte, lies in its second word.
+  private static var cellWidthShift: UInt64 { 56 }
+
+  /// Stores a cell for the scalar at `start`, which has a width and joins
+  /// nothing, and for each one after it, stopping before one that may join
+  /// its predecessor, has no width, or (with `batchingWide`) starts a run
+  /// for `storeWideRun`, and at the last column. The cell after a narrow
+  /// base is left holding a spacer.
+  ///
+  /// A leaf with its state in registers: the width selects no branch.
+  @inline(never)
+  private static func storeBases(
+    _ p: UnsafePointer<UInt32>,
+    from start: Int,
+    to n: Int,
+    into row: UnsafeMutableRawPointer,
+    column: Int,
+    batchingWide: Bool,
+    _ store: borrowing BaseStore
+  ) -> (i: Int, x: Int) {
+    let info = store.info
+    let masks = store.masks
+    let limit = store.limit
+    let (headLow, headHigh) = store.head
+    let (tailLow, tailHigh) = store.tail
+    // The width that ends the loop for a batch: none without batching.
+    let batchWidth = batchingWide ? 2 : 3
+    var i = start
+    var x = column
+    var mask: UInt32 = 0
+    var first = true
+    while i < n, x < limit {
+      let c = p[i]
+      let packed = UInt32(info.lookup(c))
+      let cls = packed & 0x1F
+      if mask &>> cls & 1 != 0, c > 0x7F { break }
+      let w = Int(packed &>> 5)
+      if w == 0 { break }
+      if w == batchWidth, !first, n &- i >= 4, limit &- x >= 7 { break }
+      first = false
+      let cell = row + x &* 16
+      // A head is the pen with a glyph, at offset 0, and a width.
+      cell.storeBytes(of: headLow | UInt64(c), as: UInt64.self)
+      cell.storeBytes(
+        of: headHigh | UInt64(truncatingIfNeeded: w) &<< cellWidthShift,
+        toByteOffset: 8,
+        as: UInt64.self
+      )
+      cell.storeBytes(of: tailLow, toByteOffset: 16, as: UInt64.self)
+      cell.storeBytes(of: tailHigh, toByteOffset: 24, as: UInt64.self)
+      mask = masks[Int(cls)]
+      x &+= w
+      i &+= 1
+    }
+    return (i, x)
+  }
+
+  /// `joinFresh` left a scalar to `print`: its cluster is at its limit.
+  private static let joinDeferred = 1
+  /// `joinFresh` dropped a selector, as `printJoining` ignores one after
+  /// a scalar that has no emoji variation.
+  private static let joinIgnoredSelector = 2
+  /// `joinFresh` narrowed a wide cluster.
+  private static let joinNarrowed = 4
+
+  /// Appends the scalars from `start` that join the cluster of `base`, a
+  /// cell holding one scalar of class `previousClass` with blank cells
+  /// after it. Follows the break state from that scalar and applies each
+  /// joined scalar's width effect, as `printJoining` does one scalar at
+  /// a time; `tail` is the spacer for a cluster that becomes wide.
+  ///
+  /// Returns the scalars taken, `join...` flags, and the class the next
+  /// scalar follows (`noClass`: it starts a cell).
+  @inline(never)
+  private mutating func joinFresh(
+    _ p: UnsafePointer<UInt32>,
+    from start: Int,
+    to n: Int,
+    base: UnsafeMutablePointer<Cell>,
+    after previousClass: Int,
+    tail: Cell
+  ) -> (count: Int, flags: Int, nextClass: Int) {
+    let tables = GraphemeBreak.tables
+    let classes = GraphemeBreak.Property.count
+    var state = 0
+    var g1 = previousClass
+    // Last scalar kept in the cluster, and how many joined its base.
+    var previous = base.pointee.glyph
+    var kept = 0
+    var wide = base.pointee.width == 2
+    var j = start
+    // First scalar taken but not yet stored.
+    var pending = start
+    var flags = 0
+    while j < n {
+      let scalar = p[j]
+      guard scalar > 0x7F else { break }
+      let properties = tables.props(scalar)
+      let g2 = Int(properties & 0x1F)
+      let step = tables.breaks[(state &* classes &+ g1) &* classes &+ g2]
+      if step & 1 != 0 { break }
+      if kept == Self.graphemeMaxLength {
+        flags |= Self.joinDeferred
+        break
+      }
+      // Marks and joiners add no width; an emoji joins a wide base.
+      if scalar &>> 1 == 0xFE0E &>> 1
+        || (properties & GraphemeBreak.zeroInGraphemeBit == 0 && !wide)
+      {
+        let effect = Self.applyWidthEffect(
+          of: scalar,
+          after: previous,
+          to: base,
+          tail: tail
+        )
+        wide = base.pointee.width == 2
+        flags |= effect
+        if effect == Self.joinIgnoredSelector {
+          // Dropped: the cluster and its break state stay as they were.
+          storeJoined(p + pending, count: j &- pending, in: base)
+          j &+= 1
+          pending = j
+          continue
+        }
+      }
+      state = Int(step &>> 1)
+      g1 = g2
+      previous = scalar
+      kept &+= 1
+      j &+= 1
+    }
+    storeJoined(p + pending, count: j &- pending, in: base)
+    if kept > 0 {
+      graphemes.recordBreakState(
+        GraphemeBreak.State(raw: UInt8(truncatingIfNeeded: state)),
+        after: base.pointee.glyph
+      )
+    }
+    let deferred = flags & Self.joinDeferred != 0
+    return (j - start, flags, deferred ? g1 : GraphemeBreak.noClass)
+  }
+
+  /// `GraphemeBreak.widthEffect` of `scalar` joining the cluster of `base`
+  /// after `previous`, applied to the cell and the one after it. Returns
+  /// `joinIgnoredSelector`, `joinNarrowed` or zero.
+  @inline(never)
+  private static func applyWidthEffect(
+    of scalar: UInt32,
+    after previous: UInt32,
+    to base: UnsafeMutablePointer<Cell>,
+    tail: Cell
+  ) -> Int {
+    switch GraphemeBreak.widthEffect(previous: previous, scalar) {
+    case .ignore: return joinIgnoredSelector
+    case .noChange: return 0
+    case .wide:
+      if base.pointee.width != 2 {
+        base.pointee.width = 2
+        (base + 1).pointee = tail
+      }
+      return 0
+    case .narrow:
+      guard base.pointee.width == 2 else { return 0 }
+      base.pointee.width = 1
+      (base + 1).pointee = narrowed((base + 1).pointee)
+      return joinNarrowed
+    }
+  }
+
+  /// Appends `count` scalars to the cluster of `cell`.
+  @inline(never)
+  private mutating func storeJoined(
+    _ scalars: UnsafePointer<UInt32>,
+    count: Int,
+    in cell: UnsafeMutablePointer<Cell>
+  ) {
+    guard count > 0 else { return }
+    let joined = UnsafeBufferPointer(start: scalars, count: count)
+    cell.pointee.glyph =
+      cell.pointee.isGrapheme
+      ? graphemes.appending(contentsOf: joined, to: cell.pointee)
+      : graphemes.insert(base: cell.pointee.glyph, joined: joined)
+    cell.pointee.attributes.flags.insert(.grapheme)
+  }
+
+  /// A cell as two little-endian words.
+  @inline(__always)
+  private static func cellWords(_ cell: Cell) -> (UInt64, UInt64) {
+    let v = unsafeBitCast(cellVector(cell), to: SIMD2<UInt64>.self)
+    return (v[0], v[1])
+  }
+
+  /// Clears the other halves of wide characters a `width` store at
+  /// `column`, before the row's clean extent, would orphan.
+  private mutating func splitWide(
+    beforeStoring width: Int,
+    column x: Int,
+    row: UnsafeMutablePointer<Cell>,
+    clean: Int
+  ) {
+    if row[x].width != 1 { splitWide(row, x, replacingWidth: width) }
+    // Cells past the extent are blank, or stale until a deferred clear.
+    if width == 2, x + 1 < clean, row[x + 1].width != 1 {
+      splitWide(row, x + 1, replacingWidth: 0)
     }
   }
 
@@ -454,21 +764,43 @@ extension TerminalState {
       previousClass = cls3
       i += 4
     }
+    // The last few of a run, under the same conditions.
+    while i > 0, i < count {
+      let scalar = scalars[i]
+      let packed = info.lookup(scalar)
+      guard packed & 0x60 == 0x40 else { break }
+      let cls = Int(packed & 0x1F)
+      if clustering, masks[previousClass] >> UInt32(cls) & 1 != 0 { break }
+      var cell = head
+      cell[0] = scalar
+      let destination = output + i * 32
+      destination.storeBytes(of: cell, as: SIMD4<UInt32>.self)
+      destination.storeBytes(of: tail, toByteOffset: 16, as: SIMD4<UInt32>.self)
+      previousClass = cls
+      i += 1
+    }
     return (i, previousClass)
   }
 
   /// `print`, with Extend appended directly: after a cell with text it never
   /// starts a cluster and leaves the width unchanged. ZWJ keeps `print`,
   /// whose recorded break state the emoji that follows needs.
+  ///
+  /// Consecutive Extend scalars join the same cell, so they are appended
+  /// together. Returns the number of scalars consumed from `at`.
   @inline(never)
-  private mutating func printJoiningExtend(_ c: UInt32) {
-    let property = GraphemeBreak.Property(
-      rawValue: ScalarInfoTable.shared.lookup(c) & 0x1F
-    )
+  private mutating func printJoiningExtend(
+    _ scalars: UnsafeBufferPointer<UInt32>,
+    at start: Int
+  ) -> Int {
+    resolveDeferredClears()
+    let c = scalars[start]
     guard modes.contains(.graphemeCluster), cursor.singleShift == nil,
-      property?.isExtend == true, c != 0xFE0E, c != 0xFE0F,
-      GraphemeBreak.isZeroInGrapheme(c)
-    else { return print(c) }
+      Self.isSafeExtend(c)
+    else {
+      print(c)
+      return 1
+    }
     // The cell `printJoining` would join.
     let row = grid._unsafeRow(cursor.y)
     let rightLimit = cursor.x > scrollRight ? columns : scrollRight + 1
@@ -478,12 +810,32 @@ extension TerminalState {
       } else if cursor.x != rightLimit - 1 { 1 } else {
         Self.hasText(row[cursor.x]) ? 0 : 1
       }
-    guard cursor.x >= left else { return print(c) }
+    guard cursor.x >= left else {
+      print(c)
+      return 1
+    }
     if Self.kind(of: row[cursor.x - left]) == .spacerTail { left += 1 }
     guard cursor.x - left >= 0, Self.hasText(row[cursor.x - left]) else {
-      return print(c)
+      print(c)
+      return 1
     }
-    appendGrapheme(c, x: cursor.x - left, y: cursor.y)
+    var end = start + 1
+    while end < scalars.count, Self.isSafeExtend(scalars[end]) { end += 1 }
+    appendGraphemes(
+      UnsafeBufferPointer(rebasing: scalars[start ..< end]),
+      x: cursor.x - left,
+      y: cursor.y
+    )
+    return end - start
+  }
+
+  /// Extend other than the emoji presentation selectors, which may be
+  /// ignored, and that adds no width to a cluster.
+  @inline(__always)
+  private static func isSafeExtend(_ c: UInt32) -> Bool {
+    let cls = UInt32(ScalarInfoTable.shared.lookup(c) & 0x1F)
+    return GraphemeBreak.Property.extendMask >> cls & 1 != 0
+      && c != 0xFE0E && c != 0xFE0F && GraphemeBreak.isZeroInGrapheme(c)
   }
 
   /// General path for one printable scalar (Ghostty `Terminal.print`).
@@ -634,6 +986,8 @@ extension TerminalState {
       if !modes.contains(.autowrap), cursor.x == columns - 1 {
         Self.hasText(row[cursor.x]) ? cursor.x : cursor.x - 1
       } else { cursor.pendingWrap ? cursor.x : cursor.x - 1 }
+    // Cells past the extent are blank, or stale until a deferred clear.
+    if grid.storage.hasStaleRows, x >= grid.extent(cursor.y) { return 0x20 }
     if x >= 0, Self.kind(of: row[x]) == .spacerTail { x -= 1 }
     guard x >= 0 else { return 0x20 }  // nothing to join
     let cell = row[x]
@@ -685,6 +1039,30 @@ extension TerminalState {
     // every append bounds it on either screen, scrolling or not.
     if graphemes.needsCompaction { compactGraphemes() }
     return true
+  }
+
+  /// `appendGrapheme` for each of `added`, with one cell lookup and one
+  /// round of selection, damage and compaction bookkeeping. Scalars past
+  /// the cluster length limit are dropped, as `appendGrapheme` drops them.
+  mutating func appendGraphemes(
+    _ added: UnsafeBufferPointer<UInt32>,
+    x: Int,
+    y: Int
+  ) {
+    let row = grid._unsafeRow(y)
+    let cell = row[x]
+    let length = cell.isGrapheme ? graphemes.scalarCount(cell.glyph) : 1
+    let accepted = min(added.count, Self.graphemeMaxLength + 1 - length)
+    guard accepted > 0 else { return }
+    let id = graphemes.appending(
+      contentsOf: UnsafeBufferPointer(rebasing: added[..<accepted]),
+      to: cell
+    )
+    invalidateSelection(rows: y ..< y + 1, from: x, to: x + 1)
+    row[x].glyph = id
+    row[x].attributes.flags.insert(.grapheme)
+    damage.insert(row: y)
+    if graphemes.needsCompaction { compactGraphemes() }
   }
 
   /// Ghostty's `grapheme_max_len`: scalars joined to a cell's base.

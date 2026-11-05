@@ -155,50 +155,25 @@ public struct Parser: ~Copyable {
 
   /// Decodes printable ASCII and complete UTF-8 sequences into `scalars`
   /// until a control byte, an incomplete/invalid sequence, or capacity.
+  /// Also stops before sixteen printable ASCII bytes, which `printASCII`
+  /// writes faster than a scalar run.
   @inline(__always)
   private func decodeRun(
     _ p: UnsafePointer<UInt8>,
     from start: Int,
     to end: Int
   ) -> (count: Int, end: Int) {
-    var i = start
-    var count = 0
-    // Probe each UTF-8 width only until its first batch miss in a run.
-    var canBatch = true
-    var canBatchTwo = true
+    let windows = Self.decodeWindows(p, from: start, to: end, into: scalars)
+    var count = windows.count
+    var i = windows.end
+    if windows.asciiAhead { return (count, i) }
+    // The last bytes of the input, and whatever a window rejected.
     while i < end, count < Self.scalarCapacity {
       let b = p[i]
       if b &- 0x20 < 0x5F {
         scalars[count] = UInt32(b)
         i += 1
-      } else if b &- 0xC2 < 0x1E {
-        if canBatchTwo {
-          if end - i >= 16, count <= Self.scalarCapacity - 8,
-            Self.decodeTwoByteBlock(p + i, into: scalars + count)
-          {
-            count += 8
-            i += 16
-            continue
-          }
-          canBatchTwo = false
-        }
-        guard let (cp, length) = Self.decodeUTF8(p + i, available: end - i)
-        else { break }
-        scalars[count] = cp
-        i += length
       } else if b >= 0xC2 {
-        if canBatch {
-          if b < 0xF0, end - i >= 16, count <= Self.scalarCapacity - 4,
-            p[i + 3] & 0xF0 == 0xE0, p[i + 6] & 0xF0 == 0xE0,
-            p[i + 9] & 0xF0 == 0xE0,
-            Self.decodeThreeByteBlock(p + i, into: scalars + count)
-          {
-            count += 4
-            i += 12
-            continue
-          }
-          canBatch = false
-        }
         guard let (cp, length) = Self.decodeUTF8(p + i, available: end - i)
         else { break }
         scalars[count] = cp
@@ -211,81 +186,191 @@ public struct Parser: ~Copyable {
     return (count, i)
   }
 
-  /// Requires sixteen readable bytes. Writes eight scalars only after validation.
+  /// One bit per byte of a comparison, at bit `4 * index`.
+  @inline(__always)
+  private static func nibbles(_ mask: SIMDMask<SIMD16<Int8>>) -> UInt64 {
+    let bytes = SIMD16<UInt8>(repeating: 0).replacing(with: 0xFF, where: mask)
+    // Narrow each byte pair to the nibbles around its middle.
+    let pairs = unsafeBitCast(bytes, to: SIMD8<UInt16>.self)
+    let narrowed = SIMD8<UInt8>(truncatingIfNeeded: pairs &>> 4)
+    return unsafeBitCast(narrowed, to: UInt64.self) & 0x1111_1111_1111_1111
+  }
+
+  /// Decodes sixteen-byte windows that each begin a sequence, while twenty
+  /// bytes are readable and sixteen scalars fit. Windows of two- or
+  /// three-byte sequences take the block decoders. Any other window is
+  /// validated whole, then its bytes are folded into scalars in a fixed
+  /// sequence: mixed widths cost no branch. Stops at the first byte that
+  /// is neither printable ASCII nor the start of a valid sequence, or at
+  /// a window a block decoder rejects; the caller's scalar loop decides
+  /// what those bytes mean.
+  ///
+  /// `asciiAhead`: the next sixteen bytes are printable ASCII.
   @inline(never)
-  private static func decodeTwoByteBlock(
+  private static func decodeWindows(
     _ p: UnsafePointer<UInt8>,
+    from start: Int,
+    to end: Int,
+    into scalars: UnsafeMutablePointer<UInt32>
+  ) -> (count: Int, end: Int, asciiAhead: Bool) {
+    var i = start
+    var count = 0
+    let continuation = SIMD16<Int8>(repeating: -64)  // 0x80...0xBF as signed
+    while end &- i >= 20, count <= scalarCapacity &- 16 {
+      let raw = UnsafeRawPointer(p + i)
+      let v0 = raw.loadUnaligned(as: SIMD16<UInt8>.self)
+      let c0 = SIMD16<Int8>(truncatingIfNeeded: v0) .< continuation
+      let starts = nibbles(.!c0)
+      guard starts & 1 != 0 else { break }
+      // Starts at every second or third byte: valid text has only two- or
+      // three-byte sequences there. Anything else is for the scalar loop.
+      if starts == 0x0101_0101_0101_0101 {
+        guard decodeTwoByteBlock(v0, into: scalars + count) else { break }
+        count &+= 8
+        i &+= 16
+        continue
+      }
+      if starts & 0x000F_FFFF_FFFF_FFFF == 0x0001_0010_0100_1001 {
+        guard decodeThreeByteBlock(v0, into: scalars + count) else { break }
+        count &+= 4
+        i &+= 12
+        continue
+      }
+      // Each sequence start must be followed by exactly as many
+      // continuation bytes as its lead announces.
+      let v1 = raw.loadUnaligned(fromByteOffset: 1, as: SIMD16<UInt8>.self)
+      let v2 = raw.loadUnaligned(fromByteOffset: 2, as: SIMD16<UInt8>.self)
+      let v3 = raw.loadUnaligned(fromByteOffset: 3, as: SIMD16<UInt8>.self)
+      let v4 = raw.loadUnaligned(fromByteOffset: 4, as: SIMD16<UInt8>.self)
+      let c1 = SIMD16<Int8>(truncatingIfNeeded: v1) .< continuation
+      let c2 = SIMD16<Int8>(truncatingIfNeeded: v2) .< continuation
+      let c3 = SIMD16<Int8>(truncatingIfNeeded: v3) .< continuation
+      let c4 = SIMD16<Int8>(truncatingIfNeeded: v4) .< continuation
+      let two = v0 .>= SIMD16(repeating: 0xC0)
+      let three = v0 .>= SIMD16(repeating: 0xE0)
+      let four = v0 .>= SIMD16(repeating: 0xF0)
+      let twoFollow = c1 .& c2
+      let threeFollow = twoFollow .& c3
+      var wrong =
+        (two .^ c1) .| (three .^ twoFollow) .| (four .^ threeFollow)
+        .| (threeFollow .& c4)
+      // Overlong three- and four-byte forms, surrogates, and scalars
+      // past U+10FFFF show in the second byte.
+      let belowA0 = v1 .< SIMD16(repeating: 0xA0)
+      let below90 = v1 .< SIMD16(repeating: 0x90)
+      wrong =
+        wrong .| ((v0 .== SIMD16(repeating: 0xE0)) .& belowA0)
+        .| ((v0 .== SIMD16(repeating: 0xED)) .& .!belowA0)
+        .| ((v0 .== SIMD16(repeating: 0xF0)) .& below90)
+        .| ((v0 .== SIMD16(repeating: 0xF4)) .& .!below90)
+      let printable = (v0 &- SIMD16(repeating: 0x20)) .< SIMD16(repeating: 0x5F)
+      let lead = (v0 &- SIMD16(repeating: 0xC2)) .< SIMD16(repeating: 0x33)
+      let stops = nibbles((.!c0 .& wrong) .| .!(printable .| c0 .| lead))
+      if stops == 0, starts == 0x1111_1111_1111_1111 {
+        return (count, i, true)
+      }
+      // Payload bits of every byte: leads lose their length marker.
+      let zero = SIMD16<UInt8>(repeating: 0)
+      let marker =
+        SIMD16<UInt8>(repeating: 0x80)
+        | zero.replacing(with: 0x60, where: two)
+        | zero.replacing(with: 0x10, where: three)
+        | zero.replacing(with: 0x08, where: four)
+      let payload = unsafeBitCast(v0 & ~marker, to: SIMD2<UInt64>.self)
+      // Fold each byte into the scalar it belongs to, storing the scalar
+      // so far at its index: the last store of each index is complete.
+      // A continuation byte shifts six payload bits in; a first byte
+      // shifts the previous scalar out of the low word instead.
+      let shift = unsafeBitCast(
+        SIMD16<UInt8>(repeating: 32).replacing(with: 6, where: c0),
+        to: SIMD2<UInt64>.self
+      )
+      var scalar = payload[0] & 0xFF
+      var index = count
+      scalars[index] = UInt32(truncatingIfNeeded: scalar)
+      var bytes = payload[0] >> 8
+      var shifts = shift[0] >> 8
+      var marks = starts >> 4
+      for _ in 1 ..< 8 {
+        index &+= Int(truncatingIfNeeded: marks & 1)
+        scalar = scalar &<< (shifts & 0xFF) | bytes & 0xFF
+        scalars[index] = UInt32(truncatingIfNeeded: scalar)
+        bytes >>= 8
+        shifts >>= 8
+        marks >>= 4
+      }
+      bytes = payload[1]
+      shifts = shift[1]
+      for _ in 0 ..< 8 {
+        index &+= Int(truncatingIfNeeded: marks & 1)
+        scalar = scalar &<< (shifts & 0xFF) | bytes & 0xFF
+        scalars[index] = UInt32(truncatingIfNeeded: scalar)
+        bytes >>= 8
+        shifts >>= 8
+        marks >>= 4
+      }
+      guard stops == 0 else {
+        // Sequences before the first stop are complete; later indexes
+        // hold scraps past the count.
+        let first = stops.trailingZeroBitCount
+        count &+= (starts & ((1 &<< UInt64(first)) &- 1)).nonzeroBitCount
+        i &+= first &>> 2
+        break
+      }
+      // The last sequence may end in the next three bytes.
+      let b16 = UInt64(p[i &+ 16])
+      let b17 = UInt64(p[i &+ 17])
+      let b18 = UInt64(p[i &+ 18])
+      let more1 = b16 & 0xC0 == 0x80
+      let more2 = more1 && b17 & 0xC0 == 0x80
+      let more3 = more2 && b18 & 0xC0 == 0x80
+      scalar = more1 ? scalar &<< 6 | b16 & 0x3F : scalar
+      scalar = more2 ? scalar &<< 6 | b17 & 0x3F : scalar
+      scalar = more3 ? scalar &<< 6 | b18 & 0x3F : scalar
+      scalars[index] = UInt32(truncatingIfNeeded: scalar)
+      count &+= starts.nonzeroBitCount
+      i &+= 16 &+ (more1 ? 1 : 0) &+ (more2 ? 1 : 0) &+ (more3 ? 1 : 0)
+    }
+    return (count, i, false)
+  }
+
+  /// Eight byte pairs whose second bytes are continuation bytes. Writes
+  /// eight scalars only when every first byte leads a two-byte sequence.
+  @inline(__always)
+  private static func decodeTwoByteBlock(
+    _ bytes: SIMD16<UInt8>,
     into output: UnsafeMutablePointer<UInt32>
   ) -> Bool {
-    let bytes = UnsafeRawPointer(p).loadUnaligned(as: SIMD16<UInt8>.self)
-    let lead = SIMD8<UInt8>(
-      bytes[0],
-      bytes[2],
-      bytes[4],
-      bytes[6],
-      bytes[8],
-      bytes[10],
-      bytes[12],
-      bytes[14]
-    )
-    let continuation = SIMD8<UInt8>(
-      bytes[1],
-      bytes[3],
-      bytes[5],
-      bytes[7],
-      bytes[9],
-      bytes[11],
-      bytes[13],
-      bytes[15]
-    )
-    guard all((lead &- SIMD8(repeating: 0xC2)) .< SIMD8(repeating: 0x1E)),
-      all((continuation & SIMD8(repeating: 0xC0)) .== SIMD8(repeating: 0x80))
+    // Little-endian pairs: the lead is the low byte.
+    let pairs = unsafeBitCast(bytes, to: SIMD8<UInt16>.self)
+    let lead = pairs & SIMD8(repeating: 0xFF)
+    guard all((lead &- SIMD8(repeating: 0xC2)) .< SIMD8(repeating: 0x1E))
     else { return false }
-    let a = SIMD8<UInt32>(truncatingIfNeeded: lead)
-    let b = SIMD8<UInt32>(truncatingIfNeeded: continuation)
+    // Two-byte UTF-8 fits in eleven bits. Widen only the result.
     let scalars =
-      ((a & SIMD8(repeating: 0x1F)) &* SIMD8(repeating: 64))
-      | (b & SIMD8(repeating: 0x3F))
+      ((lead & SIMD8(repeating: 0x1F)) &<< 6)
+      | ((pairs &>> 8) & SIMD8(repeating: 0x3F))
     UnsafeMutableRawPointer(output)
-      .storeBytes(of: scalars, as: SIMD8<UInt32>.self)
+      .storeBytes(
+        of: SIMD8<UInt32>(truncatingIfNeeded: scalars),
+        as: SIMD8<UInt32>.self
+      )
     return true
   }
 
-  /// Requires sixteen readable bytes with four three-byte leads.
-  /// Writes four scalars only when all four sequences validate.
-  /// Keep vector temporaries out of the ordinary decode loop.
-  @inline(never)
+  /// Four byte triples, in the first twelve bytes, whose second and third
+  /// bytes are continuation bytes. Writes four scalars only when every
+  /// first byte leads a three-byte sequence that encodes a scalar.
+  @inline(__always)
   private static func decodeThreeByteBlock(
-    _ p: UnsafePointer<UInt8>,
+    _ bytes: SIMD16<UInt8>,
     into output: UnsafeMutablePointer<UInt32>
   ) -> Bool {
-    let bytes = UnsafeRawPointer(p).loadUnaligned(as: SIMD16<UInt8>.self)
-    let continuation = SIMD8<UInt8>(
-      bytes[1],
-      bytes[2],
-      bytes[4],
-      bytes[5],
-      bytes[7],
-      bytes[8],
-      bytes[10],
-      bytes[11]
-    )
-    guard
-      all((continuation & SIMD8(repeating: 0xC0)) .== SIMD8(repeating: 0x80))
-    else { return false }
     let lead = SIMD4<UInt8>(bytes[0], bytes[3], bytes[6], bytes[9])
-    let first = SIMD4<UInt8>(
-      continuation[0],
-      continuation[2],
-      continuation[4],
-      continuation[6]
-    )
-    let second = SIMD4<UInt8>(
-      continuation[1],
-      continuation[3],
-      continuation[5],
-      continuation[7]
-    )
+    guard all((lead & SIMD4(repeating: 0xF0)) .== SIMD4(repeating: 0xE0))
+    else { return false }
+    let first = SIMD4<UInt8>(bytes[1], bytes[4], bytes[7], bytes[10])
+    let second = SIMD4<UInt8>(bytes[2], bytes[5], bytes[8], bytes[11])
     // Three-byte UTF-8 fits in sixteen bits. Widen only the validated result.
     let a = SIMD4<UInt16>(truncatingIfNeeded: lead)
     let b = SIMD4<UInt16>(truncatingIfNeeded: first)
@@ -387,7 +472,7 @@ public struct Parser: ~Copyable {
         if base[i] >= 0xC2 {
           let (count, end) = decodeRun(base, from: i, to: n)
           if count > 0 {
-            terminal.resolveDeferredClears()
+            // Sequential writes blank only the stale cells they skip.
             terminal.printScalars(
               UnsafeBufferPointer(start: scalars, count: count)
             )

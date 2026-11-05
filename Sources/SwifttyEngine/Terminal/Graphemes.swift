@@ -82,6 +82,38 @@ struct GraphemeTable: ~Copyable {
     return exclusiveTail
   }
 
+  /// Returns the id of `cell`'s cluster extended by every scalar of
+  /// `added`, as successive single-scalar `appending` calls would.
+  mutating func appending(
+    contentsOf added: UnsafeBufferPointer<UInt32>,
+    to cell: Cell
+  ) -> UInt32 {
+    precondition(!added.isEmpty)
+    let id = appending(added[0], to: cell)
+    guard added.count > 1 else { return id }
+    // The first append left `id` as the exclusive tail at the end.
+    scalars.append(contentsOf: UnsafeBufferPointer(rebasing: added[1...]))
+    entries[Int(id)] += UInt64(added.count - 1)
+    return id
+  }
+
+  /// Stores the cluster of `base` followed by `joined`, which is not
+  /// empty, for a cell that held `base` alone. Returns its id: the
+  /// exclusive tail, as after `appending` each scalar.
+  @inline(__always)
+  mutating func insert(
+    base: UInt32,
+    joined: UnsafeBufferPointer<UInt32>
+  ) -> UInt32 {
+    let start = scalars.count
+    scalars.append(base)
+    scalars.append(contentsOf: joined)
+    entries.append(UInt64(start) << 32 | UInt64(joined.count + 1))
+    exclusiveTail = UInt32(entries.count - 1)
+    tailBreakValid = false
+    return exclusiveTail
+  }
+
   /// Stores a complete cluster of at least two scalars and returns its id.
   mutating func insert(_ cluster: [UInt32]) -> UInt32 {
     precondition(cluster.count >= 2, "a grapheme entry joins scalars")
@@ -98,6 +130,9 @@ struct GraphemeTable: ~Copyable {
     let entry = entries[Int(cell.glyph)]
     return scalars[Int(entry >> 32) + Int(entry & 0xFFFF_FFFF) - 1]
   }
+
+  /// Call once before `adopt` reads clusters from this table.
+  mutating func prepareForAdoption() { scalars.padTail() }
 
   /// Copies `cell`'s cluster from `old` into this table (compaction).
   mutating func adopt(_ cell: inout Cell, from old: borrowing GraphemeTable) {
@@ -121,10 +156,17 @@ struct GraphemeTable: ~Copyable {
 }
 
 /// An append-only array without copy-on-write checks on each append.
+///
+/// The allocation extends `padding` elements past `capacity`, so a short
+/// run copies between buffers as one fixed-size block once the source's
+/// tail is padded. Unused capacity is otherwise never written.
 package struct GrowableBuffer<Element: BitwiseCopyable>: ~Copyable {
   private var base: UnsafeMutablePointer<Element>?
   private var capacity = 0
   private(set) var count = 0
+  private static var padding: Int { 8 }
+  /// `count` when `padTail` last ran: valid while the two are equal.
+  private var paddedCount = -1
 
   deinit { base?.deallocate() }
 
@@ -161,7 +203,22 @@ package struct GrowableBuffer<Element: BitwiseCopyable>: ~Copyable {
     count += 1
   }
 
+  /// Initializes the `padding` elements past `count`, so that
+  /// `append(_:from:count:)` may read a whole block from any element of
+  /// this buffer until it next changes.
+  mutating func padTail() {
+    guard let base else { return }
+    UnsafeMutableRawPointer(base + count)
+      .initializeMemory(
+        as: UInt8.self,
+        repeating: 0,
+        count: Self.padding * MemoryLayout<Element>.stride
+      )
+    paddedCount = count
+  }
+
   /// Appends `n` elements of `other` starting at `start`.
+  @inline(__always)
   mutating func append(
     _ other: borrowing GrowableBuffer<Element>,
     from start: Int,
@@ -170,9 +227,69 @@ package struct GrowableBuffer<Element: BitwiseCopyable>: ~Copyable {
     precondition(start >= 0 && n >= 0 && start + n <= other.count)
     guard n > 0 else { return }
     if count + n > capacity { grow(to: count + n) }
-    (base.unsafelyUnwrapped + count)
-      .update(from: other.base.unsafelyUnwrapped + start, count: n)
+    let source = other.base.unsafelyUnwrapped + start
+    let destination = base.unsafelyUnwrapped + count
+    if n <= Self.padding, other.paddedCount == other.count {
+      // Clusters are a few scalars long. Copy a whole block without
+      // branching on the length: the padded source is initialized that
+      // far, and the elements past `n` stay outside `count`.
+      let bytes = Self.padding * MemoryLayout<Element>.stride
+      let from = UnsafeRawPointer(source)
+      let to = UnsafeMutableRawPointer(destination)
+      var offset = 0
+      while offset < bytes {
+        to.storeBytes(
+          of: from.loadUnaligned(fromByteOffset: offset, as: UInt64.self),
+          toByteOffset: offset,
+          as: UInt64.self
+        )
+        offset &+= 8
+      }
+    } else {
+      destination.update(from: source, count: n)
+    }
     count += n
+  }
+
+  /// Appends the elements of `other`, which is not part of this buffer.
+  @inline(__always)
+  mutating func append(contentsOf other: UnsafeBufferPointer<Element>) {
+    guard let source = other.baseAddress, !other.isEmpty else { return }
+    if count + other.count > capacity { grow(to: count + other.count) }
+    Self.copy(other.count, from: source, to: base.unsafelyUnwrapped + count)
+    count += other.count
+  }
+
+  /// Copies `n` elements between buffers that do not overlap. Clusters are
+  /// a few scalars long: such runs copy as two words or vectors that may
+  /// overlap each other, without a call.
+  @inline(__always)
+  private static func copy(
+    _ n: Int,
+    from source: UnsafePointer<Element>,
+    to destination: UnsafeMutablePointer<Element>
+  ) {
+    let bytes = n &* MemoryLayout<Element>.stride
+    let from = UnsafeRawPointer(source)
+    let to = UnsafeMutableRawPointer(destination)
+    if n == 1 {
+      destination.pointee = source.pointee
+    } else if bytes >= 8, bytes <= 16 {
+      let head = from.loadUnaligned(as: UInt64.self)
+      let tail = from.loadUnaligned(fromByteOffset: bytes &- 8, as: UInt64.self)
+      to.storeBytes(of: head, as: UInt64.self)
+      to.storeBytes(of: tail, toByteOffset: bytes &- 8, as: UInt64.self)
+    } else if bytes > 16, bytes <= 32 {
+      let head = from.loadUnaligned(as: SIMD16<UInt8>.self)
+      let tail = from.loadUnaligned(
+        fromByteOffset: bytes &- 16,
+        as: SIMD16<UInt8>.self
+      )
+      to.storeBytes(of: head, as: SIMD16<UInt8>.self)
+      to.storeBytes(of: tail, toByteOffset: bytes &- 16, as: SIMD16<UInt8>.self)
+    } else {
+      destination.update(from: source, count: n)
+    }
   }
 
   mutating func removeAll(keepingCapacity: Bool) {
@@ -186,13 +303,15 @@ package struct GrowableBuffer<Element: BitwiseCopyable>: ~Copyable {
 
   @inline(never)
   private mutating func grow(to minimum: Int) {
+    let grownCapacity = max(16, capacity * 2, minimum)
     let grown = UnsafeMutablePointer<Element>
-      .allocate(capacity: max(16, capacity * 2, minimum))
+      .allocate(capacity: grownCapacity + Self.padding)
     if let base {
       grown.update(from: base, count: count)
       base.deallocate()
     }
-    capacity = max(16, capacity * 2, minimum)
+    capacity = grownCapacity
     base = grown
+    paddedCount = -1
   }
 }

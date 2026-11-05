@@ -118,4 +118,45 @@ struct GraphemeCompactionTests {
       )
     }
   }
+
+  /// Compaction copies short clusters as fixed blocks and longer ones
+  /// exactly: every length, across several growths of the table.
+  @Test
+  func `compaction preserves clusters of every length`() {
+    var actual = VT(60, 4, scrollback: 1 << 20)
+    var reference = VT(60, 4, scrollback: 1 << 20)
+    reference.state.graphemes.compactionLimit = .max
+    for round in 0 ..< 60 {
+      var line = ""
+      for length in 0 ..< 12 {
+        let marks = (length + round) % 13
+        line += "a" + String(repeating: "\u{301}", count: marks)
+        line += marks % 3 == 0 ? "👨\u{200D}👩\u{200D}👧 " : "é"
+      }
+      line += "\r\n"
+      actual.feed(line)
+      reference.feed(line)
+      if round % 3 == 0 { actual.state.compactGraphemes() }
+    }
+    actual.state.compactGraphemes()
+    #expect(
+      actual.state.graphemes.scalars.count
+        <= reference.state.graphemes.scalars.count
+    )
+    for y in 0 ..< 4 {
+      for x in 0 ..< 60 {
+        #expect(
+          actual.state.scalars(of: actual.cell(x, y))
+            == reference.state.scalars(of: reference.cell(x, y))
+        )
+      }
+    }
+    #expect(actual.state.scrollbackCount == reference.state.scrollbackCount)
+    for index in 0 ..< actual.state.scrollbackCount {
+      #expect(
+        actual.state.scrollbackText(index)
+          == reference.state.scrollbackText(index)
+      )
+    }
+  }
 }

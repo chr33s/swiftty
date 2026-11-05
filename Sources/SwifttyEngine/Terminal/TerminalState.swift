@@ -1488,6 +1488,7 @@ public struct TerminalState: ~Copyable {
     var fresh = GraphemeTable()
     swap(&fresh, &spareGraphemes)  // reuse the previous table's capacity
     fresh.removeAll()
+    graphemes.prepareForAdoption()
     for y in 0 ..< grid.rows {
       let row = grid._unsafeRow(y)
       for x in 0 ..< grid.columns where row[x].isGrapheme {

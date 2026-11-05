@@ -684,6 +684,70 @@ struct ParserTests {
     }
   }
 
+  /// Windows of mixed widths are validated whole, then decoded without
+  /// branching on any byte: every byte value at every window position,
+  /// under every alignment, must still match the incremental decoder.
+  @Test(arguments: zip([0, 1, 2, 3, 0], [false, false, false, false, true]))
+  func `UTF 8 mixed width windows match bytewise input with every changed byte`(
+    _ shift: Int,
+    _ asciiTail: Bool
+  ) {
+    let initial = Array(("é" + String(repeating: "a", count: shift)).utf8)
+    // Every width and every boundary scalar, across two windows.
+    let block = Array(
+      "aé漢😀b\u{7FF}\u{800}\u{D7FF}\u{E000}\u{FFFF}\u{10000}\u{10FFFF}z€"
+        .utf8
+    )
+    let tail = Array(
+      (asciiTail
+        ? "é" + String(repeating: "x", count: 40) + "é"
+        : "é漢😀 éa漢b😀c é漢😀 éa漢b😀c é")
+        .utf8
+    )
+    for position in block.indices {
+      for value in UInt8.min ... UInt8.max {
+        var bytes = block
+        bytes[position] = value
+        expectUTF8RunMatchesBytewise(
+          bytes + tail,
+          prefix: initial,
+          context: "shift=\(shift), position=\(position), byte=\(value)"
+        )
+      }
+    }
+  }
+
+  @Test(arguments: [UInt8(0x80), 0xBF])
+  func `UTF 8 windows stop at a continuation byte after a two byte block`(
+    _ stray: UInt8
+  ) {
+    let bytes =
+      Array(String(repeating: "é", count: 8).utf8) + [stray]
+      + Array("é漢😀 éa漢b😀c é漢😀 éa漢b😀c é".utf8)
+    expectUTF8RunMatchesBytewise(bytes, prefix: [], context: "stray=\(stray)")
+  }
+
+  @Test(arguments: [0, 1, 2, 3, 15, 16, 17, 19, 20, 21, 64])
+  func `UTF 8 windows match bytewise input at every split`(_ shift: Int) {
+    let text =
+      "é" + String(repeating: "a", count: shift)
+      + "wörld 日本語 😀 e\u{301} Ελληνικά → 한국어 naïve 🚀│ﬁ 中文字符 русский "
+      + String(repeating: "plain ascii ", count: 4) + "e\u{301}é漢😀\r\n漢a"
+    let bytes = Array(text.utf8)
+    var reference = VT(40, 6)
+    for byte in bytes { reference.feed(bytes: [byte]) }
+    for split in 0 ... bytes.count {
+      var actual = VT(40, 6)
+      actual.feed(bytes: Array(bytes[..<split]))
+      actual.feed(bytes: Array(bytes[split...]))
+      #expect(
+        TestFixture(actual.lines) == TestFixture(reference.lines),
+        Comment(rawValue: "split=\(split)")
+      )
+      #expect(actual.state.cursor == reference.state.cursor)
+    }
+  }
+
   private func expectUTF8RunMatchesBytewise(
     _ bytes: [UInt8],
     prefix: [UInt8],

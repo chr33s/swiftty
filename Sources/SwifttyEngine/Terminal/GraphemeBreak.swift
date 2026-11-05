@@ -40,6 +40,12 @@ package enum GraphemeBreak {
 
     static let count = 18
 
+    /// `extendMask >> rawValue & 1`: `isExtend`, without constructing a case.
+    static let extendMask: UInt32 =
+      1 << UInt32(Property.zwnj.rawValue)
+      | 1 << UInt32(Property.indicConjunctBreakExtend.rawValue)
+      | 1 << UInt32(Property.indicConjunctBreakLinkerExtend.rawValue)
+
     /// UAX #29 Extend minus Emoji_Modifier (see type doc).
     @inline(__always)
     var isExtend: Bool {
@@ -117,7 +123,9 @@ package enum GraphemeBreak {
 
   // MARK: - Property lookup
 
-  private static let zeroInGraphemeBit: UInt8 = 0x20
+  static let zeroInGraphemeBit: UInt8 = 0x20
+  /// Index into `Tables.joinMask` for "no preceding scalar": joins nothing.
+  static let noClass = Property.count
   private static let emojiVSBaseBit: UInt8 = 0x40
 
   /// Sendable: none: the buffers are written only in `init` and read-only
@@ -130,7 +138,10 @@ package enum GraphemeBreak {
     /// `[state][gb1][gb2]` -> bit 0 isBreak, bits 1... next state.
     let breaks: UnsafeMutableBufferPointer<UInt8>
     /// `joinMask[gb1] >> gb2 & 1`: some state makes `gb1 x gb2` a non-break.
+    /// The entry at `noClass` is zero.
     let joinMask: UnsafeMutableBufferPointer<UInt32>
+    /// `joinMask` when nothing clusters (mode 2027 off): all zero.
+    let noJoinMask: UnsafeMutableBufferPointer<UInt32>
 
     init() {
       precondition(
@@ -144,8 +155,10 @@ package enum GraphemeBreak {
 
       let n = Property.count
       breaks = .allocate(capacity: State.count * n * n)
-      joinMask = .allocate(capacity: n)
+      joinMask = .allocate(capacity: n + 1)
       joinMask.initialize(repeating: 0)
+      noJoinMask = .allocate(capacity: n + 1)
+      noJoinMask.initialize(repeating: 0)
       for s in 0 ..< State.count {
         for g1 in 0 ..< n {
           for g2 in 0 ..< n {

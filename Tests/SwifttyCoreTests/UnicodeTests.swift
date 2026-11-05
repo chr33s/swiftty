@@ -74,6 +74,23 @@ struct UnicodeTests {
       #expect(table.lookup(cp) == 1 << 5)
     }
   }
+
+  /// Printing stores printable scalars below U+0300 as narrow cells that
+  /// join nothing, straight from the combined table.
+  @Test
+  func `combined scalar table is narrow and unjoined below U+0300`() {
+    let table = ScalarInfoTable.shared
+    for cp in UInt32(0x20) ..< 0x300 where cp != 0xA9 && cp != 0xAE {
+      #expect(table.lookup(cp) == 1 << 5, Comment(rawValue: "U+\(cp)"))
+    }
+    for cp in [UInt32(0xA9), 0xAE] {
+      #expect(table.lookup(cp) >> 5 == 1)
+      #expect(
+        GraphemeBreak.Property(rawValue: table.lookup(cp) & 0x1F)?
+          .isExtendedPictographic == true
+      )
+    }
+  }
 }
 
 struct EmojiClusterTests {
