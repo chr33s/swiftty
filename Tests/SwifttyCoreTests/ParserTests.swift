@@ -695,8 +695,7 @@ struct ParserTests {
     let initial = Array(("é" + String(repeating: "a", count: shift)).utf8)
     // Every width and every boundary scalar, across two windows.
     let block = Array(
-      "aé漢😀b\u{7FF}\u{800}\u{D7FF}\u{E000}\u{FFFF}\u{10000}\u{10FFFF}z€"
-        .utf8
+      "aé漢😀b\u{7FF}\u{800}\u{D7FF}\u{E000}\u{FFFF}\u{10000}\u{10FFFF}z€".utf8
     )
     let tail = Array(
       (asciiTail

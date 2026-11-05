@@ -436,9 +436,7 @@ struct HyperlinkReuseTests {
   }
 
   @Test(arguments: ["scroll", "clear", "resize", "reset"])
-  func `ids are assigned again once their cells are gone`(
-    _ operation: String
-  ) {
+  func `ids are assigned again once their cells are gone`(_ operation: String) {
     var vt = VT(40, 2, scrollback: 0)
     for i in 0 ..< 300 {
       vt.feed("\(CSI)1G\(ESC)]8;;file:///full\(i)\u{07}L\(ESC)]8;;\u{07}")

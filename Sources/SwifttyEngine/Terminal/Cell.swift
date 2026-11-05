@@ -157,14 +157,14 @@ public struct CellAttributes: Hashable, Sendable, BitwiseCopyable {
   public var link: UInt32 {
     @inlinable
     get {
-      UInt32(tail & Self.linkLowMask)
-        | (backgroundBits.rawValue >> 26) << Self.linkLowBits
+      UInt32(tail & Self.linkLowMask) | (backgroundBits.rawValue >> 26)
+        << Self.linkLowBits
     }
     @inlinable
     set {
       tail =
-        tail & ~Self.linkLowMask
-        | UInt16(truncatingIfNeeded: newValue) & Self.linkLowMask
+        tail & ~Self.linkLowMask | UInt16(truncatingIfNeeded: newValue)
+        & Self.linkLowMask
       backgroundBits.rawValue =
         backgroundBits.rawValue & Self.colorMask
         | (newValue >> Self.linkLowBits) << 26

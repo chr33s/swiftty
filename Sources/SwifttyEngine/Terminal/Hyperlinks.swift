@@ -119,9 +119,8 @@ struct HyperlinkTable {
     }
     if let explicit = explicitID.removeValue(forKey: id) {
       let key = explicit.withUnsafeBufferPointer { name in
-        targets[slot].withUnsafeBufferPointer { uri in
-          Self.explicitKey(name, uri)
-        }
+        targets[slot]
+          .withUnsafeBufferPointer { uri in Self.explicitKey(name, uri) }
       }
       if explicitIndex[key] == id { explicitIndex[key] = nil }
     }

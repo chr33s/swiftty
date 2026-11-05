@@ -42,9 +42,9 @@ package enum GraphemeBreak {
 
     /// `extendMask >> rawValue & 1`: `isExtend`, without constructing a case.
     static let extendMask: UInt32 =
-      1 << UInt32(Property.zwnj.rawValue)
-      | 1 << UInt32(Property.indicConjunctBreakExtend.rawValue)
-      | 1 << UInt32(Property.indicConjunctBreakLinkerExtend.rawValue)
+      1 << UInt32(Property.zwnj.rawValue) | 1
+      << UInt32(Property.indicConjunctBreakExtend.rawValue) | 1
+      << UInt32(Property.indicConjunctBreakLinkerExtend.rawValue)
 
     /// UAX #29 Extend minus Emoji_Modifier (see type doc).
     @inline(__always)

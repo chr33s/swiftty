@@ -258,22 +258,18 @@ public struct Parser: ~Copyable {
       // past U+10FFFF show in the second byte.
       let belowA0 = v1 .< SIMD16(repeating: 0xA0)
       let below90 = v1 .< SIMD16(repeating: 0x90)
-      wrong =
-        wrong .| ((v0 .== SIMD16(repeating: 0xE0)) .& belowA0)
+      wrong = wrong .| ((v0 .== SIMD16(repeating: 0xE0)) .& belowA0)
         .| ((v0 .== SIMD16(repeating: 0xED)) .& .!belowA0)
         .| ((v0 .== SIMD16(repeating: 0xF0)) .& below90)
         .| ((v0 .== SIMD16(repeating: 0xF4)) .& .!below90)
       let printable = (v0 &- SIMD16(repeating: 0x20)) .< SIMD16(repeating: 0x5F)
       let lead = (v0 &- SIMD16(repeating: 0xC2)) .< SIMD16(repeating: 0x33)
       let stops = nibbles((.!c0 .& wrong) .| .!(printable .| c0 .| lead))
-      if stops == 0, starts == 0x1111_1111_1111_1111 {
-        return (count, i, true)
-      }
+      if stops == 0, starts == 0x1111_1111_1111_1111 { return (count, i, true) }
       // Payload bits of every byte: leads lose their length marker.
       let zero = SIMD16<UInt8>(repeating: 0)
       let marker =
-        SIMD16<UInt8>(repeating: 0x80)
-        | zero.replacing(with: 0x60, where: two)
+        SIMD16<UInt8>(repeating: 0x80) | zero.replacing(with: 0x60, where: two)
         | zero.replacing(with: 0x10, where: three)
         | zero.replacing(with: 0x08, where: four)
       let payload = unsafeBitCast(v0 & ~marker, to: SIMD2<UInt64>.self)
@@ -344,8 +340,9 @@ public struct Parser: ~Copyable {
     // Little-endian pairs: the lead is the low byte.
     let pairs = unsafeBitCast(bytes, to: SIMD8<UInt16>.self)
     let lead = pairs & SIMD8(repeating: 0xFF)
-    guard all((lead &- SIMD8(repeating: 0xC2)) .< SIMD8(repeating: 0x1E))
-    else { return false }
+    guard all((lead &- SIMD8(repeating: 0xC2)) .< SIMD8(repeating: 0x1E)) else {
+      return false
+    }
     // Two-byte UTF-8 fits in eleven bits. Widen only the result.
     let scalars =
       ((lead & SIMD8(repeating: 0x1F)) &<< 6)
@@ -367,8 +364,9 @@ public struct Parser: ~Copyable {
     into output: UnsafeMutablePointer<UInt32>
   ) -> Bool {
     let lead = SIMD4<UInt8>(bytes[0], bytes[3], bytes[6], bytes[9])
-    guard all((lead & SIMD4(repeating: 0xF0)) .== SIMD4(repeating: 0xE0))
-    else { return false }
+    guard all((lead & SIMD4(repeating: 0xF0)) .== SIMD4(repeating: 0xE0)) else {
+      return false
+    }
     let first = SIMD4<UInt8>(bytes[1], bytes[4], bytes[7], bytes[10])
     let second = SIMD4<UInt8>(bytes[2], bytes[5], bytes[8], bytes[11])
     // Three-byte UTF-8 fits in sixteen bits. Widen only the validated result.

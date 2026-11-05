@@ -835,8 +835,8 @@ extension TerminalState {
   @inline(__always)
   private static func isSafeExtend(_ c: UInt32) -> Bool {
     let cls = UInt32(ScalarInfoTable.shared.lookup(c) & 0x1F)
-    return GraphemeBreak.Property.extendMask >> cls & 1 != 0
-      && c != 0xFE0E && c != 0xFE0F && GraphemeBreak.isZeroInGrapheme(c)
+    return GraphemeBreak.Property.extendMask >> cls & 1 != 0 && c != 0xFE0E
+      && c != 0xFE0F && GraphemeBreak.isZeroInGrapheme(c)
   }
 
   /// General path for one printable scalar (Ghostty `Terminal.print`).

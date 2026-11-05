@@ -544,7 +544,10 @@ struct GridInvariantTests {
     cell.attributes = .default
     #expect(cell.width == 1)
     #expect(Cell(glyph: 0, attributes: .default, width: 1).isBlank)
-    #expect(!Cell(glyph: 0, attributes: CellAttributes(link: 1 << 14), width: 1).isBlank)
+    #expect(
+      !Cell(glyph: 0, attributes: CellAttributes(link: 1 << 14), width: 1)
+        .isBlank
+    )
   }
 
   @Test(arguments: [

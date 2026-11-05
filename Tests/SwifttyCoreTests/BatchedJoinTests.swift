@@ -118,8 +118,8 @@ struct BatchedJoinTests {
     }
     // Base plus the 64-scalar join limit.
     #expect(
-      fast.state.scalars(of: fast.cell(0, 0)).count
-        == TerminalState.graphemeMaxLength + 1
+      fast.state.scalars(of: fast.cell(0, 0)).count == TerminalState
+        .graphemeMaxLength + 1
     )
   }
 
@@ -137,13 +137,13 @@ struct BatchedJoinTests {
       return Int((state >> 33) % UInt64(bound))
     }
     let pieces = [
-      "a", "e\u{301}", "漢", "क\u{94D}ष\u{93F}", "o\u{302}\u{323}", "👨\u{200D}👩\u{200D}👧",
-      "🏳\u{FE0F}\u{200D}🌈", "👍🏽", "🏽", "🇯🇵", "🇺🇸🇯", "❤\u{FE0F}", "☺\u{FE0E}",
-      "😀\u{FE0E}", "⌚\u{FE0E}", "⌚\u{FE0E}\u{200D}💻", "\u{1100}\u{1161}\u{11A8}", "\u{600}é",
-      "\u{600}a", "©\u{FE0F}",
-      "\u{200D}", "\u{301}", "\u{200B}", "x\u{200C}\u{301}", " ", "ﷺ", "\u{903}",
-      "é\u{20DD}", String(repeating: "\u{300}", count: 70), "\(CSI)1m", "\(CSI)0m",
-      "\r\n", "\(CSI)2b",
+      "a", "e\u{301}", "漢", "क\u{94D}ष\u{93F}", "o\u{302}\u{323}",
+      "👨\u{200D}👩\u{200D}👧", "🏳\u{FE0F}\u{200D}🌈", "👍🏽", "🏽", "🇯🇵", "🇺🇸🇯",
+      "❤\u{FE0F}", "☺\u{FE0E}", "😀\u{FE0E}", "⌚\u{FE0E}", "⌚\u{FE0E}\u{200D}💻",
+      "\u{1100}\u{1161}\u{11A8}", "\u{600}é", "\u{600}a", "©\u{FE0F}",
+      "\u{200D}", "\u{301}", "\u{200B}", "x\u{200C}\u{301}", " ", "ﷺ",
+      "\u{903}", "é\u{20DD}", String(repeating: "\u{300}", count: 70),
+      "\(CSI)1m", "\(CSI)0m", "\r\n", "\(CSI)2b",
     ]
     var input = clustering ? "\(CSI)?2027h" : "\(CSI)?2027l"
     for _ in 0 ..< 1200 { input += pieces[next(pieces.count)] }
@@ -179,20 +179,19 @@ struct BatchedJoinTests {
   /// narrowing, both in turn, ignored selectors, and the row's last
   /// columns. A coloured pen makes every spacer and narrowed cell visible.
   private static let widthEffectClusters = [
-    "😀\u{FE0E}", "⌚\u{FE0E}", "⌚\u{FE0E}\r\nz", "⌚\u{FE0E}x", "⌚\u{FE0E}\u{200D}💻",
-    "⌚\u{FE0E}\u{200D}💻\u{FE0E}y", "⌚\u{FE0E}\u{FE0F}", "⌚\u{FE0E}\u{301}\u{FE0F}z",
-    "❤\u{FE0F}", "❤\u{FE0F}\u{FE0E}", "a\u{FE0F}b", "❤\u{200D}❤\u{FE0E}",
-    "❤\u{200D}❤\u{FE0E}\r\nz", "❤\u{200D}❤\u{FE0E}\u{200D}💻q",
-    "x\u{200D}\u{FE0F}💻", "👩\u{200D}\u{FE0F}💻", "क\u{94D}ष\u{93F}", "क\u{94D}ष\u{FE0E}",
-    "🇯🇵🇺", "\u{600}é\u{301}", "ab\u{200B}c", "漢字漢字漢\u{301}", "漢字漢字漢字漢",
+    "😀\u{FE0E}", "⌚\u{FE0E}", "⌚\u{FE0E}\r\nz", "⌚\u{FE0E}x",
+    "⌚\u{FE0E}\u{200D}💻", "⌚\u{FE0E}\u{200D}💻\u{FE0E}y", "⌚\u{FE0E}\u{FE0F}",
+    "⌚\u{FE0E}\u{301}\u{FE0F}z", "❤\u{FE0F}", "❤\u{FE0F}\u{FE0E}", "a\u{FE0F}b",
+    "❤\u{200D}❤\u{FE0E}", "❤\u{200D}❤\u{FE0E}\r\nz",
+    "❤\u{200D}❤\u{FE0E}\u{200D}💻q", "x\u{200D}\u{FE0F}💻", "👩\u{200D}\u{FE0F}💻",
+    "क\u{94D}ष\u{93F}", "क\u{94D}ष\u{FE0E}", "🇯🇵🇺", "\u{600}é\u{301}",
+    "ab\u{200B}c", "漢字漢字漢\u{301}", "漢字漢字漢字漢",
     "e" + String(repeating: "\u{301}", count: 64) + "\u{FE0F}\u{302}\u{200D}",
   ]
 
   // Indexes, not strings: the test log must stay free of control bytes.
   @Test(arguments: widthEffectClusters.indices)
-  func `width effects on blank cells match one scalar at a time`(
-    _ index: Int
-  ) {
+  func `width effects on blank cells match one scalar at a time`(_ index: Int) {
     let cluster = Self.widthEffectClusters[index]
     // U+231A is wide with a text presentation: its selector narrows it.
     #expect(GraphemeBreak.isEmojiVSBase(0x231A))

@@ -12,8 +12,8 @@ struct DeferredClearTests {
   /// UTF-8 runs that write over recycled rows: long narrow and wide runs,
   /// wide characters at the last column, Extend runs, and joins.
   private static let utf8Pieces = [
-    "éèê", "漢字東京", "日", "a\u{300}\u{301}\u{302}", "e\u{301}", "ö ",
-    "👍🏽", "\u{200D}", "\u{FE0F}", "\u{301}", "\(CSI)41m", "\(CSI)0m",
+    "éèê", "漢字東京", "日", "a\u{300}\u{301}\u{302}", "e\u{301}", "ö ", "👍🏽",
+    "\u{200D}", "\u{FE0F}", "\u{301}", "\(CSI)41m", "\(CSI)0m",
     String(repeating: "\u{300}", count: 70), "→│",
   ]
 
