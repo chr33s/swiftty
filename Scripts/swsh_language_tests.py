@@ -280,8 +280,9 @@ class CompletionContractTests(unittest.TestCase):
             marker = Path(shell.home.name, "arguments")
             shell.command(f"provider() {{ /usr/bin/printf '%s\\n%s\\n' $1 $2 >'{marker}'; /bin/echo prefixed; }}; complete --function echo provider; false")
             shell.send("echo pre\t")
-            eventually(lambda: marker.exists(), "provider did not run")
-            self.assertEqual(marker.read_bytes(), b"pre\necho pre\n")
+            expected = b"pre\necho pre\n"
+            # The redirect creates the file before printf writes, so wait for content.
+            eventually(lambda: marker.exists() and marker.read_bytes() == expected, "provider did not write its arguments")
             shell.send(b"\x15/usr/bin/printf '<%s>' $?\n")
             self.assertIn(b"<1>", shell.prompt())
 
