@@ -455,8 +455,9 @@ extension TerminalState {
     let tail: (UInt64, UInt64)
   }
 
-  /// Where `Cell.width`, the cell's last byte, lies in its second word.
-  private static var cellWidthShift: UInt64 { 56 }
+  /// Where `Cell.width`, the top two bits of the cell, lies in its second
+  /// word.
+  private static var cellWidthShift: UInt64 { 62 }
 
   /// Stores a cell for the scalar at `start`, which has a width and joins
   /// nothing, and for each one after it, stopping before one that may join

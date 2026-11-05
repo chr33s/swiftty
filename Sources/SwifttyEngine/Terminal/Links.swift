@@ -6,7 +6,7 @@ public struct TerminalLink: Sendable, Equatable {
   /// Cells the link covers (inclusive), for underlining on hover.
   public var range: TerminalRange
   /// OSC 8 id when the link came from the application.
-  public var id: UInt8
+  public var id: UInt32
 }
 
 extension TerminalState {

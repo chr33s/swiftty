@@ -34,7 +34,7 @@ private func hasGrapheme(_ vt: borrowing VT, _ x: Int, _ y: Int) -> Bool {
   graphemeTail(vt, x, y) != nil
 }
 
-private func link(_ vt: borrowing VT, _ x: Int, _ y: Int) -> UInt8 {
+private func link(_ vt: borrowing VT, _ x: Int, _ y: Int) -> UInt32 {
   vt.cell(x, y).attributes.link
 }
 

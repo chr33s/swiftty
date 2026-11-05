@@ -364,19 +364,87 @@ struct HyperlinkTests {
   }
 }
 
+/// Ghostty's link identity: the `id=` parameter and the URI. Without an
+/// id every OSC 8 opens a link of its own.
+struct HyperlinkIdentityTests {
+  private static func link(_ vt: borrowing VT, _ x: Int) -> UInt32 {
+    vt.cell(x, 0).attributes.link
+  }
+
+  @Test
+  func `links without an id are separate even for one URI`() {
+    var vt = VT(20, 2)
+    vt.feed("\(ESC)]8;;file:///a\u{07}xy\(ESC)]8;;\u{07} ")
+    vt.feed("\(ESC)]8;;file:///a\u{07}z\(ESC)]8;;\u{07}")
+    let first = Self.link(vt, 0)
+    #expect(first != 0 && Self.link(vt, 1) == first)
+    #expect(Self.link(vt, 2) == 0)
+    #expect(Self.link(vt, 3) != 0 && Self.link(vt, 3) != first)
+    #expect(vt.state.hyperlink(first) == "file:///a")
+    #expect(vt.state.hyperlink(Self.link(vt, 3)) == "file:///a")
+    // One stored target serves both.
+    #expect(vt.state.hyperlinks.targets.count == 1)
+  }
+
+  @Test
+  func `an id joins runs of the same URI and no others`() {
+    var vt = VT(20, 2)
+    let close = "\(ESC)]8;;\u{07}"
+    vt.feed("\(ESC)]8;id=one;file:///a\u{07}a" + close)
+    vt.feed("\(ESC)]8;x=1:id=one:y=2;file:///a\u{07}b" + close)
+    vt.feed("\(ESC)]8;id=one;file:///other\u{07}c" + close)
+    vt.feed("\(ESC)]8;id=two;file:///a\u{07}d" + close)
+    vt.feed("\(ESC)]8;id=;file:///a\u{07}e" + close)
+    vt.feed("\(ESC)]8;id=;file:///a\u{07}f" + close)
+    let ids = (0 ..< 6).map { Self.link(vt, $0) }
+    #expect(!ids.contains(0))
+    #expect(ids[0] == ids[1])
+    #expect(Set(ids).count == 5)
+    #expect(vt.state.hyperlink(ids[2]) == "file:///other")
+    for index in [0, 1, 3, 4, 5] {
+      #expect(vt.state.hyperlink(ids[index]) == "file:///a")
+    }
+  }
+
+  @Test(arguments: [2048, 2049, 100_000])
+  func `long URIs are kept whole`(_ length: Int) {
+    var vt = VT(20, 2)
+    let uri = "https://example.com/" + String(repeating: "p", count: length)
+    vt.feed("\(ESC)]8;;" + uri + "\(ESC)\\L\(ESC)]8;;\u{07}")
+    let target = vt.state.hyperlink(Self.link(vt, 0))
+    #expect(target?.utf8.count == uri.utf8.count)
+    #expect(target == uri)
+  }
+}
+
 struct HyperlinkReuseTests {
+  @Test
+  func `thousands of live links stay distinct`() {
+    var vt = VT(100, 40, scrollback: 0)
+    for i in 0 ..< 4000 {
+      vt.feed("\(ESC)]8;;file:///n\(i)\u{07}L\(ESC)]8;;\u{07}")
+    }
+    #expect(vt.state.hyperlinks.live == 4000)
+    var ids = Set<UInt32>()
+    for i in 0 ..< 4000 {
+      let id = vt.cell(i % 100, i / 100).attributes.link
+      ids.insert(id)
+      #expect(vt.state.hyperlink(id) == "file:///n\(i)")
+    }
+    #expect(ids.count == 4000 && !ids.contains(0))
+    #expect(ids.contains { $0 > 255 })
+  }
+
   @Test(arguments: ["scroll", "clear", "resize", "reset"])
-  func `a full link table resumes assigning ids when cells become available`(
+  func `ids are assigned again once their cells are gone`(
     _ operation: String
   ) {
     var vt = VT(40, 2, scrollback: 0)
-    for i in 0 ..< 255 {
+    for i in 0 ..< 300 {
       vt.feed("\(CSI)1G\(ESC)]8;;file:///full\(i)\u{07}L\(ESC)]8;;\u{07}")
     }
     let live = vt.cell(0, 0).attributes.link
-    #expect(vt.state.hyperlink(live) == "file:///full254")
-    vt.feed("\(ESC)]8;;file:///overflow\u{07}U\(ESC)]8;;\u{07}")
-    #expect(vt.cell(1, 0).attributes.link == 0)
+    #expect(vt.state.hyperlink(live) == "file:///full299")
     switch operation {
     case "scroll": vt.feed("\r\n\r\n\r\n")
     case "clear": vt.state.clearScreenKeepingCursorLine()
@@ -392,8 +460,33 @@ struct HyperlinkReuseTests {
     )
     if operation == "clear" || operation == "resize" {
       #expect(
-        vt.state.hyperlink(vt.cell(0, 0).attributes.link) == "file:///full254"
+        vt.state.hyperlink(vt.cell(0, 0).attributes.link) == "file:///full299"
       )
+    }
+  }
+
+  /// Links whose rows left history free their ids in order; on the
+  /// alternate screen, where rows say nothing, a scan does.
+  @Test(arguments: [false, true])
+  func `a stream of links keeps the table small`(_ alternate: Bool) {
+    var vt = VT(40, 4, scrollback: 0)
+    if alternate { vt.feed("\(CSI)?1049h") }
+    for i in 0 ..< 30_000 {
+      vt.feed("\(ESC)]8;;file:///s\(i % 7)\u{07}s\(ESC)]8;;\u{07}")
+      if !alternate || i % 3 == 0 { vt.feed("\r\n") } else { vt.feed("\r") }
+    }
+    #expect(vt.state.hyperlinks.target.count <= 2 * 4096)
+    #expect(vt.state.hyperlinks.targets.count <= 16)
+    vt.feed("\(ESC)]8;;file:///last\u{07}Z\(ESC)]8;;\u{07}")
+    let x = vt.state.cursor.x - 1
+    let id = vt.cell(x, vt.state.cursor.y).attributes.link
+    #expect(id != 0 && vt.state.hyperlink(id) == "file:///last")
+    // Every linked cell left on screen still resolves.
+    for y in 0 ..< 4 {
+      for x in 0 ..< 40 {
+        let link = vt.cell(x, y).attributes.link
+        if link != 0 { #expect(vt.state.hyperlink(link) != nil) }
+      }
     }
   }
 

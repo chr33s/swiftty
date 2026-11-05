@@ -258,7 +258,7 @@ extension TerminalUIView {
     let c = cell(at: point)
     let detect = configuration.linkURL
     let hovered = session.withState {
-      state -> (id: UInt8, span: HighlightSpan)? in
+      state -> (id: UInt32, span: HighlightSpan)? in
       let p = state.viewportPoint(row: c.row, column: c.column)
       guard let link = state.link(at: p, detectURLs: detect),
         LinkPolicy.openableURL(link.url) != nil
@@ -276,7 +276,7 @@ extension TerminalUIView {
 
   /// Underlines the link under the pointer: OSC 8 links by id (every
   /// cell of the link), detected URLs by their span.
-  private func setHoveredLink(_ link: (id: UInt8, span: HighlightSpan)?) {
+  private func setHoveredLink(_ link: (id: UInt32, span: HighlightSpan)?) {
     let id = link?.id ?? 0
     let span = link.flatMap { $0.id == 0 ? $0.span : nil }
     let isOver = link != nil

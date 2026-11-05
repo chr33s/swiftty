@@ -79,31 +79,44 @@ public struct CellAttributes: Hashable, Sendable, BitwiseCopyable {
   /// `TerminalColor`) hold `underlineColor`, so a cell stays 16 bytes.
   @usableFromInline
   var foregroundBits: TerminalColor
-  public var background: TerminalColor
+  /// The background color; the top six bits of its tag byte hold the high
+  /// bits of `link`.
+  @usableFromInline
+  var backgroundBits: TerminalColor
   public var flags: CellFlags
-  /// OSC 8 hyperlink id (`TerminalState.hyperlink(_:)`), 0 for none. Uses
-  /// the cell's spare byte, so a cell stays 16 bytes.
-  public var link: UInt8
+  /// The low fourteen bits of `link`. Inside a `Cell` the top two bits
+  /// hold the cell's width; they are zero in every `CellAttributes` value.
+  @usableFromInline
+  var tail: UInt16
 
   @inlinable
   public init(
     foreground: TerminalColor = .default,
     background: TerminalColor = .default,
     flags: CellFlags = [],
-    link: UInt8 = 0,
+    link: UInt32 = 0,
   ) {
     foregroundBits = TerminalColor(
       rawValue: foreground.rawValue & Self.colorMask
     )
-    self.background = background
+    backgroundBits = TerminalColor(
+      rawValue: background.rawValue & Self.colorMask
+        | (link >> Self.linkLowBits) << 26
+    )
     self.flags = flags
-    self.link = link
+    tail = UInt16(truncatingIfNeeded: link) & Self.linkLowMask
   }
 
   public static let `default` = CellAttributes()
 
   @usableFromInline
   static let colorMask: UInt32 = 0x03FF_FFFF
+  @usableFromInline
+  static let linkLowBits: UInt32 = 14
+  @usableFromInline
+  static let linkLowMask: UInt16 = 0x3FFF
+  /// The largest hyperlink id a cell can carry.
+  public static let maxLink: UInt32 = (1 << 20) - 1
 
   public var foreground: TerminalColor {
     @inlinable
@@ -112,6 +125,17 @@ public struct CellAttributes: Hashable, Sendable, BitwiseCopyable {
     set {
       foregroundBits.rawValue =
         newValue.rawValue & Self.colorMask | foregroundBits.rawValue & ~Self
+        .colorMask
+    }
+  }
+
+  public var background: TerminalColor {
+    @inlinable
+    get { TerminalColor(rawValue: backgroundBits.rawValue & Self.colorMask) }
+    @inlinable
+    set {
+      backgroundBits.rawValue =
+        newValue.rawValue & Self.colorMask | backgroundBits.rawValue & ~Self
         .colorMask
     }
   }
@@ -127,23 +151,70 @@ public struct CellAttributes: Hashable, Sendable, BitwiseCopyable {
         foregroundBits.rawValue & Self.colorMask | UInt32(newValue & 0x3F) << 26
     }
   }
+
+  /// OSC 8 hyperlink id (`TerminalState.hyperlink(_:)`), 0 for none, at
+  /// most `maxLink`. Uses the cell's spare bits, so a cell stays 16 bytes.
+  public var link: UInt32 {
+    @inlinable
+    get {
+      UInt32(tail & Self.linkLowMask)
+        | (backgroundBits.rawValue >> 26) << Self.linkLowBits
+    }
+    @inlinable
+    set {
+      tail =
+        tail & ~Self.linkLowMask
+        | UInt16(truncatingIfNeeded: newValue) & Self.linkLowMask
+      backgroundBits.rawValue =
+        backgroundBits.rawValue & Self.colorMask
+        | (newValue >> Self.linkLowBits) << 26
+    }
+  }
 }
 
 /// One grid cell. 16 bytes, trivially copyable, never heap allocated.
 /// `glyph` must stay at offset 0: `TerminalState.storeASCII` relies on it.
+/// The width is the top two bits of the last byte: `TerminalState`'s cell
+/// templates rely on that too.
 public struct Cell: Hashable, Sendable, BitwiseCopyable {
   /// Unicode scalar value, `0` for an empty cell, or a grapheme id when
   /// `attributes.flags` contains `.grapheme`.
   public var glyph: UInt32
-  public var attributes: CellAttributes
-  /// Columns occupied: 1, 2 for a wide lead, 0 for a spacer.
-  public var width: UInt8
+  /// `attributes`, with `width` in the top two bits of its tail.
+  @usableFromInline
+  var packed: CellAttributes
 
   @inlinable
   public init(glyph: UInt32, attributes: CellAttributes, width: UInt8) {
     self.glyph = glyph
-    self.attributes = attributes
-    self.width = width
+    packed = attributes
+    packed.tail |= UInt16(width) << 14
+  }
+
+  public var attributes: CellAttributes {
+    @inlinable
+    get {
+      var attributes = packed
+      attributes.tail &= CellAttributes.linkLowMask
+      return attributes
+    }
+    @inlinable
+    set {
+      let width = packed.tail & ~CellAttributes.linkLowMask
+      packed = newValue
+      packed.tail |= width
+    }
+  }
+
+  /// Columns occupied: 1, 2 for a wide lead, 0 for a spacer.
+  public var width: UInt8 {
+    @inlinable
+    get { UInt8(truncatingIfNeeded: packed.tail >> 14) }
+    @inlinable
+    set {
+      packed.tail =
+        packed.tail & CellAttributes.linkLowMask | UInt16(newValue) << 14
+    }
   }
 
   public static let blank = Cell(glyph: 0, attributes: .default, width: 1)
@@ -156,21 +227,20 @@ public struct Cell: Hashable, Sendable, BitwiseCopyable {
 
   @inlinable
   public var isBlank: Bool {
-    glyph == 0 && width == 1 && attributes.foregroundBits.rawValue == 0
-      && attributes.background.rawValue == 0 && attributes.flags.rawValue == 0
-      && attributes.link == 0
+    glyph == 0 && packed.foregroundBits.rawValue == 0
+      && packed.backgroundBits.rawValue == 0 && packed.flags.rawValue == 0
+      && packed.tail == 1 << 14
   }
 
   @inlinable
-  public var flags: CellFlags { attributes.flags }
+  public var flags: CellFlags { packed.flags }
 
   @inlinable
-  public var isGrapheme: Bool { attributes.flags.contains(.grapheme) }
+  public var isGrapheme: Bool { packed.flags.contains(.grapheme) }
 
   @inlinable
   public var isSpacer: Bool {
-    attributes.flags.contains(.spacerTail)
-      || attributes.flags.contains(.spacerHead)
+    packed.flags.contains(.spacerTail) || packed.flags.contains(.spacerHead)
   }
 }
 

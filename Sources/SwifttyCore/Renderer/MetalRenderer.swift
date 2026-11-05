@@ -34,7 +34,7 @@ public struct RenderOptions: Equatable, Sendable {
   public var searchBackground: UInt32 = 0xFFE082
   public var selectedSearchBackground: UInt32 = 0xF2A65A
   /// OSC 8 link id to underline (the one under the pointer), 0 for none.
-  public var hoveredLink: UInt8 = 0
+  public var hoveredLink: UInt32 = 0
   /// Cells to underline, in snapshot rows (a detected URL under the pointer).
   public var underlinedSpan: HighlightSpan?
   /// IME composition text, drawn underlined from the cursor.

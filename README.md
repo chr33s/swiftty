@@ -14,17 +14,14 @@ mise install
 mise run build      # debug build; `mise run release` for release
 mise run test-native # full unit suite and real PTY sessions: sh, vim, less, tmux, top
 mise run app        # launch the macOS terminal
-mise run bench      # Release microbenchmarks
+mise run test-internal # the same, with storage and terminal invariant checks
+mise run bench      # Release microbenchmarks; bench-storage for storage scaling
 mise run lint
-mise run format
-mise run format-check
-mise run test-internal
-mise run bench-storage
-mise run compare <ghostty-src> <corpus-dir>
-mise run package-swiftmux [identity]   # Swiftty.app with the SwiftMux agent
-mise run install [--roaming]           # see SwiftMux below
-mise run uninstall [--purge] [-y]
+mise run format     # format-check also validates documentation comments
 ```
+
+Packaging and installation are under [SwiftMux](#swiftmux); the Ghostty
+comparison is under [Measured results](#measured-results).
 
 The native host runs tests serially because suites share AppKit state and use
 blocking dispatch handoffs. Each manifest test bundle must exist and report a
@@ -36,8 +33,16 @@ each bundle. Allocation budgets run only with optimized code;
 Use Xcode's Swift 6.4 toolchain, as CI does; `mise.toml` pins the other
 tools but not Swift, because swift.org toolchains bundle a Swift Testing runtime
 that conflicts with Xcode 27.2's and stops `Scripts/test-native.sh` from
-finding tests. Build the UIKit frontend
-with Xcode; the package's AppKit executable scheme is macOS-only:
+finding tests. CI and release builds use the GitHub-hosted `xcode-27` runner
+(Apple Silicon, macOS 27, Xcode 27 / Swift 6.4 or newer) and enforce
+`Package.resolved`; the shared setup action selects the newest installed Xcode,
+verifies the toolchain and installs ripgrep and tmux for native tests.
+Formatting follows the pinned Swift Collections configuration: two-space
+indentation, 80-column wrapping and unindented conditional-compilation bodies;
+generated Unicode tables retain their generator's layout.
+
+Build the UIKit frontend with Xcode; the package's AppKit executable scheme is
+macOS-only:
 
 ```sh
 xcodebuild -scheme SwifttyMobile -destination 'generic/platform=iOS Simulator' build
@@ -61,12 +66,16 @@ Recorded `sh`, `vim`, `less`, `tmux` and `top` sessions live in
 
 ## Native shell development
 
-`spec.shell.md` defines the native `swsh` shell. Its current implementation has
-batch execution, scalar state and builtins, external and builtin pipelines,
-ordered redirects, interactive editing/history, Darwin job control, and literal
-`exec`, plus functions, subshells, command substitution, native programmable
-completion, app shell profiles, and bundled packaging. The spec records verification
-scope and deliberate language limits.
+[spec.shell.md](spec.shell.md) defines the native `swsh` shell: batch
+execution, scalar state and builtins, external and builtin pipelines, ordered
+redirects, interactive editing/history, Darwin job control, literal `exec`,
+functions, subshells, command substitution, native programmable completion,
+app shell profiles, and bundled packaging. None of it aims at Bash
+compatibility. The spec's
+[acceptance matrix](spec.shell.md#failure-focused-verification-matrix) and
+[implementation record](spec.shell.md#10-implementation-record) hold test
+coverage, recorded run scope, benchmark provenance, deliberate language limits
+and remaining gaps.
 
 ```sh
 swift build --product swsh
@@ -75,11 +84,9 @@ swift test --filter SwshTests
 python3 Scripts/test-swsh.py "$(swift build --show-bin-path)/swsh"
 ```
 
-The failure-focused tests are included in `Scripts/test-swsh.py`. They verify
-nested child cleanup and descriptor inventories, source-worker payload validation,
-function/subshell interactions, and completion-provider contracts. The latest
-verification scope is recorded in `spec.shell.md`, including the distinction
-between shell-specific tests and repository-wide integration totals.
+`Scripts/test-swsh.py` includes the failure-focused tests: nested child cleanup
+and descriptor inventories, source-worker payload validation, function/subshell
+interactions, and completion-provider contracts.
 
 The batch CLI accepts `-c source`, one source-file path, or source on nonterminal
 stdin. Source must be UTF-8 without NUL. Single quotes preserve all bytes between
@@ -145,9 +152,6 @@ History uses a separate mode-0600 `~/.swsh_history` JSON-lines file, bounded to
 1 MiB and 1,000 entries; individual submissions over 64 KiB are not persisted.
 
 ### Functions and programmable completion
-
-Functions, subshells, command substitution, and native programmable completion are
-part of the current scope. They do not introduce Bash compatibility.
 
 - `name() { commands; }` defines or replaces a function, retaining its exact body
   source. Definitions are standalone, without redirects or `&`, and cannot replace
@@ -226,11 +230,7 @@ modes alone. OSC 7 and OSC 133 are passive display metadata emitted only through
 the controlling-terminal handle; `SWSH_TERMINAL_METADATA=0` disables them.
 
 Implementation and review checks cover Swift 6.4.1 and Apple Swift 6.4.2 with
-Xcode 27.2 and macOS SDK 27.2. CI selects the newest Xcode installed on the
-runner image, requires at least Xcode 27 / Swift 6.4 and enforces
-`Package.resolved`. See the [spec's acceptance matrix](spec.shell.md#failure-focused-verification-matrix)
-and [implementation record](spec.shell.md#10-implementation-record) for test
-coverage, recorded run scope, benchmark provenance, and remaining test gaps.
+Xcode 27.2 and macOS SDK 27.2.
 
 Isolated PTY fault probes cover later-stage spawn failure, shutdown immediately
 before group release, failed job-mode restoration before resume, and a simulated
@@ -254,7 +254,7 @@ The [2 November language-growth baseline](Benchmarks/Swsh/baseline-2026-11-02.js
 records 360 timing samples and allocation/RSS observations before the subsequent
 nested-cleanup and stop/resume hardening,
 including function calls, subshells, and command substitutions. Its hashes identify
-exactly what was measured; results are local observations, not regression thresholds.
+exactly what was measured.
 
 The [historical pre-review baseline](Benchmarks/Swsh/baseline-2026-11-01.json) contains raw samples,
 source/binary hashes, dependency revisions, and exact compiler/SDK/host metadata.
@@ -279,7 +279,6 @@ constructor and after its destructor, and RSS is
 per process rather than the concurrent process-tree total. The measurements are
 local observations, not regression thresholds or proof of an ownership-feature
 speedup.
-
 
 ## Embedding
 
@@ -398,10 +397,10 @@ validated pane frames.
 swift build
 .build/debug/swmux agent install   # development LaunchAgent for this build
 .build/debug/swmux new -s work     # inside Swiftty
-Scripts/package-swiftmux.sh [identity]   # Swiftty.app with the bundled agent (SMAppService)
-Scripts/install.sh [--roaming]           # package, install to /Applications, register the agent (+ swifttyd)
-Scripts/install-ios.sh --team TEAM      # iOS/iPadOS app on iPhones and iPads connected by USB
-Scripts/uninstall.sh [--purge]           # remove the app, agent and swifttyd
+mise run package-swiftmux [identity]     # Swiftty.app with the bundled agent (SMAppService)
+mise run install [--roaming]             # package, install to /Applications, register the agent (+ swifttyd)
+Scripts/install-ios.sh --team TEAM       # iOS/iPadOS app on iPhones and iPads connected by USB
+mise run uninstall [--purge] [-y]        # remove the app, agent and swifttyd
 ```
 
 `install.sh` signs with the first Developer ID Application identity (else
@@ -596,9 +595,8 @@ Appendix B of the spec records the design sources.
 | `RoamingApp` (`Apps/Shared`) | Shared app model and SwiftUI for the direct clients |
 | `swifttyd` (`Apps/swifttyd`) | No-PTY SSH helper: `bootstrap --stdio`, `status` |
 
-Host setup (spec.inbox.md §1): there is one PTY owner, the SwiftMux service.
-`swiftmux-agent` serves remote clients from the same process as the native
-app when a roaming configuration exists at
+Host setup (spec.inbox.md §1): `swiftmux-agent` serves remote clients from
+the same process as the native app when a roaming configuration exists at
 `~/Library/Application Support/SwiftMux/roaming/config.json` (or
 `--roaming-config PATH`, or `$SWIFTMUX_ROAMING_CONFIG`) with an explicit
 `bindAddress`, `advertisedHost` and UDP `port` (51222 by default), plus an
@@ -608,8 +606,7 @@ the same control socket independently of their working directories. A missing
 default configuration disables roaming. A missing explicitly selected file, or
 an unreadable or invalid configuration, exits with status 78 before the agent
 starts its service. `--no-roaming` ignores the file; the last roaming option wins.
-`--idle-exit
-SECONDS|never` sets the local idle exit, which roaming disables.
+`--idle-exit SECONDS|never` sets the local idle exit, which roaming disables.
 `Scripts/install.sh --roaming [--host H] [--bind A] [--port N]` writes this
 file (default `<LocalHostName>.local`, `0.0.0.0`, 51222) and installs the
 helper. Enable Remote Login yourself. The signed bootstrap helper lives at
@@ -666,8 +663,7 @@ Developer ID. `.github/workflows/release-mac.yml` runs on the GitHub-hosted
 `mac-v<version>-<build>` prerelease): `Scripts/package-swiftmux.sh` builds and
 signs it, then `Scripts/release-mac-github.sh` notarizes it (`Scripts/notarize.sh`,
 shared with the package and install scripts) and uploads a zip and SHA-256 to
-the release, or to an existing draft for the tag. The `xcode-27` image must
-provide Apple Silicon, macOS 27 and Xcode 27 / Swift 6.4 or newer. The workflow imports
+the release, or to an existing draft for the tag. The workflow imports
 the Developer ID certificate and private key into a temporary keychain from the
 base64 `MACOS_CERTIFICATE_P12` secret and its `MACOS_CERTIFICATE_PASSWORD` secret,
 then removes the keychain after the release, including on failure. It also needs
@@ -877,21 +873,12 @@ while later frames reuse other pool entries. Grapheme ids belong to the snapshot
 that produced the cell; passing a cell from another snapshot to
 `graphemeScalars(_:)` is invalid even when the numeric id happens to match.
 
-`SWIFTTY_INTERNAL_CHECKS` validates row ownership, ring bounds, blank extents,
-grapheme references, and wide-cell structure at completed parser batches and
-storage bounds after mutations. Checks and their scratch storage are absent
-from normal builds.
-`mise run test-internal` enables them. Storage benchmarks vary size and ring layout,
-exclude setup from timing, and report consumed results alongside nanoseconds per
-operation; run them in Release without internal checks.
-
-Swift formatting follows the pinned Swift Collections configuration: two-space
-indentation, 80-column wrapping, and unindented conditional-compilation bodies.
-`mise run format-check` also validates documentation comments. Generated Unicode
-tables retain their generator's layout. CI and release builds use the GitHub-hosted
-`xcode-27` runner with Apple Silicon, macOS 27 and Xcode 27 /
-Swift 6.4 or newer. The shared macOS setup action selects the newest installed
-Xcode, verifies the toolchain and installs ripgrep and tmux for native tests.
+`SWIFTTY_INTERNAL_CHECKS` (`mise run test-internal`) validates row ownership,
+ring bounds, blank extents, grapheme references, and wide-cell structure at
+completed parser batches and storage bounds after mutations. Checks and their
+scratch storage are absent from normal builds. Storage benchmarks vary size and
+ring layout, exclude setup from timing, and report consumed results alongside
+nanoseconds per operation; run them in Release without internal checks.
 
 ## JavaScript automation (macOS)
 
@@ -957,10 +944,18 @@ trailing commas. File discovery checks, in order:
 2. `$XDG_CONFIG_HOME/swiftty/config.jsonc`, or `~/.config/swiftty/config.jsonc`.
 3. `~/.swiftty.jsonc`, then `~/.config/swiftty/config.json`.
 
-Ghostty-style files and includes are no longer supported. Existing extensionless
-configuration files are ignored by discovery. With no JSONC file, defaults apply.
-**Edit Configuration File** creates a commented template on demand. Reload Configuration applies edits; Settings
-writes to the selected file, including an explicit `--config` path.
+Configuration files are complete JSONC documents: Ghostty-style files, includes,
+repeated keys and `key = value` lines are not supported, and the Ghostty themes
+directory is not searched. Existing extensionless or legacy files are ignored by
+discovery and left on disk; convert their settings to the JSONC model. With no
+JSONC file, defaults apply.
+
+Settings (Cmd-,) edits the selected file, including an explicit `--config`
+path, and lists configuration problems; it will not overwrite an invalid file.
+Edit Configuration File (Opt-Cmd-,) opens it, creating a commented template on
+demand; Shift-Cmd-, reloads it. iOS reads `Documents/config.jsonc`. Reduce
+Motion, Reduce Transparency and Increase Contrast adjust presentation without
+changing the file ([spec.apple.md](spec.apple.md)).
 
 ```jsonc
 {
@@ -1012,18 +1007,12 @@ variables. A selected profile applies to future workspaces, tabs, and splits;
 running sessions keep their launch settings. The app bundle includes and signs
 `swsh` alongside its other executables.
 
-
 The dependency-free `SwifttyConfig` library provides `ConfigDiscovery`,
 `ConfigLoader`, `JSONCSanitizer`, and mutable Codable models. `ConfigLoader.save`
 validates and atomically writes pretty-printed, sorted JSON. Saving JSONC from
 Settings or the library replaces comments with canonical JSON; symlinked
 configuration files keep their links. `schema.json` provides editor completion;
 the `$schema` URL resolves from the repository's main branch once published.
-
-Settings (Cmd-,) edits the selected JSONC file and lists configuration problems.
-Edit Configuration File (Opt-Cmd-,) opens it; Shift-Cmd-, reloads it. iOS reads
-`Documents/config.jsonc`. Reduce Motion, Reduce Transparency and Increase
-Contrast adjust presentation without changing the file ([spec.apple.md](spec.apple.md)).
 
 Themes use JSONC too. Place a file such as `Night.jsonc` in
 `~/.config/swiftty/themes` and set `"theme": "Night.jsonc"`. Built-in themes are
@@ -1032,8 +1021,7 @@ On macOS these use native system text, background, selection and ANSI colors,
 including the system selection accent. Other platforms use an Apple-colored
 light/dark palette. The terminal defaults to 95% opacity over native glass;
 Reduce Transparency makes it fully opaque.
-A theme can also be selected by an explicit path. The Ghostty themes directory
-is no longer searched.
+A theme can also be selected by an explicit path.
 
 ```jsonc
 {
@@ -1049,10 +1037,6 @@ is no longer searched.
 Theme files must be regular UTF-8 files of at most 64 KiB; configuration files
 are limited to 1 MiB. Invalid themes fall through to the next lookup directory
 or built-in theme. Explicit unavailable themes use the standard palette.
-Configuration files are complete documents: there are no includes, repeated
-assignment keys, or `key = value` parsing. Invalid files report diagnostics and
-Settings will not overwrite them. Existing legacy files are left on disk;
-convert their supported settings to the JSONC model before using them.
 
 Programmatic embedders can still set renderer/session properties directly,
 including font features, palette overrides, shader paths and command arguments.
@@ -1085,10 +1069,9 @@ inputs missing their final `# EOF` or `#EOF` marker.
 
 ## Measured results
 
-These are Release measurements on Apple Silicon. Parser throughput was measured
-on 2026-11-05; physical iPad frame time and the centered onscreen comparison on
-2026-10-10.
-Earlier probes are identified below.
+These are Release measurements on Apple Silicon; lower times are better.
+Physical iPad frame time and the centered onscreen comparison date from
+2026-10-10; earlier probes are identified below.
 
 ### Swiftty vs Ghostty
 
@@ -1097,13 +1080,11 @@ measured 2026-11-05: Ghostty `5dc28bb`, Zig 0.16.0 ReleaseFast, versus Swift
 6.4.2 Release. Each binary read the same ~100 MiB files in 64 KiB chunks at
 120×80. Times are median CPU time (user + sys) of each process, including
 startup and file reads; relative throughput by wall time, recorded alongside,
-is within 1% of these except on `kitty-long-escape-codes` (3.3%). Each input
-had two warmups and 20 rounds in a balanced (Williams) order, so every variant
-ran in each position and after each other variant equally often. Intervals are
-paired bootstrap 95% intervals.
-The 1-minute load average fell from 5.3 to 1.6 during the run, which followed a
-Ghostty build: `ascii`, `utf8`, `utf8-cjk` and `utf8-latin` were measured
-while it was above 3.2.
+is within 1% of these except on `kitty-long-escape-codes` (4.6%) and
+`ghostty-ascii` (1.1%). Each input had two warmups and 20 rounds in a balanced
+(Williams) order, so every variant ran in each position and after each other
+variant equally often. Intervals are paired bootstrap 95% intervals.
+The 1-minute load average stayed between 1.7 and 3.4.
 
 The inputs are ten Swiftty generators, four `ghostty-gen` generators and five
 of kitty's `kitten __benchmark__` payloads, built from kitty's source at
@@ -1117,51 +1098,54 @@ literally (5 rows). "Matched" gives Swiftty 350 rows (672,000 bytes) and is the
 like-for-like comparison. kitty's payloads use the alternate screen, so history
 does not apply to them.
 
-With matched history Swiftty was faster on all 19 inputs, from 4.7% on
+With matched history Swiftty was faster on all 19 inputs, from 3.0% on
 `cat-source` to 3.5× on `ghostty-osc`. The nominal limit gives the same
 count. On 4 November, before the UTF-8 decoder and cluster changes, mixed
 `utf8` and `kitty-unique-unicode` were about 1.2% slower and `utf8-latin`
 tied ([samples](Benchmarks/Ghostty/compare-2026-11-04.json)).
 
-Lower times are better. Relative throughput is `Ghostty time / Swiftty time`.
+Relative throughput is `Ghostty time / Swiftty time`.
 
 | Input                   |   Ghostty |   Swiftty | Relative (95% CI)     |   Matched | Relative (95% CI)     |
 | ----------------------- | --------: | --------: | --------------------- | --------: | --------------------- |
-| ascii                   |  100.3 ms |   88.7 ms | 113.1% (112.8–113.5%) |   90.7 ms | 110.7% (110.4–111.0%) |
-| cat-source              |  149.6 ms |  137.7 ms | 108.6% (108.1–108.9%) |  142.8 ms | 104.7% (104.5–105.0%) |
-| compiler-log            |  141.6 ms |  109.3 ms | 129.6% (129.2–130.0%) |  110.8 ms | 127.8% (127.4–128.3%) |
-| csi-heavy               |  482.7 ms |  228.3 ms | 211.5% (210.9–212.7%) |  227.3 ms | 212.4% (211.1–213.3%) |
-| osc-heavy               | 1215.3 ms |  454.2 ms | 267.6% (262.7–271.9%) |  481.4 ms | 252.5% (249.0–256.5%) |
-| scroll                  |  410.0 ms |  304.6 ms | 134.6% (133.7–135.3%) |  304.7 ms | 134.5% (134.2–135.5%) |
-| unicode-joins           |  637.5 ms |  340.7 ms | 187.1% (186.4–187.7%) |  354.5 ms | 179.8% (179.1–180.5%) |
-| utf8 (mixed scripts)    |  340.9 ms |  223.9 ms | 152.2% (151.9–152.7%) |  225.2 ms | 151.4% (150.9–151.8%) |
-| utf8-latin              |  132.4 ms |  123.7 ms | 107.1% (106.6–107.7%) |  124.2 ms | 106.6% (106.2–107.0%) |
-| utf8-cjk                |  104.2 ms |   94.1 ms | 110.7% (108.4–112.0%) |   95.2 ms | 109.5% (107.6–110.8%) |
-| ghostty-ascii           |   69.1 ms |   62.2 ms | 111.2% (110.7–111.6%) |   62.3 ms | 110.9% (110.4–111.6%) |
-| ghostty-osc             | 4279.5 ms | 1211.0 ms | 353.4% (350.5–354.8%) | 1218.0 ms | 351.4% (347.3–352.8%) |
-| ghostty-styled          |  422.7 ms |  184.3 ms | 229.3% (227.9–230.6%) |  185.3 ms | 228.1% (226.7–229.2%) |
-| ghostty-utf8            |  770.4 ms |  387.7 ms | 198.7% (198.0–199.8%) |  389.5 ms | 197.8% (196.9–198.9%) |
-| kitty-ascii             |  168.0 ms |  156.9 ms | 107.1% (106.7–107.3%) |  157.0 ms | 107.0% (106.7–107.4%) |
-| kitty-unicode           |   98.5 ms |   85.7 ms | 114.9% (114.2–115.6%) |   85.6 ms | 115.0% (114.3–115.4%) |
-| kitty-unique-unicode    |  586.1 ms |  284.6 ms | 205.9% (204.7–207.1%) |  284.3 ms | 206.1% (204.8–207.2%) |
-| kitty-csi               |  427.4 ms |  293.0 ms | 145.8% (145.2–147.0%) |  293.5 ms | 145.6% (145.2–146.8%) |
-| kitty-long-escape-codes |   14.0 ms |   12.6 ms | 111.1% (109.6–113.7%) |   12.6 ms | 111.1% (110.0–113.5%) |
+| ascii                   |   99.9 ms |   88.7 ms | 112.6% (112.3–113.2%) |   90.8 ms | 110.0% (109.7–110.5%) |
+| cat-source              |  149.5 ms |  139.7 ms | 107.0% (106.7–107.3%) |  145.1 ms | 103.0% (102.5–103.5%) |
+| compiler-log            |  142.7 ms |  110.4 ms | 129.2% (128.6–131.2%) |  111.6 ms | 127.8% (127.2–129.7%) |
+| csi-heavy               |  483.0 ms |  226.6 ms | 213.1% (211.6–214.6%) |  226.6 ms | 213.2% (212.0–214.4%) |
+| osc-heavy               | 1241.2 ms |  367.7 ms | 337.6% (329.8–343.0%) |  378.4 ms | 328.0% (320.2–335.2%) |
+| scroll                  |  414.8 ms |  305.8 ms | 135.6% (134.2–136.4%) |  306.9 ms | 135.2% (133.2–136.5%) |
+| unicode-joins           |  667.7 ms |  347.6 ms | 192.1% (189.1–196.0%) |  361.6 ms | 184.7% (181.8–188.3%) |
+| utf8 (mixed scripts)    |  340.4 ms |  223.2 ms | 152.5% (151.8–153.0%) |  224.2 ms | 151.8% (151.1–152.3%) |
+| utf8-latin              |  132.5 ms |  123.3 ms | 107.5% (107.1–108.2%) |  124.6 ms | 106.4% (105.9–107.0%) |
+| utf8-cjk                |  101.7 ms |   93.5 ms | 108.8% (108.1–109.5%) |   94.3 ms | 107.8% (107.5–108.4%) |
+| ghostty-ascii           |   69.3 ms |   61.6 ms | 112.5% (111.4–113.1%) |   62.1 ms | 111.6% (110.3–112.5%) |
+| ghostty-osc             | 4389.5 ms | 1238.2 ms | 354.5% (349.7–355.7%) | 1249.6 ms | 351.3% (346.4–353.4%) |
+| ghostty-styled          |  421.7 ms |  184.4 ms | 228.7% (228.1–229.3%) |  185.2 ms | 227.7% (227.0–228.4%) |
+| ghostty-utf8            |  766.4 ms |  385.8 ms | 198.7% (198.0–199.3%) |  388.4 ms | 197.3% (196.6–197.8%) |
+| kitty-ascii             |  167.7 ms |  156.2 ms | 107.4% (106.7–108.0%) |  156.1 ms | 107.4% (106.9–107.9%) |
+| kitty-unicode           |   97.4 ms |   85.2 ms | 114.4% (114.0–114.9%) |   85.0 ms | 114.6% (114.2–115.2%) |
+| kitty-unique-unicode    |  586.4 ms |  283.3 ms | 207.0% (206.0–208.4%) |  283.3 ms | 207.0% (205.9–208.4%) |
+| kitty-csi               |  426.0 ms |  273.7 ms | 155.7% (155.4–156.7%) |  273.1 ms | 156.0% (155.5–156.7%) |
+| kitty-long-escape-codes |   13.9 ms |   12.3 ms | 113.3% (111.4–114.6%) |   12.3 ms | 112.6% (110.5–114.4%) |
 
 Caveats:
 
 - Upstream `ghostty-bench` logs warnings to stderr while timed. A build with
-  `log_level = .err` was 22.5% faster on `ghostty-utf8`, 15.5% on `osc-heavy`,
-  8.0% on `kitty-long-escape-codes` and 0.9–5.9% on the rest. Against it,
-  nominal-limit Swiftty is at 162.3% on `ghostty-utf8` and 231.6% on
-  `osc-heavy`, and stays ahead on every input with either limit: by at least
-  2.9% (`kitty-long-escape-codes`) with the nominal limit and 0.7%
-  (`cat-source`) with matched history.
-- Final states are not compared. Swiftty ignores OSC 8 `id=`, drops URIs over
-  2,048 bytes and leaves links unlabelled once 255 slots are live, so part of
-  the OSC margin may be work Ghostty does and Swiftty skips.
+  `log_level = .err` was 23.1% faster on `ghostty-utf8`, 15.6% on `osc-heavy`,
+  8.5% on `kitty-long-escape-codes` and 0.7–4.9% on the rest. Against it,
+  nominal-limit Swiftty is at 161.4% on `ghostty-utf8` and 291.9% on
+  `osc-heavy`, and stays ahead on every input, by at least 3.1%
+  (`cat-source`). With matched history it is ahead on all but `cat-source`
+  (99.2%).
+- Final states are not compared. OSC 8 links follow Ghostty's rules: an `id=`
+  parameter and the URI identify a link, every other OSC 8 opens a link of
+  its own, and URIs are kept whole. Swiftty keeps them in one table for both
+  screens, stores each distinct URI once, and labels at most 1,048,575 live
+  links. Adopting these rules left `ghostty-osc` where it was (351.4% before)
+  and made `osc-heavy` faster (252.5% before).
 - `ghostty-gen +ascii` and `+osc` are unseeded and `cat-source` concatenates
   this repository's sources; compare input hashes across runs.
-- Median peak RSS: Swiftty 7.6–10.9 MiB, Ghostty 9.5–11.2 MiB.
+- Median peak RSS: Swiftty 7.7–10.4 MiB, Ghostty 9.5–11.2 MiB.
 
 Raw samples, input and binary hashes, load averages and toolchain versions are
 in [Benchmarks/Ghostty/compare-2026-11-05.json](Benchmarks/Ghostty/compare-2026-11-05.json).
@@ -1174,11 +1158,11 @@ zig build -Demit-bench -Doptimize=ReleaseFast -Demit-macos-app=false
 mise run compare <ghostty-src> <corpus-dir> --generate
 ```
 
-`--generate` writes ten `swiftty-bench gen` inputs, four `ghostty-gen` inputs
-(`+ascii`, `+osc`, `+styled --seed=42 --style-rate=0.3`, `+utf8 --seed=42`) and
-the kitty payloads, downloading kitty's benchmark source at the pinned commit
-(`--no-kitty` skips them). `--metric wall` switches the headline metric;
-`--ghostty-quiet <src>` adds the log-suppressed build.
+`--generate` writes the inputs (`ghostty-gen` runs `+ascii`, `+osc`,
+`+styled --seed=42 --style-rate=0.3` and `+utf8 --seed=42`) and downloads
+kitty's benchmark source at the pinned commit (`--no-kitty` skips it).
+`--metric wall` switches the headline metric; `--ghostty-quiet <src>` adds the
+log-suppressed build.
 
 ### Memory and rendering
 
@@ -1212,7 +1196,7 @@ Three serial alternating pairs posted synthetic keys to trigger alternating
 black/white backgrounds. The same independent ScreenCaptureKit observer detected
 these changes through a 32×32 crop at the display center, requesting 120 capture
 frames/s. Each run used 20 warmups and 100 measured responses; all 720 were
-observed. Ranges span runs; lower times are better.
+observed. Ranges span runs.
 
 | Terminal      |              p50 |              p95 |
 | ------------- | ---------------: | ---------------: |
@@ -1220,8 +1204,8 @@ observed. Ranges span runs; lower times are better.
 | Ghostty 1.3.1 | 18.574–21.319 ms | 24.665–25.661 ms |
 
 Median paired p95 difference was −0.742 ms (Swiftty minus Ghostty). This
-measures synthetic key-to-captured-pixel delivery, including capture overhead.
-Physical-keyboard, glyph-typing and photon-level latency have not been measured.
+measures synthetic key-to-captured-pixel delivery, including capture overhead;
+physical-keyboard, glyph-typing and photon-level latency have not been measured.
 
 AppKit now uses two drawables. Matched foreground scrolling probes without
 Instruments used 900 updates at 60 Hz and 1,800 at 120 Hz per queue. Compared

@@ -110,16 +110,8 @@ public struct TerminalState: ~Copyable {
   private var inactiveKeyboardFlagStack: [UInt8] = []
   public var keyboardFlags: UInt8 { keyboardFlagStack.last ?? 0 }
 
-  /// OSC 8 targets by id (1...255); ids are reused round-robin.
-  var hyperlinks: [[UInt8]] = []
-  var hyperlinkHashes: [UInt64] = []
-  var hyperlinkIndex: [UInt64: UInt8] = Dictionary(minimumCapacity: 512)
-  var freeHyperlinkSlots: [Int] = []
-  /// Per slot: last absolute row its cells can occupy (.max: unknown).
-  var hyperlinkLastRow: [Int] = []
-  var hyperlinkScanCooldown = 0
-  /// First history row at which a fully occupied link table may free an id.
-  var hyperlinkReclaimAfter: Int?
+  /// OSC 8 links by id (1...`CellAttributes.maxLink`).
+  var hyperlinks = HyperlinkTable()
 
   /// Current selection, in absolute rows (see `Selection.swift`).
   public internal(set) var selection: Selection?
@@ -1205,6 +1197,7 @@ public struct TerminalState: ~Copyable {
     invalidateSelection()
     swap(&grid, &inactiveGrid)
     swap(&keyboardFlagStack, &inactiveKeyboardFlagStack)
+    pinPenLink()
     modes.insert(.alternateScreen)
     viewportOffset = 0
     damage.setFull()
@@ -1216,6 +1209,7 @@ public struct TerminalState: ~Copyable {
     invalidateSelection()
     swap(&grid, &inactiveGrid)
     swap(&keyboardFlagStack, &inactiveKeyboardFlagStack)
+    pinPenLink()
     modes.remove(.alternateScreen)
     damage.setFull()
   }
@@ -1287,13 +1281,7 @@ public struct TerminalState: ~Copyable {
     invalidateSelection()
     resetShellState()
     if programStatus.reset() { programStatusChanged = true }
-    hyperlinks = []
-    hyperlinkHashes = []
-    hyperlinkIndex.removeAll(keepingCapacity: true)
-    freeHyperlinkSlots = []
-    hyperlinkLastRow = []
-    hyperlinkScanCooldown = 0
-    hyperlinkReclaimAfter = nil
+    hyperlinks = HyperlinkTable()
     keyboardFlagStack = []
     inactiveKeyboardFlagStack = []
     if isAlternateScreen { leaveAlternateScreen() }

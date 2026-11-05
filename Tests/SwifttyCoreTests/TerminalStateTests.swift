@@ -519,8 +519,32 @@ struct GridInvariantTests {
     #expect(MemoryLayout<Cell>.stride == 16)
     #expect(MemoryLayout<Cell>.alignment == 4)
     #expect(MemoryLayout<Cell>.offset(of: \Cell.glyph) == 0)
-    #expect(MemoryLayout<Cell>.offset(of: \Cell.attributes) == 4)
-    #expect(MemoryLayout<Cell>.offset(of: \Cell.width) == 15)
+    #expect(MemoryLayout<Cell>.offset(of: \Cell.packed) == 4)
+    #expect(MemoryLayout<Cell>.offset(of: \Cell.packed.tail) == 14)
+    // The width is the cell's top two bits; a link id fills the bits
+    // around the colors without disturbing them.
+    let attributes = CellAttributes(
+      foreground: .palette(3),
+      background: .rgb(1, 2, 3),
+      flags: .bold,
+      link: CellAttributes.maxLink
+    )
+    var cell = Cell(glyph: 65, attributes: attributes, width: 2)
+    #expect(withUnsafeBytes(of: cell) { $0[15] >> 6 } == 2)
+    #expect(cell.width == 2)
+    #expect(cell.attributes == attributes)
+    #expect(cell.attributes.link == CellAttributes.maxLink)
+    #expect(cell.attributes.background == .rgb(1, 2, 3))
+    #expect(cell.attributes.foreground == .palette(3))
+    cell.width = 1
+    cell.attributes.link = 0x4001
+    #expect(cell.width == 1)
+    #expect(cell.attributes.link == 0x4001)
+    #expect(cell.attributes.background == .rgb(1, 2, 3))
+    cell.attributes = .default
+    #expect(cell.width == 1)
+    #expect(Cell(glyph: 0, attributes: .default, width: 1).isBlank)
+    #expect(!Cell(glyph: 0, attributes: CellAttributes(link: 1 << 14), width: 1).isBlank)
   }
 
   @Test(arguments: [

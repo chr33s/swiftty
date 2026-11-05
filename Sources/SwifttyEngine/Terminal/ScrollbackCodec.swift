@@ -12,11 +12,10 @@ enum ScrollbackCodec {
     typealias Layout = MemoryLayout<Cell>
     let fields: [(Int?, Int)] = [
       (Layout.offset(of: \Cell.glyph), 4),
-      (Layout.offset(of: \Cell.attributes.foregroundBits), 4),
-      (Layout.offset(of: \Cell.attributes.background), 4),
-      (Layout.offset(of: \Cell.attributes.flags), 2),
-      (Layout.offset(of: \Cell.attributes.link), 1),
-      (Layout.offset(of: \Cell.width), 1),
+      (Layout.offset(of: \Cell.packed.foregroundBits), 4),
+      (Layout.offset(of: \Cell.packed.backgroundBits), 4),
+      (Layout.offset(of: \Cell.packed.flags), 2),
+      (Layout.offset(of: \Cell.packed.tail), 2),
     ]
     var covered = [Bool](repeating: false, count: Layout.stride)
     for (offset, size) in fields {

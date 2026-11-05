@@ -2058,8 +2058,8 @@
             <h3>Faster than Ghostty on all 19.</h3>
             <p>
               Parser and terminal-state throughput beat Ghostty on all 19 inputs, kitty's benchmark
-              included: 1.5× on mixed UTF-8, 2.1× on unique Unicode cells and up to
-              3.5× on OSC-heavy output. Allocation budgets run in Release.
+              included: 1.5× on mixed UTF-8, 2.1× on unique Unicode cells and up to 3.5× on
+              OSC-heavy output. Allocation budgets run in Release.
             </p>
             <a class="text-link" href="#performance"
               >See the benchmarks <svg class="icon" aria-hidden="true"><use href="#i-arrow" /></svg
@@ -2282,30 +2282,30 @@
                 <tbody>
                   <tr>
                     <td>ascii</td>
-                    <td class="num">100.3 ms</td>
-                    <td class="num">90.7 ms</td>
+                    <td class="num">99.9 ms</td>
+                    <td class="num">90.8 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 90.4%"></span
+                        ><span class="bench-bar" style="width: 90.9%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">110.7%</td>
+                    <td class="num bench-gain">110.0%</td>
                   </tr>
                   <tr>
                     <td>cat-source</td>
-                    <td class="num">149.6 ms</td>
-                    <td class="num">142.8 ms</td>
+                    <td class="num">149.5 ms</td>
+                    <td class="num">145.1 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 95.5%"></span
+                        ><span class="bench-bar" style="width: 97.1%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">104.7%</td>
+                    <td class="num bench-gain">103.0%</td>
                   </tr>
                   <tr>
                     <td>compiler-log</td>
-                    <td class="num">141.6 ms</td>
-                    <td class="num">110.8 ms</td>
+                    <td class="num">142.7 ms</td>
+                    <td class="num">111.6 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
                         ><span class="bench-bar" style="width: 78.2%"></span
@@ -2315,179 +2315,179 @@
                   </tr>
                   <tr>
                     <td>csi-heavy</td>
-                    <td class="num">482.7 ms</td>
-                    <td class="num">227.3 ms</td>
+                    <td class="num">483.0 ms</td>
+                    <td class="num">226.6 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 47.1%"></span
+                        ><span class="bench-bar" style="width: 46.9%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">212.4%</td>
+                    <td class="num bench-gain">213.2%</td>
                   </tr>
                   <tr>
                     <td>ghostty-ascii</td>
-                    <td class="num">69.1 ms</td>
-                    <td class="num">62.3 ms</td>
+                    <td class="num">69.3 ms</td>
+                    <td class="num">62.1 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 90.2%"></span
+                        ><span class="bench-bar" style="width: 89.6%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">110.9%</td>
+                    <td class="num bench-gain">111.6%</td>
                   </tr>
                   <tr>
                     <td>ghostty-osc</td>
-                    <td class="num">4,279.5 ms</td>
-                    <td class="num">1,218.0 ms</td>
+                    <td class="num">4,389.5 ms</td>
+                    <td class="num">1,249.6 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
                         ><span class="bench-bar" style="width: 28.5%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">351.4%</td>
+                    <td class="num bench-gain">351.3%</td>
                   </tr>
                   <tr>
                     <td>ghostty-styled</td>
-                    <td class="num">422.7 ms</td>
-                    <td class="num">185.3 ms</td>
+                    <td class="num">421.7 ms</td>
+                    <td class="num">185.2 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 43.8%"></span
+                        ><span class="bench-bar" style="width: 43.9%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">228.1%</td>
+                    <td class="num bench-gain">227.7%</td>
                   </tr>
                   <tr>
                     <td>ghostty-utf8</td>
-                    <td class="num">770.4 ms</td>
-                    <td class="num">389.5 ms</td>
+                    <td class="num">766.4 ms</td>
+                    <td class="num">388.4 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 50.6%"></span
+                        ><span class="bench-bar" style="width: 50.7%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">197.8%</td>
+                    <td class="num bench-gain">197.3%</td>
                   </tr>
                   <tr>
                     <td>osc-heavy</td>
-                    <td class="num">1,215.3 ms</td>
-                    <td class="num">481.4 ms</td>
+                    <td class="num">1,241.2 ms</td>
+                    <td class="num">378.4 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 39.6%"></span
+                        ><span class="bench-bar" style="width: 30.5%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">252.5%</td>
+                    <td class="num bench-gain">328.0%</td>
                   </tr>
                   <tr>
                     <td>scroll</td>
-                    <td class="num">410.0 ms</td>
-                    <td class="num">304.7 ms</td>
+                    <td class="num">414.8 ms</td>
+                    <td class="num">306.9 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 74.3%"></span
+                        ><span class="bench-bar" style="width: 74.0%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">134.5%</td>
+                    <td class="num bench-gain">135.2%</td>
                   </tr>
                   <tr>
                     <td>unicode-joins</td>
-                    <td class="num">637.5 ms</td>
-                    <td class="num">354.5 ms</td>
+                    <td class="num">667.7 ms</td>
+                    <td class="num">361.6 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 55.6%"></span
+                        ><span class="bench-bar" style="width: 54.2%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">179.8%</td>
+                    <td class="num bench-gain">184.7%</td>
                   </tr>
                   <tr>
                     <td>utf8</td>
-                    <td class="num">340.9 ms</td>
-                    <td class="num">225.2 ms</td>
+                    <td class="num">340.4 ms</td>
+                    <td class="num">224.2 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 66.1%"></span
+                        ><span class="bench-bar" style="width: 65.9%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">151.4%</td>
+                    <td class="num bench-gain">151.8%</td>
                   </tr>
                   <tr>
                     <td>utf8-latin</td>
-                    <td class="num">132.4 ms</td>
-                    <td class="num">124.2 ms</td>
+                    <td class="num">132.5 ms</td>
+                    <td class="num">124.6 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 93.8%"></span
+                        ><span class="bench-bar" style="width: 94.0%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">106.6%</td>
+                    <td class="num bench-gain">106.4%</td>
                   </tr>
                   <tr>
                     <td>utf8-cjk</td>
-                    <td class="num">104.2 ms</td>
-                    <td class="num">95.2 ms</td>
+                    <td class="num">101.7 ms</td>
+                    <td class="num">94.3 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 91.3%"></span
+                        ><span class="bench-bar" style="width: 92.7%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">109.5%</td>
+                    <td class="num bench-gain">107.8%</td>
                   </tr>
                   <tr>
                     <td>kitty-ascii</td>
-                    <td class="num">168.0 ms</td>
-                    <td class="num">157.0 ms</td>
+                    <td class="num">167.7 ms</td>
+                    <td class="num">156.1 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 93.4%"></span
+                        ><span class="bench-bar" style="width: 93.1%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">107.0%</td>
+                    <td class="num bench-gain">107.4%</td>
                   </tr>
                   <tr>
                     <td>kitty-unicode</td>
-                    <td class="num">98.5 ms</td>
-                    <td class="num">85.6 ms</td>
+                    <td class="num">97.4 ms</td>
+                    <td class="num">85.0 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 87.0%"></span
+                        ><span class="bench-bar" style="width: 87.3%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">115.0%</td>
+                    <td class="num bench-gain">114.6%</td>
                   </tr>
                   <tr>
                     <td>kitty-unique-unicode</td>
-                    <td class="num">586.1 ms</td>
-                    <td class="num">284.3 ms</td>
+                    <td class="num">586.4 ms</td>
+                    <td class="num">283.3 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 48.5%"></span
+                        ><span class="bench-bar" style="width: 48.3%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">206.1%</td>
+                    <td class="num bench-gain">207.0%</td>
                   </tr>
                   <tr>
                     <td>kitty-csi</td>
-                    <td class="num">427.4 ms</td>
-                    <td class="num">293.5 ms</td>
+                    <td class="num">426.0 ms</td>
+                    <td class="num">273.1 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 68.7%"></span
+                        ><span class="bench-bar" style="width: 64.1%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">145.6%</td>
+                    <td class="num bench-gain">156.0%</td>
                   </tr>
                   <tr>
                     <td>kitty-long-escape-codes</td>
-                    <td class="num">14.0 ms</td>
-                    <td class="num">12.6 ms</td>
+                    <td class="num">13.9 ms</td>
+                    <td class="num">12.3 ms</td>
                     <td class="bench-cell-bar">
                       <span class="bench-bar base"
-                        ><span class="bench-bar" style="width: 90.0%"></span
+                        ><span class="bench-bar" style="width: 88.8%"></span
                       ></span>
                     </td>
-                    <td class="num bench-gain">111.1%</td>
+                    <td class="num bench-gain">112.6%</td>
                   </tr>
                 </tbody>
               </table>
@@ -2507,7 +2507,7 @@
                 ><span class="config-pill"
                   ><svg class="icon" aria-hidden="true">
                     <use href="#i-check" /></svg
-                  >up to 351.4%</span
+                  >up to 351.3%</span
                 ><span class="config-pill"
                   ><svg class="icon" aria-hidden="true">
                     <use href="#i-check" /></svg
@@ -2517,9 +2517,9 @@
             </div>
           </div>
           <p class="trust-note">
-            The narrowest margin is on <code>cat-source</code> (104.7%). The key-to-pixel probe uses synthetic
-            keys and screen capture; physical-keyboard and photon-level latency have not been
-            measured.
+            The narrowest margin is on <code>cat-source</code> (103.0%). The key-to-pixel probe
+            uses synthetic keys and screen capture; physical-keyboard and photon-level latency
+            have not been measured.
             <a href="https://github.com/chr33s/swiftty#measured-results">All measurements →</a>
           </p>
         </div>
@@ -3416,7 +3416,7 @@ body{margin:0;background:var(--anatomy-page);color:var(--anatomy-text);font:14px
         const FIGS = {
           speed: (svg, say) => {
   const P = {"origin":[200,97.82624211453975],"scale":1.0914525044297592,"azimuth":62,"elevation":30}, X0 = -90, X1 = 70;
-  const RUNS = [["csi-heavy", 482.7, 227.3], ["ghostty-styled", 422.7, 185.3], ["osc-heavy", 1215.3, 481.4], ["scroll", 410.0, 304.7], ["compiler-log", 141.6, 110.8]];
+  const RUNS = [["csi-heavy", 483.0, 226.6], ["ghostty-styled", 421.7, 185.2], ["osc-heavy", 1241.2, 378.4], ["scroll", 414.8, 306.9], ["compiler-log", 142.7, 111.6]];
   const sleds = [0, 1].map((i) => svg.querySelector('[data-part="sled-' + i + '"]'));
   const lamps = [0, 1].map((i) => svg.querySelector('[data-part="lamp-' + i + '"] .iso-solid'));
   const TS = 1.5, GAP = 0.6, HOLD = 1.6, BACK = 0.9;

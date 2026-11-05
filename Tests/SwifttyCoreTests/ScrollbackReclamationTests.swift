@@ -105,7 +105,7 @@ struct ScrollbackReclamationTests {
         let x = random.next(upperBound: columns)
         let cell = Cell(
           glyph: UInt32(65 + step % 26),
-          attributes: CellAttributes(link: UInt8(step % 7)),
+          attributes: CellAttributes(link: UInt32(step % 7)),
           width: 1
         )
         grid[x, y] = cell
