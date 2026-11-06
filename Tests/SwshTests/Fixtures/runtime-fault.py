@@ -9,7 +9,7 @@ import sys
 import subprocess
 import time
 
-if len(sys.argv) == 3:
+if len(sys.argv) == 3 and sys.platform == "darwin":
     developer = subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-platform-path"], text=True).strip() + "/Developer"
     # SIP strips the runner's DYLD_* variables before /usr/bin/python3 starts,
     # so rebuild them from the swiftc on PATH, as Scripts/test-native.sh does.
@@ -27,6 +27,11 @@ if len(sys.argv) == 3:
     os.execve(sys.executable, [sys.executable, *sys.argv, "configured"], environment)
 
 pid, master = pty.fork()
+if pid == 0 and sys.platform != "darwin":
+    # The Linux test product is an executable, not a loadable bundle: run the
+    # one test that calls the probe, in this fresh process.
+    os.execve(sys.argv[1], [sys.argv[1], "--testing-library", "swift-testing", "--filter", "isolatedRuntimeFaultChild"],
+              os.environ | {"SWSH_RUNTIME_FAULT": sys.argv[2]})
 if pid == 0:
     library = ctypes.CDLL(sys.argv[1])
     probe = library.swsh_runtime_fault_probe

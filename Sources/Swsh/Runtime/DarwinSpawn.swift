@@ -1,4 +1,11 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+import CSwshSupport
+#elseif canImport(Musl)
+import Musl
+#endif
 
 /// A single launch owner invokes this synchronously and registers the returned PID
 /// before it can suspend or accept another request. No Swift executes after fork.
@@ -40,6 +47,7 @@ struct DarwinSpawn {
     arguments: [[UInt8]],
     environment: [[UInt8]]
   ) throws -> Never {
+    #if canImport(Darwin)
     _ = try perform(
       path: path,
       arguments: arguments,
@@ -48,6 +56,26 @@ struct DarwinSpawn {
       replacing: true
     )
     preconditionFailure("POSIX_SPAWN_SETEXEC unexpectedly returned success")
+    #else
+    guard !path.isEmpty, !path.contains(0), !arguments.isEmpty else {
+      throw SystemFailure("invalid executable or argv", code: EINVAL)
+    }
+    let argv = try CStringVector(arguments)
+    let envp = try CStringVector(environment)
+    let code = (path + [0])
+      .withUnsafeBytes { executable in
+        argv.withPointers { arguments in
+          envp.withPointers { environment in
+            swsh_replace(
+              executable.baseAddress!.assumingMemoryBound(to: CChar.self),
+              UnsafeMutablePointer(mutating: arguments),
+              UnsafeMutablePointer(mutating: environment)
+            )
+          }
+        }
+      }
+    throw SystemFailure("execve", code: code)
+    #endif
   }
 
   private func perform(
@@ -64,10 +92,54 @@ struct DarwinSpawn {
     }
     let argv = try CStringVector(arguments)
     let envp = try CStringVector(environment)
+    #if !canImport(Darwin)
+    if group != .inherited {
+      // glibc has no suspended start: the child waits for SIGCONT before execve.
+      var pairs: [Int32] = []
+      for action in wiring {
+        switch action {
+        case .duplicate(let source, let destination):
+          pairs += [source, destination]
+        case .close(let descriptor): pairs += [-1, descriptor]
+        }
+      }
+      let leader: pid_t
+      if case .suspendedMember(let existing) = group {
+        leader = existing
+      } else {
+        leader = 0
+      }
+      var pid: pid_t = 0
+      let result = (path + [0])
+        .withUnsafeBytes { executable in
+          argv.withPointers { arguments in
+            envp.withPointers { environment in
+              swsh_spawn_gated(
+                &pid,
+                executable.baseAddress!.assumingMemoryBound(to: CChar.self),
+                UnsafeMutablePointer(mutating: arguments),
+                UnsafeMutablePointer(mutating: environment),
+                leader,
+                pairs,
+                Int32(pairs.count / 2),
+                parentBuiltinSetup ? 1 : 0
+              )
+            }
+          }
+        }
+      try check(result, "posix_spawn")
+      return pid
+    }
+    #endif
+    #if canImport(Darwin)
     var attributes: posix_spawnattr_t?
+    var actions: posix_spawn_file_actions_t?
+    #else
+    var attributes = posix_spawnattr_t()
+    var actions = posix_spawn_file_actions_t()
+    #endif
     try check(posix_spawnattr_init(&attributes), "posix_spawnattr_init")
     defer { posix_spawnattr_destroy(&attributes) }
-    var actions: posix_spawn_file_actions_t?
     try check(
       posix_spawn_file_actions_init(&actions),
       "posix_spawn_file_actions_init"
@@ -109,11 +181,15 @@ struct DarwinSpawn {
       "spawn signal defaults"
     )
     var flags = Int16(POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF)
+    #if canImport(Darwin)
     if replacing { flags |= Int16(POSIX_SPAWN_SETEXEC) }
+    #endif
     switch group {
     case .inherited: break
     case .suspendedLeader, .suspendedMember:
+      #if canImport(Darwin)
       flags |= Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_START_SUSPENDED)
+      #endif
       let pgid: pid_t
       if case .suspendedMember(let leader) = group {
         pgid = leader

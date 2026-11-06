@@ -1,5 +1,11 @@
 import CSwshSupport
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 /// Used in the shell's serial ownership domain, never concurrently or on a cooperative executor.
 /// This is the sole owner of child status and signaling for the process lifetime.
@@ -10,6 +16,11 @@ final class JobSupervisor {
   var propagateChildStops = false
   private var foreground: JobID?
   private(set) var editInterrupted = false
+  /// Signals with a `trap`; they queue for the driver and never shut down.
+  var trapped: Set<Int32> = []
+  private var pendingSignals: [Int32] = []
+  /// SIGINT arrived outside line editing and without a trap.
+  private(set) var interruptRequested = false
   private var workerLeases = UniqueArray<WorkerLease?>()
   private var jobs: [JobID: JobRecord] = [:]
   private var nextID: UInt64 = 1
@@ -58,6 +69,7 @@ final class JobSupervisor {
       setupSuspended: jobControl,
       background: background
     )
+    jobs[id]!.pipefail = state.options.pipefail
     do {
       var owners = UniqueArray<OwnedFD?>()
       var pipes: [(read: Int32, write: Int32)] = []
@@ -283,6 +295,13 @@ final class JobSupervisor {
           _ = try terminal?.reclaim(stopped: false)
           foreground = nil
         }
+        // A foreground job owns the terminal, so Ctrl-C reaches it and not the
+        // shell. Its death by SIGINT is the interrupt an enclosing loop sees.
+        if !trapped.contains(SIGINT),
+          job.stages.contains(.finished(.signaled(SIGINT)))
+        {
+          interruptRequested = true
+        }
         jobs.removeValue(forKey: id)
         return job.disposition
       case .stopped:
@@ -316,6 +335,13 @@ final class JobSupervisor {
       watchInput: watchInput
     )
     for signal in ready.signals {
+      if trapped.contains(signal) {
+        if !pendingSignals.contains(signal) { pendingSignals.append(signal) }
+        // A trapped signal at the prompt cancels the edit so its trap can run.
+        if watchInput { editInterrupted = true }
+        continue
+      }
+      if signal == SIGINT && !watchInput { interruptRequested = true }
       if signal == SIGHUP || signal == SIGTERM
         || (propagateChildStops && signal == SIGINT)
       {
@@ -328,6 +354,13 @@ final class JobSupervisor {
   }
 
   func clearEditInterrupt() { editInterrupted = false }
+
+  func clearInterrupt() { interruptRequested = false }
+
+  func takePendingSignals() -> [Int32] {
+    defer { pendingSignals = [] }
+    return pendingSignals
+  }
 
   var hasLiveJobs: Bool {
     jobs.values.contains { $0.stages.contains { $0.pid != nil } }
@@ -581,7 +614,7 @@ extension JobSupervisor {
         if shutdownRequested != nil {
           throw SystemFailure("capture interrupted", code: EINTR)
         }
-        let count = Darwin.read(fd, &buffer, buffer.count)
+        let count = systemRead(fd, &buffer, buffer.count)
         if count > 0 {
           guard result.count + count <= 1024 * 1024 else {
             throw ShellDiagnostic(

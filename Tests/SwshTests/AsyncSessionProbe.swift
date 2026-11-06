@@ -1,10 +1,14 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Dispatch
 import Foundation
 import Synchronization
 @testable import Swsh
-
-private final class AsyncSessionProbeBundle: NSObject {}
 
 /// Invoked only by the isolated PTY fixture, never in the shared test runner.
 func runAsyncSessionProbe(_ mode: String) throws {
@@ -53,8 +57,7 @@ func runAsyncSessionProbe(_ mode: String) throws {
   guard tcgetattr(STDIN_FILENO, &original) == 0 else {
     throw SystemFailure("probe terminal modes")
   }
-  let binary = Bundle(for: AsyncSessionProbeBundle.self).bundleURL
-    .deletingLastPathComponent().appendingPathComponent("swsh")
+  let binary = probeShellURL()
   let executable = Array(binary.path.utf8)
   let build = try LauncherPayload.buildIdentity(executable: executable)
   let session = ShellSession()

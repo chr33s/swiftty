@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 /// Owns byte-preserving, NUL-terminated copies for one spawn or replacement call.
 struct CStringVector: ~Copyable {

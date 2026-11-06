@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 /// The only successful return from exec is a new process image with the same PID.
 /// Failed lookup/replacement is ordinary command status; the caller can continue.

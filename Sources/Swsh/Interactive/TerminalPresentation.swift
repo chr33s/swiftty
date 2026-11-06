@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 /// Passive terminal metadata always goes to /dev/tty, never redirected command data.
 struct TerminalPresentation {

@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 /// The execution driver alone may change the process cwd. The handle pins its identity.
 struct WorkingDirectory: ~Copyable {

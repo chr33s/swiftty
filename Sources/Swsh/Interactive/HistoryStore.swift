@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 
 /// A separate bounded JSON-lines store. Whole source submissions are history entries.
@@ -71,7 +77,7 @@ final class HistoryStore {
     var offset = 0
     while offset < bytes.count {
       let count = bytes.withUnsafeMutableBytes {
-        Darwin.read(fd, $0.baseAddress! + offset, $0.count - offset)
+        systemRead(fd, $0.baseAddress! + offset, $0.count - offset)
       }
       if count < 0 && errno == EINTR { continue }
       guard count > 0 else { break }

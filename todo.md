@@ -1,7 +1,7 @@
 # Outstanding work
 
 Reviewed against the working tree, regression tests and recorded review evidence
-on 2026-10-27. This is the consolidated backlog from `fixme.md`, `handover.md`
+on 2026-11-05. This is the consolidated backlog from `fixme.md`, `handover.md`
 and `todo.tests.md`; completed fixes and duplicate review narratives are omitted.
 Source candidates are not reproduced defects. Historical failures remain open
 until causal evidence establishes a fix; a passing rerun alone does not close them.
@@ -9,7 +9,13 @@ Evidence paths below identify original local artifacts, which may not be retaine
 on another machine. Test symbols are preferred to historical line numbers.
 Pass 527 confirmed that the referenced pass 474 OSC, pass 470 launcher and
 pass 334 QUIC logs are absent locally. Saved review summaries preserve those
-observations, but are not substitutes for fresh causal traces.
+observations, but are not substitutes for fresh causal traces. On 2026-11-05
+none of the `/tmp` or `/private/tmp` review logs, platform reports or
+`.xcresult` bundles cited below exist locally; the paths are kept as
+provenance only. The pass 520–530 evidence also predates the work merged since
+2026-10-27 (scrollback compression, host-side history scrolling, the mobile
+keyboard lift and custom keyboard, JavaScript automation, JSONC config and
+`swsh`) and does not cover it.
 
 ## Unresolved runtime failures
 
@@ -17,6 +23,9 @@ On 2026-10-27 every test below (and `TerminalParityTests`, which timed out
 once under a full parallel run) was repeated 25–40 times with
 `swift test --maximum-repetitions … --repeat-until fail` without a failure.
 That does not close any item; it only shows they do not recur on demand.
+`e7bad3d3` made the `TerminalParityTests` prompt cases wait for a title marker
+printed after the last loop iteration, since a slow runner could act mid-loop;
+that the race caused the earlier timeout is plausible but not established.
 
 - [ ] **OSC background reply:** investigate `ProfileTests.themeUpdatesReportedDefaultColours`
   in `Tests/SwiftMuxTests/ProfileTests.swift`. Pass 474 observed `reply=''` after
@@ -34,12 +43,6 @@ That does not close any item; it only shows they do not recur on demand.
   Report-write/validation fixes and bounded child-status/report-byte diagnostics
   in `PaneLauncher.swift` are implemented; the historical cause remains unknown.
   Capture those diagnostics on recurrence.
-- [ ] **Socket deadline:** investigate
-  `RuntimeSocketTests.continuingBodyProgressDoesNotExtendTheDeadline` in
-  `Tests/IntegrationTests/Transport/RuntimeSocketTests.swift`. Pass 309 observed a
-  failed one-byte peer send after the client's one-second timeout without errno.
-  Immediate errno diagnostics are now present; retain the original cadence,
-  timeout, payload and accepted-error contract while establishing the cause.
 - [ ] **Oversized XPC record:** investigate `ConnectionTests.channelRejectsOversizedRecords`
   in `Tests/SwiftMuxTests/ConnectionTests.swift` and channel/listener ownership in
   `Sources/SwiftMuxProtocol/SMXChannel.swift`. Pass 313 repeated pass 164: two
@@ -49,23 +52,29 @@ That does not close any item; it only shows they do not recur on demand.
   traces and normal/held-client-callback cases exist, and `finish` cancels the
   native connection. Capture sender timing, reconnection and event-handler
   lifetimes; asynchronous XPC cancellation alone does not explain the recurrence.
-- [ ] **QUIC cancellation and replacement:** resolve the historical group aborts
-  from passes 317, 334 and 341, and finish the snapshot admission/retirement review.
-  Current regression: `Tests/IntegrationTests/Transport/QUICSnapshotCancellationTests.swift`;
-  production: `Sources/AppleTransport/QUICRSTConnection.swift`. Pass 334's polling
-  cancellation failed replacement delivery with `.closed` after a 4,194,313-byte
-  native write: `sent=false`, reset metadata available, later successful send
-  completion, then server/client control errors POSIX 53/57. Missing reset
-  metadata is excluded for that occurrence. Preserve
-  `/private/tmp/swiftty-review-pass317-full.log` and
-  `/private/tmp/swiftty-review-pass334-full.log`. Adoption/polling cancellation
-  and combined/separate-FIN comparisons already exist. Current code finishes with
-  FIN and delays native retirement; investigate against that implementation, not
-  the obsolete `scheduleSnapshotReset` path. Healthy comparisons and subsequent
-  lifecycle changes have not established the historical cause. Retain full native
-  payloads, stream credit, replacement delivery, sibling-connection assertions,
-  flow-control settings and deadlines; callback-only fake writes cannot establish
-  native queued-data behavior.
+  Excluded on 2026-11-05 (macOS 27.2, standalone raw-XPC probe): a third send
+  delayed 50 ms past the listener-side cancellation does not reconnect an
+  endpoint-created connection or reach a second accepted channel, with client
+  callbacks held or not. Late-send reconnection therefore does not account for
+  the second channel on 27.2; it is untested on earlier releases.
+- [ ] **QUIC connection loss without cancellation:** on 2026-11-04 CI run
+  41798355339 (release, macOS 27.0.1 runner) failed
+  `QUICTransportTests.retiredSnapshotStreamIsReleased(cancel: false, bodyLength: 4194304)`
+  with `.closed` after 60 s, before diagnostics existed. No stream was
+  cancelled, so the 27.0.x reset abort below does not explain it.
+  `withConnectionDiagnostics` (`e7bad3d3`) now records both ends' termination
+  and lifecycle; capture that on recurrence. Retain full native payloads,
+  stream credit, flow-control settings and deadlines. Production:
+  `Sources/AppleTransport/QUICRSTConnection.swift`.
+  Closed as an OS defect on 2026-11-05: the historical group aborts of passes
+  317, 334 and 341 (cancellation, then `.closed` with control errors POSIX
+  53/57). CI run 41803777888 captured the same signature on macOS 27.0.1 in
+  `a reset partial stream is never delivered`, and this Mac ran 27.0/27.0.1
+  from 2026-09-15 to 2026-10-31, covering those passes. The host runtime is
+  documented as 27.2+ in [the roaming spec](spec.roaming.md#4-macos-deployment-and-session-lifetime)
+  with no production mitigation; the test is enabled only on 27.2+, where 12
+  repetitions of all 41 `QUICTransportTests` passed on 2026-11-05. Reopen if
+  the 53/57 signature appears on 27.2 or later.
 - [ ] **Rejected QUIC stream:** investigate
   `QUICTransportTests.rejectedSnapshotStreamIsReleased`. A valid replacement failed
   with `.closed` after the client read 65,536 bytes and released the rejected
@@ -88,6 +97,9 @@ That does not close any item; it only shows they do not recur on demand.
 - [ ] Continue review of current source/app files; historical inventory hashes
   are not current coverage or proof of convergence. Geometry and physical-history
   reviews remain deferred under the recorded scope exclusions.
+- [ ] Finish the QUIC snapshot admission/retirement review against the current
+  FIN-and-delayed-retirement implementation in
+  `Sources/AppleTransport/QUICRSTConnection.swift`.
 ## Platform and release validation
 
 - [ ] Verify paired phone/watch continuity, signing and actual Handoff, plus
@@ -111,6 +123,9 @@ That does not close any item; it only shows they do not recur on demand.
   healthy comparisons do not close the historical transport failures. All four
   real OpenSSH Release tests passed separately in pass 520. Preserve exact
   toolchain/platform evidence and distinguish disabled checks from executed tests;
+  GitHub `Swift checks` passed on `ceb4c95c` and `Release Swiftty.app` built on
+  2026-11-05, but the `xcode-27` runner (macOS 27.0.1) skips the OS-gated reset
+  test above, so CI does not execute it;
   the five SessionRecorder fixture generators are not tests to blindly enable.
   Unsigned Release builds for iOS, Catalyst, visionOS, tvOS and watchOS passed
   and were audited in pass 521: OS 27.0 product minimums, unchanged source hashes,

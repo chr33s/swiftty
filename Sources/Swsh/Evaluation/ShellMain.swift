@@ -1,8 +1,25 @@
 import CSwshSupport
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 /// One executable owns one session. Private workers bypass session initialization.
 public enum ShellMain {
+  #if !canImport(Darwin)
+  /// Runs the shell and exits with its status. corelibs Dispatch parks an
+  /// async `main` in a thread that unblocks every signal, which would discard
+  /// an inherited signal mask. Here the main thread keeps its mask and only
+  /// waits, while the session runs on its own executor.
+  public static func runAndExit(arguments: [[UInt8]]) -> Never {
+    Task.detached { exit(await run(arguments: arguments)) }
+    while true { pause() }
+  }
+  #endif
+
   public static func run(arguments: [[UInt8]]) async -> Int32 {
     do {
       guard let path = swsh_executable_path() else {
@@ -86,6 +103,7 @@ public enum ShellMain {
       try driver.supervisor.poll(milliseconds: 0)
       if let status = driver.supervisor.shutdownRequested { return status }
       driver.supervisor.discardCompleted()
+      if case .exit(let status) = try driver.runPendingTraps() { return status }
       if source.isEmpty { try presentation.prompt() }
       let editor = LineEditor(
         terminal: terminal,
@@ -138,7 +156,7 @@ public enum ShellMain {
         case .completed: break
         case .stopped: completed = false
         }
-      } catch {
+      } catch is LoopInterrupt { driver.state.status = 128 + SIGINT } catch {
         diagnostic(error)
         driver.state.status = error is ShellDiagnostic ? 2 : 1
       }
@@ -170,11 +188,11 @@ public enum ShellMain {
       // indefinite read responsive. This driver is the sole source reader;
       // wait for readiness in bounded intervals before entering read.
       var input = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
-      let ready = Darwin.poll(&input, 1, 50)
+      let ready = systemPoll(&input, 1, 50)
       if ready < 0 && errno == EINTR { continue }
       guard ready >= 0 else { throw SystemFailure("wait for source input") }
       if ready == 0 { continue }
-      let count = Darwin.read(descriptor, &buffer, buffer.count)
+      let count = systemRead(descriptor, &buffer, buffer.count)
       if count < 0 && errno == EINTR { continue }
       guard count >= 0 else { throw SystemFailure("read source") }
       if count == 0 { return result }

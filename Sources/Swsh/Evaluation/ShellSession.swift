@@ -1,11 +1,21 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Dispatch
 
 /// One serial executor owns all process-global shell state and the sole evaluator.
 /// Blocking command/terminal waits occupy this dedicated queue, not the cooperative
 /// executor. Async cleanup retains the same isolation across every suspension.
 actor ShellSession {
+  #if canImport(Darwin)
   nonisolated private let queue = DispatchSerialQueue(label: "swsh.session")
+  #else
+  nonisolated private let queue = SessionExecutor()
+  #endif
   nonisolated var unownedExecutor: UnownedSerialExecutor {
     queue.asUnownedSerialExecutor()
   }
@@ -79,32 +89,36 @@ actor ShellSession {
       }
       do {
         let driver = try SessionDriver(supervisor: supervisor)
+        defer { status = driver.runExitTrap(status) }
+        driver.state.variables["0"] = Array("swsh".utf8)
+        driver.state.setArguments([])
         if let terminal {
           status = try ShellMain.interact(driver: driver, terminal: terminal)
         } else {
+          let usage = ShellDiagnostic(
+            offset: 0,
+            message:
+              "usage: swsh [-i] | -c source [name [argument...]] | file [argument...]"
+          )
           let source: [UInt8]
           if options.first == Array("-c".utf8) {
-            guard options.count == 2 else {
-              throw ShellDiagnostic(
-                offset: 0,
-                message: "usage: swsh [-i] | -c source | file"
-              )
-            }
+            guard options.count >= 2 else { throw usage }
             source = options[1]
-          } else if options.count == 1 {
-            let file = try OwnedFD.open(options[0], flags: O_RDONLY)
+            // As in sh, the word after the source names the script as `$0`.
+            if options.count > 2 { driver.state.variables["0"] = options[2] }
+            driver.state.setArguments(Array(options.dropFirst(3)))
+          } else if let path = options.first {
+            guard path.first != 45 else { throw usage }
+            let file = try OwnedFD.open(path, flags: O_RDONLY)
             source = try file.withDescriptor {
               try ShellMain.readSource($0, supervisor: supervisor)
             }
-          } else if options.isEmpty {
+            driver.state.variables["0"] = path
+            driver.state.setArguments(Array(options.dropFirst()))
+          } else {
             source = try ShellMain.readSource(
               STDIN_FILENO,
               supervisor: supervisor
-            )
-          } else {
-            throw ShellDiagnostic(
-              offset: 0,
-              message: "usage: swsh [-i] | -c source | file"
             )
           }
           switch try driver.submit(ShellMain.parse(source)) {
@@ -123,3 +137,18 @@ actor ShellSession {
     }
   }
 }
+
+#if !canImport(Darwin)
+/// corelibs Dispatch has no `DispatchSerialQueue`; this runs the session's
+/// jobs on one serial queue instead.
+final class SessionExecutor: SerialExecutor {
+  private let queue = DispatchQueue(label: "swsh.session")
+  func enqueue(_ job: consuming ExecutorJob) {
+    let job = UnownedJob(job)
+    queue.async { job.runSynchronously(on: self.asUnownedSerialExecutor()) }
+  }
+  func asUnownedSerialExecutor() -> UnownedSerialExecutor {
+    UnownedSerialExecutor(ordinary: self)
+  }
+}
+#endif

@@ -1,10 +1,10 @@
 # Swift Native Shell — Revised Architecture Spec
 
-**Updated:** 2 November 2026  
-**Status:** Implemented on macOS; acceptance coverage is in §9, with recorded verification and scope limits in §10.
+**Updated:** 6 November 2026  
+**Status:** Implemented on macOS and Linux; acceptance coverage is in §9, with recorded verification and scope limits in §10. §11 specifies confined execution for Swiftty (`SwifttyExec` execution contexts with `swsh` as the runner; proposed architecture, not an implemented security guarantee, with working-tree status in §11.6).  
 **Baseline:** Swift 6.4.1, Swift 6 language mode, current Xcode 27 SDK/toolchain pairing, macOS 27.  
 **References:** Brush for interpreter engineering; Swiftty for the native terminal application.  
-**Architecture review revision:** `78ee561d977bf4c1c25976126c07f8480370ec65`.
+**Architecture review revisions:** `78ee561d977bf4c1c25976126c07f8480370ec65` (shell baseline) and `ceb4c95ccb3940f112274a8064600e01a45c2b3d` (confined execution review).
 
 ## 1. Product and scope
 
@@ -18,13 +18,14 @@ Brush informs the separation of concerns, quoting discipline, descriptor plannin
 
 Swift.org lists Swift 6.4.1, dated 12 October 2026; the Swift 6.4 release announcement confirms the relevant ownership and cleanup additions. Swiftty declares tools 6.4, macOS 27, and experimental `Lifetimes`. Use this current baseline and pin the exact compiler, SDK, and dependency revisions in CI. There is no older Swift or macOS implementation path. [Swift releases][swift-install] · [Swift 6.4][swift64] · [Swiftty manifest][swiftty-package]
 
-The first runtime is Darwin. Organize Darwin-specific code clearly, but remove Linux parity from the initial acceptance gate. A future Linux backend requires its own launch and terminal proofs; the macOS design does not establish portability. This changes the previous sketch's early cross-platform commitment.
+The first runtime is Darwin. Organize Darwin-specific code clearly, but remove Linux parity from the initial acceptance gate. A future Linux backend requires its own launch and terminal proofs; the macOS design does not establish portability. This changes the previous sketch's early cross-platform commitment. The shell also builds, runs, and is tested on Linux (including interactive mode and job control), where `Package.swift` reduces itself to the shell targets (`Swsh`, `CSwshSupport`, `SwifttyExec`, `SwshAgent`, `SwshCLI`, `SwshTests`, and `SwifttyExecTests`) so `swift build` and `swift test` work unmodified; CI runs the `shell-linux` job and `Scripts/test-swsh-linux.sh` runs the same suite locally in Docker. Linux differs where Darwin facilities are missing (§11.6): signals arrive through a handler and a pipe read with `poll` instead of kqueue; a job-control launch forks and waits for `SIGCONT` before `execve` instead of starting suspended, so an `execve` failure is reported by the child with status 126 or 127; `exec` uses `execve`, installs a no-op handler for ignored signals and a recording handler for blocked ones before clearing the mask, and re-raises held signals under the restored mask if `execve` fails; the main thread only waits so an inherited signal mask is kept despite corelibs Dispatch; file names need not be valid UTF-8; and the editor display tests (which replay output through `SwifttyEngine`) are compiled out on Linux.
 
 ### Interpreter selection
 
 | Invocation | Contract |
 | --- | --- |
 | `swsh file` or `swsh -c '…'` | Interpret the documented `swsh` language. |
+| `swsh --agent` | Run the headless `swsh.run/1` runner loop for tools: no prompt, editor, history, completion, or startup files; preview typed pipelines and refuse `run` without a supplied execution context (§11.4). |
 | `bash script.sh`, `zsh script.zsh`, or interpreter `-c` arguments | Resolve and execute the actual interpreter; pass the resulting argv without translating its program. |
 | Executable script with a valid shebang | Use the OS interpreter-dispatch path. |
 | Executable file with an unrecognized format | Report a launch error; do not retry with another shell. |
@@ -40,8 +41,8 @@ The initial release is a small native language, not a growing list of implicit B
 ### Initial language contract
 
 - Source text is valid UTF-8, with byte offsets for diagnostics. Invalid source encoding and embedded NUL are rejected explicitly. Runtime arguments, environment values, filesystem names, and process output use byte-preserving representations; decoding for display is a separate operation. Reject NUL at argv/environment/path boundaries instead of silently truncating it.
-- Support simple commands; single and double quotes; documented escapes; scalar assignments; `$NAME`, `${NAME}`, and `$?`; command lists; `&&`, `||`, and external pipelines.
-- A scalar expansion contributes its bytes to one argument. It never undergoes implicit IFS splitting or becomes new syntax. An unset variable expands to an empty scalar; a word consisting only of that expansion is one empty argument. There is no implicit list expansion in version 1.
+- Support simple commands; single and double quotes; documented escapes; scalar assignments; `$NAME`, `${NAME}`, and `$?`; command lists; `&&`, `||`, and external pipelines. The growth contracts below add to this list.
+- A scalar expansion contributes its bytes to one argument. It never undergoes implicit IFS splitting or becomes new syntax. An unset variable expands to an empty scalar; a word consisting only of that expansion is one empty argument. There is no implicit list expansion; the explicit `${name[@]}` form is specified in the second growth contract.
 - Pathname expansion applies only to unquoted pattern syntax authored in the source. Initially support `*` and `?`; quoted characters and characters obtained from scalar values remain literal. A pattern with no matches is an expansion error. Sort matches by byte order, independent of locale. Bracket patterns, recursive globbing, brace expansion, and tilde rules can wait.
 - A redirection target must expand to exactly one path. Zero or multiple matches are errors before that command launches.
 - A standalone `NAME=value` updates shell state. `NAME=value external-command` supplies a temporary child-environment overlay. Prefix assignments to builtins are rejected initially, avoiding accidental special-builtin persistence rules.
@@ -63,7 +64,7 @@ Removing implicit splitting reduces expansion contexts and surprises. Quoting st
 
 Initial stateful builtins: `cd`, `pwd`, `export`, `unset`, and `exit`. Simple utility builtins such as `:`, `true`, `false`, and a documented `printf` subset may be included when they eliminate a demonstrated cost. Explicit executable paths always permit an external utility.
 
-External and supported builtin pipelines are implemented. Reject unsupported builtin stages before launching a pipeline. Functions, subshells, command substitution, and programmable completion follow the contract below. Arithmetic, heredocs, arrays, traps, and automatic-exit policies remain deferred.
+External and supported builtin pipelines are implemented. Reject unsupported builtin stages before launching a pipeline. Functions, subshells, command substitution, and programmable completion follow the first contract below; arithmetic, heredocs, lists, control flow, traps, and automatic-exit policies follow the second.
 
 ### Language growth contract
 
@@ -131,14 +132,193 @@ names() { /usr/bin/printf 'Alice\nBob\n'; }
 complete --function greet names
 ```
 
+### Second language growth contract
+
+Arithmetic, heredocs, lists, control flow, traps, and automatic-exit policies are
+part of the current scope. Like the first growth contract, they are native rules,
+not Bash compatibility, and every ambiguity is an error instead of a guess.
+
+- **Arithmetic.** `$(( expression ))` contributes one decimal scalar, also inside
+  double quotes and unquoted heredoc bodies. Values are checked signed 64-bit
+  integers: overflow, division or remainder by zero, a shift outside 0 through 63,
+  and a non-integer operand are expansion errors (status 2). Operators, by rising
+  precedence: `?:`, `||`, `&&`, `|`, `^`, `&`, `==` `!=`, `<` `<=` `>` `>=`,
+  `<<` `>>`, `+` `-`, `*` `/` `%`, then unary `-` `+` `!` `~` and parentheses.
+  Below them all, `,` runs both operands and yields the last, and assignment
+  binds next loosest and to the right. `&&`, `||`, and `?:` evaluate only the
+  selected operand. Literals are decimal or
+  `0x` hexadecimal; a leading zero is decimal, never octal. Operands are `name`,
+  `$name`, `${name}`, `name[index]`, `${#name[@]}`, and a nested `$(( ))`. An unset
+  or empty name is 0. `name = value`, the compound forms `+=` `-=` `*=` `/=` `%=`
+  `<<=` `>>=` `&=` `^=` `|=`, and prefix or postfix `++` and `--` assign a scalar
+  `name` or a list element `name[index]` and yield the new value, or the old one
+  for a postfix form. Only a bare name is assignable: `$name = 1` is an error, as
+  are assigning a list without an index and an index beyond the list's end. `--`
+  or `++` directly before a name is a decrement or increment; write `- -n` for
+  two negations. Assignments happen in the current shell, in source order, as
+  the command's words are expanded and before the command runs, so
+  `echo $n $((n += 1)) $n` prints the old value, then the new one twice; a
+  `${name[@]}` in the same command shows the list after all of them. In a
+  substitution, pipeline stage, or other worker they change only that worker. An
+  index in `name[index]=value` may assign too, as in `list[i++]=value`. Syntax is
+  checked when the command is parsed. Text after `$((` that begins with a name or
+  path and is not an expression remains a substituted subshell, as before; text
+  that begins like an expression keeps its arithmetic diagnostic.
+- **Heredocs.** `[n]<<word` and `[n]<<-word` supply the lines after the operator's
+  line, up to a line equal to `word`, as descriptor `n` (default 0). `<<-` removes
+  leading tabs from every body line and from the delimiter line. An unquoted
+  delimiter expands `$name`, `${...}`, `$?`, `$( )`, and `$(( ))` in the body, with
+  `\$`, `\\`, and backslash-newline as the only escapes; any quoting in the
+  delimiter makes the body literal. Several heredocs on one line read their bodies
+  in order. The body is one scalar: no splitting, no globbing, NUL rejected, at most
+  1 MiB. It is delivered as a private unlinked file, so a body larger than a pipe
+  buffer cannot block the launch. A heredoc body must end inside the function,
+  subshell, substitution, or control-flow command that contains its operator,
+  because a worker reparses exactly that source.
+- **Lists.** `name=(words)` assigns an indexed list, `name+=(words)` appends, and
+  `name[index]=value` replaces an element or appends at exactly the current count;
+  `name+=value` appends bytes to a scalar. Indices are arithmetic. These forms are
+  standalone assignments: they cannot prefix a command, and all updates in one
+  command apply together or not at all. `${name[@]}` contributes every element as
+  its own argument and must be an entire word, optionally double-quoted; an empty
+  list contributes no arguments. This is the only expansion that produces more or
+  fewer than one argument from a value. `${name[index]}` is one element and
+  `${#name[@]}` the count. A name is a scalar or a list: `$name` on a list, a list
+  form on a scalar, and an index outside the list are errors. Lists are not
+  exported and cannot be assigned to an exported name; `unset` removes them. A list
+  holds at most 65536 elements. Workers receive lists in their snapshot.
+- **Control flow.** `if list; then list; [elif list; then list;]... [else list;] fi`,
+  `while list; do list; done`, `until list; do list; done`, and
+  `for name in words; do list; done`. The words `if`, `then`, `elif`, `else`, `fi`,
+  `while`, `until`, `for`, `do`, and `done` are reserved only at command position.
+  `for` expands its words once, as arguments, before the first iteration.
+  `case word in [(]pattern[|pattern]...) list ;; ... esac` runs the list of the
+  first clause with a matching pattern; the final `;;` is optional and a clause
+  may be empty. A pattern matches the whole word: `*`, `?`, and bracket
+  expressions written in the pattern are wildcards, while quoted characters and
+  bytes from expansions are literal, as in pathname expansion. `{ list; }` groups a list. `case` and `esac`
+  are reserved like the other words. A standalone foreground compound runs in the
+  current shell, so assignments, `cd`, and function definitions persist. That
+  includes one whose redirects name only descriptors 0, 1, and 2: they are scoped
+  to the compound by the same supervised handoff as function redirects, so
+  `while read line; do ...; done < file` keeps its variables. In a pipeline, with
+  `&`, or with another redirected descriptor, the compound runs in a source worker
+  and cannot change the parent. A compound's status is that of the last command
+  run in its selected body, or 0 when no body ran. `break [n]` and `continue [n]`
+  act on the `n`th enclosing loop of the current function (default 1); a count
+  outside 1 through the number of enclosing loops, or use outside a loop, is an
+  error. `! pipeline` inverts a pipeline's status. Ctrl-C ends
+  a running loop: a batch shell exits with 130 and an interactive shell returns to
+  the prompt with status 130, including when the signal was delivered only to the
+  loop's foreground job. Control-flow lists count toward the 16-level nesting limit.
+- **Bracket patterns.** An unquoted `[...]` in a word matches one character from
+  the set, in pathname expansion and in `case` patterns: members, ranges such as
+  `a-z`, and `[!...]` for any character outside the set. A `]` directly after
+  `[` or `[!` is a member. The expression holds literal characters only, so a
+  quote, backslash, or `$` inside it is a parse error, as is `[^`, which
+  glob(3) and fnmatch(3) read differently. `[:class:]` members such as
+  `[[:digit:]]` work in `case` patterns and are an expansion error in pathname
+  expansion, where glob(3) does not honor them. A `[` with no `]` later in the
+  same word, and any other `]`, are literal, so `[ -f file ]` runs the `[`
+  program found on PATH. As with `*`, quote the brackets to pass them literally;
+  a pattern without a match is an error, and brackets in a value never match.
+- **Parameters.** `$$` is the process ID of the session's shell; workers report
+  that same shell, not themselves. `swsh file argument...` runs the file with
+  `$0` set to its path and the arguments as positional parameters;
+  `swsh -c source [name [argument...]]` takes `$0` from `name`. Otherwise `$0` is
+  `swsh` and there are no parameters. A function call replaces the positional
+  parameters, not `$0`, until it returns. `$@` and `${@}` contribute every
+  positional parameter as its own argument, under the whole-word rule of
+  `${name[@]}`; with none they contribute nothing, also under `set -u`. `$@` is
+  not limited to nine parameters, while `$1` through `$9`, also written `${1}`,
+  remain the only numbered names; one past the last argument is unset, so
+  `${2-word}` selects `word` and `set -u` rejects `$2`. `shift [n]` drops the
+  first `n` parameters (default 1) and renumbers the rest; a count that is not
+  0 through `$#` changes nothing and reports status 2. `local name[=value]...`,
+  valid only in a function and not in a subshell inside one, saves each name's value,
+  list, and export state and restores them when that function returns, however
+  it ends; functions it calls see the local value. A name without a value
+  starts unset. `shift` and `local` are rejected as pipeline stages. `${#name}` is a value's length in bytes.
+  `${name-word}` uses `word` when `name` is unset, `${name=word}` also assigns it,
+  `${name?word}` fails the expansion with `word` as its message (status 2), and
+  `${name+word}` uses `word` only when `name` is set. With a colon (`:-`, `:=`,
+  `:?`, `:+`) an empty value counts as unset. `word` extends to the closing brace:
+  spaces are literal, quotes, escapes, and expansions apply, and it is a value,
+  never a pattern. Only the selected `word` is expanded, so a substitution in an
+  unused default does not run. These forms answer for an unset name themselves, so
+  `set -u` does not apply to them; they are errors on a list, and a positional
+  parameter cannot be assigned. Pattern-removal operators remain unsupported.
+- **`read`.** `read [-r] name...` reads one line from standard input, without its
+  newline, one byte at a time so the remaining input stays available to later
+  commands. Backslashes are always literal, so `-r` is accepted and has no effect.
+  One name receives the line exactly, including surrounding blanks. With several
+  names, fields are separated by runs of spaces and tabs and the last name
+  receives the rest of the line without surrounding blanks; names without a field
+  become empty. Status 0 means a complete line; 1 means the input ended first,
+  with whatever preceded it still assigned; 2 means a usage error, a line above
+  1 MiB, or a NUL byte, with nothing assigned. `read` runs only in the current
+  shell, so it is rejected as a pipeline stage: put the loop or a group in the
+  pipeline instead. It polls for shutdown and Ctrl-C while waiting; an interrupt
+  yields status 130 and ends an enclosing loop.
+- **Policies.** `set -e`, `set -u`, and `set -o pipefail` (also `-o errexit` and
+  `-o nounset`) enable a policy, `+` disables it, and `set` alone prints all three.
+  `set` validates its whole request before changing anything and does not set
+  positional parameters. Under `-e` a command that finishes with a nonzero status
+  exits the shell with that status, except in an `if`/`elif`/`while`/`until`
+  condition (including functions called from one), in any operand of `&&`/`||`
+  but the last, after `!`, and for background jobs. Under `-u`, expanding an unset
+  name is an expansion error; a name set to an empty value is not. Under
+  `pipefail` a pipeline reports its last stage that failed, fixed when the job is
+  launched. Workers inherit the policies with the rest of their snapshot.
+- **Traps.** `trap source name...` registers `swsh` source for `EXIT` (or `0`),
+  `HUP`, `INT`, and `TERM`, with or without a `SIG` prefix; `trap - name...`
+  restores the default and `trap` alone lists registrations. Source is parsed when
+  registered; an empty source ignores the signal. A trapped signal no longer shuts
+  the shell down. Its trap runs at the next command boundary of the session
+  driver, after any foreground job finishes, outside the interrupted function and
+  loop, and `$?` is restored afterwards unless the trap calls `exit`. A trapped
+  signal at the interactive prompt cancels the line being edited so the trap can
+  run. The `EXIT` trap runs once when the shell exits normally, by `exit`, by
+  `set -e`, or after a diagnostic, with `$?` set to the exit status, and may
+  replace that status with `exit`. It does not run when an untrapped signal ends
+  the shell. Traps are driver state: source workers start with none and run their
+  own `EXIT` trap. `trap`, `set`, `read`, `break`, and `continue` are parent-shell
+  builtins and are rejected as pipeline stages.
+
+```sh
+set -eu -o pipefail
+trap '/usr/bin/printf "exit %s\n" $?' EXIT
+files=(*.swift)
+total=0
+for file in ${files[@]}; do
+  if /usr/bin/grep -q TODO $file; then total=$((total + 1)); fi
+done
+/bin/cat <<EOF
+${#files[@]} files, $total with notes
+EOF
+count() {
+  lines=0
+  while read line; do
+    case $line in
+      '' | '//'*) continue ;;
+      *) lines=$((lines + 1)) ;;
+    esac
+  done < ${1:?expected a file}
+}
+count ${files[0]}
+{ /usr/bin/printf '%s: ' ${files[0]}; /bin/echo $lines; } >&2
+```
+
 ## 3. Package shape
 
 Start with two Swift targets and add a C target only for concrete operations that need it.
 
 | Target or component | Responsibility |
 | --- | --- |
-| `Swsh` library | Concrete parser, syntax values, expansion, evaluator, builtin dispatch, logical state, Darwin process runtime, job supervision. Organize these into internal source directories. |
-| `swsh` executable | CLI arguments, interactive editor/history, startup policy, main session driver, private worker entry point. |
+| `Swsh` library | Concrete parser, syntax values, expansion, evaluator, builtin dispatch, logical state, Darwin/Linux process runtime, job supervision. Organize these into internal source directories. |
+| `SwifttyExec` library | Confined-execution wire codec, `swiftty.exec/1` requests, grants, and context admission (§11.3). No dependency beyond SHA-256 on Linux; cannot reach the shell runtime or the app. |
+| `SwshAgent` library | `swsh --agent` headless `swsh.run/1` request decoding, pure previews, and runner responses (§11.4). Depends on `SwifttyExec` only; holds no grants and no backend. |
+| `swsh` executable (`SwshCLI`) | CLI arguments, interactive editor/history, startup policy, main session driver, private worker entry point, and `--agent` dispatch. |
 | Optional `CSwshSupport` | Small C-only interfaces, macros, or truly async-signal-safe operations that cannot be expressed safely through existing imports. |
 | Existing native app | SwiftUI/AppKit presentation, Swiftty, shell profiles, packaging, and optional presentation adapters. |
 
@@ -340,7 +520,7 @@ Construct/start once per session, outside repeated SwiftUI view updates. One app
 
 Swiftty already processes OSC 7 directory data and OSC 133 prompt/command boundaries. Its event extraction exposes working-directory and command-finished values; opt-in OSC 7501 offers program status. Use those for passive presentation before designing another IPC transport. Emit terminal metadata only through an optional terminal presentation component, never into redirected command data. [OSC dispatch][swiftty-osc] · [Semantic prompts][swiftty-shell] · [Terminal events][swiftty-state]
 
-These values are display metadata: some are coalesced, and any terminal program can emit escape sequences. They are not a complete job log or an authoritative command/result API. Exact app-triggered execution requires request IDs, submission rules, bounded transport, and a deliberate control protocol; it remains a separate feature.
+These values are display metadata: some are coalesced, and any terminal program can emit escape sequences. They are not a complete job log or an authoritative command/result API. Exact app-triggered or agent-triggered execution requires request IDs, submission rules, bounded transport, and a deliberate control protocol; §11 specifies that confined execution context (`SwifttyExec`) and the headless runner (`swsh --agent`).
 
 `TerminalView` installs the session's event/update callbacks and currently forwards title/exit only. Add a small view-level terminal-event forwarding hook, or compose callbacks once after construction while preserving the installed handler. Do not overwrite it. Avoid calling the session's synchronous `snapshot()` from its own callback queue; use its documented safe state access and pass owned data to the main actor. [TerminalView][swiftty-view] · [TerminalSession][swiftty-session]
 
@@ -348,7 +528,7 @@ An app-local `@MainActor @Observable` model owns display state. Terminal bytes a
 
 ### Change boundary
 
-Ordinary commands, pipelines, job control, and exec are implemented inside `swsh`. The app needs shell selection, distribution/signing, and lifecycle integration. The recommended launch-configuration and event-forwarding refinements are small Swiftty/app integration changes; they are not a new terminal command executor. A jobs inspector or structured execution API is additional work outside `swsh` as well as inside it.
+Ordinary commands, pipelines, job control, and exec are implemented inside `swsh`. The app needs shell selection, distribution/signing, and lifecycle integration. The recommended launch-configuration and event-forwarding refinements are small Swiftty/app integration changes; they are not a new terminal command executor. A jobs inspector or structured execution API is additional work outside `swsh` as well as inside it (§11).
 
 ## 9. Implementation order and acceptance evidence
 
@@ -361,7 +541,10 @@ Ordinary commands, pipelines, job control, and exec are implemented inside `swsh
 | 4. Swiftty app integration | Exact launch profiles, correct view lifecycle, passive metadata | Real Bash/Zsh regressions plus `swsh`; ordinary execution also works in another terminal. |
 | 5. Additional process semantics | Worker-backed builtin stages; separately proven exec | No startup-payload deadlock; no recursive worker launch; PID continuity and failed-exec policy. |
 | 6. Language growth | Functions, subshells, command substitution, programmable completion | CompoundParserTests, LanguageGrowthTests, state/FD/signal isolation and bounded provider execution. |
-| Later language growth | Arithmetic, heredocs, arrays, traps, richer syntax | Each feature requires its own semantics; no feature-parity gate. |
+| 7. Second language growth | Arithmetic, heredocs, lists, control flow, `set` policies, traps | LanguageGrowthSyntaxTests and process/PTY LanguageGrowthTests: checked arithmetic, body delivery above a pipe buffer, all-or-nothing list updates, parent versus worker state, `set -e` exemptions, trap ordering, and loop interruption. |
+| 8. Parameters and input | `read`, `case`, `{ }`, `$@`, `$$`, `${name-word}` family, `break n`, parent redirects for compounds | ParameterSyntaxTests and process/PTY LanguageGrowthTests: lazy operand selection, literal values in patterns, state kept by redirected loops, unread input left for later commands, interruptible `read`. |
+| 9. Scripts | `swsh file args`, `$0`, `shift`, `local`, arithmetic assignment, bracket patterns | ScriptSyntaxTests and process LanguageGrowthTests: assignment order within a command, worker isolation, restore of scalars, lists, and export state on every function exit, literal brackets from values and quotes. |
+| Later language growth | Pattern-removal operators, positional `set`, `getopts` | Each feature requires its own semantics; no feature-parity gate. |
 
 The app prototype can begin in parallel using an existing shell. Shipping with `swsh` depends on its interactive-job gate, not on every future language construct.
 
@@ -446,9 +629,7 @@ Implemented on macOS, with language-growth validation recorded on 2 November
   Direct PTY shutdown and explicit mux pane termination allow five seconds for shell
   cleanup. Closing a mux frontend retains the existing detach behavior.
 
-The Swsh library depends only on `CSwshSupport`. SwifttyEngine is a test-only
-dependency for rendered editor assertions. No public plugin/embedding framework,
-second process backend, or structured command transport was introduced.
+The `Swsh` library depends only on `CSwshSupport` (and `Crypto` on Linux). `SwifttyEngine` is a test-only dependency on macOS for rendered editor assertions. `SwifttyExec` and `SwshAgent` add the effect-free context and runner protocol modules (§11.6) without importing the shell runtime or the app. No public plugin/embedding framework or second process backend was introduced in `Swsh`.
 
 ### Earlier recorded verification
 
@@ -564,6 +745,25 @@ The prior coverage gaps now have regression assertions:
 - Isolated `RuntimeFaultTests` low-FD cases cover pipe creation with one free slot,
   payload creation at exhaustion, and descriptor-channel duplication failure after
   socket creation; descriptor inventories must match before and after failure.
+- `LanguageGrowthSyntaxTests` covers the second growth contract without launching a
+  process: arithmetic values and failures, heredoc body expansion and resumption,
+  whole-word list expansion, all-or-nothing list updates, `set` validation,
+  `nounset`, and `pipefail` selection. Process/PTY `LanguageGrowthTests` cover the
+  same features end to end, including heredocs for externals, builtins, functions
+  and subshells, a 200 kB body, `set -e` exemptions, signal and `EXIT` traps, and
+  Ctrl-C ending batch and interactive loops.
+- `ParameterSyntaxTests` covers `case`, groups, `$@`, `$$`, and the parameter
+  operators without launching a process. Process/PTY `LanguageGrowthTests` cover
+  them end to end with `read`: field splitting, end-of-input status, NUL and usage
+  errors, input left unread for the next command, loops redirected from a file or
+  heredoc that keep their variables, counted `break`/`continue`, and `read`
+  interrupted by shutdown and by Ctrl-C at a terminal.
+- `ScriptSyntaxTests` covers arithmetic assignment and its rejection outside the
+  driver, bracket-expression parsing, and `shift` without launching a process.
+  Process `LanguageGrowthTests` cover script and `-c` arguments, `shift` in
+  functions and its errors, assignment ordering and worker isolation, `local`
+  across nested, recursive, early-returning, and piped functions, and bracket
+  patterns against real directories and `case` words.
 - `CompoundParserTests` and process/PTY `LanguageGrowthTests` cover the added syntax,
   state and cwd isolation, function parameters/return, recursion bounds, ordered
   function redirects, binary/NUL/oversized substitutions, single evaluation, compound
@@ -576,12 +776,286 @@ app and terminal tests; they are not shell-specific coverage counts. These check
 are regression evidence for the listed cases, not exhaustive scheduling or input proofs.
 
 Validation of the expanded implementation is recorded above. Bash-specific
-history formats/completion protocols, arithmetic, heredocs, arrays, traps, Linux parity,
-and arbitrary embedding/plugins remain outside this release scope.
+history formats/completion protocols and arbitrary embedding/plugins
+remain outside this release scope (Linux support and platform differences for
+`swsh` are recorded in §11.6). So do pattern-removal operators such as
+`${name%pattern}`, character classes in pathname expansion, positional `set`,
+`getopts`, `read` options other than `-r`, and traps for signals other than HUP,
+INT, and TERM.
+
+## 11. Confined execution: an execution context, with `swsh` as its runner
+
+**Status:** Proposed architecture; not an implemented security guarantee. §11.6 lists what exists in the working tree.  
+**Review date:** 6 November 2026 · **Source baseline:** [`ceb4c95ccb3940f112274a8064600e01a45c2b3d`](https://github.com/chr33s/swiftty/commit/ceb4c95ccb3940f112274a8064600e01a45c2b3d).
+
+Based on static inspection of the shell, launcher, multiplexer, and JavaScript integration sources at that commit, plus a headless Linux build of `swsh`. No isolation tests were run. Names, profiles, and messages below are proposals.
+
+### 11.1 Direction
+
+The design has one seam, the **execution context**: a confined place to run programs, with a fixed set of inputs, resources, and output channels. Two parts meet at it and share nothing else.
+
+- **The Swiftty execution service** creates, bounds, observes, and destroys contexts. It manages contexts, not commands: it never parses a pipeline, resolves an executable, or decides whether an argv looks safe.
+- **`swsh`** runs inside a context it was handed. It makes execution precise, predictable, and inspectable (§11.4). It holds no grant and cannot create, widen, or replace a context.
+
+The guarantee belongs to the context:
+
+> A workload can use only the data, resources, and output channels granted to its context, even if the model, repository, build script, or launched program behaves maliciously.
+
+It is narrower than "the agent does what the user intended". A permitted program can corrupt its disposable work tree, produce misleading output, or copy every admitted input into its permitted output.
+
+Why this shape:
+
+- **Policy is about resources, not commands.** A command name or syntax tree cannot predict what arbitrary code does. The context's mounts, network, and budgets can bound it. So the service needs no command planner and no per-command approval.
+- **Everything inside is untrusted, including `swsh`.** A bug in the shell cannot widen the context, so shell features need no security review of their own: substitutions, globs, functions, and `exec` all run confined.
+- **One mechanism for agents and people.** A confined pane is a terminal attached to a context. An agent task is a headless `swsh` in a context. Both use the same creation, limits, teardown, and export.
+- **No host fallback.** Every machine-access path offered to an agent identity leads into a context. An interface that cannot reach the service reports `service_unavailable`; it never runs the request on the host.
+
+Human interactive `swsh` on the host is unchanged and keeps its ambient authority.
+
+```mermaid
+flowchart TD
+    C["Clients: agent integrations, Swiftty UI, remote"] --> S["Execution service (host)"]
+    U["Trusted session controls"] --> S
+    S --> B["Backend: one Linux VM per context"]
+    subgraph X["Execution context (untrusted)"]
+      R["swsh: headless runner or interactive shell"] --> W["Workload processes"]
+      W --> D["Disposable workspace"]
+    end
+    B --> X
+    X --> O["Bounded output"]
+    D --> E["Validated artifact export"]
+    E --> H["Review, later authorized apply"]
+```
+
+### 11.2 The execution context contract
+
+#### What a context is
+
+| Part | Content | Fixed by |
+| --- | --- | --- |
+| Runtime | A pinned, read-only image containing `swsh` and the toolchain. | Grant |
+| Inputs | Immutable snapshots selected under trusted control. | Grant |
+| Workspace | A disposable writable copy, a fresh temporary directory, and an artificial home. | Service |
+| Environment | An allowlist: fixed PATH, locale, temporary directory, home. Nothing inherited from the host. | Service |
+| Network | None by default. | Grant |
+| Budgets | Wall time, memory, CPUs, scratch size, output bytes, export bytes and file count. | Grant, reducible by the client |
+| Channels | Standard streams or one PTY; one control channel for the runner; one export channel. | Service |
+| Lifetime | A lease held by the service. | Service |
+
+Nothing in a context is ambient. It never contains the live checkout, the host home, SSH or cloud credentials, authentication agents, the keychain, container or service control sockets, or the service's own configuration.
+
+#### Required properties
+
+1. **Bounded filesystem reach.** Only the image, the admitted snapshots, and the workspace are visible.
+2. **Bounded network reach.** The offline profile has no IPv4 or IPv6 egress, no DNS, no host or local services, no metadata endpoints, no inherited sockets, and no proxy. The management channel carries only the context protocol.
+3. **No ambient credentials.**
+4. **Transitive confinement.** Children, interpreters, plugins, and daemonized descendants stay inside.
+5. **Bounded resources and lifetime.** Host-side controls set VM memory, CPUs, attached storage, and the deadline. A limit the workload could change from inside is not advertised as enforced.
+6. **Controlled export.** Nothing inside chooses a host destination or becomes a host instruction (§11.3).
+7. **Fail closed.** A backend that cannot establish a required control returns `unsupported_enforcement`. There is no weaker fallback.
+8. **Teardown is the recovery model.** Cancellation, expiry, revocation, a lost lease, and a service crash all destroy the whole context. Nothing is reconciled or resumed, and no grant is restored because a VM could be.
+
+#### Trust
+
+Untrusted: model-generated requests and shell text; repository content, filenames, symlinks, scripts, dependencies, and caches; everything running in a context, including `swsh` and any guest agent; all output, terminal escape sequences, statuses, manifests, and exported files crossing back to the host.
+
+Trusted: the service, its authenticated session controls, the backend, the host operating system and hypervisor, and the export validator. Keep these small. The host establishes security-relevant facts (confined, expired, cleaned up) from its own backend state and never from a guest's statement.
+
+#### Limits of the claim
+
+The design does not prove programs correct, and does not stop admitted data from appearing in permitted output: stdout, logs, artifacts, and later model context are export channels even with networking off. It does not make a compromised host or hypervisor safe, and does not cover tools outside the service.
+
+### 11.3 The service
+
+A Swiftty component in its own process, separate from the unsandboxed app and from any shell, reached over an authenticated local connection. It links no shell module.
+
+#### Operations
+
+| Operation | Effect |
+| --- | --- |
+| `create` | Check the grant, reserve budget, and start a context from an image and snapshots. Returns a context ID. |
+| `attach` | Connect the caller to a context's channels: headless control and output, or a PTY. |
+| `status`, `cancel` | Report backend-established state; destroy the context. |
+| `export` | Stop the workload, transfer selected files through the validator, and return immutable artifact IDs. |
+
+There is no `execute` operation. What runs inside a context is a matter between the client and the runner (§11.4), carried as opaque bytes over `attach`.
+
+Results distinguish policy denial, unsupported enforcement, runtime failure, timeout, cancellation, output exhaustion, and `cleanup_incomplete`. State may be reported as unknown after lost observability; it is never reported as "nothing ran" without evidence.
+
+#### Grants
+
+A grant is trusted, service-owned state that binds: the authenticated caller and session, permitted images and snapshots, the backend and its required controls, network and export policy, a cumulative budget, and an expiry.
+
+- Repository files and clients can request or narrow authority. They cannot grant it. Fields such as `approved` or `backendVerified` are not accepted from a caller.
+- Standing session grants cover routine work, so there is no per-command prompt. A new decision is needed only to exceed the scope: another snapshot, a network fetch, applying an artifact to a live checkout. It creates a new context or a separately admitted operation; a running workload is never upgraded.
+- Budget is reserved atomically at `create` and stays charged until the context is known to be destroyed. A repeated request ID returns the first result. A new context ID does not escape session accounting.
+- Session and global caps bound active contexts, queued requests, and total VM allocation.
+
+Illustrative starting limits for a small-command profile; tuning values, not measurements:
+
+| Resource | Limit |
+| --- | --- |
+| Control frame | 1 MiB |
+| Wall time | 120 seconds per context, with a cumulative session budget |
+| VM allocation | 2 vCPUs, 2 GiB RAM |
+| Writable scratch | 1 GiB |
+| Captured stdout and stderr | 1 MiB combined |
+| Artifact export | A separately granted file-count and byte budget |
+
+Every limit has a defined overflow result. Output exhaustion ends the context with a structured result; the service does not keep allocating or wait on an unserviced pipe.
+
+#### Backends
+
+**First backend: one Linux VM per context on Apple silicon**, using Apple's Containerization stack. [E-container] [E-containerization] Pin the release, image digest, and launch configuration, and verify each advertised control with a test. Inspect defaults before inheriting them: Apple's container machine mode shares the host home read/write and forwards `SSH_AUTH_SOCK`, which this profile must not do. [E-machine]
+
+The lease is the VM's owning connection. When the service exits or the lease expires, the VM stops. That removes the need for a separate reconciling supervisor in the first release; whether the backend guarantees it is a decision to validate (§11.6).
+
+Linux cgroups organize accounting and teardown inside the guest but are one component, not the boundary. [E-cgroup]
+
+**Native macOS workloads** need a separate macOS VM backend. [E-macosvm] A sandboxed helper suits narrow fixed operations only: subprocesses inherit their parent's sandbox, XPC separates privilege but is not task policy, and the sandbox profile language is unsupported. [E-process] [E-xpc] [E-seatbelt]
+
+**Remote clients** such as iOS submit to an authenticated remote service ([spec.roaming.md §2](spec.roaming.md#2-minimum-scope-and-exclusions)). SSH authenticates and transports; it confines nothing.
+
+#### Ingress and export
+
+Snapshots are built under trusted control by explicit selection. `.gitignore`, repository instructions, and secret scanning are not access policy. Stage Git metadata deliberately instead of mounting live configuration or hooks. Filenames are data; account for case and Unicode differences between macOS and Linux.
+
+Export copies selected regular-file bytes into immutable host objects over a bounded protocol. A privileged host process never mounts a guest filesystem. Stop the workload first, then validate:
+
+- Resource-relative paths; no traversal and no absolute paths.
+- No symlinks, hard links, devices, sockets, or FIFOs initially.
+- Ownership, modes, ACLs, xattrs, and executable bits against an explicit list.
+- File count, path length, per-file and total size, and manifest complexity.
+- Case and normalization collisions on the destination.
+
+Review refers to exactly those bytes, with content hashes and provenance. Previews of HTML, SVG, Markdown, and other active formats are inert: no script, no remote fetch, no native bridge. Shared writable caches between contexts are not provided; use read-only content-addressed inputs or per-context caches.
+
+Applying artifacts to a live checkout, and fetching dependencies over the network, are later, separately granted operations (§11.6). Apply must bind approval to immutable artifacts and check base versions under a lock. Fetch is a fixed operation with an approved manifest and an isolated cache, not a general proxy, and it does not disclose credentials to the context.
+
+#### Output
+
+Output is bounded and carried as data. It is never parsed as control messages, approvals, or notifications ([spec.md](spec.md#osc-7501-program-status)). Terminal control sequences from a context are escaped or contained so they cannot draw approval state, open URLs, set the clipboard, or trigger UI actions. The configurable JavaScript filter ([spec.javascript.md §3.1](spec.javascript.md#31-stream-filters)) passes original data through on error, so it is a convenience and not a redaction boundary. Raw output, display transformations, and audit records are kept separate.
+
+### 11.4 `swsh` in the context
+
+`swsh` answers "exactly what will run, with which bytes and streams, and exactly what happened". The service answers "where it runs and what it can reach".
+
+| Responsibility | Meaning | Today | Work |
+| --- | --- | --- | --- |
+| Clear argument and expansion semantics | Values are bytes. A value never becomes syntax: no field splitting, no globbing of expanded bytes, a pattern without a match is an error. | In place (§2). | Keep these rules as syntax grows. |
+| Bounded parsing and useful errors | Every input has size and nesting bounds, is parsed completely before it has an effect, and fails with a located diagnostic. | Nesting, heredoc, and capture bounds; byte offsets in diagnostics; a strict bounded request decoder. | Stable machine-readable error codes for headless use. |
+| Explicit pipelines and stream routing | Stages, order, and the destination of each standard stream are stated, not inferred. | Explicit in the syntax tree. | Report routing per stage in results. |
+| Machine-readable results | Per-stage status, signal, termination reason, truncation, and whether anything started. | Batch mode returns one exit status. | A result record; separate failure to launch from a failing program. |
+| A headless interface for tools | No prompt, editor, history, completion, or startup files. Framed requests and results on a control channel, apart from workload output. | `swsh --agent` reads `swsh.run/1` frames, previews typed pipelines, and refuses to run (§11.6). | Execute requests; settle framing. |
+| Honest previews | A preview is pure. Known values are shown exactly; a value that needs execution, the filesystem, or mutable state is marked unresolved with the reason. | Typed pipelines only, where every value is literal. For shell source it is missing: preparation runs substitutions, arithmetic assignment, and `${name=word}`. | A planning pass over shell source that shares no code path with preparation. |
+| Integration with an established context | Environment, working directory, descriptors, and limits come from the context. | Missing. The shell inherits the ambient environment. | Take the context from the runner channel; refuse to execute without one. |
+
+`swsh` does not take on grants, approvals, backend selection, isolation, cross-request budgets, export, or audit.
+
+#### Headless rules
+
+- The mode is selected before any shell state exists. It builds no interactive session and reads no configuration or history.
+- Requests are either typed pipelines (literal argv, explicit streams) or shell source. Both run with ordinary shell semantics, because the whole shell is inside the context. There is no lowering step and no restricted dialect to maintain.
+- A preview has no effects anywhere and needs no context.
+- Without a context, `swsh` previews and refuses to execute. This prevents an accidental host run; it is not a security boundary. `swsh` cannot prove it is confined, and nothing relies on its word.
+- `swsh` never authors statements about policy. "Confined", "approved", and cleanup state come from the service.
+
+#### Linux
+
+The context is Linux, so `swsh` must run there. It does, including interactive mode and job control, so a confined pane can run `swsh` too (§11.6).
+
+### 11.5 Swiftty
+
+The app ([spec.md](spec.md#architecture-and-ownership)), the multiplexer service ([spec.multiplexer.md](spec.multiplexer.md)), and the JavaScript runtime ([spec.javascript.md](spec.javascript.md)) are clients of the execution service and gain no path around it.
+
+- A confined pane is a PTY attached to one context. Input goes to that context only.
+- An agent identity is never given pane writes into a host pane, the JavaScript bridge, or SSH as a way to reach the host. Today's JavaScript actions can write to panes and receive the service environment; both must be closed for agent identities.
+- Scope, backend, expiry, and cleanup state are drawn from service state in UI that terminal output cannot imitate.
+- Configuration and completion do not run on behalf of an agent outside a context.
+- The multiplexer's peer-signing policy ([spec.multiplexer.md §4](spec.multiplexer.md#4-owned-frames-and-local-messages)) can identify callers of the service. Code identity is not task authorization, and development same-user fallbacks must not become production assumptions. [R-peer]
+
+### 11.6 Delivery
+
+Two tracks that meet at the contract. Neither blocks the other until the join.
+
+#### Track A: `swsh`
+
+| Step | Work | Exit condition |
+| --- | --- | --- |
+| A1 | Result records and stable error codes for headless and batch runs. | A tool can tell launch failure, signal, timeout, and truncation apart without parsing text. |
+| A2 | Pure previews. | Previewing source with substitutions, globs, and assignments creates no marker, process, or file, and marks each unresolved value. |
+| A3 | Headless execution inside a supplied context, for typed pipelines and shell source. | Runs only with a context; refuses otherwise; output never appears on the control channel. |
+| A4 | Linux as a supported target: unit tests and CI on Linux, then job control and interactive mode. | The Linux build passes the same suites as macOS, apart from documented platform differences. |
+
+#### Track B: service
+
+| Step | Work | Exit condition |
+| --- | --- | --- |
+| B1 | Context contract, grants, budget reservation, and a backend that can start nothing. | Denied and unsupported requests have no effects, shown with host canaries. |
+| B2 | Service process, Linux VM backend, lease teardown, snapshots, export validator. | Adversarial programs stay inside the boundary; cancel and service-crash tests end with the context gone. This is the first basis for a confinement claim. |
+| B3 | Confined panes; close pane-write, JavaScript, and host-execution paths for agent identities; trusted scope and status UI. | The same policy applies from every client, and each refuses when the service is unavailable. |
+| B4 | Brokered dependency fetch; reviewed apply to a live checkout. | Neither can act as a general proxy or host execution. |
+| Later | Persistent contexts, a native macOS backend. | Each specifies its authority and lifecycle first and leaves the offline profile intact. |
+
+**Join:** after A3 and B2, the image's runner is `swsh`. A host command filter must not ship under a confinement label before B2.
+
+#### Acceptance tests
+
+Tests use externally observable canaries. Asserting that a decision said "deny" does not show that nothing ran.
+
+| Scenario | Required result |
+| --- | --- |
+| Denied or unsupported `create` | No VM, process, or file; `unsupported_enforcement` where a control is missing. |
+| Preview of source with substitutions and redirections | Unresolved values reported; nothing executed, created, or truncated. |
+| Oversized frame, argv, nesting, pipeline, or manifest | Bounded rejection without large allocation or partial effect. |
+| Metacharacters, newlines, non-UTF-8 bytes, misleading Unicode in operands | Exact bytes preserved; display cannot imitate trusted controls. |
+| Hostile PATH, loader, or startup variables on the host | Not present in the context. |
+| Reads of host home, credentials, agents, or service sockets | Host canaries unreachable; no such endpoint exists inside. |
+| Fork, daemonize, `setsid`, nested shells | Descendants stay confined and disappear with the context. |
+| Service crash, client disconnect, timeout, app restart, expired lease | The context is destroyed; no running orphan; budget still charged. |
+| IPv4, IPv6, DNS, localhost, metadata, inherited socket, proxy | All blocked in the offline profile. |
+| Guest status or output shaped like an approval or control message | Treated as data; no service state changes. |
+| Pane write, JavaScript callback, or escape sequence from an agent | Cannot reach a host shell or a trusted action. |
+| Symlink swap, hard link, special file, traversal, or name collision at export | Rejected by the validator. |
+| File changed in the guest during review | Review refers to the exported bytes. |
+| Repeated requests or new context IDs beyond the budget | Denied; the budget does not reset. |
+| Guest alters its own supervisor or limits | Advertised limits still hold, or the backend fails certification. |
+| Output contains an admitted source file | Reported as permitted export, not as impossible. |
+| Concurrent edits during a later apply | Conflict; no silent overwrite. |
+
+#### Working-tree status
+
+Uncommitted. Nothing here confines a workload, and nothing runs one through the headless interface.
+
+- **Linux (A4).** `swsh` builds, runs, and is tested on Linux (Swift 6.4.2, Ubuntu 26.04, arm64), including interactive mode and job control. On Linux `Package.swift` reduces itself to the shell targets, so `swift build` and `swift test` work unmodified. The Swift unit tests (81 + 10) and all 93 acceptance tests pass there; macOS is unchanged (83 + 10 and 93). CI has a `shell-linux` job, and `Scripts/test-swsh-linux.sh` runs the same thing locally in Docker. Platform differences:
+  - Signals arrive through a handler and a pipe read with `poll`, not kqueue, so a signal is observed shortly after it is sent, not at the moment of sending.
+  - Job-control launches fork and wait for `SIGCONT` before `execve`, in place of a suspended `posix_spawn`. An `execve` failure in such a launch is reported by the child with status 126 or 127.
+  - `exec` uses `execve`. Ignored signals get a no-op handler and blocked ones a recording handler before the mask is cleared, so a failed `exec` never exposes the shell to a default action; a held signal is raised again under the restored mask.
+  - The main thread only waits, so an inherited signal mask is kept; corelibs Dispatch would otherwise unblock every signal.
+  - A file name that is not valid UTF-8 is accepted, where APFS rejects it.
+  - The editor display tests replay output through Swiftty's terminal engine and are compiled out. Porting the engine (Apple's Compression framework, Mach memory accounting, Dispatch process and memory-pressure sources) is a separate project and not needed to run `swsh`. `EditorDisplay` has no platform-specific code, so the macOS run covers it.
+- **`Sources/SwifttyExec` (B1).** The service's side of the contract. `ContextRequest` decodes `swiftty.exec/1` requests: `create`, `attach`, `status`, `cancel`, and `export`. No operation names a command. `ContextService` admits `create` against grants (images, snapshots, limits, expiry), replays a repeated request ID, reserves session budget before asking the backend, and requires every control of every context. The only backend advertises no control, so every `create` ends `unsupported_enforcement`; the other operations answer `unknown_context`. No process hosts the service yet. The module also holds the shared wire codec: a strict bounded JSON reader, identifiers, byte values, canonical SHA-256 identity, and ASCII-only output.
+- **`Sources/SwshAgent` (A1 to A3, partly).** `swsh --agent` reads newline-delimited `swsh.run/1` requests: `run` or `preview` of either a typed pipeline (literal argv) or shell source. A preview of a typed pipeline returns each argument exactly, as text or base64, with nothing unresolved. A preview of shell source is refused as not implemented, and `run` is refused with `no_context`, because no context input exists. It holds no grant and makes no policy statement.
+- **Checks.** `Scripts/check-agent-purity.sh` runs in CI and forbids process, filesystem, environment, and network APIs in both modules. `Tests/SwifttyExecTests` has 10 tests over both request formats and admission ordering; `AgentProtocolTests` drives the binary with host canaries.
+
+Not started: the service process and its transport, any real backend, export, previews of shell source, result records for executed work, and the context input.
+
+#### Decisions to validate
+
+- The supported macOS baseline and the pinned Containerization release, image provenance, and update policy.
+- Whether closing the owning connection reliably stops a VM, or a separate lease supervisor is needed.
+- The service's process model and transport (launch agent or XPC service) and how clients authenticate.
+- How `swsh` receives its context inside the guest: a descriptor from the guest init, or a record on the control channel.
+- The framing of both protocols. The working tree uses newline-delimited JSON: `swiftty.exec/1` for the service and `swsh.run/1` between client and runner.
+- Whether native macOS execution is a first requirement.
+- How input selection and export interact with the model provider's data boundary.
+- The cost of a fresh context per task against later persistent contexts.
+
+Unsupported functionality stays unavailable until its enforcement is demonstrated.
 
 ## Primary sources
 
-Source status was checked on 1 November 2026. Swiftty links are pinned to the inspected commit. Subprocess monitoring links are pinned to `dbe21bd7dfd4ffef8c32588918542a8abfa1b54c`. Evolution proposals are living documents; the release pages and status headers establish the stated implementation versions. Apple archived manuals describe interfaces but do not substitute for selected-SDK/runtime tests.
+Source status was checked on 1 November 2026 (and 6 November 2026 for §11). Swiftty links are pinned to the inspected commits (`78ee561d977bf4c1c25976126c07f8480370ec65` for §§1–10 and `ceb4c95ccb3940f112274a8064600e01a45c2b3d` for §11). Subprocess monitoring links are pinned to `dbe21bd7dfd4ffef8c32588918542a8abfa1b54c`. Evolution proposals are living documents; the release pages and status headers establish the stated implementation versions. Apple archived manuals describe interfaces but do not substitute for selected-SDK/runtime tests.
 
 [brush]: https://github.com/reubeno/brush
 [swift-install]: https://www.swift.org/install/macos/
@@ -609,3 +1083,40 @@ Source status was checked on 1 November 2026. Swiftty links are pinned to the in
 [swiftty-osc]: https://github.com/chr33s/swiftty/blob/78ee561d977bf4c1c25976126c07f8480370ec65/Sources/SwifttyEngine/Terminal/TerminalState%2BOSC.swift
 [swiftty-shell]: https://github.com/chr33s/swiftty/blob/78ee561d977bf4c1c25976126c07f8480370ec65/Sources/SwifttyEngine/Terminal/TerminalState%2BShell.swift
 [swiftty-state]: https://github.com/chr33s/swiftty/blob/78ee561d977bf4c1c25976126c07f8480370ec65/Sources/SwifttyEngine/Terminal/TerminalState.swift
+[R-parser]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/Sources/Swsh/Syntax/Parser.swift
+[R-expansion]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/Sources/Swsh/Expansion/Expansion.swift
+[R-prepare]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/Sources/Swsh/Evaluation/CompoundEvaluation.swift
+[R-command]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/Sources/Swsh/Evaluation/PreparedCommand.swift
+[R-driver]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/Sources/Swsh/Evaluation/SessionDriver.swift
+[R-lookup]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/Sources/Swsh/Runtime/ExecutableLookup.swift
+[R-launcher]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/Sources/Swsh/Runtime/PrivateLauncher.swift
+[R-cwd]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/Sources/Swsh/Runtime/WorkingDirectory.swift
+[R-supervisor]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/Sources/Swsh/Runtime/JobSupervisor.swift
+[R-payload]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/Sources/Swsh/Runtime/LauncherPayload.swift
+[R-main]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/Sources/Swsh/Evaluation/ShellMain.swift
+[R-js]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/Sources/SwifttyJS/JavaScriptRuntime.swift
+[R-muxjs]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/Sources/SwiftMuxService/MuxService+JavaScript.swift
+[R-peer]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/Sources/SwiftMuxService/PeerSigningPolicy.swift
+[R-package]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/Package.swift
+[R-shellspec]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/spec.shell.md
+[R-readme]: https://github.com/chr33s/swiftty/blob/ceb4c95ccb3940f112274a8064600e01a45c2b3d/README.md
+[E-container]: https://opensource.apple.com/projects/container/
+[E-containerization]: https://developer.apple.com/videos/play/wwdc2025/346/
+[E-machine]: https://github.com/apple/container/blob/main/docs/container-machine.md
+[E-macosvm]: https://developer.apple.com/documentation/virtualization/virtualize-macos-on-a-mac
+[E-process]: https://developer.apple.com/documentation/foundation/process
+[E-xpc]: https://developer.apple.com/documentation/xpc
+[E-seatbelt]: https://developer.apple.com/forums/thread/661939
+[E-cgroup]: https://docs.kernel.org/admin-guide/cgroup-v2.html
+
+### Confined-execution sources (`ceb4c95ccb3940f112274a8064600e01a45c2b3d`)
+
+- [Parser][R-parser] and [expansion semantics][R-expansion].
+- [Effectful command preparation][R-prepare] and [prepared commands/environment][R-command].
+- [Session execution][R-driver], [executable lookup][R-lookup], and [redirection launcher][R-launcher].
+- [Working directory][R-cwd], [job supervision][R-supervisor], and [launcher payloads][R-payload].
+- [Shell startup][R-main], [JavaScript runtime][R-js], and [pane action integration][R-muxjs].
+- [Peer identity policy][R-peer], [package configuration][R-package], [shell specification][R-shellspec], and [project README][R-readme].
+- [Apple Container overview][E-container], [Apple: Meet Containerization][E-containerization], and [Apple container machine-mode documentation][E-machine] (inspected for its explicit host-sharing defaults).
+- [Apple: Virtualize macOS on a Mac][E-macosvm], [Apple Process documentation][E-process], [XPC documentation][E-xpc], and [Apple DTS guidance about sandbox profile support][E-seatbelt] (historical support-policy rationale, not a claim about every current virtualization capability).
+- [Linux kernel cgroup v2 documentation][E-cgroup].

@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import CSwshSupport
 
 /// Runs only at the private CLI entry point in a fresh process.
@@ -11,7 +17,7 @@ struct PrivateLauncher {
   ) -> Int32 {
     let payload: LauncherPayload
     do {
-      defer { Darwin.close(payloadDescriptor) }
+      defer { systemClose(payloadDescriptor) }
       payload = try LauncherPayload.read(
         descriptor: payloadDescriptor,
         build: build
@@ -23,9 +29,7 @@ struct PrivateLauncher {
       diagnostic(error)
       return 2
     }
-    defer {
-      if let lease = payload.supervisorDescriptor { Darwin.close(lease) }
-    }
+    defer { if let lease = payload.supervisorDescriptor { systemClose(lease) } }
     if let lease = payload.supervisorDescriptor {
       var info = stat()
       guard fstat(lease, &info) == 0, (info.st_mode & S_IFMT) == S_IFIFO,
@@ -49,7 +53,7 @@ struct PrivateLauncher {
       return status
     }
     if let reply = payload.replyDescriptor {
-      defer { Darwin.close(reply) }
+      defer { systemClose(reply) }
       guard swsh_send_standard_descriptors(reply) == 0 else {
         diagnostic(SystemFailure("send builtin descriptors"))
         return 1
@@ -94,7 +98,7 @@ struct PrivateLauncher {
   private func apply(_ action: DescriptorAction) throws {
     switch action {
     case .close(let descriptor):
-      if Darwin.close(descriptor) != 0 && errno != EBADF {
+      if systemClose(descriptor) != 0 && errno != EBADF {
         throw SystemFailure("redirect close")
       }
     case .duplicate(let descriptor, let source):
@@ -108,18 +112,32 @@ struct PrivateLauncher {
       case .write: flags = O_WRONLY | O_CREAT | O_TRUNC
       case .append: flags = O_WRONLY | O_CREAT | O_APPEND
       }
-      let owner = try OwnedFD.open(path, flags: flags, mode: 0o666)
-      // open may itself return the requested descriptor when that slot was closed.
-      if owner.withDescriptor({ $0 }) == descriptor {
-        guard fcntl(descriptor, F_SETFD, 0) == 0 else {
-          throw SystemFailure("redirect inheritance")
+      try install(OwnedFD.open(path, flags: flags, mode: 0o666), at: descriptor)
+    case .data(let descriptor, let bytes):
+      // An unlinked file cannot block a writer the way a full pipe would.
+      let owner = try OwnedFD.temporaryPayload()
+      try owner.withDescriptor { fd in
+        try writeBytes(bytes, to: fd)
+        guard lseek(fd, 0, SEEK_SET) == 0 else {
+          throw SystemFailure("rewind heredoc")
         }
-        _ = owner.transfer()
-      } else {
-        try owner.withDescriptor { fd in
-          guard dup2(fd, descriptor) >= 0 else {
-            throw SystemFailure("redirect dup2")
-          }
+      }
+      try install(owner, at: descriptor)
+    }
+  }
+
+  private func install(_ owner: consuming OwnedFD, at descriptor: Int32) throws
+  {
+    // open may itself return the requested descriptor when that slot was closed.
+    if owner.withDescriptor({ $0 }) == descriptor {
+      guard fcntl(descriptor, F_SETFD, 0) == 0 else {
+        throw SystemFailure("redirect inheritance")
+      }
+      _ = owner.transfer()
+    } else {
+      try owner.withDescriptor { fd in
+        guard dup2(fd, descriptor) >= 0 else {
+          throw SystemFailure("redirect dup2")
         }
       }
     }

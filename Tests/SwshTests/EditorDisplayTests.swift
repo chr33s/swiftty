@@ -1,3 +1,4 @@
+#if canImport(SwifttyEngine)
 import Foundation
 import SwifttyEngine
 import Testing
@@ -89,3 +90,4 @@ struct EditorDisplayTests {
     }
   }
 }
+#endif

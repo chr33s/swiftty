@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 extension PrivateLauncher {
   func launch(
@@ -45,9 +51,18 @@ extension PrivateLauncher {
       )
     }
     var forbidden = Set<Int32>([0, 1, 2] + pipeDescriptors)
+    for wiring in initialWiring {
+      switch wiring {
+      case .duplicate(let source, let destination):
+        forbidden.insert(source)
+        forbidden.insert(destination)
+      case .close(let destination): forbidden.insert(destination)
+      }
+    }
     for action in command.redirects {
       switch action {
-      case .open(let fd, _, _), .close(let fd): forbidden.insert(fd)
+      case .open(let fd, _, _), .close(let fd), .data(let fd, _):
+        forbidden.insert(fd)
       case .duplicate(let fd, let source):
         forbidden.insert(fd);
         forbidden.insert(source)

@@ -28,7 +28,11 @@ presentation actions. The service also provisions the assets before loading the
 script. Automation protocol operations are feature-gated and preserve existing
 ownership and lease checks. Remote clients and observers cannot invoke native
 automation key or focus writes; the local native observer can subscribe to UI
-updates.
+updates. For confined execution ([spec.shell.md §11.5](spec.shell.md#115-swiftty)),
+the JavaScript runtime is a client of the execution service and gains no path
+around it: an agent identity is never given the JavaScript bridge, pane writes
+into a host pane or `swiftty.env` (the service environment), and configuration
+does not run on behalf of an agent outside a context.
 
 ## 2. Configuration and editor support
 
@@ -143,7 +147,9 @@ Stdout filtering occurs before terminal parsing, including parsing of OSC events
 Stdin filtering occurs after input encoding. Streamed paste filters the payload
 while preserving framing and sanitization. Exceptions, invalid return values,
 invalid or partial UTF-8, and replacements exceeding host capacity preserve the
-original bytes.
+original bytes; stream filters are therefore a convenience and not a redaction
+or security boundary ([spec.shell.md §11.3](spec.shell.md#113-the-service)). Raw
+output, display transformations, and audit records remain separate.
 
 Chunks are transport boundaries, not lines or complete tokens. A regular
 expression applied to one chunk does not guarantee matching text split across

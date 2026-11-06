@@ -5,7 +5,8 @@ import Testing
 struct ParserTests {
   @Test(arguments: [
     "echo '", "echo \"", "echo \\", "echo ${name", "echo |", "echo &&",
-    "echo >",
+    "echo >", "echo <<EOF", "echo <<EOF\nbody", "echo $((1 +", "a=(1",
+    "if true", "if true; then echo", "while true; do", "for x in 1 2",
   ])
   func continuation(source: String) {
     guard case .incomplete = Parser().parse(source) else {
@@ -14,9 +15,7 @@ struct ParserTests {
     }
   }
 
-  @Test(arguments: [
-    "echo `pwd`", "echo <<EOF", "| echo", "echo ;; pwd", "echo ${x:-y}",
-  ])
+  @Test(arguments: ["echo `pwd`", "| echo", "echo ;; pwd", "echo ${x%y}"])
   func unsupported(source: String) {
     guard case .invalid = Parser().parse(source) else {
       Issue.record("expected invalid: \(source)");

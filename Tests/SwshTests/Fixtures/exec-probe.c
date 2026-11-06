@@ -4,7 +4,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#ifdef __APPLE__
 #include <sys/sysctl.h>
+#else
+#include <string.h>
+#endif
 
 static void hex(const char *label, const char *value) {
   printf("%s=", label);
@@ -14,6 +18,23 @@ static void hex(const char *label, const char *value) {
 
 int main(int argc, char **argv) {
   if (argc == 3 && argv[1][0] == 'i') {
+#ifndef __APPLE__
+    // Linux reports the same process-wide sets as hexadecimal masks.
+    char path[64], line[256];
+    snprintf(path, sizeof(path), "/proc/%d/status", atoi(argv[2]));
+    FILE *status = fopen(path, "r");
+    if (!status) return 24;
+    unsigned long long ignored = 0, caught = 0;
+    int found = 0;
+    while (fgets(line, sizeof(line), status)) {
+      if (!strncmp(line, "SigIgn:", 7)) { ignored = strtoull(line + 7, 0, 16); ++found; }
+      if (!strncmp(line, "SigCgt:", 7)) { caught = strtoull(line + 7, 0, 16); ++found; }
+    }
+    fclose(status);
+    if (found != 2) return 24;
+    printf("ignored=%u\ncaught=%u\n", (unsigned)ignored, (unsigned)caught);
+    return 0;
+#else
     int query[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, atoi(argv[2])};
     struct kinfo_proc info;
     size_t size = sizeof(info);
@@ -22,6 +43,7 @@ int main(int argc, char **argv) {
     // p_sigmask is deliberately not used as evidence about thread signal masks.
     printf("ignored=%u\ncaught=%u\n", info.kp_proc.p_sigignore, info.kp_proc.p_sigcatch);
     return 0;
+#endif
   }
   printf("pid=%d\ngroup=%d\n", getpid(), getpgrp());
   sigset_t blocked;

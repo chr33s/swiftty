@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 enum EvaluationControl: Equatable {
   case continuing(Int32)
@@ -9,6 +15,7 @@ enum EvaluationControl: Equatable {
 struct BuiltinIO {
   let output: Int32
   let error: Int32
+  var input: Int32 = STDIN_FILENO
 }
 
 struct BuiltinEvaluator {
@@ -50,8 +57,63 @@ struct BuiltinEvaluator {
         return .continuing(
           ExecReplacement().run(arguments: arguments, state: state)
         )
-      case .jobs, .fg, .bg, .return:
-        throw UsageFailure("job actions require the session driver")
+      case .jobs, .fg, .bg, .return, .trap, .break, .continue, .read, .local:
+        throw UsageFailure("\(builtin.rawValue) requires the session driver")
+      case .set:
+        guard !arguments.isEmpty else {
+          let lines = ShellOptions.names.map {
+            "set \(state.options[$0] == true ? "-" : "+")o \($0)\n"
+          }
+          try writeBytes(Array(lines.joined().utf8), to: io.output)
+          break
+        }
+        // Validate the entire request before changing any policy.
+        var options = state.options
+        var index = 0
+        while index < arguments.count {
+          let argument = String(decoding: arguments[index], as: UTF8.self)
+          index += 1
+          guard argument.count >= 2, let sign = argument.first,
+            sign == "-" || sign == "+"
+          else {
+            throw UsageFailure(
+              "set: expected -e, -u, or -o name; use + to disable"
+            )
+          }
+          for flag in argument.dropFirst() {
+            switch flag {
+            case "e": options.errexit = sign == "-"
+            case "u": options.nounset = sign == "-"
+            case "o":
+              guard flag == argument.last, index < arguments.count,
+                case let name = String(
+                  decoding: arguments[index],
+                  as: UTF8.self
+                ), options[name] != nil
+              else {
+                throw UsageFailure(
+                  "set: -o expects errexit, nounset, or pipefail"
+                )
+              }
+              options[name] = sign == "-"
+              index += 1
+            default: throw UsageFailure("set: unsupported option -\(flag)")
+            }
+          }
+        }
+        state.options = options
+      case .shift:
+        let parameters = state.arrays["@"] ?? []
+        let count =
+          arguments.first.map { Int(String(decoding: $0, as: UTF8.self)) } ?? 1
+        guard arguments.count <= 1, let count, count >= 0,
+          count <= parameters.count
+        else {
+          throw UsageFailure(
+            "shift: expected a count from 0 through \(parameters.count)"
+          )
+        }
+        state.setArguments(Array(parameters.dropFirst(count)))
       case .colon, .true: return .continuing(0)
       case .false: return .continuing(1)
       case .exit:
@@ -89,6 +151,9 @@ struct BuiltinEvaluator {
           )
           return (name, equal.map { Array(argument[($0 + 1)...]) })
         }
+        if let (name, _) = entries.first(where: { state.arrays[$0.0] != nil }) {
+          throw UsageFailure("export: \(name) is a list")
+        }
         for (name, value) in entries {
           if let value { state.variables[name] = value }
           if state.variables[name] == nil { state.variables[name] = [] }
@@ -98,6 +163,7 @@ struct BuiltinEvaluator {
         let names = try arguments.map(variableName)
         for name in names {
           state.variables.removeValue(forKey: name)
+          state.arrays.removeValue(forKey: name)
           state.exported.remove(name)
         }
       }

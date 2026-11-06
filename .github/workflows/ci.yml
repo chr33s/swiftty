@@ -46,6 +46,9 @@ jobs:
       - name: Check unchecked Sendable documentation
         if: matrix.configuration == 'debug'
         run: Scripts/check-unchecked-sendable.sh
+      - name: Check agent request handling stays effect-free
+        if: matrix.configuration == 'debug'
+        run: Scripts/check-agent-purity.sh
   shell-baseline:
     runs-on: xcode-27
     steps:
@@ -69,6 +72,21 @@ jobs:
           swift --version | head -1 | grep -Fx 'Apple Swift version 6.4.1 (swift-6.4.1-RELEASE)'
           Scripts/test-native.sh --toolchain "$SWSH_BASELINE_TOOLCHAIN" \
             --sdk "$(xcrun --sdk macosx --show-sdk-path)" --disable-automatic-resolution
+          python3 Scripts/test-swsh.py "$(swift build --show-bin-path)/swsh"
+  shell-linux:
+    # swsh is the only product ported to Linux; Package.swift reduces itself to
+    # the shell targets there.
+    runs-on: ubuntu-latest
+    container: swift:6.4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install test tools
+        run: apt-get update -qq && apt-get install -y -qq python3 zsh procps
+      - name: Test
+        run: swift test
+      - name: Check native shell process and PTY behavior
+        run: |
+          swift build --product swsh
           python3 Scripts/test-swsh.py "$(swift build --show-bin-path)/swsh"
   frontends:
     runs-on: xcode-27

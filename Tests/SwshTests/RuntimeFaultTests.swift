@@ -1,9 +1,28 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 import Testing
 @testable import Swsh
 
 private final class RuntimeFaultBundle: NSObject {}
+
+/// The swsh executable built beside the test product. On Linux that product is
+/// itself an executable in the build directory, not a bundle inside it.
+func probeShellURL() -> URL {
+  #if canImport(Darwin)
+  let directory = Bundle(for: RuntimeFaultBundle.self).bundleURL
+    .deletingLastPathComponent()
+  #else
+  let directory = URL(fileURLWithPath: CommandLine.arguments[0])
+    .resolvingSymlinksInPath().deletingLastPathComponent()
+  #endif
+  return directory.appendingPathComponent("swsh")
+}
 
 struct RuntimeFaultTests {
   @Test(arguments: [
@@ -43,6 +62,18 @@ struct RuntimeFaultTests {
         .contains("runtime fault verified: \(fault)")
     )
   }
+
+  #if !canImport(Darwin)
+  /// On Linux the test product is an executable and cannot be loaded as a
+  /// library, so the helper runs this one test in a fresh PTY process instead.
+  /// Without the variable it does nothing.
+  @Test
+  func isolatedRuntimeFaultChild() {
+    guard let fault = ProcessInfo.processInfo.environment["SWSH_RUNTIME_FAULT"]
+    else { return }
+    #expect(swshRuntimeFaultProbe(fault) == 0)
+  }
+  #endif
 }
 
 /// Called only in a fresh PTY helper process. Never mutates the test runner's
@@ -91,10 +122,7 @@ private func runRuntimeFault(_ fault: String) throws {
   var children: [pid_t] = []
   var clockCalls = 0
   let clockStart = ContinuousClock.now
-  let executable = Array(
-    Bundle(for: RuntimeFaultBundle.self).bundleURL.deletingLastPathComponent()
-      .appendingPathComponent("swsh").path.utf8
-  )
+  let executable = Array(probeShellURL().path.utf8)
   let supervisor = try JobSupervisor(
     executable: executable,
     build: fault == "redirect-retention"
@@ -108,7 +136,14 @@ private func runRuntimeFault(_ fault: String) throws {
         }
       case .registered(_, let pid): children.append(pid)
       case .beforeRelease:
-        if fault == "shutdown-before-release" { _ = kill(getpid(), SIGTERM) }
+        if fault == "shutdown-before-release" {
+          _ = kill(getpid(), SIGTERM)
+          #if !canImport(Darwin)
+          // Without kqueue the signal reaches the supervisor through a handler
+          // on another thread, shortly after `kill` returns.
+          usleep(100_000)
+          #endif
+        }
       }
     },
     cleanupNow: {
@@ -177,7 +212,7 @@ private func runRuntimeFault(_ fault: String) throws {
           throw SystemFailure("nonblocking ownership probe")
         }
         var byte: UInt8 = 0
-        guard Darwin.read(fd, &byte, 1) == 0 else {
+        guard systemRead(fd, &byte, 1) == 0 else {
           throw ProbeFailure("resource collection retained a writer")
         }
       }
@@ -194,7 +229,7 @@ private func runRuntimeFault(_ fault: String) throws {
       throw SystemFailure("flush editor input")
     }
     var byte: UInt8 = 0
-    guard Darwin.read(terminal.inputDescriptor, &byte, 1) == -1, errno == EAGAIN
+    guard systemRead(terminal.inputDescriptor, &byte, 1) == -1, errno == EAGAIN
     else {
       throw ProbeFailure("empty editor read must return without blocking")
     }
@@ -326,16 +361,22 @@ private struct ProbeFailure: Error {
   init(_ message: String) { self.message = message }
 }
 
+#if canImport(Darwin)
+private let descriptorLimit = RLIMIT_NOFILE
+#else
+private let descriptorLimit = Int32(RLIMIT_NOFILE.rawValue)
+#endif
+
 private func verifyDescriptorExhaustion(_ fault: String) throws {
   var original = rlimit()
-  guard getrlimit(RLIMIT_NOFILE, &original) == 0 else {
+  guard getrlimit(descriptorLimit, &original) == 0 else {
     throw SystemFailure("getrlimit")
   }
   var limited = rlimit(rlim_cur: 64, rlim_max: original.rlim_max)
-  guard setrlimit(RLIMIT_NOFILE, &limited) == 0 else {
+  guard setrlimit(descriptorLimit, &limited) == 0 else {
     throw SystemFailure("setrlimit")
   }
-  defer { _ = setrlimit(RLIMIT_NOFILE, &original) }
+  defer { _ = setrlimit(descriptorLimit, &original) }
   var owners = UniqueArray<OwnedFD?>()
   while true {
     do {

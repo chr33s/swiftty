@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import CSwshSupport
 
 struct SystemFailure: Error, CustomStringConvertible, Sendable {
@@ -15,8 +21,9 @@ struct SystemFailure: Error, CustomStringConvertible, Sendable {
 struct OwnedFD: ~Copyable {
   private let descriptor: Int32
   private init(adopting descriptor: Int32) { self.descriptor = descriptor }
-  deinit { Darwin.close(descriptor) }
+  deinit { systemClose(descriptor) }
 
+  #if canImport(Darwin)
   static func eventQueue() throws -> OwnedFD {
     let fd = kqueue()
     guard fd >= 0 else { throw SystemFailure("kqueue") }
@@ -26,6 +33,7 @@ struct OwnedFD: ~Copyable {
     }
     return owner
   }
+  #endif
 
   borrowing func withDescriptor<Result: ~Copyable>(
     _ body: (Int32) throws -> Result
@@ -41,7 +49,7 @@ struct OwnedFD: ~Copyable {
     }
     let fd = (path + [0])
       .withUnsafeBytes {
-        Darwin.open(
+        systemOpen(
           $0.baseAddress!.assumingMemoryBound(to: CChar.self),
           flags | O_CLOEXEC,
           mode
@@ -75,7 +83,7 @@ struct OwnedFD: ~Copyable {
   /// Called only by the launch owner, which serializes pipe creation and spawn.
   static func pipe() throws -> OwnedPipe {
     var descriptors: [Int32] = [-1, -1]
-    guard Darwin.pipe(&descriptors) == 0 else { throw SystemFailure("pipe") }
+    guard systemPipe(&descriptors) == 0 else { throw SystemFailure("pipe") }
     let input = OwnedFD(adopting: descriptors[0])
     let output = OwnedFD(adopting: descriptors[1])
     guard fcntl(descriptors[0], F_SETFD, FD_CLOEXEC) == 0,
@@ -86,7 +94,7 @@ struct OwnedFD: ~Copyable {
 
   static func descriptorChannel() throws -> OwnedPipe {
     var descriptors: [Int32] = [-1, -1]
-    guard socketpair(AF_UNIX, SOCK_DGRAM, 0, &descriptors) == 0 else {
+    guard socketpair(AF_UNIX, systemDatagramSocket, 0, &descriptors) == 0 else {
       throw SystemFailure("descriptor socketpair")
     }
     let input = OwnedFD(adopting: descriptors[0])
@@ -120,7 +128,7 @@ struct OwnedFD: ~Copyable {
   }
 
   consuming func close() throws {
-    let result = Darwin.close(descriptor)
+    let result = systemClose(descriptor)
     let error = errno
     discard self
     // Retrying close after EINTR risks closing a reused descriptor.
@@ -141,7 +149,7 @@ func writeBytes(_ bytes: [UInt8], to descriptor: Int32) throws {
   try bytes.withUnsafeBytes { buffer in
     var offset = 0
     while offset < buffer.count {
-      let count = Darwin.write(
+      let count = systemWrite(
         descriptor,
         buffer.baseAddress! + offset,
         buffer.count - offset
@@ -164,7 +172,8 @@ struct OwnedStandardIO: ~Copyable {
   var builtinIO: BuiltinIO {
     BuiltinIO(
       output: output?.withDescriptor { $0 } ?? -1,
-      error: error?.withDescriptor { $0 } ?? -1
+      error: error?.withDescriptor { $0 } ?? -1,
+      input: input?.withDescriptor { $0 } ?? -1
     )
   }
 }

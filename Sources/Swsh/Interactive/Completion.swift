@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 /// Completion is non-executing and runs in the driver's current directory context.
 /// The first editor supports simple unquoted words; ambiguous lists never become syntax.

@@ -3,6 +3,14 @@ import PackageDescription
 
 let core: [SwiftSetting] = [.enableExperimentalFeature("Lifetimes")]
 
+// SHA-256 comes from CryptoKit on Apple platforms. The Linux build of swsh
+// (`swift build --product swsh`) takes it from swift-crypto instead.
+let linuxCrypto: Target.Dependency = .product(
+  name: "Crypto",
+  package: "swift-crypto",
+  condition: .when(platforms: [.linux])
+)
+
 let package = Package(
   name: "swiftty",
   // Source language of the String Catalogs in the UI targets.
@@ -62,7 +70,7 @@ let package = Package(
   targets: [
     .target(
       name: "Swsh",
-      dependencies: ["CSwshSupport"],
+      dependencies: ["CSwshSupport", linuxCrypto],
       swiftSettings: [.enableUpcomingFeature("NonisolatedNonsendingByDefault")]
     ),
     .testTarget(
@@ -70,7 +78,17 @@ let package = Package(
       dependencies: ["Swsh", "SwifttyEngine"],
       resources: [.copy("Fixtures")]
     ), .target(name: "CSwshSupport"),
-    .executableTarget(name: "SwshCLI", dependencies: ["Swsh"]),
+    // The execution service's protocol, planner, and broker. No dependency
+    // beyond SHA-256 on Linux: request handling cannot reach the shell runtime
+    // or the app.
+    .target(name: "SwifttyExec", dependencies: [linuxCrypto]),
+    .testTarget(
+      name: "SwifttyExecTests",
+      dependencies: ["SwifttyExec", "SwshAgent"]
+    ),
+    // swsh's headless interface; it holds no grants and no backend.
+    .target(name: "SwshAgent", dependencies: ["SwifttyExec"]),
+    .executableTarget(name: "SwshCLI", dependencies: ["Swsh", "SwshAgent"]),
     .target(name: "SwifttyConfig"),
     .testTarget(name: "SwifttyConfigTests", dependencies: ["SwifttyConfig"]),
     .target(
@@ -377,3 +395,29 @@ where target.type != .system && target.name != "CScrollbackChecksum"
       )
     ]
 }
+
+// Only the shell is ported to Linux. There the package is reduced to the shell
+// targets, so `swift build` and `swift test` need no Apple-only module.
+#if os(Linux)
+let shell: Set<String> = [
+  "Swsh", "CSwshSupport", "SwifttyExec", "SwshAgent", "SwshCLI", "SwshTests",
+  "SwifttyExecTests",
+]
+package.targets.removeAll { !shell.contains($0.name) }
+package.products.removeAll { $0.name != "Swsh" && $0.name != "swsh" }
+package.dependencies.removeAll { dependency in
+  if case .sourceControl(_, let location, _) = dependency.kind {
+    return !location.hasSuffix("swift-crypto.git")
+  }
+  return true
+}
+// The editor display tests replay output through the terminal engine.
+for target in package.targets where target.name == "SwshTests" {
+  target.dependencies.removeAll { dependency in
+    if case .byNameItem(let name, _) = dependency {
+      return name == "SwifttyEngine"
+    }
+    return false
+  }
+}
+#endif

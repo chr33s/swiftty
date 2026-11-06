@@ -1,5 +1,15 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 
 /// A private exact-executable protocol. Source workers carry exact body bytes and
@@ -82,6 +92,10 @@ struct LauncherPayload: Codable, Equatable {
       switch action {
       case .open(let descriptor, let path, _):
         valid = descriptor >= 0 && !path.contains(0)
+      case .data(let descriptor, let bytes):
+        valid =
+          descriptor >= 0 && bytes.count <= DescriptorAction.maximumHeredocBytes
+          && !bytes.contains(0)
       case .duplicate(let descriptor, let source):
         valid = descriptor >= 0 && source >= 0
       case .close(let descriptor): valid = descriptor >= 0
@@ -94,7 +108,8 @@ struct LauncherPayload: Codable, Equatable {
       guard payload.kind == .source, lease >= 3, lease != descriptor,
         payload.redirects.allSatisfy({ action in
           switch action {
-          case .open(let fd, _, _), .close(let fd): return fd != lease
+          case .open(let fd, _, _), .close(let fd), .data(let fd, _):
+            return fd != lease
           case .duplicate(let fd, let source):
             return fd != lease && source != lease
           }
@@ -110,7 +125,8 @@ struct LauncherPayload: Codable, Equatable {
       guard payload.kind == .descriptors, reply >= 3, reply != descriptor,
         payload.redirects.allSatisfy({ action in
           switch action {
-          case .open(let fd, _, _), .close(let fd): return fd != reply
+          case .open(let fd, _, _), .close(let fd), .data(let fd, _):
+            return fd != reply
           case .duplicate(let fd, let source):
             return fd != reply && source != reply
           }
@@ -129,7 +145,9 @@ struct LauncherPayload: Codable, Equatable {
         String(validating: context.source, as: UTF8.self) != nil,
         (0 ..< 128).contains(context.state.executionDepth),
         context.state.variables.values.allSatisfy({ !$0.contains(0) }),
-        context.state.opaqueEnvironment.allSatisfy({ !$0.contains(0) }),
+        context.state.arrays.values.allSatisfy({
+          $0.allSatisfy { !$0.contains(0) }
+        }), context.state.opaqueEnvironment.allSatisfy({ !$0.contains(0) }),
         context.functionArguments?.allSatisfy({ !$0.contains(0) }) ?? true,
         context.state.functions.values.allSatisfy({
           !$0.contains(0) && String(validating: $0, as: UTF8.self) != nil
@@ -168,7 +186,7 @@ struct LauncherPayload: Codable, Equatable {
     try file.withDescriptor { fd in
       var buffer = [UInt8](repeating: 0, count: 64 * 1024)
       while true {
-        let count = Darwin.read(fd, &buffer, buffer.count)
+        let count = systemRead(fd, &buffer, buffer.count)
         if count < 0 && errno == EINTR { continue }
         guard count >= 0 else {
           throw SystemFailure("read executable identity")
@@ -188,7 +206,7 @@ struct LauncherPayload: Codable, Equatable {
     try bytes.withUnsafeMutableBytes { buffer in
       var offset = 0
       while offset < count {
-        let result = Darwin.read(
+        let result = systemRead(
           fd,
           buffer.baseAddress! + offset,
           count - offset

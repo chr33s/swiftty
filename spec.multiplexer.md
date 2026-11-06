@@ -116,7 +116,13 @@ signed code requires a nonempty team identifier and a parseable same-team peer
 requirement. Unexpected lookup or validity errors and incomplete signing
 metadata abort startup with exit status 78; they never select development
 fallback. Validate the identity before reading signing metadata, since the
-Security API can otherwise return partial data for corrupt signatures.
+Security API can otherwise return partial data for corrupt signatures. The same
+peer-signing policy (`PeerSigningPolicy`) can identify callers of the execution
+service ([spec.shell.md §11.5](spec.shell.md#115-swiftty)); code identity is not
+task authorization, and development same-user fallbacks must not become
+production assumptions.
+
+For confined execution ([spec.shell.md §11](spec.shell.md#11-confined-execution-an-execution-context-with-swsh-as-its-runner)), the multiplexer service and app are clients of the execution service and gain no path around it: a confined pane is a PTY attached to one execution context, input goes to that context only, and an agent identity is never given pane writes into a host pane.
 
 Commands have request IDs and explicit targets. Mutations produce typed results/errors, such as `alreadyAttached`, `staleGeometry`, `paneExited`, `historyUnavailable`, `resourceLimit` and `incompatibleVersion`. Command acknowledgement means the specified operation committed. Input acknowledgement means admission to the ordered writer, not execution by the shell. Never automatically replay uncertain input or mutating commands after connection loss.
 

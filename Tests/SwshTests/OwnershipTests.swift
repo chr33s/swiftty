@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Testing
 @testable import Swsh
 
@@ -11,7 +17,7 @@ struct OwnershipTests {
     #expect(fcntl(raw, F_GETFD) & FD_CLOEXEC != 0)
     let duplicate = try owner.withDescriptor { try OwnedFD.duplicate($0) }
     let transferred = duplicate.transfer()
-    defer { Darwin.close(transferred) }
+    defer { systemClose(transferred) }
     try owner.close()
     #expect(fcntl(transferred, F_GETFD) & FD_CLOEXEC != 0)
   }

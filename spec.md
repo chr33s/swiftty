@@ -18,7 +18,9 @@ resize, Unicode/graphemes, snapshots, fonts, rendering and frontend features.
 The embedder owns external transports, connections, authentication and window/tab/
 split management; the Swiftty app's own SwiftMux workspace window is specified
 below. Linux, Windows, GTK, OpenGL, WebAssembly, plugin APIs and a
-stable core C ABI are excluded; Shell supplies its own libghostty embedder API.
+stable core C ABI are excluded from the terminal core and frontends (`Package.swift`
+reduces itself on Linux to the `swsh` shell and confined-execution targets in
+[spec.shell.md](spec.shell.md)); Shell supplies its own libghostty embedder API.
 Sixel is excluded. Kitty graphics is future work; until separately specified,
 ignore APC strings safely. Future graphics support should use bounded image
 storage and cover transmission, placement, deletion, z-order and placeholders.
@@ -55,9 +57,16 @@ policy, and ordinary SSH/SFTP does not require roaming.
 | Ordinary SSH | Client-side parser; locally parsed byte stream | Ends with SSH connection |
 | Native SwiftMux | Agent-side runtime; validated owned pane frames | Outlives app window |
 | Roaming workspace | Same agent-side runtime; validated RST snapshots | Outlives network attachment within service retention guarantees |
+| Confined execution ([spec.shell.md §11](spec.shell.md#11-confined-execution-an-execution-context-with-swsh-as-its-runner)) | Confined pane PTY or headless `swsh` runner inside a per-context Linux VM | Bounded by execution-service lease and grant |
 
 `swiftmux-agent` remains the single persistent workspace/PTY authority. Local
-SMX and roaming RST address the same workspaces and leases. Applications own
+SMX and roaming RST address the same workspaces and leases. For confined
+workloads, the app, the multiplexer service and the JavaScript runtime are
+clients of the execution service (`SwifttyExec`) and gain no path around it: a
+confined pane attaches a PTY to one execution context, an agent identity never
+receives host-pane writes, the JavaScript bridge or SSH as a path to the host,
+and an unreachable execution service reports `service_unavailable` instead of
+falling back to host execution ([spec.shell.md §11.5](spec.shell.md#115-swiftty)). Applications own
 windows, navigation, trust prompts and credentials; attachments own protocol
 identity, recovery and delivery; surfaces own visible interaction. A workspace,
 tab, view, connection and PTY have distinct lifetimes. Hide, detach and end are
@@ -378,7 +387,11 @@ Required verification covers:
 The core owns protocol validation, state, lifecycle and support replies.
 Embedders own badges, notifications, acknowledgment, permission UX, aggregation
 and pane-specific transport routing. Keep status distinct from OSC 9;4 progress;
-never persist it into a newly created process or interpret it as approval.
+never persist it into a newly created process or interpret it as approval. Output
+and terminal control sequences from an execution context are untrusted data and
+cannot draw approval state, open URLs, set the clipboard or trigger UI actions;
+scope, backend, expiry and cleanup state come from service state in UI that
+terminal output cannot imitate ([spec.shell.md §11.3](spec.shell.md#113-the-service), [§11.5](spec.shell.md#115-swiftty)).
 
 ### Framing and fields
 

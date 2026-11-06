@@ -8,7 +8,11 @@ struct BuiltinWorkerContext: Codable, Equatable {
   let opaqueEnvironment: [[UInt8]]
 
   static func supports(_ builtin: Builtin) -> Bool {
-    ![.jobs, .fg, .bg, .complete, .return].contains(builtin)
+    ![
+      .jobs, .fg, .bg, .complete, .return, .set, .trap, .break, .continue,
+      .read, .shift, .local,
+    ]
+    .contains(builtin)
   }
 
   init(builtin: Builtin, arguments: [[UInt8]], state: ShellState) {

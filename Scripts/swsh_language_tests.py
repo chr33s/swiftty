@@ -49,6 +49,8 @@ def children(pid):
 
 
 def descriptors(pid):
+    if sys.platform != "darwin":
+        return sorted(os.listdir(f"/proc/{pid}/fd"))
     output = subprocess.check_output(["/usr/sbin/lsof", "-a", "-p", str(pid), "-Ff"], text=True)
     return sorted(line[1:] for line in output.splitlines() if line.startswith("f") and line[1:].isdigit())
 

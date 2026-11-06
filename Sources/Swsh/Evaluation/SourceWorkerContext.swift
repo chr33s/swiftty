@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 /// Exact source and a value snapshot cross the private file handoff. No expansion
 /// has run for this body; the worker evaluates it once in its inherited job group.
@@ -37,6 +43,8 @@ struct SourceWorkerContext: Codable, Equatable {
       case .completed(let result), .exit(let result): status = result
       case .stopped: status = 1
       }
+      // A worker's own EXIT trap; it never inherits the parent's traps.
+      status = driver.runExitTrap(status)
     } catch {
       ShellMain.diagnostic(error)
       status = error is ShellDiagnostic ? 2 : 1

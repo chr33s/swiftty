@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 /// A small terminal editor: append/backspace, kill-line/word, history and bracketed paste.
 /// Input readiness shares the supervisor's event source, so background children are reaped.
@@ -53,10 +59,15 @@ struct LineEditor {
       }
       guard ready else { continue }
       var byte: UInt8 = 0
-      let count = Darwin.read(terminal.inputDescriptor, &byte, 1)
+      let count = systemRead(terminal.inputDescriptor, &byte, 1)
       if count < 0 && (errno == EINTR || errno == EAGAIN) { continue }
       guard count >= 0 else { throw SystemFailure("read editor input") }
-      if count == 0 { return .eof }
+      if count == 0 {
+        // A hangup can make the terminal readable before its SIGHUP is
+        // observed. Give the signal a moment, so the exit reports the hangup.
+        try supervisor.poll(milliseconds: 100)
+        return .eof
+      }
       if !escape.isEmpty || byte == 27 {
         escape.append(byte)
         let sequence = String(decoding: escape, as: UTF8.self)

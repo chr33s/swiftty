@@ -4,6 +4,7 @@
 Usage: Scripts/test-swsh.py /absolute/path/to/swsh
 Every shell gets its own test session; timeouts kill that test session.
 """
+import json
 import os
 import fcntl
 import struct
@@ -23,7 +24,7 @@ from swsh_pty import PtyShell
 
 SHELL = str(Path(sys.argv.pop(1)).resolve())
 
-from swsh_language_tests import LanguageInteractionTests, LanguageLifecycleTests, CompletionContractTests, configure
+from swsh_language_tests import LanguageInteractionTests, LanguageLifecycleTests, CompletionContractTests, configure, eventually, children
 configure(SHELL)
 
 
@@ -228,9 +229,14 @@ class BatchTests(unittest.TestCase):
                 self.assertEqual(file.read(), os.fsencode(str(Path(directory).resolve())) + b"\n")
             # APFS rejects invalid UTF-8 names; preserve that OS error instead
             # of decoding with replacement and silently creating another path.
-            output, error = self.run_source("pwd >$DEST", status=1, cwd=directory,
+            # Linux filesystems take any bytes, so there the exact name is created.
+            invalid = sys.platform == "darwin"
+            output, error = self.run_source("pwd >$DEST", status=1 if invalid else 0, cwd=directory,
                                            env=os.environb | {b"DEST": b"out\xff"})
-            self.assertIn(b"Illegal byte sequence", error)
+            if invalid:
+                self.assertIn(b"Illegal byte sequence", error)
+            else:
+                os.unlink(os.fsencode(directory) + b"/out\xff")
             self.assertEqual(len(list(Path(directory).iterdir())), 1)
             # The launch wrapper closes stdout before starting swsh. Receiving
             # SCM_RIGHTS must not accidentally reopen that standard slot.
@@ -376,7 +382,7 @@ class ExecTests(unittest.TestCase):
         cls.workspace = tempfile.TemporaryDirectory()
         cls.probe = str(Path(cls.workspace.name, "exec-probe"))
         fixture = Path(__file__).resolve().parent.parent / "Tests/SwshTests/Fixtures/exec-probe.c"
-        subprocess.run(["xcrun", "clang", "-Wall", "-Wextra", "-Werror", str(fixture), "-o", cls.probe], check=True)
+        subprocess.run((["xcrun", "clang"] if sys.platform == "darwin" else ["clang"]) + ["-Wall", "-Wextra", "-Werror", str(fixture), "-o", cls.probe], check=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -477,6 +483,18 @@ class ExecTests(unittest.TestCase):
             # SIGUSR1 has default termination disposition. This command can run
             # only if failed SETEXEC preserved the shell thread's blocked mask.
             self.assertIn(b"mask-preserved", shell.command("/usr/bin/printf mask-preserved"))
+
+    def test_failed_replacement_keeps_a_pending_blocked_signal_pending(self):
+        invalid = Path(self.workspace.name, "pending-bad-format")
+        invalid.write_text("invalid executable\n")
+        invalid.chmod(0o700)
+        with PtyShell(SHELL, blocked_signals=[signal.SIGUSR1]) as shell:
+            # Pending before the attempt: clearing the mask for the new image
+            # must not deliver it to the shell with its default action.
+            os.kill(shell.pid, signal.SIGUSR1)
+            output = shell.command(f"exec '{invalid}'")
+            self.assertIn(b"133;D;126", output)
+            self.assertIn(b"still-here", shell.command("/usr/bin/printf still-here"))
 
     def test_worker_replacement_retains_group_leader_pid_and_parent(self):
         with PtyShell(SHELL) as shell:
@@ -739,6 +757,89 @@ class InteractiveTests(unittest.TestCase):
             self.assertEqual(restored, editor)
 
 
+class AgentProtocolTests(unittest.TestCase):
+    """spec.shell.md §11: the headless interface describes requests and runs none without a context."""
+
+    def exchange(self, frames, **kwargs):
+        process = subprocess.Popen([SHELL, "--agent"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, start_new_session=True, **kwargs)
+        output, error = process.communicate(b"".join(frames), timeout=20)
+        self.assertEqual((process.returncode, error), (0, b""))
+        self.assertTrue(all(32 <= byte <= 126 or byte == 10 for byte in output), output[:200])
+        return [json.loads(line) for line in output.splitlines()]
+
+    def request(self, **fields):
+        base = {"protocol": "swsh.run/1", "requestId": "req-1", "operation": "run",
+                "pipeline": [{"argv": ["git", "status"]}]}
+        base.update(fields)
+        return json.dumps({key: value for key, value in base.items() if value is not None}).encode() + b"\n"
+
+    def test_requests_never_reach_the_host(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = os.path.join(directory, "marker")
+            target = os.path.join(directory, "target")
+            Path(target).write_text("keep")
+            for name in ("git", "sh", "touch"):
+                tool = Path(directory, name)
+                tool.write_text(f"#!/bin/sh\n/usr/bin/touch {shlex.quote(marker)}\n")
+                tool.chmod(0o755)
+            Path(directory, ".swshrc").write_text(f"/usr/bin/touch {shlex.quote(marker)}\n")
+            hostile = f"$(/usr/bin/touch {marker}) `/usr/bin/touch {marker}` > {target}; /usr/bin/touch {marker}"
+            environment = {"PATH": directory + ":", "HOME": directory, "ENV": os.path.join(directory, ".swshrc"),
+                           "SHELL": os.path.join(directory, "sh"), "SSH_AUTH_SOCK": os.path.join(directory, "agent")}
+            results = self.exchange([
+                self.request(pipeline=[{"argv": ["git", hostile, "--", marker]},
+                                       {"argv": ["sh", "-c", f"/usr/bin/touch {marker}"]}]),
+                self.request(requestId="req-2", pipeline=None, source=hostile),
+                self.request(requestId="req-3", operation="preview", pipeline=[{"argv": ["touch", hostile]}]),
+                self.request(requestId="req-4", operation="preview", pipeline=None, source=hostile),
+                self.request(requestId="req-5", cwd=directory),
+                self.request(requestId="req-6", approved=True, effectivePolicy="unrestricted", backendVerified=True),
+                self.request(requestId="req-7", operation="create"),
+                b'{"protocol": "swiftty.exec/1", "requestId": "req-8", "sessionId": "s", "operation": "create", "image": "i", "snapshots": []}\n',
+            ], cwd=directory, env=environment)
+            self.assertEqual([(r["requestId"], r["outcome"]) for r in results], [
+                ("req-1", "no_context"), ("req-2", "no_context"), ("req-3", "previewed"),
+                ("req-4", "unsupported_operation"), ("req-5", "invalid_request"), ("req-6", "invalid_request"),
+                ("req-7", "unsupported_operation"), ("req-8", "unsupported_protocol")])
+            for result in results:
+                self.assertEqual(result["effects"], "none")
+                # swsh authors no statement about policy.
+                self.assertFalse({"approved", "confined", "backend", "scope"} & set(result))
+            # A preview shows exactly the bytes that would be passed, unexpanded.
+            self.assertEqual(results[2]["stages"], [{"argv": [{"text": "touch"}, {"text": hostile}], "unresolved": []}])
+            self.assertEqual([r["stages"] for r in results[:2] + results[3:]], [None] * 7)
+            self.assertEqual(len(results[0]["requestIdentity"]), 64)
+            self.assertFalse(os.path.exists(marker))
+            self.assertEqual(Path(target).read_text(), "keep")
+            self.assertEqual(sorted(os.listdir(directory)), [".swshrc", "git", "sh", "target", "touch"])
+
+    def test_frames_are_bounded_and_output_is_inert(self):
+        results = self.exchange([
+            b"\n  \n",
+            b"x" * (2 * 1024 * 1024) + b"\n",
+            self.request(),
+            self.request(requestId="req-7", **{"\x1b]0;approved\x07": 1}),
+            b"[" * 100000 + b"\n",
+            self.request(pipeline=[{"argv": ["a" * 70000]}]),
+            self.request(pipeline=[{"argv": ["t"]}] * 9),
+            self.request(pipeline=None, source="x" * 300000),
+            b"\xff\xfe\n",
+            b'{"protocol": "swsh.run/1", "requestId": "partial"',
+        ])
+        self.assertEqual([(r["requestId"], r["outcome"]) for r in results], [
+            (None, "invalid_request"), ("req-1", "no_context"), ("req-7", "invalid_request"),
+            (None, "invalid_request"), ("req-1", "invalid_request"), ("req-1", "invalid_request"),
+            ("req-1", "invalid_request"), (None, "invalid_request")])
+        self.assertIn("1048576", results[0]["reason"])
+        self.assertIn("\x1b]0;approved\x07", results[2]["reason"])
+
+    def test_agent_mode_takes_no_other_arguments(self):
+        for arguments in (["--agent", "-c", "/bin/echo x"], ["--agent", "--agent"]):
+            process = subprocess.run([SHELL, *arguments], stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+            self.assertEqual((process.returncode, process.stdout), (2, b""))
+
+
 class LanguageGrowthTests(unittest.TestCase):
     def run_source(self, source, expected, status=0):
         process = launch(source)
@@ -757,6 +858,319 @@ class LanguageGrowthTests(unittest.TestCase):
             second.prompt()
             second.send(b"\x1b[A\x1b[A\n")
             self.assertIn(b"persisted-history-token", second.prompt())
+
+    def test_arithmetic_values_and_diagnostics(self):
+        self.run_source("n=5; /usr/bin/printf '<%s>' $((n * n)) $(($n + 1)) \"q$((n - 1))q\" $((1 << 4)) $((0 ? 1 / 0 : 9)) $((0x1f))",
+                        b"<25><6><q4q><16><9><31>")
+        self.run_source("/bin/echo $((/bin/echo subshell))", b"subshell\n")
+        for source in ("/bin/echo $((1 / 0))", "/bin/echo $((9223372036854775807 + 1))", "x=abc; /bin/echo $((x + 1))"):
+            with self.subTest(source=source):
+                self.run_source(source + "; /bin/echo unreachable", b"", 2)
+
+    def test_lists_expand_as_arguments_and_reject_scalar_use(self):
+        self.run_source("""a=(one "two words" '*'); a+=(four); a[1]=TWO; a[4]=five
+/usr/bin/printf '<%s>' ${a[@]} "${a[@]}" ${#a[@]} ${a[$((${#a[@]} - 1))]}
+e=(); /usr/bin/printf '[%s]' x ${e[@]} ${#e[@]}""",
+                        b"<one><TWO><*><four><five><one><TWO><*><four><five><5><five>[x][0]")
+        self.run_source("(a=(child)); a=(1 2); f() { a+=(3); }; f; /usr/bin/printf '%s' ${#a[@]}; unset a; /usr/bin/printf ':%s' ${#a[@]}", b"3:0")
+        for source in ("a=(1); /bin/echo $a", "a=(1); /bin/echo ${a[1]}", "a=(1); a[2]=x", "a=(1); /bin/echo x${a[@]}",
+                       "export a; a=(1)", "a=(1) /bin/echo"):
+            with self.subTest(source=source):
+                self.run_source(source + "; /bin/echo unreachable", b"", 2)
+        self.run_source("a=(1); export a; /usr/bin/printf '%s' $?", b"2")
+
+    def test_heredocs_reach_externals_builtins_functions_and_pipelines(self):
+        self.run_source("""n=5
+/bin/cat <<EOF; /bin/cat <<'RAW'
+$n $((n + 1)) $(/bin/echo sub) \\$n
+EOF
+$n \\$n
+RAW
+/bin/cat <<-TABS | /usr/bin/tr a-z A-Z
+\tindented
+\tTABS
+f() { /bin/cat; }; f <<EOF
+function $n
+EOF
+(/bin/cat) <<EOF
+subshell
+EOF
+/bin/cat 3<<EOF <&3
+descriptor
+EOF
+""", b"5 6 sub $n\n$n \\$n\nINDENTED\nfunction 5\nsubshell\ndescriptor\n")
+        # Larger than a pipe buffer: delivery must not depend on a reader draining it.
+        body = "x" * 200000
+        # A script file: Linux limits one argument to 128 KiB.
+        with tempfile.NamedTemporaryFile("w", suffix=".swsh") as script:
+            script.write(f"/usr/bin/wc -c <<EOF\n{body}\nEOF\n")
+            script.flush()
+            result = subprocess.run([SHELL, script.name], capture_output=True, timeout=10)
+        self.assertEqual((result.returncode, result.stdout.split(), result.stderr), (0, [b"200001"], b""))
+        self.run_source("if true; then /bin/cat <<EOF; fi\nx\nEOF\n", b"", 2)
+
+    def test_control_flow_runs_in_the_current_shell(self):
+        self.run_source("""i=0; out=()
+while /bin/test $i != 5; do
+  i=$((i + 1))
+  if /bin/test $i = 2; then continue; elif /bin/test $i = 4; then break; else out+=($i); fi
+done
+until false; do out+=(until); break; done
+for x in ${out[@]} 'two words'; do /usr/bin/printf '<%s>' $x; done
+/usr/bin/printf ':%s:%s' $i $x
+if false; then /bin/echo no; fi; /usr/bin/printf ':%s' $?
+! false; /usr/bin/printf ':%s' $?; ! true; /usr/bin/printf ':%s' $?
+for x in; do /bin/echo never; done; /usr/bin/printf ':%s' $?""",
+                        b"<1><3><until><two words>:4:two words:0:0:1:0")
+        self.run_source("x=parent; for x in a b; do /bin/echo $x; done | /usr/bin/tr a-z A-Z; /usr/bin/printf '%s' $x", b"A\nB\nparent")
+        self.run_source("while true; do /bin/echo once; exit 3; done", b"once\n", 3)
+        self.run_source("f() { for x in 1 2; do return 4; done; }; f; /usr/bin/printf '%s:%s' $? $x", b"4:1")
+        for source in ("break", "continue", "f() { break; }; while true; do f; done"):
+            with self.subTest(source=source):
+                self.run_source(source + "; /bin/echo unreachable", b"", 2)
+
+    def test_errexit_nounset_and_pipefail(self):
+        self.run_source("set -e; false || /usr/bin/printf a; if false; then :; fi; ! true; while false; do :; done; false && true; /usr/bin/printf b; false; /usr/bin/printf c",
+                        b"ab", 1)
+        self.run_source("set -e; f() { false; /usr/bin/printf in; }; if f; then /usr/bin/printf :then; fi; f; /usr/bin/printf unreachable", b"in:then", 1)
+        self.run_source("set -e; (exit 6); /usr/bin/printf unreachable", b"", 6)
+        self.run_source("set -e; /usr/bin/false | /usr/bin/true; /usr/bin/printf a; set -o pipefail; /usr/bin/true | /bin/sh -c 'exit 5' | /usr/bin/true; /usr/bin/printf b", b"a", 5)
+        self.run_source("set -e; set +e; false; /usr/bin/printf '%s' $?", b"1")
+        self.run_source("set -u; x=; /usr/bin/printf '<%s>' $x; /usr/bin/printf '%s' $missing; /usr/bin/printf unreachable", b"<>", 2)
+        self.run_source("set -eu -o pipefail; set", b"set -o errexit\nset -o nounset\nset -o pipefail\n")
+        self.run_source("set -x; /usr/bin/printf '%s' $?; set -e -o nope; /usr/bin/printf ':%s' $?; false; /usr/bin/printf :kept", b"2:2:kept")
+        # Workers inherit the policies with the rest of the snapshot.
+        self.run_source("set -e; (false; /usr/bin/printf unreachable); /usr/bin/printf unreachable", b"", 1)
+
+    def test_traps_run_at_command_boundaries_and_on_exit(self):
+        kill = "/bin/sh -c 'kill -%s $PPID'"
+        self.run_source(f"trap '/usr/bin/printf \"<term:%s>\" $?' TERM; false; {kill % 'TERM'}; /usr/bin/printf '<after:%s>' $?; trap - TERM; trap",
+                        b"<term:0><after:0>")
+        self.run_source(f"trap '/usr/bin/printf int' INT HUP; {kill % 'INT'}; {kill % 'HUP'}; trap",
+                        b"intinttrap -- '/usr/bin/printf int' HUP\ntrap -- '/usr/bin/printf int' INT\n")
+        self.run_source(f"trap '' TERM; {kill % 'TERM'}; /bin/sleep 0.2; /usr/bin/printf survived", b"survived")
+        self.run_source(f"trap 'exit 9' TERM; {kill % 'TERM'}; /bin/sleep 0.2; /usr/bin/printf unreachable", b"", 9)
+        self.run_source("trap '/usr/bin/printf \"<exit:%s>\" $?' EXIT; /usr/bin/printf body; exit 4", b"body<exit:4>", 4)
+        self.run_source("trap 'exit 7' EXIT; /usr/bin/printf body", b"body", 7)
+        self.run_source("set -e; trap '/usr/bin/printf exit' 0; false", b"exit", 1)
+        self.run_source("trap '/usr/bin/printf exit' EXIT; /bin/echo $((1 / 0))", b"exit", 2)
+        # An untrapped fatal signal ends the shell without running the EXIT trap.
+        self.run_source(f"trap '/usr/bin/printf exit' EXIT; {kill % 'TERM'}; /bin/sleep 0.2", b"", 128 + signal.SIGTERM)
+        # Workers start without the parent's traps.
+        self.run_source("trap '/usr/bin/printf parent' EXIT; (trap; /usr/bin/printf child:)", b"child:parent")
+        self.run_source("trap 'if' TERM; /usr/bin/printf '%s' $?; trap x KILL; /usr/bin/printf ':%s' $?; trap x; /usr/bin/printf ':%s' $?", b"2:2:2")
+
+    def test_interrupt_ends_a_batch_loop(self):
+        self.run_source("while true; do /bin/sh -c 'kill -INT $PPID'; /bin/sleep 0.1; /usr/bin/printf once; done; /usr/bin/printf unreachable",
+                        b"once", 128 + signal.SIGINT)
+
+    def test_interactive_continuation_interrupt_and_trap(self):
+        with PtyShell(SHELL) as shell:
+            shell.send("if true\n")
+            shell.expect(b"...> ")
+            shell.send("then /bin/cat <<EOF\n")
+            shell.expect(b"...> ")
+            shell.send("heredoc $((6 * 7))\n")
+            shell.expect(b"...> ")
+            shell.send("EOF\n")
+            shell.expect(b"...> ")
+            shell.send("fi\n")
+            self.assertIn(b"heredoc 42\r\n", shell.prompt())
+            shell.send("while true; do /bin/sleep 30; done\n")
+            eventually(lambda: children(shell.pid), "loop body not started")
+            shell.send(b"\x03")
+            shell.prompt()
+            self.assertIn(b"<130>", shell.command("/usr/bin/printf '<%s>' $?"))
+            self.assertEqual(children(shell.pid), [])
+            shell.command("trap '/usr/bin/printf TRAPPED' TERM")
+            os.kill(shell.pid, signal.SIGTERM)
+            shell.expect(b"TRAPPED")
+            shell.prompt()
+            self.assertIn(b"<alive>", shell.command("/usr/bin/printf '<%s>' alive"))
+            shell.send("trap '/usr/bin/printf BYE' EXIT\n")
+            shell.prompt()
+            shell.send(b"\x04")
+            shell.expect(b"BYE")
+            self.assertEqual(shell.wait(), 0)
+
+    def test_positional_list_process_id_and_parameter_operators(self):
+        self.run_source("""f() { /usr/bin/printf '<%s>' $@ "$@" $# ${1:-none} ${3:-none} ${#1}; for a in $@; do /usr/bin/printf '(%s)' $a; done; }
+f 'two words' b; /usr/bin/printf '|'; g() { f $@ c; }; g a; /usr/bin/printf '|'; /usr/bin/printf '[%s]' x $@ end""",
+                        b"<two words><b><two words><b><2><two words><none><9>(two words)(b)|<a><c><a><c><2><a><none><1>(a)(c)|[x][end]")
+        self.run_source("""unset u; e=
+/usr/bin/printf '%s\\n' "${u-d1} ${u:-d2} [${e-d3}] ${e:-d4 spaced}" "[${u+a1}] [${u:+a2}] [${e+a3}] [${e:+a4}] [${HOME:+a5}]"
+/usr/bin/printf '%s\\n' "${u:=made} $u ${e:=filled} $e ${u:=ignored}" "${#u} ${nope:-$(/bin/echo sub) $((1 + 2)) ${u}}"
+/usr/bin/printf '%s\\n' "${u:-$(/usr/bin/printf SHOULD-NOT-RUN >&2)}" ${u:+'kept * literal'}""",
+                        b"d1 d2 [] d4 spaced\n[] [] [a3] [] [a5]\nmade made filled filled made\n4 sub 3 made\nmade\nkept * literal\n")
+        self.run_source("p=$$; (/bin/test $$ = $p) && /bin/sh -c 'kill -0 $1' sh $$ && /usr/bin/printf same", b"same")
+        for source in ("/bin/echo ${u:?}", "/bin/echo ${u?custom}", "e=; /bin/echo ${e:?}", "a=(1); /bin/echo ${a:-x}", "/bin/echo x$@"):
+            with self.subTest(source=source):
+                self.run_source(source + "; /bin/echo unreachable", b"", 2)
+        process = launch("/bin/echo ${u:?custom message}")
+        _, error = collect(process)
+        self.assertIn(b"u: custom message", error)
+
+    def test_case_groups_and_counted_loop_control(self):
+        self.run_source("""v='*'
+for word in abc 'x y' star none; do
+  case $word in
+    a*c) /usr/bin/printf glob ;;
+    x | "x y") /usr/bin/printf :alt ;;
+    $v) /usr/bin/printf :value-is-not-a-pattern ;;
+    (star) /usr/bin/printf :literal
+           /usr/bin/printf :multi ;;
+    no?e) kept=$word
+  esac
+done
+case none in a) false ;; esac; /usr/bin/printf ':%s:%s' $? $kept
+false; case x in x) ;; esac; /usr/bin/printf ':%s' $?""", b"glob:alt:literal:multi:0:none:0")
+        self.run_source("""{ /usr/bin/printf a; g=kept; }; /usr/bin/printf $g
+{ /bin/echo piped; g=lost; } | /usr/bin/tr a-z A-Z; /usr/bin/printf $g
+{ /usr/bin/printf hidden; h=redirected; } > /dev/null; /usr/bin/printf :$h
+f() { { return 5; }; }; f; /usr/bin/printf ':%s' $?""", b"akeptPIPED\nkept:redirected:5")
+        self.run_source("""for i in 1 2 3; do for j in a b c; do
+  if /bin/test $j = b; then continue 2; fi
+  if /bin/test $i = 3; then break 2; fi
+  /usr/bin/printf $i$j
+done; done; /usr/bin/printf ':%s' $?""", b"1a2a:0")
+        for source in ("while true; do break 2; done", "while true; do break 0; done", "while true; do continue x; done", "esac", "case x in x) /bin/echo; ;; ;; esac"):
+            with self.subTest(source=source):
+                self.run_source(source + "; /bin/echo unreachable", b"", 2)
+
+    def test_read_lines_fields_and_redirected_loops_keep_state(self):
+        self.run_source("""/usr/bin/printf 'one\\n two  words \\n\\nlast' > $TMPDIR/swsh-read
+n=0; while read line; do n=$((n + 1)); /usr/bin/printf '[%s]' $line; done < $TMPDIR/swsh-read
+/usr/bin/printf ':%s:%s:%s' $n $line $?
+/usr/bin/printf 'a  b\\tc d \\n' | { read first second rest; /usr/bin/printf ':%s|%s|%s' $first $second $rest; }
+/usr/bin/printf 'only\\n' | { read -r first second; /usr/bin/printf ':%s|%s' $first $second; }
+read direct <<EOF
+from heredoc
+EOF
+/usr/bin/printf ':%s:%s' $direct $?
+read empty < /dev/null; /usr/bin/printf ':%s[%s]' $? $empty
+/bin/rm $TMPDIR/swsh-read""", b"[one][ two  words ][]:3:last:0:a|b|c d:only|:from heredoc:0:1[]",
+                        )
+        # A read leaves the rest of the input for the next command.
+        self.run_source("/usr/bin/printf 'first\\nsecond\\n' | { read line; /bin/cat; }", b"second\n")
+        self.run_source("read; /usr/bin/printf '%s' $?; read 1x; /usr/bin/printf ':%s' $?; read x <&-; /usr/bin/printf ':%s' $?", b"2:2:1")
+        self.run_source("/usr/bin/printf 'a\\0b\\n' | { read x; /usr/bin/printf '%s[%s]' $? $x; }", b"2[]")
+        self.run_source("set -e; /usr/bin/printf 'x\\n' | { while read line; do /usr/bin/printf $line; done; /usr/bin/printf :done; }", b"x:done")
+        self.run_source("/bin/echo x | read y", b"", 2)
+
+    def test_script_arguments_and_shift(self):
+        def run(arguments, expected, status=0, **kwargs):
+            process = subprocess.Popen([SHELL, *arguments], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       start_new_session=True, **kwargs)
+            output, error = collect(process)
+            self.assertEqual((process.returncode, output), (status, expected), error)
+
+        with tempfile.TemporaryDirectory() as directory:
+            script = os.path.join(directory, "script.swsh")
+            Path(script).write_text("""/usr/bin/printf '<%s>' $# $1 $2 "$@"; /usr/bin/printf '|'
+shift; /usr/bin/printf '<%s>' $# $1 ${3-unset} $@; /usr/bin/printf '|'
+f() { shift 2; /usr/bin/printf '(%s)' $# $@; }; f a b c; /usr/bin/printf '<%s>' $#
+/bin/echo $1 | /usr/bin/tr a-z A-Z
+(/usr/bin/printf '%s:' $0 $2)
+shift 3; /usr/bin/printf '%s' $?; shift; shift; shift; /usr/bin/printf ':%s:%s' $? $#
+""")
+            run([script, "one", "two words", "*"],
+                b"<3><one><two words><one><two words><*>|<2><two words><unset><two words><*>|(1)(c)<2>TWO WORDS\n"
+                + script.encode() + b":*:2:2:0")
+        run(["-c", "/usr/bin/printf '<%s>' $0 $# $@", "name", "a", "b c"], b"<name><2><a><b c>")
+        run(["-c", "/usr/bin/printf '<%s>' $0 $# $@ ${1-unset}"], b"<swsh><0><unset>")
+        run(["-c", "set -u; /bin/echo $#; /bin/echo $1; /bin/echo unreachable", "name"], b"0\n", 2)
+        run(["-c", "shift x; /usr/bin/printf '%s' $?; shift 1 2; /usr/bin/printf '%s' $?", "name", "a"], b"22")
+        run(["-c", "/bin/echo x | shift", "name", "a"], b"", 2)
+        for arguments in (["-c"], ["-x"], ["-i", "extra"]):
+            with self.subTest(arguments=arguments):
+                run(arguments, b"", 2)
+
+    def test_arithmetic_assignment_updates_the_current_shell(self):
+        self.run_source("""x=5; /usr/bin/printf '%s ' $x $((x = x + 2)) $x $((x++)) $x $((++x)) $((x--)) $((--x)) $x
+/usr/bin/printf '%s ' $((y = z = 3)) $y $z $((y += 4)) $((y <<= 2)) $((y %= 5)) $((y == 3 ? (x = 1) : (x = 2))) $x $((q = 2, q * 4))""",
+                        b"5 7 7 7 8 9 9 7 7 3 3 3 7 28 3 1 1 8 ")
+        self.run_source("""a=(1 2 3); /usr/bin/printf '%s ' $((a[1] += 10)) $((a[0]++)) ${a[0]} $((a[3] = 9)) ${#a[@]}
+i=0; a[i++]=zero; a[i++]=$i; /usr/bin/printf '%s ' $i ${a[@]}""", b"12 1 2 9 4 2 zero 2 3 9 ")
+        self.run_source("a=(x y); s=scalar; i=0; trap '/usr/bin/printf \"%s:%s\" $i ${a[0]}' EXIT; a[i++]=changed s[0]=bad", b"0:x", 2)
+        self.run_source("""i=0; while /bin/test $((i++)) -lt 3; do /usr/bin/printf $i; done; : $((n += 5)) $((n *= 2))
+/usr/bin/printf ':%s:%s:%s' $n "$n$((n = 1))$n" ${u:-$((n = 7))}$n
+v=1; /usr/bin/printf ':%s:%s' $(/bin/echo $((v = 5))) $v
+f() { $((count += 1)); }; /bin/cat <<EOF
+:$((h = 4))$h
+EOF""", b"123:10:1011:77:5:1:44\n")
+        for source in ("a=(1); /bin/echo $((a = 2))", "/bin/echo $((5 = 1))", "a=(1); /bin/echo $((a[2] = 1))",
+                       "s=x; /bin/echo $((s[0] = 1))", "w=abc; /bin/echo $((w += 1))", "/bin/echo $(($x = 1))",
+                       "set -u; /bin/echo $((unset_name++))"):
+            with self.subTest(source=source):
+                self.run_source(source + "; /bin/echo unreachable", b"", 2)
+
+    def test_local_restores_the_callers_variables(self):
+        self.run_source("""g=global; e=exp; export e; l=(1 2)
+inner() { local g=deeper; /usr/bin/printf 'inner:%s ' $g; }
+f() { local g=inner e h l=scalar; /usr/bin/printf 'in:%s[%s][%s]%s ' $g ${e-unset} ${h-unset} $l; h=set; g2=leak; inner; g=changed; /usr/bin/printf 'in2:%s ' $g; }
+f; /usr/bin/printf 'out:%s:%s:[%s]:%s:%s ' $g $e ${h-unset} $g2 ${#l[@]}; /usr/bin/env | /usr/bin/grep '^e='""",
+                        b"in:inner[unset][unset]scalar inner:deeper in2:changed out:global:exp:[unset]:leak:2 e=exp\n")
+        self.run_source("""fact() { local n=$1; if /bin/test $n -le 1; then r=1; else fact $((n - 1)); r=$((r * n)); fi; }
+fact 5; /usr/bin/printf '%s:[%s]' $r ${n-unset}
+early() { local v=1; return 3; }; v=kept; early; /usr/bin/printf ':%s:%s' $? $v
+twice() { local t=1; local t=2 PATH=/nonexistent; /usr/bin/printf ':%s' $t; }; t=outer; twice; /usr/bin/printf ':%s' $t; /bin/echo :path-restored
+piped() { local p=worker; /bin/echo $p; }; piped | /usr/bin/tr a-z A-Z""", b"120:[unset]:3:kept:2:outer:path-restored\nWORKER\n")
+        for source in ("local x=1", "f() { local 1x; }; f", "f() { local; }; f", "f() { local a=1 b-c; /bin/echo $a; }; f",
+                       "f() { /bin/echo x | local y; }; f"):
+            with self.subTest(source=source):
+                self.run_source(source + "; /bin/echo unreachable", b"", 2)
+
+    def test_bracket_patterns_match_paths_and_case_words(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for name in ("a1", "a2", "b1", "c.txt", "]x"):
+                Path(directory, name).touch()
+
+            def run(source, expected, status=0):
+                process = launch(source, cwd=directory)
+                output, error = collect(process)
+                self.assertEqual((process.returncode, output), (status, expected), error)
+
+            run("""/usr/bin/printf '<%s>' [ab]1 [!a]? [!ab]? a[1-2] "[ab]1" '['ab] [ ] x[ y] a[]1] []]x ?[!0-9]*""",
+                b"<a1><b1><]x><b1><]x><a1><a2><[ab]1><[ab]><[><]><x[><y]><a1><]x><]x><c.txt>")
+            run("v='[ab]1'; /usr/bin/printf '<%s>' $v ${v} \"$v\" ${u:-[ab]1}; /bin/[ -f a1 ] && /usr/bin/printf ok",
+                b"<[ab]1><[ab]1><[ab]1><[ab]1>ok")
+            for source in ("/bin/echo [xyz]1", "/bin/echo [$v]", "/bin/echo [a\\]]", "/bin/echo [[:alpha:]]1",
+                           "/bin/echo a['1']", "/bin/echo [^a]1"):
+                with self.subTest(source=source):
+                    run(source + "; /bin/echo unreachable", b"", 2)
+        self.run_source("""v='[ab]'
+for word in b d 5 ']' '[ab]' -; do
+  case $word in
+    [ac]) /usr/bin/printf no ;;
+    [[:digit:]]) /usr/bin/printf class: ;;
+    []x]) /usr/bin/printf bracket: ;;
+    $v) /usr/bin/printf value-is-literal: ;;
+    [a-c]|[!a-z]) /usr/bin/printf range-or-negated: ;;
+    *) /usr/bin/printf other: ;;
+  esac
+done""", b"range-or-negated:other:class:bracket:value-is-literal:range-or-negated:")
+
+    def test_read_is_interruptible_and_honors_shutdown(self):
+        read, write = os.pipe()
+        process = launch("read line; /usr/bin/printf unreachable", stdin=read)
+        os.close(read)
+        time.sleep(0.3)
+        os.kill(process.pid, signal.SIGTERM)
+        output, _ = collect(process)
+        os.close(write)
+        self.assertEqual((process.returncode, output), (128 + signal.SIGTERM, b""))
+        with PtyShell(SHELL) as shell:
+            shell.send("while read line; do /usr/bin/printf '<%s>' $line; done\n")
+            # Input typed before the command starts belongs to the line editor.
+            shell.expect(b"\x1b]133;C\x07")
+            shell.send("typed\n")
+            shell.expect(b"<typed>")
+            # Until the body's job is reaped it, not the shell, owns the terminal
+            # and would receive the interrupt.
+            time.sleep(0.3)
+            shell.send(b"\x03")
+            shell.prompt()
+            self.assertIn(b"<130>", shell.command("/usr/bin/printf '<%s>' $?"))
 
     def test_functions_arguments_state_and_pipeline_isolation(self):
         self.run_source("f() { x=$1; /usr/bin/printf '<%s>:%s\\n' $x $#; }; f 'two words'; /usr/bin/printf '%s\\n' $x; f child | /bin/cat; /usr/bin/printf '%s\\n' $x",

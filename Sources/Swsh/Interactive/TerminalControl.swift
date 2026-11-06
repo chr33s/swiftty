@@ -1,5 +1,11 @@
 import CSwshSupport
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 /// Owns the controlling-terminal handle independently of all command descriptors.
 /// Only the session driver uses this object; terminal restoration is explicit.
@@ -85,7 +91,9 @@ final class TerminalControl {
 
   var size: (columns: Int, rows: Int) {
     var value = winsize()
-    guard ioctl(descriptor, TIOCGWINSZ, &value) == 0 else { return (80, 24) }
+    guard ioctl(descriptor, UInt(TIOCGWINSZ), &value) == 0 else {
+      return (80, 24)
+    }
     return (
       max(1, Int(value.ws_col == 0 ? 80 : value.ws_col)),
       max(1, Int(value.ws_row == 0 ? 24 : value.ws_row))
