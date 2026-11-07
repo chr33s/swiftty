@@ -33,11 +33,11 @@ extension TerminalState {
     isControlMode = continuation.isControlMode
   }
 
-  mutating func dcsHook(_ csi: borrowing CSISequence) {
+  mutating func dcsHook(_ csi: UnsafePointer<CSISequence>) {
     graphemes.releaseTail()
     dcsBuffer.removeAll(keepingCapacity: true)
-    switch (csi.marker, csi.intermediate, csi.final) {
-    case (0, 0, 0x70) where csi.value(0) == 1000:  // tmux -CC
+    switch (csi.pointee.marker, csi.pointee.intermediate, csi.pointee.final) {
+    case (0, 0, 0x70) where csi.pointee.value(0) == 1000:  // tmux -CC
       dcsKind = .tmux
       isControlMode = true
       events.append(.controlModeStarted)

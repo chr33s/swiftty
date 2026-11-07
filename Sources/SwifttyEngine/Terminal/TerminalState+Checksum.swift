@@ -21,9 +21,9 @@ extension TerminalState {
   }
 
   /// `CSI Pi ; Pg ; Pt ; Pl ; Pb ; Pr * y`. The page is ignored.
-  mutating func requestRectangleChecksum(_ csi: borrowing CSISequence) {
-    guard rectangleChecksumsEnabled, csi.count <= 6 else { return }
-    func field(_ i: Int) -> Int { min(csi.value(i), Int(UInt16.max)) }
+  mutating func requestRectangleChecksum(_ csi: UnsafePointer<CSISequence>) {
+    guard rectangleChecksumsEnabled, csi.pointee.count <= 6 else { return }
+    func field(_ i: Int) -> Int { min(csi.pointee.value(i), Int(UInt16.max)) }
     let id = field(0)
     let sum = rectangleChecksum(
       top: field(2),
@@ -37,10 +37,10 @@ extension TerminalState {
   }
 
   /// `CSI Ps # y`. Unknown bits are ignored, as in xterm.
-  mutating func selectChecksumExtension(_ csi: borrowing CSISequence) {
-    guard rectangleChecksumsEnabled, csi.count <= 1 else { return }
+  mutating func selectChecksumExtension(_ csi: UnsafePointer<CSISequence>) {
+    guard rectangleChecksumsEnabled, csi.pointee.count <= 1 else { return }
     checksumFlags = ChecksumFlags(
-      rawValue: UInt8(truncatingIfNeeded: csi.value(0))
+      rawValue: UInt8(truncatingIfNeeded: csi.pointee.value(0))
     )
   }
 

@@ -236,8 +236,18 @@ extension QUICTransportTests {
     if close { server.close() }
     server.queue.resume()
     suspended = false
-    try await transportEventually(.seconds(2)) {
-      server.admittedSnapshotSendsForTesting == 0
+    // Every held write completes only now, and after a close only once the
+    // group is canceled (up to `closeGrace` later): a loaded runner needs
+    // more than the two seconds the other waits get.
+    do {
+      try await transportEventually {
+        server.admittedSnapshotSendsForTesting == 0
+      }
+    } catch {
+      Issue.record(
+        "admissions not released: \(server.snapshotDiagnosticsForTesting)"
+      )
+      throw error
     }
     if close {
       #expect(server.isClosed)

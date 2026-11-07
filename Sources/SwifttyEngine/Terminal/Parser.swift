@@ -866,7 +866,9 @@ public struct Parser: ~Copyable {
     // Colon-separated subparameters are supported only by SGR.
     if !parameterOverflow, final == 0x6D || csi.colonMask == 0 {
       csi.final = final
-      t.csiDispatch(csi)
+      // By address: passing the value copies it with vector loads over
+      // the parameter stores just made, which defeats store forwarding.
+      withUnsafePointer(to: &csi) { t.csiDispatch($0) }
     }
     state = .ground
   }
@@ -924,7 +926,7 @@ public struct Parser: ~Copyable {
       return
     }
     csi.final = final
-    t.dcsHook(csi)
+    withUnsafePointer(to: &csi) { t.dcsHook($0) }
     if csi.marker == 0, csi.intermediate == 0, final == 0x70,
       csi.value(0) == 1000
     {

@@ -873,23 +873,29 @@ public struct TerminalState: ~Copyable {
 
   // MARK: CSI
 
-  mutating func csiDispatch(_ csi: borrowing CSISequence) {
+  mutating func csiDispatch(_ csi: UnsafePointer<CSISequence>) {
     graphemes.releaseTail()
-    let marker = csi.marker
-    let inter = csi.intermediate
+    let marker = csi.pointee.marker
+    let inter = csi.pointee.intermediate
     if marker == 0, inter == 0 {
       dispatchPlainCSI(csi)
       return
     }
-    switch (marker, inter, csi.final) {
+    switch (marker, inter, csi.pointee.final) {
     case (0x3F, 0, 0x68):
-      for i in 0 ..< csi.count { setDECMode(csi.value(i), true) }  // ? h
+      for i in 0 ..< csi.pointee.count {
+        setDECMode(csi.pointee.value(i), true)
+      }  // ? h
     case (0x3F, 0, 0x6C):
-      for i in 0 ..< csi.count { setDECMode(csi.value(i), false) }  // ? l
-    case (0x3F, 0, 0x4A): eraseDisplay(csi.value(0), selective: true)  // DECSED
-    case (0x3F, 0, 0x4B): eraseLine(csi.value(0), selective: true)  // DECSEL
+      for i in 0 ..< csi.pointee.count {
+        setDECMode(csi.pointee.value(i), false)
+      }  // ? l
+    case (0x3F, 0, 0x4A):  // DECSED
+      eraseDisplay(csi.pointee.value(0), selective: true)
+    case (0x3F, 0, 0x4B):  // DECSEL
+      eraseLine(csi.pointee.value(0), selective: true)
     case (0, 0x22, 0x71):  // DECSCA " q
-      switch csi.value(0) {
+      switch csi.pointee.value(0) {
       case 0, 2: cursor.isProtected = false
       case 1:
         cursor.isProtected = true
@@ -897,7 +903,7 @@ public struct TerminalState: ~Copyable {
       default: break
       }
     case (0x3F, 0, 0x6E):  // ? n
-      switch csi.value(0) {
+      switch csi.pointee.value(0) {
       case 6: reply("\u{1B}[?\(reportedRow);\(reportedColumn)R")
       case 996: reportColorScheme()
       default: break
@@ -905,24 +911,26 @@ public struct TerminalState: ~Copyable {
     case (0, 0x23, 0x7B), (0, 0x23, 0x70): pushPen()  // XTPUSHSGR # { and # p
     case (0, 0x23, 0x7D), (0, 0x23, 0x71): popPen()  // XTPOPSGR # } and # q
     case (0x3F, 0x24, 0x70):  // DECRQM ? $ p
-      let n = csi.value(0)
+      let n = csi.pointee.value(0)
       // Paste events are unusable unless their follow-up read is served.
       let state =
         n == 5522 && kittyClipboardReader == nil
         ? 0 : Modes.dec(n).map { modes.contains($0) ? 1 : 2 } ?? 0
       reply("\u{1B}[?\(n);\(state)$y")
     case (0, 0x24, 0x70):  // ANSI DECRQM
-      let n = csi.value(0)
+      let n = csi.pointee.value(0)
       let state = Modes.ansi(n).map { modes.contains($0) ? 1 : 2 } ?? 0
       reply("\u{1B}[\(n);\(state)$y")
     case (0x3E, 0, 0x63): reply("\u{1B}[>1;10;0c")  // DA2
     case (0x3E, 0, 0x6D):  // XTMODKEYS > m
       // Only `modifyOtherKeys` state 2 changes encoding. Every valid
       // request leaves it, as in Ghostty.
-      let resource = csi.value(0)
-      let value = csi.value(1)
-      guard csi.count <= 2, [0, 1, 2, 4].contains(resource) else { return }
-      if csi.count == 2, resource == 4, value == 2 {
+      let resource = csi.pointee.value(0)
+      let value = csi.pointee.value(1)
+      guard csi.pointee.count <= 2, [0, 1, 2, 4].contains(resource) else {
+        return
+      }
+      if csi.pointee.count == 2, resource == 4, value == 2 {
         modes.insert(.modifyOtherKeys)
       } else {
         modes.remove(.modifyOtherKeys)
@@ -934,8 +942,8 @@ public struct TerminalState: ~Copyable {
       else { return }
       reply("\u{1B}P>|\(terminalVersion)\u{1B}\\")
     case (0, 0x20, 0x71):  // DECSCUSR
-      let p = csi.value(0)
-      guard csi.count <= 1, (0 ... 6).contains(p) else { return }
+      let p = csi.pointee.value(0)
+      guard csi.pointee.count <= 1, (0 ... 6).contains(p) else { return }
       cursorStyle = p <= 2 ? .block : p <= 4 ? .underline : .bar
       if p == 0 || p % 2 == 1 {
         modes.insert(.cursorBlink)
@@ -954,16 +962,16 @@ public struct TerminalState: ~Copyable {
     case (0x3F, 0, 0x75): reply("\u{1B}[?\(keyboardFlags)u")
     case (0x3E, 0, 0x75):  // push
       if keyboardFlagStack.count >= 16 { keyboardFlagStack.removeFirst() }
-      keyboardFlagStack.append(UInt8(clamping: csi.value(0)) & 0x1F)
+      keyboardFlagStack.append(UInt8(clamping: csi.pointee.value(0)) & 0x1F)
     case (0x3C, 0, 0x75):  // pop
       keyboardFlagStack.removeLast(
-        min(max(csi.value(0), 1), keyboardFlagStack.count)
+        min(max(csi.pointee.value(0), 1), keyboardFlagStack.count)
       )
     case (0x3D, 0, 0x75):  // set
-      let flags = UInt8(clamping: csi.value(0)) & 0x1F
+      let flags = UInt8(clamping: csi.pointee.value(0)) & 0x1F
       let current = keyboardFlags
       let updated: UInt8 =
-        switch csi.param(1, default: 1) {
+        switch csi.pointee.param(1, default: 1) {
         case 2: current | flags
         case 3: current & ~flags
         default: flags
@@ -977,9 +985,9 @@ public struct TerminalState: ~Copyable {
     }
   }
 
-  private mutating func dispatchPlainCSI(_ csi: borrowing CSISequence) {
-    let n = csi.param(0, default: 1)
-    switch csi.final {
+  private mutating func dispatchPlainCSI(_ csi: UnsafePointer<CSISequence>) {
+    let n = csi.pointee.param(0, default: 1)
+    switch csi.pointee.final {
     case 0x40: insertBlanks(n)  // ICH @
     case 0x41: cursorUp(n)  // CUU A
     case 0x42: cursorDown(n)  // CUD B
@@ -996,11 +1004,11 @@ public struct TerminalState: ~Copyable {
     case 0x47, 0x60: setCursorColumn(n)  // CHA G, HPA `
     case 0x48, 0x66:
       // CUP H, HVP f
-      setCursorPosition(row: n, column: csi.param(1, default: 1))
+      setCursorPosition(row: n, column: csi.pointee.param(1, default: 1))
     case 0x49: tabForward(n)  // CHT I
-    case 0x4A: eraseDisplay(csi.value(0))  // ED J
+    case 0x4A: eraseDisplay(csi.pointee.value(0))  // ED J
     // EL K
-    case 0x4B: eraseLine(csi.value(0))
+    case 0x4B: eraseLine(csi.pointee.value(0))
     case 0x4C: insertLines(n)  // IL L
     case 0x4D: deleteLines(n)  // DL M
     case 0x50: deleteChars(n)  // DCH P
@@ -1010,39 +1018,48 @@ public struct TerminalState: ~Copyable {
     case 0x5A: tabBackward(n)  // CBT Z
     case 0x62:  // REP b
       if lastPrinted != 0 { repeatLastPrinted(min(n, 65535)) }
-    case 0x63: if csi.value(0) == 0 { reply("\u{1B}[?62;22c") }  // DA1
+    case 0x63: if csi.pointee.value(0) == 0 { reply("\u{1B}[?62;22c") }  // DA1
     case 0x64: setCursorRow(n)  // VPA d
     case 0x67:  // TBC g
-      switch csi.value(0) {
+      switch csi.pointee.value(0) {
       case 0: tabStops[cursor.x] = false
       case 3: for i in tabStops.indices { tabStops[i] = false }
       default: break
       }
     // SM h
-    case 0x68: for i in 0 ..< csi.count { setANSIMode(csi.value(i), true) }
+    case 0x68:
+      for i in 0 ..< csi.pointee.count {
+        setANSIMode(csi.pointee.value(i), true)
+      }
     // RM l
-    case 0x6C: for i in 0 ..< csi.count { setANSIMode(csi.value(i), false) }
+    case 0x6C:
+      for i in 0 ..< csi.pointee.count {
+        setANSIMode(csi.pointee.value(i), false)
+      }
     case 0x6D: selectGraphicRendition(csi)  // SGR m
     // DSR n
     case 0x6E:
-      switch csi.value(0) {
+      switch csi.pointee.value(0) {
       case 5: reply("\u{1B}[0n")
       case 6: reply("\u{1B}[\(reportedRow);\(reportedColumn)R")
       default: break
       }
     case 0x72:  // DECSTBM r
-      let top = max(1, csi.value(0))
-      let bottom = min(rows, csi.value(1) == 0 ? rows : csi.value(1))
+      let top = max(1, csi.pointee.value(0))
+      let bottom = min(
+        rows,
+        csi.pointee.value(1) == 0 ? rows : csi.pointee.value(1)
+      )
       if top < bottom {
         scrollTop = top - 1
         scrollBottom = bottom - 1
         setCursorPosition(row: 1, column: 1)
       }
     case 0x73:  // DECSLRM s, or SCOSC without parameters unless DECLRMM
-      if csi.count == 0, !modes.contains(.leftRightMargin) {
+      if csi.pointee.count == 0, !modes.contains(.leftRightMargin) {
         saveCursor()
       } else {
-        setLeftRightMargins(csi.value(0), csi.value(1))
+        setLeftRightMargins(csi.pointee.value(0), csi.pointee.value(1))
       }
     case 0x74: windowOperation(csi)  // XTWINOPS t
     case 0x75: restoreCursor()  // SCORC u
@@ -1091,8 +1108,8 @@ public struct TerminalState: ~Copyable {
     modes.contains(.origin) ? cursor.y - scrollTop + 1 : cursor.y + 1
   }
 
-  private mutating func windowOperation(_ csi: borrowing CSISequence) {
-    switch csi.value(0) {
+  private mutating func windowOperation(_ csi: UnsafePointer<CSISequence>) {
+    switch csi.pointee.value(0) {
     case 14:
       reply("\u{1B}[4;\(textAreaPixelSize.height);\(textAreaPixelSize.width)t")
     case 16: reply("\u{1B}[6;\(cellPixelSize.height);\(cellPixelSize.width)t")
