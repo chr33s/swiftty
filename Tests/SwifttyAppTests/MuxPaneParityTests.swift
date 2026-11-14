@@ -1,3 +1,4 @@
+import CoreTestSupport
 import TestSupport
 import AppKit
 import SwiftMuxProtocol

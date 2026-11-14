@@ -60,13 +60,16 @@ policy, and ordinary SSH/SFTP does not require roaming.
 | Confined execution ([spec.shell.md §11](spec.shell.md#11-confined-execution-an-execution-context-with-swsh-as-its-runner)) | Confined pane PTY or headless `swsh` runner inside a per-context Linux VM | Bounded by execution-service lease and grant |
 
 `swiftmux-agent` remains the single persistent workspace/PTY authority. Local
-SMX and roaming RST address the same workspaces and leases. For confined
-workloads, the app, the multiplexer service and the JavaScript runtime are
-clients of the execution service (`SwifttyExec`) and gain no path around it: a
-confined pane attaches a PTY to one execution context, an agent identity never
-receives host-pane writes, the JavaScript bridge or SSH as a path to the host,
-and an unreachable execution service reports `service_unavailable` instead of
-falling back to host execution ([spec.shell.md §11.5](spec.shell.md#115-swiftty)). Applications own
+SMX and roaming RST address the same workspaces and leases. Confined execution
+is a proposed design, not an implemented path: `SwifttyExec` holds the protocol
+and admission only, `SwshAgent` is its sole importer, and no process hosts the
+service ([spec.shell.md §11.6](spec.shell.md)). As designed, the app, the
+multiplexer service and the JavaScript runtime will be clients of that service
+and gain no path around it: a confined pane attaches a PTY to one execution
+context, an agent identity never receives host-pane writes, the JavaScript
+bridge or SSH as a path to the host, and an unreachable execution service
+reports `service_unavailable` instead of falling back to host execution
+([spec.shell.md §11.5](spec.shell.md#115-swiftty)). Applications own
 windows, navigation, trust prompts and credentials; attachments own protocol
 identity, recovery and delivery; surfaces own visible interaction. A workspace,
 tab, view, connection and PTY have distinct lifetimes. Hide, detach and end are
@@ -149,8 +152,8 @@ They already share parser/state and scrollback maintenance; the input-reservatio
 extraction is used by actual callers. Their different reply, callback and lifetime
 policies do not justify wholesale runtime consolidation.
 
-Owned-capture replacement, SSH bootstrap relocation, XPC target separation and
-module renaming remain optional, not prerequisites:
+Owned-capture replacement, SSH bootstrap relocation and module renaming remain
+optional, not prerequisites:
 
 - Borrowed queue-ordered `MuxService.inspect` is valid. Replace it only for an
   observed consistency, coupling or testability limitation, with bounded coherent
@@ -158,8 +161,10 @@ module renaming remain optional, not prerequisites:
   palette/grapheme limits and encoding in its adapter; avoid gratuitous copies.
 - Move `runBootstrap` into `SSHBootstrapper` only if that removes generic SSH-layer
   RST policy without duplicating timeout, path-validation or error handling.
-- Split Foundation SMX contracts from XPC only for an enforceable dependency/build
-  benefit; do not create separately versioned packages for diagram symmetry.
+- Foundation SMX contracts (`SwiftMuxProtocol`) are split from the XPC channel
+  and launchd job description (`SwiftMuxXPC`), because the roaming clients on
+  iOS, tvOS and visionOS link the contracts for attention metadata. Do not
+  create separately versioned packages for diagram symmetry.
 - Preserve target/product names and the dependency graph unless a concrete change
   needs a new boundary. No universal backend ABI, wire DTO, extra parser/renderer/
   SSH stack, service or PTY owner is required. SFTP and watch companion data stay

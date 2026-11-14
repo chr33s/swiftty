@@ -4,6 +4,7 @@ import Foundation
 import MuxAttention
 import os
 import SwiftMuxProtocol
+import SwiftMuxXPC
 
 /// The persistent session service: workspace graph, stable identities,
 /// one interactive lease per workspace, layout revisions and frame

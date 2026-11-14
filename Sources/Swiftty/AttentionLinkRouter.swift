@@ -85,9 +85,10 @@ final class AttentionLinkRouter {
     switch state {
     case .idle, .connecting, .opening, .opened: break
     case .rejected:
+      let message = AttentionPresentation.rejectedLink
       await inform(
-        "This link can't be opened",
-        "It is not a valid Swiftty attention link. Nothing was contacted."
+        String(localized: message.title),
+        String(localized: message.detail)
       )
       guard isCurrent(state, request: id) else { return }
       navigator.cancel()
@@ -142,17 +143,22 @@ final class AttentionLinkRouter {
       guard isCurrent(state, request: id) else { return }
       navigator.cancel()
     case let .missing(reason):
+      let message = AttentionPresentation.missing(
+        serviceRestarted: reason == .serviceRestarted
+      )
       await inform(
-        "Attention item no longer exists",
-        reason == .serviceRestarted
-          ? "SwiftMux restarted since this link was made, so the pane it named is gone."
-          : "The request, pane or terminal this link named was replaced or removed."
+        String(localized: message.title),
+        String(localized: message.detail)
       )
       guard isCurrent(state, request: id) else { return }
       navigator.cancel()
     case let .paneExited(preview):
-      let alert = itemAlert(preview, headline: "The program's pane has exited")
-      alert.informativeText += "\n\nIts final output may still be retained."
+      let message = AttentionPresentation.paneExited
+      let alert = itemAlert(
+        preview,
+        headline: String(localized: message.title)
+      )
+      alert.informativeText += "\n\n" + String(localized: message.detail)
       alert.addButton(withTitle: "Show Final Output")
       alert.addButton(withTitle: "Close")
       let open = await present(alert) == .alertFirstButtonReturn
@@ -163,12 +169,11 @@ final class AttentionLinkRouter {
     case let .confirmTakeover(offer):
       let alert = NSAlert()
       alert.alertStyle = .warning
-      alert.messageText =
-        offer.controllerChanged
-        ? "Another client took control first"
-        : "Another client controls this workspace"
-      var detail =
-        "Taking over disconnects it from the workspace. Its shells keep running."
+      let message = AttentionPresentation.takeover(
+        controllerChanged: offer.controllerChanged
+      )
+      alert.messageText = String(localized: message.title)
+      var detail = String(localized: message.detail)
       if let holder = offer.holder {
         let place = holder.transport == .remote ? "a remote device" : "this Mac"
         detail =
@@ -212,13 +217,7 @@ final class AttentionLinkRouter {
   }
 
   private func staleHeadline(_ resolution: AttentionResolution) -> String {
-    switch resolution {
-    case .superseded: "This request was replaced by a newer one"
-    case .resolved: "This request was already resolved"
-    case .reviewed: "This item was already reviewed"
-    case .paneExited: "The program's pane has exited"
-    case .open: "This item is no longer current"
-    }
+    String(localized: AttentionPresentation.staleHeadline(resolution))
   }
 
   /// Program text is untrusted: sanitized plain text only.

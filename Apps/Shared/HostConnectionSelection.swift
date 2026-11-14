@@ -32,3 +32,9 @@ extension RoamingAppModel {
     )
   }
 }
+
+extension HostDataOwner {
+  init(_ selection: HostConnectionSelection) {
+    self.init(host: selection.host, account: selection.context.scope)
+  }
+}

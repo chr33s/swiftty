@@ -353,7 +353,7 @@ public final class RoamingAppModel {
   private(set) var keyDeletionReviews: [IdentityIntent] = []
   private(set) var keyAccountReviews: [SSHIdentityMetadata] = []
   /// Invalidates reviewed host/key actions even after switching away and back.
-  private(set) var accountGeneration = 0
+  package private(set) var accountGeneration = 0
   /// Every identity, deleted ones included, by ID.
   private var identityIndex: [UUID: SSHIdentityMetadata] = [:]
   public private(set) var syncSettings = SyncSettings()
@@ -601,7 +601,7 @@ public final class RoamingAppModel {
   /// The in-memory state advances only after the write succeeds; a store
   /// that could not be read is never overwritten.
   @discardableResult
-  func commitConnections(
+  package func commitConnections(
     notifySync: Bool = true,
     _ mutate: (inout ConnectionSnapshot) throws(ConnectionStore.StoreError) ->
       Void
@@ -720,7 +720,7 @@ public final class RoamingAppModel {
 
   // MARK: Identities
 
-  func invalidateAccountContext() { accountGeneration += 1 }
+  package func invalidateAccountContext() { accountGeneration += 1 }
 
   public func identity(_ id: UUID) -> SSHIdentityMetadata? { identityIndex[id] }
 
@@ -1242,4 +1242,9 @@ public final class TransferPausePolicy {
       if next { await gate.pause() } else { await gate.resume() }
     }
   }
+}
+
+extension RoamingAppModel: ConnectionOwner {
+  package var cloudDatabase: (any ConnectionCloudDatabase)? { sync?.database }
+  package var trustFile: FileHostTrustStore { ssh.trustFile }
 }

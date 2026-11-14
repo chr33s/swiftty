@@ -3,6 +3,7 @@ import Foundation
 import MetalKit
 import SwiftMuxClient
 import SwiftMuxProtocol
+import SwiftMuxXPC
 import SwiftMuxService
 @testable import Swiftty
 import SwifttyCore

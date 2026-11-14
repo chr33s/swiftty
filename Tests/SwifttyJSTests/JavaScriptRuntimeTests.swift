@@ -156,6 +156,50 @@ extension JavaScriptRuntimeTests {
     #expect(actions.take().isEmpty)
   }
 
+  /// A script that never returns must not stall the host that entered it.
+  @Test
+  func runawayScriptsAreTerminated() throws {
+    let actions = ActionRecorder()
+    let runtime = JavaScriptRuntime(
+      executionTimeLimit: 0.2,
+      onAction: { actions.append($0) }
+    )
+    let clock = ContinuousClock()
+    let started = clock.now
+    #expect(throws: JavaScriptRuntime.ScriptError.self) {
+      try runtime.evaluate("while (true) {}")
+    }
+    try runtime.evaluate(
+      """
+      swiftty.filter.onStdout(() => { while (true) {} });
+      swiftty.events.bindKey('ctrl+k', () => { for (;;) {} });
+      """
+    )
+    #expect(
+      runtime.filter(Data("kept".utf8), stream: .stdout) == Data("kept".utf8)
+    )
+    #expect(!runtime.handleKey("ctrl+k"))
+    // Three terminated entries; an unbounded one would never get here.
+    #expect(clock.now - started < .seconds(5))
+    let errors = actions.take().filter { $0.kind == .error }
+    #expect(errors.count == 3)
+    #expect(errors.allSatisfy { $0.text?.contains("time limit") == true })
+    // The VM stays usable after a termination.
+    // The VM stays usable, and the pane entered by the terminated filter
+    // does not remain the active one.
+    runtime.setActivePane("focused")
+    _ = runtime.filter(Data("x".utf8), stream: .stdout, pane: "background")
+    _ = actions.take()
+    try runtime.evaluate(
+      """
+      swiftty.filter.onStdout(s => s);
+      swiftty.events.bindKey('ctrl+j', () => swiftty.currentPane.write('ok'));
+      """
+    )
+    #expect(runtime.handleKey("ctrl+j"))
+    #expect(actions.take().contains { $0.kind == .write && $0.pane == "focused" })
+  }
+
   @Test
   func backgroundCallbacksRestoreFocusedPaneEvenOnFailure() throws {
     let actions = ActionRecorder()

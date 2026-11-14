@@ -1,3 +1,4 @@
+import CoreTestSupport
 import TestSupport
 @testable import SwifttyCore
 @testable import SwifttyEngine

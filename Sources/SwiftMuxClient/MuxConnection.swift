@@ -1,6 +1,7 @@
 import Dispatch
 import Foundation
 import SwiftMuxProtocol
+import SwiftMuxXPC
 
 extension Duration {
   fileprivate var dispatchDeadline: DispatchTime {

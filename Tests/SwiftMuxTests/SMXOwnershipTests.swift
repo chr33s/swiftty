@@ -1,6 +1,7 @@
 import Dispatch
 import Foundation
 import SwiftMuxProtocol
+import SwiftMuxXPC
 import Synchronization
 import Testing
 

@@ -40,6 +40,7 @@ let package = Package(
     .library(name: "TerminalSurface", targets: ["TerminalSurface"]),
     .library(name: "CompanionModel", targets: ["CompanionModel"]),
     .library(name: "RoamingApp", targets: ["RoamingApp"]),
+    .library(name: "RoamingStore", targets: ["RoamingStore"]),
     .library(name: "MuxNavigation", targets: ["MuxNavigation"]),
     .library(name: "HostConnection", targets: ["HostConnection"]),
     .executable(name: "swiftty", targets: ["Swiftty"]),
@@ -126,7 +127,10 @@ let package = Package(
     ),
     // SwiftMux (spec.multiplexer.md): shared messages, engine bridge,
     // service, PTY launcher, client connection and frontends.
+    // Foundation only: every platform that shows attention links it.
     .target(name: "SwiftMuxProtocol"),
+    // The local XPC channel and launchd job description; macOS only.
+    .target(name: "SwiftMuxXPC", dependencies: ["SwiftMuxProtocol"]),
     // OSC 7501 attention reducer (spec.inbox.md §3): pure, no I/O.
     .target(name: "MuxAttention", dependencies: ["SwiftMuxProtocol"]),
     // Frame export needs only the engine; import needs the renderer.
@@ -142,18 +146,21 @@ let package = Package(
     .target(
       name: "SwiftMuxService",
       dependencies: [
-        "SwifttyEngine", "SwiftMuxProtocol", "SwiftMuxExport", "MuxAttention",
-        "SwifttyJS",
+        "SwifttyEngine", "SwiftMuxProtocol", "SwiftMuxXPC", "SwiftMuxExport",
+        "MuxAttention", "SwifttyJS",
       ]
     ),
     // The one PTY owner: local XPC and, when configured, roaming RST/1.
     .executableTarget(
       name: "SwiftMuxAgent",
-      dependencies: ["SwiftMuxService", "TerminalHost"]
+      dependencies: ["SwiftMuxService", "SwiftMuxProtocol", "TerminalHost"]
     ),
     // Fresh-process terminal setup: login_tty, then exec the shell in place.
     .executableTarget(name: "SwiftMuxLauncher"),
-    .target(name: "SwiftMuxClient", dependencies: ["SwiftMuxProtocol"]),
+    .target(
+      name: "SwiftMuxClient",
+      dependencies: ["SwiftMuxProtocol", "SwiftMuxXPC"]
+    ),
     // Deep links (spec.inbox.md §4): typed destinations, the
     // opaque locator, URL validation and the navigation state machine.
     // Foundation only, so the watch companion can link it.
@@ -181,7 +188,9 @@ let package = Package(
     ),
     .executableTarget(
       name: "SwiftMuxCLI",
-      dependencies: ["SwiftMuxTerminal", "SwiftMuxClient", "SwiftMuxProtocol"]
+      dependencies: [
+        "SwiftMuxTerminal", "SwiftMuxClient", "SwiftMuxProtocol", "SwiftMuxXPC",
+      ]
     ),
     // UIKit views are conditional; shared frontend tests also run on macOS.
     .target(name: "SwifttyMobile", dependencies: ["SwifttyCore"]),
@@ -190,10 +199,18 @@ let package = Package(
       dependencies: ["SwifttyCore", "CAllocCounter"],
       swiftSettings: core,
     ),
+    // Links neither the engine nor the renderer, so every test target can
+    // use it without rebuilding them.
     .target(
       name: "TestSupport",
-      dependencies: ["SessionCore", "SwifttyCore"],
+      dependencies: ["SessionCore"],
       path: "Tests/Support"
+    ),
+    // Fixtures that need `Configuration`, and so the renderer module.
+    .target(
+      name: "CoreTestSupport",
+      dependencies: ["SwifttyCore"],
+      path: "Tests/CoreSupport"
     ),
     .executableTarget(
       name: "StorageBoundsProbe",
@@ -276,14 +293,25 @@ let package = Package(
     // (spec.connection-setup.md). Foundation only: no UI, credentials,
     // PTYs or network I/O.
     .target(name: "HostConnection"),
+    // Saved hosts, SSH identities, CloudKit metadata sync and transfer
+    // manifests for the direct clients. No UI, terminal or renderer code.
+    .target(
+      name: "RoamingStore",
+      dependencies: [
+        "SessionCore", "SSHClient", "SSHIdentity",
+        .product(name: "Crypto", package: "swift-crypto"),
+      ],
+      path: "Apps/Store"
+    ),
     // Shared app model and per-platform UI for the direct clients
     // (Apps/* app targets are thin XcodeGen wrappers around this).
     .target(
       name: "RoamingApp",
       dependencies: [
-        "SessionCore", "ScreenProtocol", "SSHClient", "TerminalSurface",
-        "CompanionModel", "SwifttyCore", "SwifttyMobile", "MuxNavigation",
-        "HostConnection", "SSHIdentity",
+        "RoamingStore", "SessionCore", "ScreenProtocol", "SSHClient",
+        "TerminalSurface", "CompanionModel", "SwifttyCore", "SwifttyMobile",
+        "MuxNavigation",
+        "HostConnection", "SSHIdentity", "SwiftMuxProtocol",
         // AppKit surface for native macOS builds (the SwiftPM test host).
         .target(name: "SwifttyMac", condition: .when(platforms: [.macOS])),
         .product(name: "Crypto", package: "swift-crypto"),
@@ -300,9 +328,17 @@ let package = Package(
       swiftSettings: core
     ),
 
+    // Engine tests link neither the renderer nor fonts, so an engine change
+    // is tested without rebuilding them.
+    .testTarget(
+      name: "SwifttyEngineTests",
+      dependencies: ["SwifttyEngine", "TestSupport"],
+      swiftSettings: core
+    ),
     .testTarget(
       name: "SwifttyCoreTests",
       dependencies: [
+        "CoreTestSupport",
         "SwifttyCore", "SwifttyEngine", "CAllocCounter", "TestSupport",
         "StorageBoundsProbe",
       ],
@@ -310,13 +346,14 @@ let package = Package(
     ),
     .testTarget(
       name: "SwifttyMobileTests",
-      dependencies: ["SwifttyMobile", "SwifttyCore", "TestSupport"],
+      dependencies: [
+        "CoreTestSupport","SwifttyMobile", "SwifttyCore", "TestSupport"],
       resources: [.copy("Fixtures")],
     ),
     .testTarget(
       name: "SwiftMuxTests",
       dependencies: [
-        "SwiftMuxProtocol", "SwiftMuxBridge", "SwiftMuxService",
+        "SwiftMuxProtocol", "SwiftMuxXPC", "SwiftMuxBridge", "SwiftMuxService",
         "SwiftMuxClient", "SwiftMuxTerminal", "SwifttyCore", "MuxAttention",
         "TestSupport",
       ]
@@ -347,8 +384,9 @@ let package = Package(
     .testTarget(
       name: "SwifttyAppTests",
       dependencies: [
+        "CoreTestSupport",
         "Swiftty", "SwifttyMac", "SwifttyCore", "TestSupport",
-        "SwiftMuxService", "SwiftMuxClient", "SwiftMuxProtocol",
+        "SwiftMuxService", "SwiftMuxClient", "SwiftMuxProtocol", "SwiftMuxXPC",
         "SwiftMuxExport", "MuxNavigation", "MuxNavigationSMX", "HostConnection",
       ]
     ),
@@ -361,6 +399,7 @@ let package = Package(
     .testTarget(
       name: "IntegrationTests",
       dependencies: [
+        "CoreTestSupport",
         "SessionCore", "ScreenProtocol", "SSHClient", "AppleTransport",
         "TerminalHost", "TerminalSurface", "SwifttyCore", "TestSupport",
         "RoamingApp", "SwiftMuxProtocol", "SwiftMuxService", "SwiftMuxClient",

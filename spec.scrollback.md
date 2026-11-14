@@ -474,7 +474,7 @@ Keep new storage internals in the engine. Avoid a general storage framework or d
 | `TerminalState.swift`, `TerminalReflow.swift`, invariant checks | Shared-table epochs, reflow reads, full cold-state verification |
 | `SessionConfiguration.swift`, core `Configuration.swift` | Policy and finite config aliases |
 | `SwifttyCore/Session/TerminalSession.swift` | Direct-owner maintenance lifecycle |
-| `SwiftMuxService/PaneRuntime.swift`, `Model.swift`, `MuxService+Panes.swift` | Headless-owner policy and scheduling without wire changes |
+| `SwiftMuxService/PaneRuntime.swift` and its `PaneRuntime+*.swift` extensions, `Model.swift`, `MuxService+Panes.swift` | Headless-owner policy and scheduling without wire changes |
 | `SnapshotBuilder.swift`, `SnapshotStorage.swift`, engine `OwnedScreen.swift` | Viewport protection, immutable copied frames |
 | `Sources/SwifttyBench` and existing test targets | New storage-state metrics, transitions, and replay coverage |
 | `README.md`, `spec.md` | Public warm/cold read costs, configuration, measurement evidence |

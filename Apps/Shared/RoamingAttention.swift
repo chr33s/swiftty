@@ -274,8 +274,10 @@ final class RoamingInboxModel {
     init(host: NavigationHost, item: AttentionItem) {
       self.host = host
       self.item = item
-      title = AttentionInboxText.plain(item.status.title ?? item.status.message)
-      appName = AttentionInboxText.plain(item.status.app)
+      title = AttentionPresentation.plain(
+        item.status.title ?? item.status.message
+      )
+      appName = AttentionPresentation.plain(item.status.app)
     }
   }
 

@@ -3,6 +3,7 @@ import Dispatch
 import Foundation
 import SwiftMuxClient
 import SwiftMuxProtocol
+import SwiftMuxXPC
 @testable import Swiftty
 import SwifttyCore
 import Synchronization

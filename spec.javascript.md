@@ -23,6 +23,19 @@ and callbacks stay on that queue; host boundaries carry owned Swift values.
 Native UI actions are delivered asynchronously to the macOS client and execute
 on the main actor. Neither Node.js nor a package manager is required.
 
+The service and every pane's output path block on that queue, so each entry
+into the virtual machine (loading `config.js`, a filter, an event, a key
+binding or a status refresh) is limited to two seconds. An entry that exceeds
+the limit is terminated: a filter passes its input through unchanged, a key
+binding reports unhandled, loading fails, one error is logged, and the focused
+pane is restored. Later entries run normally. Termination cannot be caught by
+script code and `finally` blocks do not run. The limit uses JavaScriptCore's
+`JSContextGroupSetExecutionTimeLimit`, which is not public API; it is resolved
+at run time and `JavaScriptRuntimeTests.runawayScriptsAreTerminated` fails if
+an OS release removes it. `SwifttyJS` is linked only by the native macOS app and
+`swiftmux-agent`, which are distributed with Developer ID and notarized, not
+through the App Store; the App Store clients (`RoamingApp`) must not link it.
+
 The native client provisions editor assets at launch and subscribes to automation
 presentation actions. The service also provisions the assets before loading the
 script. Automation protocol operations are feature-gated and preserve existing

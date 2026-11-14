@@ -12,7 +12,7 @@ esac
 
 cd "$(dirname "$0")/.."
 properties=Sources/SwifttyEngine/Terminal/GraphemeBreakTables.swift
-test_data=Tests/SwifttyCoreTests/GraphemeBreakTestData.swift
+test_data=Tests/SwifttyEngineTests/GraphemeBreakTestData.swift
 temporary=$(mktemp -d .grapheme-tables.XXXXXX)
 publication_started=0
 committed=0

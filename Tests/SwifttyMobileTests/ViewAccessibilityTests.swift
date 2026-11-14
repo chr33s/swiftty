@@ -1,3 +1,4 @@
+import CoreTestSupport
 import TestSupport
 #if canImport(UIKit)
 import SwifttyCore

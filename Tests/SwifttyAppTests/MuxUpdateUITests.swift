@@ -1,6 +1,7 @@
 import Foundation
 import SwiftMuxClient
 import SwiftMuxProtocol
+import SwiftMuxXPC
 import SwiftMuxService
 @testable import Swiftty
 import Testing

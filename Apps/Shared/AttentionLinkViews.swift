@@ -179,14 +179,7 @@ struct AttentionDestinationView: View {
     switch navigator.state {
     case .idle: ProgressView()
     case .rejected:
-      message(
-        .localized("This link can't be opened"),
-        Text(
-          "It is not a valid Swiftty attention link. Nothing was contacted.",
-          bundle: #bundle
-        ),
-        symbol: "link.badge.plus"
-      )
+      message(AttentionPresentation.rejectedLink, symbol: "link.badge.plus")
     case let .needsHostSelection(hosts):
       VStack(alignment: .leading, spacing: 12) {
         Text("Choose a host", bundle: #bundle).font(.headline)
@@ -230,9 +223,9 @@ struct AttentionDestinationView: View {
     case let .stale(preview):
       VStack(alignment: .leading, spacing: 12) {
         message(
-          .localized("No longer current"),
+          AttentionPresentation.staleHeadline(preview.item.resolution),
           Text(
-            "This request was resolved, reviewed or replaced. A newer request is not shown in its place.",
+            "A newer request is not shown in its place.",
             bundle: #bundle
           ),
           symbol: "clock.arrow.circlepath"
@@ -242,22 +235,14 @@ struct AttentionDestinationView: View {
       .task { await navigator.didView() }
     case let .missing(reason):
       message(
-        .localized("Item not found"),
-        Text(
-          reason == .serviceRestarted
-            ? "The host's service restarted since this link was made."
-            : "The request, pane or terminal this link named is gone.",
-          bundle: #bundle
+        AttentionPresentation.missing(
+          serviceRestarted: reason == .serviceRestarted
         ),
         symbol: "questionmark.square.dashed"
       )
     case let .paneExited(preview):
       VStack(alignment: .leading, spacing: 12) {
-        message(
-          .localized("The pane exited"),
-          Text("Its final output may still be retained.", bundle: #bundle),
-          symbol: "stop.circle"
-        )
+        message(AttentionPresentation.paneExited, symbol: "stop.circle")
         item(preview)
         Button(.localized("Show Final Output")) {
           Task { await navigator.openInPane() }
@@ -267,12 +252,8 @@ struct AttentionDestinationView: View {
     case let .confirmTakeover(offer):
       VStack(alignment: .leading, spacing: 12) {
         message(
-          offer.controllerChanged
-            ? .localized("Another client took control first")
-            : .localized("Another client controls this workspace"),
-          Text(
-            "Taking over disconnects it. Its shells keep running.",
-            bundle: #bundle
+          AttentionPresentation.takeover(
+            controllerChanged: offer.controllerChanged
           ),
           symbol: "person.2.badge.gearshape"
         )
@@ -304,28 +285,33 @@ struct AttentionDestinationView: View {
     }
   }
 
+  /// Copy shared with the native macOS client.
+  private func message(
+    _ shared: AttentionPresentation.Message,
+    symbol: String
+  ) -> some View {
+    message(shared.title, Text(shared.detail), symbol: symbol)
+  }
+
+  /// Program text is untrusted: sanitized plain text, never markup.
   private func item(_ preview: AttentionPreview) -> some View {
     let status = preview.item.status
     return VStack(alignment: .leading, spacing: 4) {
-      Text(category(preview.item.category)).font(.subheadline.bold())
-      if let app = status.app { Text(verbatim: app).font(.caption) }
-      if let title = status.title { Text(verbatim: title) }
-      if let message = status.message {
+      Text(AttentionPresentation.categoryLabel(preview.item.category))
+        .font(.subheadline.bold())
+      if let app = AttentionPresentation.plain(status.app) {
+        Text(verbatim: app).font(.caption)
+      }
+      if let title = AttentionPresentation.plain(status.title) {
+        Text(verbatim: title)
+      }
+      if let message = AttentionPresentation.plain(status.message, limit: 300)
+      {
         Text(verbatim: message).font(.callout).foregroundStyle(.secondary)
           .lineLimit(6)
       }
     }
     .accessibilityElement(children: .combine)
-  }
-
-  private func category(
-    _ category: AttentionCategory
-  ) -> LocalizedStringResource {
-    switch category {
-    case .needsYou: .localized("Needs you")
-    case .failure: .localized("Failed")
-    case .result: .localized("Result")
-    }
   }
 }
 

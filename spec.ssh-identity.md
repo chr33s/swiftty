@@ -301,8 +301,8 @@ A missing replacement can be repaired from the matching legacy item using the sa
 |---|---|
 | `Sources/SSHClient/Ed25519Keys.swift` | Retain generation/public formatting and compatibility interfaces; remove app login dependence on load-or-create. |
 | New `Sources/SSHIdentity/` | Identity models, resolver, Keychain adapter, import adapter, typed errors, injectable stores. |
-| `Apps/Shared/HostProfile.swift`, `HostProfileStore.swift` | Versioned auth decoding, stable references, compatibility migration. |
-| New `Apps/Shared/ConnectionStore.swift`, `ConnectionSyncCoordinator.swift` | Atomic non-secret state, operation journals, private CloudKit sync. |
+| `Apps/Store/HostProfile.swift`, `HostProfileStore.swift` | Versioned auth decoding, stable references, compatibility migration. |
+| New `Apps/Store/ConnectionStore.swift`, `ConnectionSyncCoordinator.swift` | Atomic non-secret state, operation journals, private CloudKit sync. |
 | `Apps/Shared/SSHAccess.swift` | Inject resolver; preserve host/pairing checks; share behavior across all SSH callers. |
 | `Apps/Shared/HostViews.swift`, `RoamingAppModel.swift`; new key/settings views | Picker, generation/import, lifecycle handling, availability and recovery UI. |
 | `Package.swift`, `Apps/project.yml`, entitlement sources and `Scripts/configure-links.sh` | Wire client-only dependencies and configured capabilities; preserve generated Associated Domains entitlements. |

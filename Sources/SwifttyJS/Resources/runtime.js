@@ -137,7 +137,11 @@
     try { fn(); } catch (error) { emit({kind: 'error', text: String(error)}); }
     return true;
   });
-  globalThis.__activePane = id => { activePane = id; };
+  // A terminated entry unwinds without running `finally`, so the host
+  // restores the focused pane itself.
+  let focusedPane = activePane;
+  globalThis.__activePane = id => { activePane = id; focusedPane = id; };
+  globalThis.__recover = () => { activePane = focusedPane; };
   globalThis.__tick = now => {
     for (const [id, item] of items) {
       if (item.interval && now >= item.next) {

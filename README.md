@@ -592,6 +592,7 @@ Appendix B of the spec records the design sources.
 | `TerminalSurface` | Client: `RoamingClient`, frontend backends (roaming, ordinary SSH, local PTY), SSH and QUIC bridges |
 | `CompanionModel` | Bounded watch/iPhone status DTOs; no Swiftty, SSH or QUIC |
 | `HostConnection` | Pairing-code descriptor and `_swiftty._tcp` discovery contract (spec.connection-setup.md); Foundation only |
+| `RoamingStore` (`Apps/Store`) | Saved hosts, SSH identity lifecycle, CloudKit metadata sync and transfer manifests; no UI, terminal or renderer code |
 | `RoamingApp` (`Apps/Shared`) | Shared app model and SwiftUI for the direct clients |
 | `swifttyd` (`Apps/swifttyd`) | No-PTY SSH helper: `bootstrap --stdio`, `status` |
 

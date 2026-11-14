@@ -1,3 +1,4 @@
+import CoreTestSupport
 import AppKit
 @testable import Swiftty
 @testable import SwifttyMac

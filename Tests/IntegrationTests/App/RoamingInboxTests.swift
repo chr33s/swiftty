@@ -1,3 +1,4 @@
+import CoreTestSupport
 import Foundation
 import MuxNavigation
 import ScreenProtocol

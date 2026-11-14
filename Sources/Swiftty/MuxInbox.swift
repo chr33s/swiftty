@@ -1,4 +1,5 @@
 import AppKit
+import MuxNavigation
 import SwiftMuxProtocol
 
 /// The window's mirror of the service attention inbox (spec.inbox.md §3):
@@ -27,14 +28,9 @@ struct MuxInboxModel: Equatable {
   /// Whether any section has rows beyond those read so far.
   var hasMore: Bool { !cursors.isEmpty }
 
-  /// Whether the inbox shows `item`: a waiting request or an unreviewed
-  /// failure or result.
+  /// Whether the inbox shows `item`; the rule every inbox shares.
   static func shows(_ item: AttentionItem) -> Bool {
-    switch item.category {
-    case .needsYou: item.resolution == .open
-    case .failure, .result:
-      item.resolution == .open || item.resolution == .paneExited
-    }
+    AttentionPresentation.shows(item)
   }
 
   /// Adopts freshly read first pages, keeping items a newer update
@@ -133,36 +129,14 @@ struct MuxInboxModel: Equatable {
   var sorted: [AttentionItem] { sorted(at: Date()) }
 
   func sorted(at now: Date) -> [AttentionItem] {
-    items.values.sorted {
-      let a = Self.rank($0.category) + ($0.isSnoozed(at: now) ? 3 : 0)
-      let b = Self.rank($1.category) + ($1.isSnoozed(at: now) ? 3 : 0)
-      return a != b ? a < b : $0.createdAt > $1.createdAt
-    }
-  }
-
-  private static func rank(_ c: AttentionCategory) -> Int {
-    switch c {
-    case .needsYou: 0
-    case .failure: 1
-    case .result: 2
-    }
+    items.values.sorted { AttentionPresentation.precedes($0, $1, at: now) }
   }
 
   /// Plain-text heading and detail. Program text is untrusted: it is
   /// sanitized and never rendered as markup or links.
   static func text(_ item: AttentionItem) -> (heading: String, detail: String) {
     let s = item.status
-    let what: String =
-      switch item.category {
-      case .needsYou:
-        switch s.kind {
-        case .permission?: "Needs permission"
-        case .auth?: "Needs authentication"
-        case .question?, nil: "Needs an answer"
-        }
-      case .failure: "Failed"
-      case .result: "Done"
-      }
+    let what = String(localized: AttentionPresentation.label(item))
     let program = [s.app, s.title].compactMap { $0 }
       .map { DisplayText.sanitize($0) }.filter { !$0.isEmpty }
       .joined(separator: " — ")
@@ -176,64 +150,25 @@ struct MuxInboxModel: Equatable {
 
   // MARK: Snooze
 
-  enum SnoozeOption: CaseIterable {
-    case fifteenMinutes, oneHour, tomorrowMorning
+  typealias SnoozeOption = AttentionPresentation.SnoozeOption
 
-    var title: String {
-      switch self {
-      case .fifteenMinutes: "15 Minutes"
-      case .oneHour: "1 Hour"
-      case .tomorrowMorning: "Tomorrow at 9:00"
-      }
-    }
-
-    func until(at now: Date, calendar: Calendar = .current) -> Date? {
-      switch self {
-      case .fifteenMinutes: return now.addingTimeInterval(15 * 60)
-      case .oneHour: return now.addingTimeInterval(60 * 60)
-      case .tomorrowMorning:
-        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: now)
-        else { return nil }
-        return calendar.date(
-          bySettingHour: 9,
-          minute: 0,
-          second: 0,
-          of: tomorrow
-        )
-      }
-    }
-  }
-
-  /// Only a waiting request can be snoozed: snoozing hides it from the
-  /// badge until the time passes or the program moves on.
   static func canSnooze(_ item: AttentionItem) -> Bool {
-    item.category == .needsYou && item.resolution == .open
+    AttentionPresentation.canSnooze(item)
   }
 
-  /// The snooze choices offered at `now`: 15 minutes, an hour and 9:00
-  /// tomorrow (in `calendar`'s time zone).
   static func snoozeChoices(
     at now: Date,
     calendar: Calendar = .current
   ) -> [(title: String, until: Date)] {
-    SnoozeOption.allCases.compactMap { option in
-      option.until(at: now, calendar: calendar).map { (option.title, $0) }
-    }
+    AttentionPresentation.snoozeChoices(at: now, calendar: calendar)
   }
 
-  /// "Snoozed until …" for a snoozed item, else nil.
   static func snoozeText(
     _ item: AttentionItem,
     at now: Date,
     calendar: Calendar = .current
   ) -> String? {
-    guard let until = item.snoozedUntil, until > now else { return nil }
-    var style = Date.FormatStyle(date: .omitted, time: .shortened)
-    if !calendar.isDate(until, inSameDayAs: now) {
-      style = Date.FormatStyle(date: .abbreviated, time: .shortened)
-    }
-    style.timeZone = calendar.timeZone
-    return "Snoozed until \(until.formatted(style))"
+    AttentionPresentation.snoozeText(item, at: now, calendar: calendar)
   }
 
   // MARK: Failures
@@ -431,7 +366,8 @@ final class MuxInboxViewController: NSViewController {
     for option in MuxInboxModel.SnoozeOption.allCases {
       button.menu?
         .addItem(
-          ActionMenuItem(title: option.title) { [weak self] in
+          ActionMenuItem(title: String(localized: option.title)) {
+            [weak self] in
             guard let self, let until = option.until(at: self.snoozeNow())
             else { return }
             self.onSnooze?(item, until)

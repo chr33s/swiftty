@@ -1,3 +1,4 @@
+import CoreTestSupport
 import AppKit
 import CoreImage
 import CryptoKit

@@ -4,26 +4,6 @@ import SSHClient
 import SSHIdentity
 import TerminalSurface
 
-/// Where the app keeps non-secret state: trusted host public keys,
-/// transfer manifests and staged files. tvOS offers no durable local
-/// storage, so it uses Caches there (spec §2.3).
-enum RoamingStorage {
-  static var directory: URL {
-    if let override = UITesting.storageDirectory { return override }
-    #if os(tvOS)
-    let base = URL.cachesDirectory
-    #else
-    let base = URL.applicationSupportDirectory
-    #endif
-    return base.appending(path: "Swiftty", directoryHint: .isDirectory)
-  }
-
-  /// Trusted SSH host keys (public keys only).
-  static var knownHostsURL: URL {
-    directory.appending(path: "known_hosts.json", directoryHint: .notDirectory)
-  }
-}
-
 /// Why an SSH connection for a saved host could not be made. Messages
 /// carry no secrets.
 enum SSHAccessError: Error, Equatable, Sendable {

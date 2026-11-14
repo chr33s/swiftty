@@ -92,7 +92,7 @@ private struct AttentionInboxRow: View {
     } label: {
       VStack(alignment: .leading, spacing: 2) {
         HStack {
-          Text(label(item)).font(.headline)
+          Text(AttentionPresentation.label(item)).font(.headline)
           if !item.seen { Image(systemName: "circle.fill").font(.caption2) }
           Spacer()
           Text(item.updatedAt, style: .relative).font(.caption)
@@ -105,23 +105,30 @@ private struct AttentionInboxRow: View {
           verbatim: [entry.host.name, entry.appName].compactMap { $0 }
             .joined(separator: " · ")
         )
-        (snoozed ? Text("\(names) · snoozed", bundle: #bundle) : names)
-          .font(.caption).foregroundStyle(.secondary)
+        names.font(.caption).foregroundStyle(.secondary)
+        if let snooze = AttentionPresentation.snoozeText(item, at: .now) {
+          Text(verbatim: snooze).font(.caption).foregroundStyle(.secondary)
+        }
       }
     }
     .contextMenu {
-      Button(.localized("Snooze 1 Hour"), systemImage: "moon.zzz") {
-        inbox.perform(
-          .snooze(reference(item), until: .now.addingTimeInterval(3600)),
-          on: entry
-        )
+      if AttentionPresentation.canSnooze(item) {
+        Menu(.localized("Snooze"), systemImage: "moon.zzz") {
+          ForEach(AttentionPresentation.SnoozeOption.allCases, id: \.self) {
+            option in
+            Button(option.title) {
+              guard let until = option.until(at: .now) else { return }
+              inbox.perform(.snooze(reference(item), until: until), on: entry)
+            }
+          }
+        }
       }
       if snoozed {
         Button(.localized("Unsnooze"), systemImage: "bell") {
           inbox.perform(.snooze(reference(item), until: nil), on: entry)
         }
       }
-      if item.category != .needsYou {
+      if AttentionPresentation.canMarkReviewed(item) {
         Button(.localized("Mark Reviewed"), systemImage: "checkmark") {
           inbox.perform(.markReviewed(reference(item)), on: entry)
         }
@@ -131,38 +138,6 @@ private struct AttentionInboxRow: View {
 
   private func reference(_ item: AttentionItem) -> AttentionReference {
     AttentionReference(source: item.source, occurrence: item.occurrence)
-  }
-
-  private func label(_ item: AttentionItem) -> LocalizedStringResource {
-    switch item.category {
-    case .needsYou:
-      switch item.status.kind {
-      case .permission: .localized("Permission needed")
-      case .auth: .localized("Sign-in needed")
-      case .question, nil: .localized("Question")
-      }
-    case .failure: .localized("Failed")
-    case .result: .localized("Finished")
-    }
-  }
-}
-
-nonisolated enum AttentionInboxText {
-  /// Untrusted program text as one plain line.
-  static func plain(_ text: String?) -> String? {
-    guard let text else { return nil }
-    let cleaned = String(
-      String.UnicodeScalarView(
-        text.unicodeScalars.map {
-          switch $0.properties.generalCategory {
-          case .control, .format, .lineSeparator, .paragraphSeparator: " "
-          default: $0
-          }
-        }
-      )
-    )
-    .trimmingCharacters(in: .whitespaces)
-    return cleaned.isEmpty ? nil : String(cleaned.prefix(200))
   }
 }
 

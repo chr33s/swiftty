@@ -1,5 +1,6 @@
 import Foundation
 import SwiftMuxProtocol
+import SwiftMuxXPC
 import TestSupport
 import Testing
 

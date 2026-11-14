@@ -4,6 +4,7 @@ import MuxNavigation
 import SwiftMuxClient
 import SwiftMuxExport
 import SwiftMuxProtocol
+import SwiftMuxXPC
 @testable import Swiftty
 import SwifttyCore
 import Synchronization

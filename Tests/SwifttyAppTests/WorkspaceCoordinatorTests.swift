@@ -1,7 +1,9 @@
+import CoreTestSupport
 import AppKit
 import Foundation
 import SwiftMuxClient
 import SwiftMuxProtocol
+import SwiftMuxXPC
 @testable import Swiftty
 import SwifttyConfig
 import SwifttyCore

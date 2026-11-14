@@ -1,3 +1,4 @@
+import CoreTestSupport
 @testable import SwifttyCore
 @testable import SwifttyEngine
 import Synchronization

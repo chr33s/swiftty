@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 import SwiftMuxClient
 import SwiftMuxProtocol
+import SwiftMuxXPC
 import SwiftMuxTerminal
 
 let usage = """

@@ -89,11 +89,7 @@ public struct AttentionSummary: Sendable, Equatable, Codable {
 
   /// A one-line, non-secret label: never the program title or message.
   public var categoryLabel: LocalizedStringResource {
-    switch category {
-    case .needsYou: LocalizedStringResource("Needs you", bundle: #bundle)
-    case .failure: LocalizedStringResource("Failed", bundle: #bundle)
-    case .result: LocalizedStringResource("Result", bundle: #bundle)
-    }
+    AttentionPresentation.categoryLabel(category)
   }
 
   static func sanitize(_ text: String?, limit: Int) -> String? {

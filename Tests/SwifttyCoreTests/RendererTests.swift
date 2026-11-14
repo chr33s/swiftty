@@ -1,3 +1,4 @@
+import CoreTestSupport
 import CoreText
 import Metal
 @testable import SwifttyCore
