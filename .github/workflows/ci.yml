@@ -49,6 +49,9 @@ jobs:
       - name: Check agent request handling stays effect-free
         if: matrix.configuration == 'debug'
         run: Scripts/check-agent-purity.sh
+      - name: Check roaming client layering
+        if: matrix.configuration == 'debug'
+        run: Scripts/check-layering.sh
   shell-baseline:
     runs-on: xcode-27
     steps:
