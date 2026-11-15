@@ -590,6 +590,7 @@ Sources/
   RoamingKit/        headless client core: RoamingClient, input, frames, seams
   RoamingConnect/    RoamingKit seams bound to SSHClient and AppleTransport
   TerminalSurface/   GUI frontend backends over TerminalSession
+  RoamingTerminal/   TTY frontend over TTYKit (swroam)
   CompanionModel/    bounded watch/iPhone status DTOs; no SSH/RST secrets
 Apps/
   MobileClient/      iOS/iPadOS full client and iPhone companion bridge

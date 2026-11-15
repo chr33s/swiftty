@@ -38,6 +38,7 @@ let package = Package(
     .library(name: "AppleTransport", targets: ["AppleTransport"]),
     .library(name: "TerminalHost", targets: ["TerminalHost"]),
     .library(name: "TTYKit", targets: ["TTYKit"]),
+    .library(name: "RoamingTerminal", targets: ["RoamingTerminal"]),
     .library(name: "RoamingKit", targets: ["RoamingKit"]),
     .library(name: "RoamingConnect", targets: ["RoamingConnect"]),
     .library(name: "TerminalSurface", targets: ["TerminalSurface"]),
@@ -49,6 +50,7 @@ let package = Package(
     .executable(name: "swiftty", targets: ["Swiftty"]),
     .executable(name: "swiftty-bench", targets: ["SwifttyBench"]),
     .executable(name: "swmux", targets: ["SwiftMuxCLI"]),
+    .executable(name: "swroam", targets: ["SwRoamCLI"]),
     .executable(name: "swiftmux-agent", targets: ["SwiftMuxAgent"]),
     .executable(name: "swmux-launcher", targets: ["SwiftMuxLauncher"]),
     .executable(name: "swiftmux-bench", targets: ["SwiftMuxBench"]),
@@ -188,7 +190,10 @@ let package = Package(
     // Outer-terminal I/O shared by the TTY frontends: raw mode, input
     // decoding, display-width text and the cell diff renderer. Headless:
     // SwiftMuxProtocol supplies only the key vocabulary and DisplayText.
-    .target(name: "TTYKit", dependencies: ["SwiftMuxProtocol", "SwifttyEngine"]),
+    .target(
+      name: "TTYKit",
+      dependencies: ["SwiftMuxProtocol", "SwifttyEngine"]
+    ),
     .target(
       name: "SwiftMuxTerminal",
       dependencies: [
@@ -303,6 +308,24 @@ let package = Package(
         .product(name: "NIOCore", package: "swift-nio"),
       ]
     ),
+    // TTY frontend for RoamingKit: frames through TTYKit's diff renderer,
+    // decoded outer input as semantic operations. No renderer or UI.
+    .target(
+      name: "RoamingTerminal",
+      dependencies: [
+        "RoamingKit", "TTYKit", "SessionCore", "ScreenProtocol",
+        "SwiftMuxProtocol", "SwifttyEngine",
+      ]
+    ),
+    // swroam: mosh-style roaming client for any terminal.
+    .executableTarget(
+      name: "SwRoamCLI",
+      dependencies: [
+        "RoamingTerminal", "RoamingConnect", "RoamingKit", "TTYKit",
+        "SessionCore", "ScreenProtocol", "SSHClient", "SSHIdentity",
+        "AppleTransport",
+      ]
+    ),
     // GUI frontend glue: backends that render through a TerminalSession.
     .target(
       name: "TerminalSurface",
@@ -337,8 +360,7 @@ let package = Package(
       dependencies: [
         "RoamingStore", "SessionCore", "ScreenProtocol", "SSHClient",
         "TerminalSurface", "CompanionModel", "SwifttyCore", "SwifttyMobile",
-        "MuxNavigation",
-        "HostConnection", "SSHIdentity", "SwiftMuxProtocol",
+        "MuxNavigation", "HostConnection", "SSHIdentity", "SwiftMuxProtocol",
         // AppKit surface for native macOS builds (the SwiftPM test host).
         .target(name: "SwifttyMac", condition: .when(platforms: [.macOS])),
         .product(name: "Crypto", package: "swift-crypto"),
@@ -365,16 +387,16 @@ let package = Package(
     .testTarget(
       name: "SwifttyCoreTests",
       dependencies: [
-        "CoreTestSupport",
-        "SwifttyCore", "SwifttyEngine", "CAllocCounter", "TestSupport",
-        "StorageBoundsProbe",
+        "CoreTestSupport", "SwifttyCore", "SwifttyEngine", "CAllocCounter",
+        "TestSupport", "StorageBoundsProbe",
       ],
       swiftSettings: core,
     ),
     .testTarget(
       name: "SwifttyMobileTests",
       dependencies: [
-        "CoreTestSupport","SwifttyMobile", "SwifttyCore", "TestSupport"],
+        "CoreTestSupport", "SwifttyMobile", "SwifttyCore", "TestSupport",
+      ],
       resources: [.copy("Fixtures")],
     ),
     .testTarget(
@@ -411,10 +433,10 @@ let package = Package(
     .testTarget(
       name: "SwifttyAppTests",
       dependencies: [
-        "CoreTestSupport",
-        "Swiftty", "SwifttyMac", "SwifttyCore", "TestSupport",
-        "SwiftMuxService", "SwiftMuxClient", "SwiftMuxProtocol", "SwiftMuxXPC",
-        "SwiftMuxExport", "MuxNavigation", "MuxNavigationSMX", "HostConnection",
+        "CoreTestSupport", "Swiftty", "SwifttyMac", "SwifttyCore",
+        "TestSupport", "SwiftMuxService", "SwiftMuxClient", "SwiftMuxProtocol",
+        "SwiftMuxXPC", "SwiftMuxExport", "MuxNavigation", "MuxNavigationSMX",
+        "HostConnection",
       ]
     ),
     .testTarget(
@@ -426,13 +448,11 @@ let package = Package(
     .testTarget(
       name: "IntegrationTests",
       dependencies: [
-        "CoreTestSupport",
-        "SessionCore", "ScreenProtocol", "SSHClient", "AppleTransport",
-        "TerminalHost", "RoamingKit", "RoamingConnect", "TerminalSurface",
-        "SwifttyCore",
-        "TestSupport",
-        "RoamingApp", "SwiftMuxProtocol", "SwiftMuxService", "SwiftMuxClient",
-        "HostConnection", "MuxNavigation", "SSHIdentity",
+        "CoreTestSupport", "SessionCore", "ScreenProtocol", "SSHClient",
+        "AppleTransport", "TerminalHost", "RoamingKit", "RoamingConnect",
+        "TerminalSurface", "RoamingTerminal", "TTYKit", "SwifttyCore",
+        "TestSupport", "RoamingApp", "SwiftMuxProtocol", "SwiftMuxService",
+        "SwiftMuxClient", "HostConnection", "MuxNavigation", "SSHIdentity",
         .product(name: "NIOCore", package: "swift-nio"),
         .product(name: "NIOPosix", package: "swift-nio"),
         .product(name: "NIOSSH", package: "swift-nio-ssh"),

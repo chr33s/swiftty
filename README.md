@@ -592,6 +592,9 @@ Appendix B of the spec records the design sources.
 | `RoamingKit` | Headless client core: `RoamingClient`, semantic input, presentation frames and the bootstrap/connector/sink seams; links the engine only |
 | `RoamingConnect` | `RoamingKit` seams bound to SSH (`SSHBootstrapper`, `SSHShellByteChannel`) and pinned QUIC (`QUICGrantConnector`); no renderer or UI |
 | `TerminalSurface` | GUI client glue: frontend backends (roaming, ordinary SSH, local PTY) over `TerminalSession`; re-exports `RoamingKit` and `RoamingConnect` |
+| `TTYKit` | Outer-terminal I/O shared by `swmux` and `swroam`: raw mode, input decoding, display-width text, cell diff renderer |
+| `RoamingTerminal` | TTY frontend for `RoamingKit`: frames through `TTYKit`, decoded input as semantic operations, reconnect banner |
+| `swroam` (`SwRoamCLI`) | mosh-style roaming client for any terminal |
 | `CompanionModel` | Bounded watch/iPhone status DTOs; no Swiftty, SSH or QUIC |
 | `HostConnection` | Pairing-code descriptor and `_swiftty._tcp` discovery contract (spec.connection-setup.md); Foundation only |
 | `RoamingStore` (`Apps/Store`) | Saved hosts, SSH identity lifecycle, CloudKit metadata sync and transfer manifests; no UI, terminal or renderer code |
@@ -620,6 +623,16 @@ epoch, and each attachment takes the workspace's interactive lease: a
 workspace the Mac app controls is refused (`writerBusy`) unless the client
 resumes with `takeover`. Grant expiry never ends a shell the remote client
 did not create.
+
+From any terminal, `swroam [-i KEY] [user@]host` bootstraps over SSH and then
+follows the session over QUIC through network changes and sleep, like mosh,
+but drawing the host's authoritative screen with no local prediction. It
+accepts OpenSSH Ed25519 keys (default `~/.ssh/id_ed25519`, passphrase
+prompted) or a password, and asks once about an unknown host key before
+raw mode; reconnects never prompt. Trusted keys live in
+`~/Library/Application Support/swroam/known_hosts.json`. In the session,
+Ctrl-^ `.` detaches (printing the `swroam -r ID host` to resume), Ctrl-^ `k`
+terminates the shell, and Ctrl-^ Ctrl-^ sends Ctrl-^.
 
 To allow incoming connections to the bundled `swiftmux-agent` through the
 macOS firewall, run `Scripts/install.sh --roaming --configure-firewall`.
