@@ -1,5 +1,6 @@
 import ScreenProtocol
 import SessionCore
+@testable import RoamingKit
 @testable import TerminalSurface
 import Testing
 import TestSupport

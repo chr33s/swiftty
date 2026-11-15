@@ -587,7 +587,8 @@ Sources/
   ScreenProtocol/    RST messages, validation, snapshots, bounded scheduler
   AppleTransport/    QUIC, TLS identity policy, Network callbacks
   TerminalHost/      Swiftty adapter, macOS PTY ownership, semantic input
-  TerminalSurface/   shared direct-client frame/input abstraction
+  RoamingKit/        headless client core: RoamingClient, input, frames, seams
+  TerminalSurface/   GUI frontend backends over TerminalSession
   CompanionModel/    bounded watch/iPhone status DTOs; no SSH/RST secrets
 Apps/
   MobileClient/      iOS/iPadOS full client and iPhone companion bridge

@@ -178,7 +178,7 @@ build WatchCompanion "generic/platform=watchOS Simulator"
 
 # The watch target must link only CompanionModel and MuxNavigation (spec §2.2).
 watch_log="$logs/WatchCompanion.log"
-if grep -qE "SwifttyCore|SSHClient|NIOSSH|NIOCore|TerminalSurface|AppleTransport" "$watch_log"; then
+if grep -qE "SwifttyCore|SSHClient|NIOSSH|NIOCore|RoamingKit|TerminalSurface|AppleTransport" "$watch_log"; then
   record_evidence echo "WatchCompanion dependency check: FAIL (direct-client modules built for watchOS)"
   failures=$((failures + 1))
 else

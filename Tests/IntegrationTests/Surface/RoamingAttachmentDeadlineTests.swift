@@ -3,6 +3,7 @@ import Foundation
 import SessionCore
 import Synchronization
 import SwifttyCore
+@testable import RoamingKit
 @testable import TerminalSurface
 import Testing
 

@@ -37,6 +37,7 @@ let package = Package(
     .library(name: "SSHIdentity", targets: ["SSHIdentity"]),
     .library(name: "AppleTransport", targets: ["AppleTransport"]),
     .library(name: "TerminalHost", targets: ["TerminalHost"]),
+    .library(name: "RoamingKit", targets: ["RoamingKit"]),
     .library(name: "TerminalSurface", targets: ["TerminalSurface"]),
     .library(name: "CompanionModel", targets: ["CompanionModel"]),
     .library(name: "RoamingApp", targets: ["RoamingApp"]),
@@ -277,12 +278,21 @@ let package = Package(
       ],
       swiftSettings: core
     ),
-    // Shared direct-client frame/input abstraction and backends.
+    // Roaming client core: RST/1 client state machine, semantic input,
+    // presentation frames and the transport seams. Headless: links the
+    // engine, never the renderer, NIO, Network or a UI framework.
+    .target(
+      name: "RoamingKit",
+      dependencies: ["SessionCore", "ScreenProtocol", "SwifttyEngine"],
+      swiftSettings: core
+    ),
+    // GUI frontend glue: backends that render through a TerminalSession.
     .target(
       name: "TerminalSurface",
       dependencies: [
-        "SessionCore", "ScreenProtocol", "AppleTransport", "SSHClient",
-        "SwifttyCore", .product(name: "NIOCore", package: "swift-nio"),
+        "RoamingKit", "SessionCore", "ScreenProtocol", "AppleTransport",
+        "SSHClient", "SwifttyCore",
+        .product(name: "NIOCore", package: "swift-nio"),
       ],
       swiftSettings: core
     ),
@@ -401,7 +411,8 @@ let package = Package(
       dependencies: [
         "CoreTestSupport",
         "SessionCore", "ScreenProtocol", "SSHClient", "AppleTransport",
-        "TerminalHost", "TerminalSurface", "SwifttyCore", "TestSupport",
+        "TerminalHost", "RoamingKit", "TerminalSurface", "SwifttyCore",
+        "TestSupport",
         "RoamingApp", "SwiftMuxProtocol", "SwiftMuxService", "SwiftMuxClient",
         "HostConnection", "MuxNavigation", "SSHIdentity",
         .product(name: "NIOCore", package: "swift-nio"),

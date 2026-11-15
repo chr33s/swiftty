@@ -5,6 +5,7 @@ import Synchronization
 import SwifttyCore
 import Testing
 
+@testable import RoamingKit
 @testable import TerminalSurface
 
 /// Client-side history windows (`historyViewport`).

@@ -1,6 +1,7 @@
 import Dispatch
 import SSHClient
 import Synchronization
+@testable import RoamingKit
 @testable import TerminalSurface
 import Testing
 

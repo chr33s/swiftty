@@ -589,7 +589,8 @@ Appendix B of the spec records the design sources.
 | `SSHIdentity` | SSH identities (spec.ssh-identity.md): UUID metadata, Keychain storage policies, read-only resolution, bounded OpenSSH Ed25519 import, including passphrase-protected keys; client-only |
 | `AppleTransport` | Network framework QUIC (ALPN `rst/1`, TLS 1.3, no 0-RTT), SPKI and exact-certificate pinning, host identity |
 | `TerminalHost` | RST/1 host over the SwiftMux service (owns no PTYs): `RoamingHost` QUIC listener and grants, in-process SMX client, screen exporter, session registry, bootstrap/attention service, control socket, roaming configuration |
-| `TerminalSurface` | Client: `RoamingClient`, frontend backends (roaming, ordinary SSH, local PTY), SSH and QUIC bridges |
+| `RoamingKit` | Headless client core: `RoamingClient`, semantic input, presentation frames and the bootstrap/connector/sink seams; links the engine only |
+| `TerminalSurface` | GUI client glue: frontend backends (roaming, ordinary SSH, local PTY) over `TerminalSession`, SSH and QUIC bridges; re-exports `RoamingKit` |
 | `CompanionModel` | Bounded watch/iPhone status DTOs; no Swiftty, SSH or QUIC |
 | `HostConnection` | Pairing-code descriptor and `_swiftty._tcp` discovery contract (spec.connection-setup.md); Foundation only |
 | `RoamingStore` (`Apps/Store`) | Saved hosts, SSH identity lifecycle, CloudKit metadata sync and transfer manifests; no UI, terminal or renderer code |

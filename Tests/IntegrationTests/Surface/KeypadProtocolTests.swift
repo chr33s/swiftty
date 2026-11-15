@@ -6,6 +6,7 @@ import SwifttyCore
 @testable import TerminalHost
 import Testing
 
+@testable import RoamingKit
 @testable import TerminalSurface
 
 /// Keypad keys across SMX/2 and RST/1, with main-keyboard fallbacks for
