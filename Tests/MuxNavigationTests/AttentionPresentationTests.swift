@@ -34,9 +34,8 @@ struct AttentionPresentationTests {
   func ordersRequestsFailuresResultsThenSnoozed() {
     let later = now.addingTimeInterval(60)
     let ordered = [
-      item(.needsYou, snoozedUntil: later), item(.result),
-      item(.failure), item(.needsYou, created: 900),
-      item(.needsYou, created: 1_500),
+      item(.needsYou, snoozedUntil: later), item(.result), item(.failure),
+      item(.needsYou, created: 900), item(.needsYou, created: 1_500),
     ]
     .sorted { AttentionPresentation.precedes($0, $1, at: now) }
     #expect(
@@ -88,10 +87,8 @@ struct AttentionPresentationTests {
         .hasPrefix("Snoozed until ") == true
     )
     #expect(
-      AttentionPresentation.snoozeText(
-        snoozed,
-        at: now.addingTimeInterval(120)
-      ) == nil
+      AttentionPresentation.snoozeText(snoozed, at: now.addingTimeInterval(120))
+        == nil
     )
     #expect(AttentionPresentation.snoozeChoices(at: now).count == 3)
   }
@@ -104,8 +101,7 @@ struct AttentionPresentationTests {
     #expect(!String(localized: gone.detail).contains("restarted"))
     #expect(
       String(
-        localized: AttentionPresentation.takeover(controllerChanged: true)
-          .title
+        localized: AttentionPresentation.takeover(controllerChanged: true).title
       ) == "Another client took control first"
     )
     #expect(

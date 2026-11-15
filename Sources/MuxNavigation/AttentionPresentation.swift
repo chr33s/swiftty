@@ -152,7 +152,10 @@ extension AttentionPresentation {
 
   /// A link that failed validation; no host was contacted.
   public static let rejectedLink = Message(
-    title: LocalizedStringResource("This link can't be opened", bundle: #bundle),
+    title: LocalizedStringResource(
+      "This link can't be opened",
+      bundle: #bundle
+    ),
     detail: LocalizedStringResource(
       "It is not a valid Swiftty attention link. Nothing was contacted.",
       bundle: #bundle

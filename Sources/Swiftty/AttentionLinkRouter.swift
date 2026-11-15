@@ -154,10 +154,7 @@ final class AttentionLinkRouter {
       navigator.cancel()
     case let .paneExited(preview):
       let message = AttentionPresentation.paneExited
-      let alert = itemAlert(
-        preview,
-        headline: String(localized: message.title)
-      )
+      let alert = itemAlert(preview, headline: String(localized: message.title))
       alert.informativeText += "\n\n" + String(localized: message.detail)
       alert.addButton(withTitle: "Show Final Output")
       alert.addButton(withTitle: "Close")

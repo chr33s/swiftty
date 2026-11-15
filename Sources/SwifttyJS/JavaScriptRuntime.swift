@@ -263,8 +263,8 @@ public final class JavaScriptRuntime: @unchecked Sendable {
       executionTimeLimit,
       { _, pointer in
         guard let pointer else { return true }
-        Unmanaged<JavaScriptRuntime>.fromOpaque(pointer)
-          .takeUnretainedValue().timedOut = true
+        Unmanaged<JavaScriptRuntime>.fromOpaque(pointer).takeUnretainedValue()
+          .timedOut = true
         return true
       },
       Unmanaged.passUnretained(self).toOpaque()

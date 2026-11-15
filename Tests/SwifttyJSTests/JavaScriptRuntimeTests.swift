@@ -197,7 +197,9 @@ extension JavaScriptRuntimeTests {
       """
     )
     #expect(runtime.handleKey("ctrl+j"))
-    #expect(actions.take().contains { $0.kind == .write && $0.pane == "focused" })
+    #expect(
+      actions.take().contains { $0.kind == .write && $0.pane == "focused" }
+    )
   }
 
   @Test
