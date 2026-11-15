@@ -1,12 +1,10 @@
-import SwiftMuxProtocol
-
 public enum OuterColor: Hashable, Sendable {
   case `default`
   case palette(UInt8)
   case rgb(UInt32)
 
   /// From an engine `TerminalColor` raw value.
-  init(raw: UInt32) {
+  public init(raw: UInt32) {
     switch raw >> 24 {
     case 1: self = .palette(UInt8(truncatingIfNeeded: raw))
     case 2: self = .rgb(raw & 0xFF_FFFF)
@@ -24,18 +22,18 @@ public struct OuterStyle: Hashable, Sendable {
 
   public static let plain = OuterStyle()
 
-  static let bold: UInt16 = 1 << 0
-  static let faint: UInt16 = 1 << 1
-  static let italic: UInt16 = 1 << 2
-  static let underline: UInt16 = 1 << 3
-  static let doubleUnderline: UInt16 = 1 << 4
-  static let blink: UInt16 = 1 << 5
-  static let inverse: UInt16 = 1 << 6
-  static let invisible: UInt16 = 1 << 7
-  static let strikethrough: UInt16 = 1 << 8
-  static let overline: UInt16 = 1 << 9
-  static let underlineStyleA: UInt16 = 1 << 11
-  static let underlineStyleB: UInt16 = 1 << 15
+  package static let bold: UInt16 = 1 << 0
+  package static let faint: UInt16 = 1 << 1
+  package static let italic: UInt16 = 1 << 2
+  package static let underline: UInt16 = 1 << 3
+  package static let doubleUnderline: UInt16 = 1 << 4
+  package static let blink: UInt16 = 1 << 5
+  package static let inverse: UInt16 = 1 << 6
+  package static let invisible: UInt16 = 1 << 7
+  package static let strikethrough: UInt16 = 1 << 8
+  package static let overline: UInt16 = 1 << 9
+  package static let underlineStyleA: UInt16 = 1 << 11
+  package static let underlineStyleB: UInt16 = 1 << 15
 
   public init(
     foreground: OuterColor = .default,
@@ -49,33 +47,14 @@ public struct OuterStyle: Hashable, Sendable {
     self.flags = flags
   }
 
-  init(_ s: FrameStyle, palette: FramePalette, underlineColors: [UInt32]) {
-    func resolve(_ raw: UInt32, defaultColor: UInt32) -> OuterColor {
-      switch OuterColor(raw: raw) {
-      case .default: .rgb(defaultColor)
-      case let .palette(index): .rgb(palette.colors[Int(index)])
-      case let .rgb(value): .rgb(value)
-      }
-    }
-    foreground = resolve(s.foreground, defaultColor: palette.foreground)
-    background = resolve(s.background, defaultColor: palette.background)
-    if s.underlineColor != 0 {
-      underlineColor = resolve(
-        underlineColors[Int(s.underlineColor) - 1],
-        defaultColor: palette.foreground
-      )
-    }
-    flags = s.flags
-  }
-
-  func toggling(_ flag: UInt16) -> OuterStyle {
+  package func toggling(_ flag: UInt16) -> OuterStyle {
     var copy = self
     copy.flags ^= flag
     return copy
   }
 
   /// SGR for exactly this style, starting from a reset.
-  var sgr: String {
+  package var sgr: String {
     var p = ["0"]
     if flags & Self.bold != 0 { p.append("1") }
     if flags & Self.faint != 0 { p.append("2") }
@@ -187,19 +166,6 @@ public struct ScreenBuffer: Equatable, Sendable {
         )
       }
       cx += glyph.width
-    }
-  }
-
-  public mutating func fill(_ rect: LayoutRect, style: OuterStyle = .plain) {
-    let firstY = max(0, rect.y)
-    let lastY = min(rows, rect.maxY)
-    let firstX = max(0, rect.x)
-    let lastX = min(columns, rect.maxX)
-    guard firstY < lastY, firstX < lastX else { return }
-    for y in firstY ..< lastY {
-      for x in firstX ..< lastX {
-        cells[y * columns + x] = ScreenCell(text: " ", style: style)
-      }
     }
   }
 

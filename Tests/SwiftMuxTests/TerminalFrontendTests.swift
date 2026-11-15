@@ -5,6 +5,7 @@ import SwiftMuxBridge
 import SwiftMuxClient
 import SwiftMuxProtocol
 @testable import SwiftMuxTerminal
+@testable import TTYKit
 import SwifttyCore
 import SwifttyEngine
 import Testing

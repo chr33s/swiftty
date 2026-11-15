@@ -3,8 +3,8 @@ import SwifttyEngine
 
 /// Chrome uses the same segmentation and display widths as pane text.
 /// Native UI character-count truncation stays in `DisplayText`.
-enum TerminalText {
-  static func glyphs(_ text: String) -> [(text: String, width: Int)] {
+package enum TerminalText {
+  package static func glyphs(_ text: String) -> [(text: String, width: Int)] {
     var result: [(text: String, width: Int)] = []
     for character in text {
       guard DisplayText.draws(character) else {
@@ -30,15 +30,15 @@ enum TerminalText {
     return result
   }
 
-  static func width(_ text: String) -> Int {
+  package static func width(_ text: String) -> Int {
     glyphs(text).reduce(0) { $0 + $1.width }
   }
 
-  static func head(_ text: String, width: Int) -> String {
+  package static func head(_ text: String, width: Int) -> String {
     clipped(text, width: width, keepingEnd: false)
   }
 
-  static func tail(_ text: String, width: Int) -> String {
+  package static func tail(_ text: String, width: Int) -> String {
     clipped(text, width: width, keepingEnd: true)
   }
 

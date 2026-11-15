@@ -37,6 +37,7 @@ let package = Package(
     .library(name: "SSHIdentity", targets: ["SSHIdentity"]),
     .library(name: "AppleTransport", targets: ["AppleTransport"]),
     .library(name: "TerminalHost", targets: ["TerminalHost"]),
+    .library(name: "TTYKit", targets: ["TTYKit"]),
     .library(name: "RoamingKit", targets: ["RoamingKit"]),
     .library(name: "RoamingConnect", targets: ["RoamingConnect"]),
     .library(name: "TerminalSurface", targets: ["TerminalSurface"]),
@@ -184,9 +185,15 @@ let package = Package(
         "SwiftMuxBridge", "SwifttyCore",
       ]
     ),
+    // Outer-terminal I/O shared by the TTY frontends: raw mode, input
+    // decoding, display-width text and the cell diff renderer. Headless:
+    // SwiftMuxProtocol supplies only the key vocabulary and DisplayText.
+    .target(name: "TTYKit", dependencies: ["SwiftMuxProtocol", "SwifttyEngine"]),
     .target(
       name: "SwiftMuxTerminal",
-      dependencies: ["SwiftMuxClient", "SwiftMuxProtocol", "SwifttyEngine"]
+      dependencies: [
+        "TTYKit", "SwiftMuxClient", "SwiftMuxProtocol", "SwifttyEngine",
+      ]
     ),
     .executableTarget(
       name: "SwiftMuxCLI",
@@ -374,8 +381,8 @@ let package = Package(
       name: "SwiftMuxTests",
       dependencies: [
         "SwiftMuxProtocol", "SwiftMuxXPC", "SwiftMuxBridge", "SwiftMuxService",
-        "SwiftMuxClient", "SwiftMuxTerminal", "SwifttyCore", "MuxAttention",
-        "TestSupport",
+        "SwiftMuxClient", "SwiftMuxTerminal", "TTYKit", "SwifttyCore",
+        "MuxAttention", "TestSupport",
       ]
     ),
     .testTarget(
