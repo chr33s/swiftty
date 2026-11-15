@@ -588,6 +588,7 @@ Sources/
   AppleTransport/    QUIC, TLS identity policy, Network callbacks
   TerminalHost/      Swiftty adapter, macOS PTY ownership, semantic input
   RoamingKit/        headless client core: RoamingClient, input, frames, seams
+  RoamingConnect/    RoamingKit seams bound to SSHClient and AppleTransport
   TerminalSurface/   GUI frontend backends over TerminalSession
   CompanionModel/    bounded watch/iPhone status DTOs; no SSH/RST secrets
 Apps/

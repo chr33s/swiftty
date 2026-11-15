@@ -38,6 +38,7 @@ let package = Package(
     .library(name: "AppleTransport", targets: ["AppleTransport"]),
     .library(name: "TerminalHost", targets: ["TerminalHost"]),
     .library(name: "RoamingKit", targets: ["RoamingKit"]),
+    .library(name: "RoamingConnect", targets: ["RoamingConnect"]),
     .library(name: "TerminalSurface", targets: ["TerminalSurface"]),
     .library(name: "CompanionModel", targets: ["CompanionModel"]),
     .library(name: "RoamingApp", targets: ["RoamingApp"]),
@@ -286,11 +287,20 @@ let package = Package(
       dependencies: ["SessionCore", "ScreenProtocol", "SwifttyEngine"],
       swiftSettings: core
     ),
+    // RoamingKit's seams bound to SSHClient (bootstrap, shell channel) and
+    // AppleTransport (pinned QUIC). No renderer or UI.
+    .target(
+      name: "RoamingConnect",
+      dependencies: [
+        "RoamingKit", "ScreenProtocol", "AppleTransport", "SSHClient",
+        .product(name: "NIOCore", package: "swift-nio"),
+      ]
+    ),
     // GUI frontend glue: backends that render through a TerminalSession.
     .target(
       name: "TerminalSurface",
       dependencies: [
-        "RoamingKit", "SessionCore", "ScreenProtocol", "AppleTransport",
+        "RoamingKit", "RoamingConnect", "SessionCore", "ScreenProtocol",
         "SSHClient", "SwifttyCore",
         .product(name: "NIOCore", package: "swift-nio"),
       ],
@@ -411,7 +421,8 @@ let package = Package(
       dependencies: [
         "CoreTestSupport",
         "SessionCore", "ScreenProtocol", "SSHClient", "AppleTransport",
-        "TerminalHost", "RoamingKit", "TerminalSurface", "SwifttyCore",
+        "TerminalHost", "RoamingKit", "RoamingConnect", "TerminalSurface",
+        "SwifttyCore",
         "TestSupport",
         "RoamingApp", "SwiftMuxProtocol", "SwiftMuxService", "SwiftMuxClient",
         "HostConnection", "MuxNavigation", "SSHIdentity",

@@ -590,7 +590,8 @@ Appendix B of the spec records the design sources.
 | `AppleTransport` | Network framework QUIC (ALPN `rst/1`, TLS 1.3, no 0-RTT), SPKI and exact-certificate pinning, host identity |
 | `TerminalHost` | RST/1 host over the SwiftMux service (owns no PTYs): `RoamingHost` QUIC listener and grants, in-process SMX client, screen exporter, session registry, bootstrap/attention service, control socket, roaming configuration |
 | `RoamingKit` | Headless client core: `RoamingClient`, semantic input, presentation frames and the bootstrap/connector/sink seams; links the engine only |
-| `TerminalSurface` | GUI client glue: frontend backends (roaming, ordinary SSH, local PTY) over `TerminalSession`, SSH and QUIC bridges; re-exports `RoamingKit` |
+| `RoamingConnect` | `RoamingKit` seams bound to SSH (`SSHBootstrapper`, `SSHShellByteChannel`) and pinned QUIC (`QUICGrantConnector`); no renderer or UI |
+| `TerminalSurface` | GUI client glue: frontend backends (roaming, ordinary SSH, local PTY) over `TerminalSession`; re-exports `RoamingKit` and `RoamingConnect` |
 | `CompanionModel` | Bounded watch/iPhone status DTOs; no Swiftty, SSH or QUIC |
 | `HostConnection` | Pairing-code descriptor and `_swiftty._tcp` discovery contract (spec.connection-setup.md); Foundation only |
 | `RoamingStore` (`Apps/Store`) | Saved hosts, SSH identity lifecycle, CloudKit metadata sync and transfer manifests; no UI, terminal or renderer code |
