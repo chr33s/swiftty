@@ -1,5 +1,5 @@
 import SessionCore
-import SwifttyCore
+import SwifttyEngine
 import Synchronization
 
 // Frontend input from a presentation-mode `TerminalSession`

@@ -1,7 +1,7 @@
 import Foundation
 import ScreenProtocol
 import SessionCore
-import SwifttyCore
+import SwifttyEngine
 
 /// The direct-client RST/1 state machine (spec §8, §9): the single
 /// serialized owner of one roaming session's attachment, input queue and

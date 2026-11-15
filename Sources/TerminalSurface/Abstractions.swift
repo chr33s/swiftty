@@ -1,13 +1,13 @@
 import ScreenProtocol
 import SessionCore
-import SwifttyCore
+import SwifttyEngine
 
 // Small seams bridged to concrete modules at integration time: the
-// presentation-mode `TerminalSession`, the SSH exec bootstrap, the QUIC
-// connector and the ordinary SSH shell channel.
+// frame display, the SSH exec bootstrap, the QUIC connector and the
+// ordinary SSH shell channel.
 
-/// Displays complete presentation frames (spec §A.4.3). A
-/// presentation-mode `TerminalSession` conforms at integration.
+/// Displays complete presentation frames (spec §A.4.3). A GUI frontend's
+/// presentation-mode session or a TTY renderer conforms at integration.
 ///
 /// Called from the client's serialized owner, never from the UI executor;
 /// implementations hop to their own executor as needed.

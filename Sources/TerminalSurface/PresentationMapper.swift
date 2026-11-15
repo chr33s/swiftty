@@ -1,6 +1,6 @@
 import ScreenProtocol
 import SessionCore
-import SwifttyCore
+import SwifttyEngine
 
 /// Maps a validated RST/1 `ScreenSnapshot` to a Swiftty `PresentationFrame`
 /// (spec §6, §A.4.3). Pure and `Sendable`-safe: run it off the UI
