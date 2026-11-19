@@ -207,6 +207,16 @@ final class RoamingTerminalController: TerminalSurfaceController {
         }
       }
     }
+    // A selection reaching beyond the shown rows is copied from the host
+    // (spec.roaming.md §7.5); the view writes the pasteboard when it lands.
+    display.remoteCopyHandler = { [weak self] selection, done in
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+          guard let client = self?.client else { return done(nil) }
+          Task { done(try? await client.copySelection(selection)) }
+        }
+      }
+    }
     model.previewLines = { [display] in display.withState { $0.screenLines } }
     observeSystem()
   }

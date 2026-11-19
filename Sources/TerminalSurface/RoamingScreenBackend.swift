@@ -1,5 +1,6 @@
 import ScreenProtocol
 import SessionCore
+import SwiftMuxProtocol
 import SwifttyCore
 import Synchronization
 
@@ -227,6 +228,20 @@ public final class RoamingScreenBackend: TerminalSurfaceBackend {
   public func scrollViewport(by lines: Int) async {
     await client.scrollViewport(by: lines)
   }
+
+  /// The newest screen in the shared frame model, whose row identities a
+  /// live selection records (spec.roaming.md §7.5). Nil from a host
+  /// without `paneFrames`.
+  public func currentPaneFrame() async -> PaneFrame? {
+    await client.currentPaneFrame
+  }
+
+  /// Copies a selection's text from the host's grid, including history
+  /// this client never received (`copySelection`). Throws
+  /// `RoamingClient.CopyError` rather than returning partial text.
+  public func copySelection(
+    _ request: CopySelectionRequest
+  ) async throws -> String { try await client.copySelection(request) }
 
   public func close() async { await close(.detach) }
 

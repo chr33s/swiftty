@@ -74,10 +74,19 @@ extension TerminalView {
 
   private func copySelection() -> Bool {
     guard capabilities.localCopy else { return false }
-    guard let text = session.withState({ $0.selectionText }), !text.isEmpty
+    guard
+      session.withState({
+        $0.selection != nil || $0.presentationSelectionBeyondView != nil
+      })
     else { return false }
-    pasteboard.clearContents()
-    pasteboard.setString(text, forType: .string)
+    // A remote selection reaching beyond the shown rows is copied from the
+    // host; the pasteboard is written once the text arrives.
+    let pasteboard = pasteboard
+    session.copySelectedText { text in
+      guard let text, !text.isEmpty else { return }
+      pasteboard.clearContents()
+      pasteboard.setString(text, forType: .string)
+    }
     return true
   }
 

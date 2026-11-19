@@ -133,6 +133,45 @@ public final class TerminalSession: @unchecked Sendable {
     set { callbacks.viewportScroll = newValue }
   }
 
+  /// Copies a presentation selection that reaches beyond the shown frame
+  /// from the remote host (spec.roaming.md §7.5). Calls back with the
+  /// text, or nil when the host refused (the selection changed or left
+  /// history); never partial text.
+  public var remoteCopyHandler:
+    (
+      @Sendable (PresentationSelection, @escaping @Sendable (String?) -> Void)
+        -> Void
+    )?
+  {
+    get { callbacks.remoteCopy }
+    set { callbacks.remoteCopy = newValue }
+  }
+
+  /// The selected text: from the shown cells, synchronously, or for a
+  /// presentation selection reaching beyond them from the remote host,
+  /// later and on the main queue. Nil when there is nothing to copy or
+  /// the host refused.
+  public func copySelectedText(
+    _ completion: @escaping @MainActor @Sendable (String?) -> Void
+  ) {
+    let (local, remote) = withState { state in
+      (state.selectionText, state.presentationSelectionBeyondView)
+    }
+    if let remote, let handler = remoteCopyHandler {
+      handler(remote) { text in
+        DispatchQueue.main.async {
+          MainActor.assumeIsolated { completion(text) }
+        }
+      }
+    } else if pthread_main_np() != 0 {
+      MainActor.assumeIsolated { completion(local) }
+    } else {
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated { completion(local) }
+      }
+    }
+  }
+
   /// Presentation mode: shows frames produced by a remote authoritative
   /// terminal. Never parses program output or encodes input.
   public let isPresentation: Bool

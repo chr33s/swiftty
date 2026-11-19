@@ -220,6 +220,7 @@ public final class TerminalClient {
     switch event {
     case let .frame(frame):
       guard frame.identity.attachment == attachment else { return }
+      notePalette(frame)
       frames[frame.identity.pane] = frame
       if let state = copying, state.pane == frame.identity.pane {
         setCopying(following(state, frame))
@@ -245,6 +246,8 @@ public final class TerminalClient {
     case let .paste(_, state):
       if state != .completed { show("paste \(state.rawValue)") }
     case let .frameUnavailable(_, error): show("frame unavailable: \(error)")
+    // MuxConnection applies deltas; consumers only see complete frames.
+    case .frameDelta: break
     // This frontend never asks for clipboard requests.
     case .automation, .workspaces, .inbox, .clipboardRead, .clipboardWrite:
       break
@@ -386,6 +389,20 @@ public final class TerminalClient {
     }
   }
 
+  /// Palette tokens for keyed row diffing: a pane's token changes with
+  /// its palette, so rows keyed under the old colors are redrawn.
+  private var paletteTokens: [PaneID: UInt64] = [:]
+  private var palettes: [PaneID: FramePalette] = [:]
+  private var nextPaletteToken: UInt64 = 1
+
+  private func notePalette(_ frame: PaneFrame) {
+    let pane = frame.identity.pane
+    guard palettes[pane] != frame.palette else { return }
+    palettes[pane] = frame.palette
+    paletteTokens[pane] = nextPaletteToken
+    nextPaletteToken &+= 1
+  }
+
   func compose() -> ScreenBuffer {
     var shown = frames
     var overlays: [PaneID: PaneOverlay] = [:]
@@ -409,9 +426,13 @@ public final class TerminalClient {
       frames: shown,
       overlays: overlays,
       status: status,
-      showCursor: showCursor
+      showCursor: showCursor,
+      paletteTokens: paletteTokens
     )
-    if case .help = mode { drawHelp(into: &screen) }
+    if case .help = mode {
+      drawHelp(into: &screen)
+      screen.unkeyAll()
+    }
     return screen
   }
 

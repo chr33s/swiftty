@@ -369,7 +369,8 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
       refreshInbox()
     case let .clipboardRead(request): handleClipboardRead(request)
     case let .clipboardWrite(request): handleClipboardWrite(request)
-    case .paste, .frameUnavailable, .frame, .workspaces, .ready: break
+    case .paste, .frameUnavailable, .frame, .frameDelta, .workspaces, .ready:
+      break
     }
   }
 
@@ -876,6 +877,30 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
           found(output)
         } else {
           found(nil)
+        }
+      }
+    )
+  }
+
+  /// Copies a live selection from the service's grid
+  /// (spec.multiplexer.md §4, "Live selection across pages").
+  func copySelection(
+    _ request: CopySelectionRequest,
+    copied: @escaping @MainActor @Sendable (Result<String, MuxError>) -> Void
+  ) {
+    guard features.contains(.liveSelection) else {
+      return copied(.failure(MuxError(.invalidRequest, "no live selection")))
+    }
+    command(
+      .copySelection(request),
+      failed: { error in
+        copied(.failure(error as? MuxError ?? MuxError(.connectionLost)))
+      },
+      replied: { reply in
+        if case let .copied(text) = reply {
+          copied(.success(text))
+        } else {
+          copied(.failure(MuxError(.invalidRequest, "copy reply")))
         }
       }
     )

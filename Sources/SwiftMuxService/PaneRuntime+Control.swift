@@ -194,6 +194,25 @@ extension PaneRuntime {
     }
   }
 
+  /// Text of a client-local selection (spec.multiplexer.md §4, "Live
+  /// selection across pages"). Fails rather than copying text the client
+  /// did not see: a changed generation or evicted row is
+  /// `historyUnavailable`, a changed screen row `selectionChanged`.
+  func copySelection(
+    _ request: CopySelectionRequest,
+    attachment: AttachmentID,
+    completion: @escaping @Sendable (Result<String, MuxError>) -> Void,
+  ) {
+    queue.async { [self] in
+      let tracker = rowTrackers[attachment]
+      completion(
+        SelectionCopy.text(request, in: state) { identity in
+          tracker?.matches(identity, in: state) ?? false
+        }
+      )
+    }
+  }
+
   /// Frontend theme: default colours and scheme, as a theme change does.
   func setTheme(_ theme: MuxTheme) {
     queue.async { [self] in

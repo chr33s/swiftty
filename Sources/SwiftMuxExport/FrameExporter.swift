@@ -25,6 +25,8 @@ public enum FrameExporter {
     var styles: [FrameStyle] = [.plain]
     var lookup: [FrameStyle: UInt16] = [.plain: 0]
     var graphemes: [[UInt32]] = []
+    // Neighbouring cells usually share a style: skip the table lookup.
+    var last: (style: FrameStyle, index: UInt16) = (.plain, 0)
     for i in 0 ..< count {
       let cell = screen.cells[i]
       let a = cell.attributes
@@ -36,8 +38,11 @@ public enum FrameExporter {
         flags: flags.rawValue,
         underlineColor: a.underlineColor
       )
-      if let idx = lookup[style] {
+      if style == last.style {
+        styleIndex[i] = last.index
+      } else if let idx = lookup[style] {
         styleIndex[i] = idx
+        last = (style, idx)
       } else {
         guard styles.count < limits.maxStyles,
           let index = UInt16(exactly: styles.count)
@@ -45,6 +50,7 @@ public enum FrameExporter {
         lookup[style] = index
         styleIndex[i] = index
         styles.append(style)
+        last = (style, index)
       }
       if cell.flags.contains(.spacerTail) {
         kinds[i] = CellKind.continuation.rawValue

@@ -238,6 +238,11 @@ extension TerminalState {
   // MARK: Selection
 
   public mutating func setSelection(_ newValue: Selection?) {
+    // Clearing also ends a presentation selection kept off the frame.
+    if newValue == nil {
+      presentationSelection = nil
+      presentedSelection = nil
+    }
     let clamped = newValue.map { s in
       Selection(
         anchor: clamp(s.anchor),

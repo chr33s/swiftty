@@ -119,6 +119,9 @@ extension MuxService {
         server: instance,
         attachment: attachment,
         layoutRevision: layoutRevision,
+        encoding: clients[current.client]?.frameEncoding
+          ?? PaneRuntime.FrameEncoding(),
+        baseline: slot.baseline,
       ) { [weak self] result in
         self?
           .onQueue {
@@ -199,6 +202,7 @@ extension MuxService {
       inflight.revision == revision
     {
       leases[wsID]?.frames[pane]?.inflight = nil
+      leases[wsID]?.frames[pane]?.baseline = inflight.baseline
       inflightFrameBytes -= inflight.bytes
       let window =
         panes[pane]?.runtime.currentViewport.load(ordering: .acquiring) ?? 0
@@ -210,6 +214,32 @@ extension MuxService {
       return
     }
     acknowledgeViewer(pane, revision, attachment: attachment, from: id)
+  }
+
+  /// A delta could not be applied: forget the base so the next frame of
+  /// the pane is complete. Applies to the lease or the viewer `attachment`
+  /// names; anything else is ignored.
+  func requestFullFrame(
+    _ pane: PaneID,
+    attachment: AttachmentID,
+    from id: UUID,
+  ) {
+    if let wsID = clientLeases[id], leases[wsID]?.attachment == attachment,
+      leases[wsID]?.frames[pane] != nil
+    {
+      leases[wsID]?.frames[pane]?.baseline = nil
+      leases[wsID]?.frames[pane]?.dirty = true
+    } else if let wsID = clientViewers[id] {
+      _ = withViewer(id, in: wsID) { viewer -> Bool in
+        guard viewer.attachment == attachment, viewer.frames[pane] != nil else {
+          return false
+        }
+        viewer.frames[pane]?.baseline = nil
+        viewer.frames[pane]?.dirty = true
+        return true
+      }
+    }
+    pump()
   }
 
   // MARK: Input

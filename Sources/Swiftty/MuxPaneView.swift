@@ -111,7 +111,16 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
   /// selection, IME placement and accessibility.
   private(set) var presented: MuxPresentation?
   /// Set while a selection freezes the presentation used for interaction.
+  /// With live selection it is instead the presentation the selection's
+  /// viewport coordinates refer to, and newer frames keep drawing.
   var frozen: MuxPresentation?
+  /// Versions of selected rows when first seen, and whether each was a
+  /// screen row then (only those are sent with a copy).
+  var liveSeen: [HistoryAddress: (version: UInt64, screen: Bool)] = [:]
+  /// Identifies the copy whose reply may still write the pasteboard.
+  var copyToken: UInt64 = 0
+  /// A drag past an edge asked to scroll; the next frame admits another.
+  var autoscrollPending = false
   var selection: FrozenSelection? {
     didSet {
       if selection != outputSelection?.selection { outputSelection = nil }
@@ -333,7 +342,7 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
       return
     }
     pending = presentation
-    if frozen == nil { needsDisplay = true }
+    if frozen == nil || liveSelecting { needsDisplay = true }
 
   }
 
@@ -362,7 +371,25 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
   func draw(in view: MTKView) {
     let candidate: MuxPresentation?
     var drawn: RenderSnapshot?
-    if let frozen {
+    let live = liveSelecting
+    var remapped: FrozenSelection?
+    if live, let base = frozen {
+      let target = pending ?? presented ?? base
+      if let moved = remapSelection(from: base, to: target) {
+        remapped = moved
+        candidate = target
+        localSequence &+= 1
+        drawn = try? FrameImporter.snapshot(
+          from: target.frame,
+          selection: moved.span(in: target.frame),
+          sequence: localSequence
+        )
+      } else {
+        clearSelection()
+        candidate = pending ?? presented
+        drawn = candidate?.snapshot
+      }
+    } else if let frozen {
       candidate = frozen
       localSequence &+= 1
       let span = selection.map { $0.span(in: frozen.frame) }
@@ -385,7 +412,22 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
     )
     switch result {
     case .submitted:
-      if frozen == nil {
+      if live, frozen != nil, let remapped {
+        // The selection's coordinates now refer to what was drawn.
+        let shift = remapped.anchor.row - (selection?.anchor.row ?? 0)
+        if let output = outputSelection, output.selection == selection {
+          var moved = output.selection
+          moved.anchor.row += shift
+          moved.head.row += shift
+          selection = remapped
+          outputSelection = (moved, output.text)
+        } else {
+          selection = remapped
+        }
+        frozen = candidate
+        autoscrollPending = false
+      }
+      if frozen == nil || live {
         let tracking = presented?.frame.modes.contains(.mouseTracking)
         presented = candidate
         if tracking != candidate.frame.modes.contains(.mouseTracking) {
@@ -507,19 +549,157 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
   }
 
   /// The selected text; a command-output selection copies all of it.
+  /// Nil for a live selection reaching beyond the drawn rows: that text
+  /// comes from the service (`copy(_:)`).
   var selectedText: String? {
     guard let selection, let frame = frozen?.frame else { return nil }
     if let output = outputSelection, output.selection == selection {
       return output.text
+    }
+    if liveSelecting {
+      let rows = 0 ..< frame.grid.rows
+      guard rows.contains(selection.anchor.row),
+        rows.contains(selection.head.row)
+      else { return nil }
     }
     return selection.text(in: frame)
   }
 
   @objc
   func copy(_ sender: Any?) {
-    guard let text = selectedText, !text.isEmpty else { return }
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
+    if let text = selectedText {
+      guard !text.isEmpty else { return }
+      NSPasteboard.general.clearContents()
+      NSPasteboard.general.setString(text, forType: .string)
+      return
+    }
+    guard let request = copyRequest() else { return }
+    copyToken &+= 1
+    let token = copyToken
+    let selected = selection
+    controller?
+      .copySelection(request) { [weak self] result in
+        // Only the selection this copy was made for writes the pasteboard.
+        guard let self, copyToken == token, selection == selected else {
+          return
+        }
+        switch result {
+        case let .success(text):
+          guard !text.isEmpty else { return }
+          NSPasteboard.general.clearContents()
+          NSPasteboard.general.setString(text, forType: .string)
+        case .failure:
+          clearSelection()
+          NSSound.beep()
+        }
+      }
+  }
+
+  // MARK: Live selection
+
+  /// The selection follows newer frames instead of freezing one: the
+  /// service offers live selection and frames carry row versions.
+  var liveSelecting: Bool {
+    features.contains(.liveSelection) && frozen?.frame.rowVersions != nil
+  }
+
+  /// The selection in `target`'s viewport coordinates, after checking the
+  /// rows it covers there; it is applied only once `target` is drawn. Nil
+  /// when it must end: another history generation or screen, an evicted
+  /// end, or a selected row edited in place since it was first seen.
+  func remapSelection(
+    from base: MuxPresentation,
+    to target: MuxPresentation
+  ) -> FrozenSelection? {
+    guard var current = selection else { return nil }
+    let b = base.frame
+    let t = target.frame
+    guard b.history.generation == t.history.generation,
+      b.grid.alternateScreen == t.grid.alternateScreen,
+      let versions = t.rowVersions
+    else { return nil }
+    // Versions are recorded from the frame the user selected on first, so
+    // an edit before the next frame arrived still ends the selection.
+    if let seen = b.rowVersions {
+      let baseTop = b.history.viewportTop + b.history.viewportOffset
+      let lo = max(min(current.anchor.row, current.head.row), 0)
+      let hi = min(max(current.anchor.row, current.head.row), b.grid.rows - 1)
+      if lo <= hi {
+        for row in lo ... hi {
+          let address = b.history.address(
+            viewportRow: row,
+            alternateScreen: b.grid.alternateScreen
+          )
+          if liveSeen[address] == nil {
+            liveSeen[address] = (
+              seen[row], b.grid.alternateScreen || address.row >= baseTop
+            )
+          }
+        }
+      }
+    }
+    let shift = b.history.viewportTop - t.history.viewportTop
+    current.anchor.row += shift
+    current.head.row += shift
+    let top = min(current.anchor.row, current.head.row)
+    let bottom = max(current.anchor.row, current.head.row)
+    guard t.history.viewportTop + top >= t.history.firstRow else { return nil }
+    let screenTop = t.history.viewportTop + t.history.viewportOffset
+    for row in max(top, 0) ... max(min(bottom, t.grid.rows - 1), max(top, 0))
+    where row < t.grid.rows {
+      let address = t.history.address(
+        viewportRow: row,
+        alternateScreen: t.grid.alternateScreen
+      )
+      if let seen = liveSeen[address] {
+        guard seen.version == versions[row] else { return nil }
+      } else {
+        liveSeen[address] = (
+          versions[row], t.grid.alternateScreen || address.row >= screenTop
+        )
+      }
+    }
+    return current
+  }
+
+  /// The service request for the current live selection.
+  func copyRequest() -> CopySelectionRequest? {
+    guard liveSelecting, let selection, let frame = frozen?.frame else {
+      return nil
+    }
+    let h = frame.history
+    func point(_ p: (row: Int, column: Int)) -> SelectionPoint {
+      SelectionPoint(
+        address: HistoryAddress(
+          generation: h.generation,
+          alternateScreen: frame.grid.alternateScreen,
+          row: h.viewportTop + p.row
+        ),
+        column: min(max(p.column, 0), frame.grid.columns - 1)
+      )
+    }
+    let a = point(selection.anchor)
+    let b = point(selection.head)
+    let ordered =
+      (a.address.row, a.column) <= (b.address.row, b.column) ? (a, b) : (b, a)
+    let rows = ordered.0.address.row ... ordered.1.address.row
+    let screen =
+      liveSeen.filter { $0.value.screen && rows.contains($0.key.row) }
+      .prefix(CopySelectionRequest.maxScreenRows)
+      .map { RowIdentity(address: $0.key, version: $0.value.version) }
+    let unit: CopySelectionRequest.Unit =
+      switch selection.unit {
+      case .cell: .character
+      case .word: .word
+      case .line: .line
+      }
+    return CopySelectionRequest(
+      pane: pane,
+      start: ordered.0,
+      end: ordered.1,
+      unit: unit,
+      screenRowVersions: Array(screen)
+    )
   }
 
   @objc

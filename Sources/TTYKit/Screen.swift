@@ -109,17 +109,40 @@ public struct ScreenCell: Hashable, Sendable {
   }
 }
 
+/// Everything that produced one composed row, compared exactly
+/// (spec.multiplexer.md §6, "Keyed row diffing"). Two rows with equal
+/// keys hold equal cells, so the diff can skip comparing them.
+public struct RowKey: Hashable, Sendable {
+  public var parts: [UInt64]
+
+  public init(_ parts: [UInt64] = []) { self.parts = parts }
+
+  public mutating func append(_ v: UInt64) { parts.append(v) }
+  public mutating func append(_ v: Int) {
+    parts.append(UInt64(bitPattern: Int64(v)))
+  }
+}
+
 /// The composed workspace for the outer terminal.
 public struct ScreenBuffer: Equatable, Sendable {
   public let columns: Int
   public let rows: Int
   public var cells: [ScreenCell]
   public var cursor: (x: Int, y: Int, style: UInt8)?
+  /// Per row, the key of what drew it, or nil when unkeyed (compared
+  /// cell by cell). Only an optimization: never part of equality.
+  public var rowKeys: [RowKey?]
 
   public init(columns: Int, rows: Int) {
     self.columns = max(1, columns)
     self.rows = max(1, rows)
     cells = Array(repeating: .blank, count: self.columns * self.rows)
+    rowKeys = Array(repeating: nil, count: self.rows)
+  }
+
+  /// Forgets every key, after drawing over rows without keying them.
+  public mutating func unkeyAll() {
+    rowKeys = Array(repeating: nil, count: rows)
   }
 
   public subscript(x: Int, y: Int) -> ScreenCell {
@@ -196,17 +219,32 @@ public struct DiffRenderer {
   /// Forget the baseline (reconnect, resize or output failure).
   public mutating func invalidate() { baseline = nil }
 
+  /// Rows of `screen` whose key equals the baseline's: they are skipped
+  /// without comparing cells.
+  public func keyedRows(of screen: ScreenBuffer) -> Set<Int> {
+    guard let old = baseline, old.columns == screen.columns,
+      old.rows == screen.rows, old.rowKeys.count == screen.rowKeys.count
+    else { return [] }
+    var rows: Set<Int> = []
+    for y in 0 ..< screen.rows {
+      if let key = screen.rowKeys[y], key == old.rowKeys[y] { rows.insert(y) }
+    }
+    return rows
+  }
+
   /// Bytes to transform the outer display into `screen`. Call
-  /// `commit(screen)` only after all bytes were written.
-  public func update(to screen: ScreenBuffer) -> [UInt8] {
+  /// `commit(screen)` only after all bytes were written. With `useKeys`,
+  /// rows whose key matches the baseline's are not compared.
+  public func update(to screen: ScreenBuffer, useKeys: Bool = true) -> [UInt8] {
     var out = "\u{1B}[?2026h\u{1B}[?25l"
     let old = baseline.flatMap {
       $0.columns == screen.columns && $0.rows == screen.rows ? $0 : nil
     }
     if old == nil { out += "\u{1B}[0m\u{1B}[H\u{1B}[2J" }
+    let skipped = useKeys ? keyedRows(of: screen) : []
     var pen: OuterStyle?
     var at: (x: Int, y: Int)?
-    for y in 0 ..< screen.rows {
+    for y in 0 ..< screen.rows where !skipped.contains(y) {
       var x = 0
       while x < screen.columns {
         let i = y * screen.columns + x

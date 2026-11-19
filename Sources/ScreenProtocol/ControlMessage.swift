@@ -21,6 +21,12 @@ public enum RSTErrorCode: String, Hashable, Sendable, Codable {
   case limitExceeded
   case sessionExited
   case internalError
+  /// `CopySelection`: a selected screen row changed since the client saw it.
+  case selectionChanged
+  /// `CopySelection`: the history generation changed or a row was evicted.
+  case historyUnavailable
+  /// `CopySelection`: another copy is still in flight on this attachment.
+  case busy
 
   public init(_ rejection: HostInputLedger.Rejection) {
     switch rejection {
@@ -51,27 +57,95 @@ public enum ControlMessage: Hashable, Sendable {
   /// window through the session's history by `lines` (positive reveals
   /// older lines). The host clamps it; input returns it to live output.
   case viewport(epoch: UInt64, lines: Int64)
+  /// Client to host, with `screenDeltas`: a delta could not be applied;
+  /// discard delta state and send a full screen of current state (§7.4).
+  case requestFullScreen(epoch: UInt64)
+  /// Client to host, with `copySelection` (§7.5).
+  case copySelection(CopySelection)
+  /// Host to client: one ordered piece of a copy's text.
+  case copyChunk(epoch: UInt64, requestID: UInt64, index: UInt64, text: String)
+  /// Host to client: ends a copy, with its total bytes or a failure.
+  case copyResult(
+    epoch: UInt64,
+    requestID: UInt64,
+    totalBytes: UInt64?,
+    error: RSTErrorCode?
+  )
   case error(RSTError)
+
+  /// Bytes of text in one `CopyChunk`, under the control-record limit.
+  public static let maxCopyChunkBytes = 48 * 1024
+  /// Total text one copy may return; never truncated.
+  public static let maxCopyBytes = 2 * 1024 * 1024
+  /// Screen rows one `CopySelection` may list.
+  public static let maxCopyScreenRows = 1024
+
+  /// A selection in absolute history rows (§7.5).
+  public struct CopySelection: Hashable, Sendable {
+    public enum Unit: String, Hashable, Sendable, Codable {
+      case character, word, line
+    }
+
+    public var attachmentEpoch: UInt64
+    public var requestID: UInt64
+    public var generation: UInt64
+    public var alternateScreen: Bool
+    public var startRow: UInt64
+    public var startColumn: UInt64
+    public var endRow: UInt64
+    public var endColumn: UInt64
+    public var unit: Unit
+    /// `[row, version]` of selected screen rows as the client saw them.
+    public var screenRowVersions: [[UInt64]]
+
+    public init(
+      attachmentEpoch: UInt64,
+      requestID: UInt64,
+      generation: UInt64,
+      alternateScreen: Bool,
+      startRow: UInt64,
+      startColumn: UInt64,
+      endRow: UInt64,
+      endColumn: UInt64,
+      unit: Unit,
+      screenRowVersions: [[UInt64]]
+    ) {
+      self.attachmentEpoch = attachmentEpoch
+      self.requestID = requestID
+      self.generation = generation
+      self.alternateScreen = alternateScreen
+      self.startRow = startRow
+      self.startColumn = startColumn
+      self.endRow = endRow
+      self.endColumn = endColumn
+      self.unit = unit
+      self.screenRowVersions = screenRowVersions
+    }
+  }
 
   /// Largest `viewport` movement one message may request.
   public static let maxViewportLines: Int64 = 1_000_000
 
-  public struct Attach: Hashable, Sendable, Codable {
+  public struct Attach: Hashable, Sendable {
     public var sessionID: SessionID
     public var serverInstanceID: ServerInstanceID
     public var writerID: WriterID
     public var applicationToken: ApplicationToken
+    /// Additions the client can receive (§5.3); empty from older clients.
+    public var features: RSTFeatures
 
     public init(
       sessionID: SessionID,
       serverInstanceID: ServerInstanceID,
       writerID: WriterID,
-      applicationToken: ApplicationToken
+      applicationToken: ApplicationToken,
+      features: RSTFeatures = []
     ) {
       self.sessionID = sessionID
       self.serverInstanceID = serverInstanceID
       self.writerID = writerID
       self.applicationToken = applicationToken
+      self.features = features
     }
   }
 
@@ -151,6 +225,10 @@ public enum ControlMessage: Hashable, Sendable {
     case .terminated: "Terminated"
     case .sessionExited: "SessionExited"
     case .viewport: "Viewport"
+    case .requestFullScreen: "RequestFullScreen"
+    case .copySelection: "CopySelection"
+    case .copyChunk: "CopyChunk"
+    case .copyResult: "CopyResult"
     case .error: "Error"
     }
   }
@@ -163,8 +241,11 @@ public enum ControlMessage: Hashable, Sendable {
     case let .input(i): i.attachmentEpoch
     case let .inputAck(e, _), let .screenAck(e, _), let .ping(e, _),
       let .pong(e, _), let .detach(e), let .detached(e), let .terminate(e),
-      let .terminated(e), let .sessionExited(e, _, _), let .viewport(e, _):
+      let .terminated(e), let .sessionExited(e, _, _), let .viewport(e, _),
+      let .requestFullScreen(e), let .copyChunk(e, _, _, _),
+      let .copyResult(e, _, _, _):
       e
+    case let .copySelection(c): c.attachmentEpoch
     }
   }
 }
@@ -174,7 +255,9 @@ extension ControlMessage: Codable {
     case type, sessionID, serverInstanceID, writerID, applicationToken,
       attachmentEpoch, lastFullyAppliedInputSequence, partialInputSequence,
       resizeRevision, sequence, operation, screenRevision, nonce, status,
-      finalScreenRevision, code, message, features, lines
+      finalScreenRevision, code, message, features, lines, requestID,
+      generation, alternateScreen, startRow, startColumn, endRow, endColumn,
+      unit, screenRowVersions, index, text, totalBytes, error
   }
 
   public init(from decoder: any Decoder) throws {
@@ -196,6 +279,9 @@ extension ControlMessage: Codable {
           applicationToken: try c.decode(
             ApplicationToken.self,
             forKey: .applicationToken
+          ),
+          features: RSTFeatures(
+            names: try c.decodeIfPresent([String].self, forKey: .features) ?? []
           )
         )
       )
@@ -260,6 +346,56 @@ extension ControlMessage: Codable {
         )
       }
       self = .viewport(epoch: try u64(.attachmentEpoch), lines: lines)
+    case "RequestFullScreen":
+      self = .requestFullScreen(epoch: try u64(.attachmentEpoch))
+    case "CopySelection":
+      let rows = try c.decode([[WireUInt64]].self, forKey: .screenRowVersions)
+      guard rows.count <= Self.maxCopyScreenRows,
+        rows.allSatisfy({ $0.count == 2 })
+      else {
+        throw DecodingError.dataCorruptedError(
+          forKey: .screenRowVersions,
+          in: c,
+          debugDescription: "screen row versions"
+        )
+      }
+      self = .copySelection(
+        CopySelection(
+          attachmentEpoch: try u64(.attachmentEpoch),
+          requestID: try u64(.requestID),
+          generation: try u64(.generation),
+          alternateScreen: try c.decode(Bool.self, forKey: .alternateScreen),
+          startRow: try u64(.startRow),
+          startColumn: try u64(.startColumn),
+          endRow: try u64(.endRow),
+          endColumn: try u64(.endColumn),
+          unit: try c.decode(CopySelection.Unit.self, forKey: .unit),
+          screenRowVersions: rows.map { $0.map(\.value) }
+        )
+      )
+    case "CopyChunk":
+      let text = try c.decode(String.self, forKey: .text)
+      guard text.utf8.count <= Self.maxCopyChunkBytes else {
+        throw DecodingError.dataCorruptedError(
+          forKey: .text,
+          in: c,
+          debugDescription: "copy chunk too long"
+        )
+      }
+      self = .copyChunk(
+        epoch: try u64(.attachmentEpoch),
+        requestID: try u64(.requestID),
+        index: try u64(.index),
+        text: text
+      )
+    case "CopyResult":
+      self = .copyResult(
+        epoch: try u64(.attachmentEpoch),
+        requestID: try u64(.requestID),
+        totalBytes: try c.decodeIfPresent(WireUInt64.self, forKey: .totalBytes)?
+          .value,
+        error: try c.decodeIfPresent(RSTErrorCode.self, forKey: .error)
+      )
     case "Error":
       let message = try c.decodeIfPresent(String.self, forKey: .message)
       guard (message?.utf8.count ?? 0) <= 1024 else {
@@ -299,6 +435,9 @@ extension ControlMessage: Codable {
       try c.encode(a.serverInstanceID, forKey: .serverInstanceID)
       try c.encode(a.writerID, forKey: .writerID)
       try c.encode(a.applicationToken, forKey: .applicationToken)
+      if !a.features.isEmpty {
+        try c.encode(a.features.names, forKey: .features)
+      }
     case let .attached(a):
       try u64(a.attachmentEpoch, .attachmentEpoch)
       try c.encode(a.writerID, forKey: .writerID)
@@ -331,6 +470,31 @@ extension ControlMessage: Codable {
     case let .viewport(e, lines):
       try u64(e, .attachmentEpoch)
       try c.encode(lines, forKey: .lines)
+    case let .requestFullScreen(e): try u64(e, .attachmentEpoch)
+    case let .copySelection(s):
+      try u64(s.attachmentEpoch, .attachmentEpoch)
+      try u64(s.requestID, .requestID)
+      try u64(s.generation, .generation)
+      try c.encode(s.alternateScreen, forKey: .alternateScreen)
+      try u64(s.startRow, .startRow)
+      try u64(s.startColumn, .startColumn)
+      try u64(s.endRow, .endRow)
+      try u64(s.endColumn, .endColumn)
+      try c.encode(s.unit, forKey: .unit)
+      try c.encode(
+        s.screenRowVersions.map { $0.map { WireUInt64($0) } },
+        forKey: .screenRowVersions
+      )
+    case let .copyChunk(e, request, index, text):
+      try u64(e, .attachmentEpoch)
+      try u64(request, .requestID)
+      try u64(index, .index)
+      try c.encode(text, forKey: .text)
+    case let .copyResult(e, request, total, error):
+      try u64(e, .attachmentEpoch)
+      try u64(request, .requestID)
+      if let total { try u64(total, .totalBytes) }
+      try c.encodeIfPresent(error, forKey: .error)
     case let .error(error):
       try c.encode(error.code, forKey: .code)
       if let s = error.sequence { try u64(s, .sequence) }
@@ -350,20 +514,41 @@ public struct RSTFeatures: OptionSet, Hashable, Sendable {
   /// The host accepts `Viewport` and presents the requested history
   /// window to this attachment only; the host's own view never moves.
   public static let historyViewport = RSTFeatures(rawValue: 1 << 1)
+  /// Screens in the shared frame model, `SMXB/1` encodings 2 and 3 (§6, §7.2).
+  public static let paneFrames = RSTFeatures(rawValue: 1 << 2)
+  /// Deltas against the last acknowledged screen; needs `paneFrames` (§7.4).
+  public static let screenDeltas = RSTFeatures(rawValue: 1 << 3)
+  /// `CopySelection`; needs `paneFrames` and `historyViewport` (§7.5).
+  public static let copySelection = RSTFeatures(rawValue: 1 << 4)
 
-  public static let supported: RSTFeatures = [.keypadKeys, .historyViewport]
+  public static let supported: RSTFeatures = [
+    .keypadKeys, .historyViewport, .paneFrames, .screenDeltas, .copySelection,
+  ]
 
   private static let wireNames: [(String, RSTFeatures)] = [
     ("keypadKeys", .keypadKeys), ("historyViewport", .historyViewport),
+    ("paneFrames", .paneFrames), ("screenDeltas", .screenDeltas),
+    ("copySelection", .copySelection),
   ]
 
-  init(names: [String]) {
+  /// What both peers listed, with dependent features dropped when the
+  /// feature they need is missing.
+  public func agreed(with other: RSTFeatures) -> RSTFeatures {
+    var both = intersection(other)
+    if !both.contains(.paneFrames) {
+      both.subtract([.screenDeltas, .copySelection])
+    }
+    if !both.contains(.historyViewport) { both.remove(.copySelection) }
+    return both
+  }
+
+  public init(names: [String]) {
     self = Self.wireNames.reduce(into: []) { result, entry in
       if names.contains(entry.0) { result.insert(entry.1) }
     }
   }
 
-  var names: [String] {
+  public var names: [String] {
     Self.wireNames.compactMap { contains($0.1) ? $0.0 : nil }
   }
 }

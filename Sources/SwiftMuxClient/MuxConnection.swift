@@ -156,7 +156,61 @@ public actor MuxConnection {
   ) {
     self.channel = channel
     self.queue = queue
-    self.capabilities = capabilities
+    self.capabilities = Self.negotiable(capabilities)
+  }
+
+  /// `SWMUX_FRAME_CODEC=json` keeps frames in JSON for debugging.
+  static func negotiable(
+    _ capabilities: ClientCapabilities
+  ) -> ClientCapabilities {
+    var capabilities = capabilities
+    if ProcessInfo.processInfo.environment["SWMUX_FRAME_CODEC"] == "json" {
+      capabilities.remove(.binaryFrames)
+    }
+    return capabilities
+  }
+
+  /// Recently delivered frames per pane: the bases a delta may name
+  /// (spec.multiplexer.md §4, "Frame deltas").
+  private var deltaBases: [PaneID: [PaneFrame]] = [:]
+  static let retainedDeltaBases = 4
+  /// Deltas applied and full frames requested (tests, diagnostics).
+  package private(set) var deltaStatistics = (applied: 0, requestedFull: 0)
+
+  private func retainBase(_ frame: PaneFrame) {
+    guard capabilities.contains(.frameDeltas), frame.rowVersions != nil else {
+      return
+    }
+    var list = deltaBases[frame.identity.pane, default: []]
+    list.removeAll { $0.identity.revision == frame.identity.revision }
+    list.append(frame)
+    if list.count > Self.retainedDeltaBases {
+      list.removeFirst(list.count - Self.retainedDeltaBases)
+    }
+    deltaBases[frame.identity.pane] = list
+  }
+
+  /// The complete frame `delta` describes, or nil after asking for one:
+  /// the delta is acknowledged (its credit is released) and the service
+  /// is told to forget its base.
+  private func resolve(_ delta: FrameDelta) -> PaneFrame? {
+    let limits = welcome?.limits ?? .standard
+    if let base = deltaBases[delta.identity.pane]?
+      .last(where: { $0.identity.revision == delta.baseRevision }),
+      let frame = try? FrameDeltaApplier.apply(delta, to: base, limits: limits)
+    {
+      deltaStatistics.applied += 1
+      return frame
+    }
+    deltaStatistics.requestedFull += 1
+    if !suppressesFrameAcknowledgement { acknowledgeFrame(delta.identity) }
+    transmit(
+      .requestFullFrame(
+        pane: delta.identity.pane,
+        attachment: delta.identity.attachment
+      )
+    )
+    return nil
   }
 
   isolated deinit {
@@ -361,6 +415,21 @@ public actor MuxConnection {
   private func receive(_ event: SMXChannel.Event) {
     switch event {
     case let .closed(reason): fail(MuxError(.connectionLost, reason))
+    case let .message(data) where SMXB.isRecord(data):
+      let record: SMXB.Record
+      do {
+        record = try SMXB.decode(data, limits: welcome?.limits ?? .standard)
+      } catch {
+        fail(error)
+        return
+      }
+      guard case .mux = record.envelope else {
+        return fail(MuxError(.invalidRequest, "frame record envelope"))
+      }
+      switch record.payload {
+      case let .frame(frame): dispatch(.event(.frame(frame)))
+      case let .delta(delta): dispatch(.event(.frameDelta(delta)))
+      }
     case let .message(data):
       let message: ServerMessage
       do {
@@ -463,7 +532,13 @@ public actor MuxConnection {
         readiness = notice
       case let .layout(snapshot):
         installation.retain(panes: Set(snapshot.panes.map(\.id)))
+        let shown = Set(snapshot.panes.map(\.id))
+        deltaBases = deltaBases.filter { shown.contains($0.key) }
+      case let .frameDelta(delta):
+        if let frame = resolve(delta) { dispatch(.event(.frame(frame))) }
+        return
       case let .frame(frame):
+        retainBase(frame)
         guard
           installation.install(
             frame,
@@ -484,6 +559,7 @@ public actor MuxConnection {
         attachment = nil
         readiness = nil
         installation = FrameInstallation()
+        deltaBases = [:]
         failPendingInputs(MuxError(.notAttached))
       }
       deliver(event)

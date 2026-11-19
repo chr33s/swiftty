@@ -115,6 +115,12 @@ public struct TerminalState: ~Copyable {
 
   /// Current selection, in absolute rows (see `Selection.swift`).
   public internal(set) var selection: Selection?
+  /// Presentation mode: the installed frame's host row keys, the live
+  /// selection in host addresses, and the engine selection it was last
+  /// placed as (a different selection means the user changed it).
+  var presentationKeys: [[UInt64]]?
+  var presentationSelection: PresentationSelection?
+  var presentedSelection: Selection?
   /// Changes when resizing, clearing, resetting or switching screens
   /// invalidates retained cell coordinates. Ordinary output and viewport
   /// scrolling preserve it; callers must also check row availability.

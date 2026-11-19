@@ -100,7 +100,8 @@ parser/grid loops and cross-thread terminal-state mutation.
 | `TerminalPointer` | Gesture routing, click units, cell geometry and fractional scrolling |
 | `TerminalAccessibility` | Unicode text/ranges, hit testing and rectangles; cache keyed by retained source identity and sequence |
 
-Small adapters retain direct state/history access and mux frozen-frame semantics.
+Small adapters retain direct state/history access and mux live-selection semantics
+(frozen-frame selection against a service without `liveSelection`).
 They obtain complete immutable presentations without unbounded queues, coalesce
 redraw notifications, submit ordered bounded semantic input, propose geometry
 without declaring authority acceptance, expose supported capabilities, and route
@@ -687,9 +688,10 @@ The pipeline:
   - App shortcuts (new tab, split, focus, zoom, resize, end pane or tab,
     find) are never forwarded as terminal input.
   - Ctrl-C, arrows, paste and IME commits go to the pane.
-- **Selection and search:** selection freezes the displayed viewport for
-  copy. Find runs the service's bounded history search. Selection across
-  fetched pages is deferred.
+- **Selection and search:** selection stays live while output arrives and
+  can span history pages; copy outside the displayed frame is a bounded
+  service request ([spec.multiplexer.md §4](spec.multiplexer.md#live-selection-across-pages)).
+  Find runs the service's bounded history search.
 - **Accessibility:** pane names, status, dividers, tab titles and displayed
   text are exposed through AppKit accessibility. Mutable server state is
   never read synchronously on the main actor.
@@ -845,7 +847,7 @@ security, protocol, resource and lifecycle guarantees. Required checks include:
 - IME composition and commit, dead keys, modifiers, special keys and paste deliver intended input exactly once.
 - A mux pane accepts frames only for the current server/attachment/pane/geometry and rejects stale frames.
 - Renderer unavailable/busy/hidden does not advance the interaction baseline prematurely.
-- Selection on a frozen displayed frame survives ongoing output and accurately copies wrapped/wide text.
+- A live selection follows ongoing output, clears on in-place edits under it, and accurately copies wrapped/wide text across history pages; the frozen-frame fallback survives ongoing output.
 - Switching tabs or destroying a pane view does not terminate any process.
 - Closing an app window, app Quit and local/remote detach retain the same service-owned shell and workspace until an explicit end or applicable service failure.
 - One writer is authoritative across local and remote transports; takeover fences old queued input.

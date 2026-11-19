@@ -2,6 +2,8 @@
 import Dispatch
 import ScreenProtocol
 import SessionCore
+import SwiftMuxExport
+import SwiftMuxProtocol
 import Synchronization
 
 /// The RST/1 protocol handler for one authenticated connection (spec
@@ -50,6 +52,19 @@ final class HostAttachment: @unchecked Sendable {
   /// Counts input returning this attachment to live output, so a move
   /// that began before the input cannot reopen a window after it.
   var liveReturns = 0
+  /// What the client listed in `Attach`; set before the session sees it.
+  let clientFeatures = Mutex(RSTFeatures())
+  /// Additions both sides listed (spec.roaming.md §5.3).
+  var features: RSTFeatures = []
+  /// Row versions of this attachment's frames and copies.
+  let rowVersions = RowVersionBox()
+  /// Baselines of submitted frames by screen revision, until acknowledged.
+  var submittedBaselines: [UInt64: FrameBaseline] = [:]
+  /// The last acknowledged frame: the base of the next delta (§7.4).
+  var deltaBaseline: FrameBaseline?
+  /// A full screen was requested and has not been submitted yet.
+  var fullScreenPending = false
+  var copyInFlight = false
 
   init(connection: any RSTConnection, registry: SessionRegistry) {
     self.connection = connection
@@ -106,6 +121,7 @@ final class HostAttachment: @unchecked Sendable {
           fail(.notAttached)
           return
         }
+        clientFeatures.withLock { $0 = request.features }
         switch await registry.attach(request, attachment: self) {
         case let .success(session):
           let attached = phase.withLock { p -> Bool in

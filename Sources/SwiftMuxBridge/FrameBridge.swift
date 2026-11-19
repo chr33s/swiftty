@@ -15,16 +15,19 @@ public enum FrameImporter {
     let count = g.columns * g.rows
     var cells: [Cell] = []
     cells.reserveCapacity(count)
-    for i in 0 ..< count {
-      let s = frame.styles[g.style(at: i)]
+    // Attributes per style entry, built once rather than per cell.
+    let table = frame.styles.map { s in
       var attributes = CellAttributes(
         foreground: TerminalColor(rawValue: s.foreground),
         background: TerminalColor(rawValue: s.background),
         flags: CellFlags(rawValue: s.flags).subtracting(.structural)
       )
       attributes.underlineColor = s.underlineColor
+      return attributes
+    }
+    for i in 0 ..< count {
       let glyph = g.glyph(at: i)
-      var cell = Cell(glyph: 0, attributes: attributes, width: 1)
+      var cell = Cell(glyph: 0, attributes: table[g.style(at: i)], width: 1)
       switch g.kind(at: i) {
       case .continuation:
         cell.width = 0

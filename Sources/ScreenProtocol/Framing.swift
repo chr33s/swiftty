@@ -11,6 +11,8 @@ public enum FramingError: Error, Equatable, Sendable {
   case invalidSnapshot(SnapshotValidationError)
   case trailingData
   case truncated
+  /// An `SMXB/1` screen that fails decoding or the RST/1 frame limits.
+  case invalidFrame(String)
 }
 
 func makeEncoder() -> JSONEncoder {
@@ -112,6 +114,12 @@ public enum SnapshotFrame {
   public enum Encoding: UInt8, Sendable {
     case plain = 0
     case zlib = 1
+    /// `SMXB/1` with an `rstHeader` envelope (`paneFrames`).
+    case smxb = 2
+    case smxbZlib = 3
+
+    var isCompressed: Bool { self == .zlib || self == .smxbZlib }
+    var isFrame: Bool { self == .smxb || self == .smxbZlib }
   }
   public static let headerLength = 9
 
@@ -157,7 +165,7 @@ public enum SnapshotFrame {
     guard decoded <= limits.maxSnapshotDecodedBytes,
       encoded <= limits.maxSnapshotEncodedBytes
     else { throw .snapshotTooLarge }
-    if encoding == .plain, decoded != encoded { throw .lengthMismatch }
+    if !encoding.isCompressed, decoded != encoded { throw .lengthMismatch }
     return Header(
       encoding: encoding,
       decodedLength: decoded,
@@ -177,14 +185,10 @@ public enum SnapshotFrame {
     let total = headerLength + header.encodedLength
     guard bytes.count >= total else { throw .truncated }
     guard bytes.count == total else { throw .trailingData }
-    let body = Array(bytes[headerLength...])
-    let json: [UInt8]
-    switch header.encoding {
-    case .plain: json = body
-    case .zlib:
-      do { json = try Zlib.decompress(body, limit: header.decodedLength) } catch
-      { throw .decompression(error) }
+    guard !header.encoding.isFrame else {
+      throw .unsupportedEncoding(header.encoding.rawValue)
     }
+    let json = try body(bytes, header)
     guard json.count == header.decodedLength else { throw .lengthMismatch }
     let snapshot: ScreenSnapshot
     do {
@@ -226,6 +230,11 @@ public struct SnapshotStreamReader: Sendable {
   /// Call at FIN.
   public func finish() throws(FramingError) -> ScreenSnapshot {
     try SnapshotFrame.decode(buffer)
+  }
+
+  /// Call at FIN when the attachment negotiated `paneFrames`.
+  public func finishRecord() throws(FramingError) -> ScreenRecord {
+    try SnapshotFrame.decodeRecord(buffer)
   }
 }
 

@@ -105,6 +105,11 @@ private struct MuxCommandPayload {
     case let .automationKey(_, shortcut): try text(shortcut)
     case .subscribeAutomation, .automationFocus: break
     case let .search(_, query): try text(query)
+    case let .copySelection(request):
+      try add(
+        count: request.screenRowVersions.count,
+        stride: MemoryLayout<RowIdentity>.stride,
+      )
     case let .clipboardReadResult(_, _, .success(available, contents, _)):
       try add(count: available.count, stride: MemoryLayout<String>.stride)
       for mime in available { try text(mime) }

@@ -36,6 +36,8 @@ public struct MuxError: Error, Codable, Sendable, Equatable,
     case staleRevision
     /// Input skipped a sequence number; resend from `nextExpected`.
     case inputGap
+    /// A selected screen row changed since the client saw it.
+    case selectionChanged
   }
 
   public var code: Code
@@ -81,9 +83,13 @@ public struct ClientCapabilities: OptionSet, Codable, Sendable, Equatable {
   /// The client answers `clipboardRead` and `clipboardWrite` events.
   /// Only frontends with a pasteboard ask for it (not in `supported`).
   public static let clipboardRequests = ClientCapabilities(rawValue: 1 << 3)
+  /// The client decodes `SMXB/1` frame records (spec.multiplexer.md §4).
+  public static let binaryFrames = ClientCapabilities(rawValue: 1 << 4)
+  /// The client applies frame deltas and sends `requestFullFrame`.
+  public static let frameDeltas = ClientCapabilities(rawValue: 1 << 5)
 
   public static let supported: ClientCapabilities = [
-    .attachReadiness, .observers, .viewerViewport,
+    .attachReadiness, .observers, .viewerViewport, .binaryFrames, .frameDeltas,
   ]
 }
 
@@ -171,10 +177,18 @@ public struct ServiceFeatures: OptionSet, Codable, Sendable, Equatable {
   public static let dropTargets = ServiceFeatures(rawValue: 1 << 6)
 
   public static let javaScript = ServiceFeatures(rawValue: 1 << 7)
+  /// `SMXB/1` frames to clients with `ClientCapabilities.binaryFrames`.
+  public static let binaryFrames = ServiceFeatures(rawValue: 1 << 8)
+  /// Frame deltas to clients with `ClientCapabilities.frameDeltas`, and
+  /// `ClientMessage.requestFullFrame`.
+  public static let frameDeltas = ServiceFeatures(rawValue: 1 << 9)
+  /// Row versions in frames and `MuxCommand.copySelection`.
+  public static let liveSelection = ServiceFeatures(rawValue: 1 << 10)
 
   public static let supported: ServiceFeatures = [
     .mouseReporting, .historyJumps, .terminalControl, .shellIntegration,
-    .keypadKeys, .kittyClipboard, .dropTargets, .javaScript,
+    .keypadKeys, .kittyClipboard, .dropTargets, .javaScript, .binaryFrames,
+    .frameDeltas, .liveSelection,
   ]
 }
 
@@ -681,6 +695,9 @@ public enum MuxCommand: Codable, Sendable, Equatable {
   /// output), from OSC 133 marks. Scrolls it into view; replies
   /// `commandOutput`.
   case commandOutput(pane: PaneID, at: HistoryAddress?)
+  /// With `liveSelection`: the text of a selection, from the authoritative
+  /// grid (spec.multiplexer.md §4, "Live selection across pages").
+  case copySelection(CopySelectionRequest)
 
   // Kitty clipboard (lease required; `kittyClipboard`).
   case clipboardReadResult(pane: PaneID, token: UInt64, MuxClipboardReadResult)
@@ -701,7 +718,7 @@ public enum MuxCommand: Codable, Sendable, Equatable {
       .clearScreen, .resetTerminal, .link, .commandOutput, .setTheme,
       .observeWorkspaces, .subscribeAutomation, .subscribeInbox, .inbox,
       .locateAttention, .markSeen, .snooze, .markReviewed, .clipboardReadResult,
-      .clipboardWriteResult:
+      .clipboardWriteResult, .copySelection:
       true
     default: false
     }
@@ -713,7 +730,7 @@ public enum MuxCommand: Codable, Sendable, Equatable {
     case .status, .listWorkspaces, .detach, .observeWorkspaces,
       .subscribeAutomation, .subscribeInbox, .inbox, .locateAttention,
       .setSubscriptions, .setViewport, .scroll, .search, .searchStep,
-      .endSearch:
+      .endSearch, .copySelection:
       true
     default: false
     }
@@ -730,6 +747,49 @@ public enum MuxCommand: Codable, Sendable, Equatable {
       false
     default: true
     }
+  }
+}
+
+/// One end of a selection: a cell at an absolute history address.
+public struct SelectionPoint: Codable, Sendable, Hashable {
+  public var address: HistoryAddress
+  public var column: Int
+
+  public init(address: HistoryAddress, column: Int) {
+    self.address = address
+    self.column = column
+  }
+}
+
+/// A client-local selection to copy from the service's grid. Screen rows
+/// carry the versions the client saw; history rows cannot change within
+/// a generation and need none.
+public struct CopySelectionRequest: Codable, Sendable, Equatable {
+  public enum Unit: String, Codable, Sendable { case character, word, line }
+
+  /// Copied text above this fails with `resourceLimit`; never truncated.
+  public static let maxTextBytes = 8 << 20
+  /// Screen rows a request may list.
+  public static let maxScreenRows = 1024
+
+  public var pane: PaneID
+  public var start: SelectionPoint
+  public var end: SelectionPoint
+  public var unit: Unit
+  public var screenRowVersions: [RowIdentity]
+
+  public init(
+    pane: PaneID,
+    start: SelectionPoint,
+    end: SelectionPoint,
+    unit: Unit,
+    screenRowVersions: [RowIdentity]
+  ) {
+    self.pane = pane
+    self.start = start
+    self.end = end
+    self.unit = unit
+    self.screenRowVersions = screenRowVersions
   }
 }
 
@@ -771,6 +831,7 @@ public enum MuxReply: Codable, Sendable, Equatable {
   case attention(AttentionLocation)
   case link(MuxLink?)
   case commandOutput(CommandOutput?)
+  case copied(String)
 }
 
 /// A link found by `MuxCommand.link`.
@@ -941,12 +1002,18 @@ public enum ClientMessage: Codable, Sendable {
   case frameAck(pane: PaneID, revision: UInt64, attachment: AttachmentID)
   /// The consumer took one `inbox` event (inbox flow control).
   case inboxAck(revision: UInt64)
+  /// With `ServiceFeatures.frameDeltas`: a delta could not be applied, so
+  /// the next frame of the pane must be complete.
+  case requestFullFrame(pane: PaneID, attachment: AttachmentID)
 }
 
 public enum MuxEvent: Codable, Sendable {
   /// JSON-encoded automation presentation value, never executable code.
   case automation(Data)
   case frame(PaneFrame)
+  /// A frame against an installed base (JSON clients with `frameDeltas`).
+  /// Consumers of `MuxConnection` only ever see `frame`.
+  case frameDelta(FrameDelta)
   case layout(WorkspaceSnapshot)
   /// `truncated`: an explicit end had to force-kill the processes, so
   /// final output may be incomplete.

@@ -12,7 +12,7 @@ import Testing
 import TestSupport
 
 /// Drives the native SwiftMux window against an in-process service with
-/// real shells: Metal presentation, semantic input, IME, frozen selection,
+/// real shells: Metal presentation, semantic input, IME, live selection,
 /// accessibility, splits, divider ratios and close-to-detach.
 @MainActor
 @Suite(.serialized, .timeLimit(.minutes(1)))
@@ -163,11 +163,15 @@ struct MuxNativeTests {
   }
 
   @Test(.enabled(if: hasMetal))
-  func `word selection freezes the presented frame`() async throws {
+  func `word selection follows new output and ends on a clear`() async throws {
     let f = try await open()
     defer { f.controller.close() }
     let view = try #require(activeView(f.controller))
     f.controller.send(.text("echo pick-me\r"), to: view.pane)
+    _ = await waitPresented(view) { $0.lines.contains("pick-me") }
+    // A resize renumbers history and ends a live selection: select once
+    // the window's first geometry has been applied.
+    try await Task.sleep(for: .milliseconds(300))
     let frame = try #require(
       await waitPresented(view) { $0.lines.contains("pick-me") }
     )
@@ -197,16 +201,21 @@ struct MuxNativeTests {
     )
     view.mouseDown(with: down)
     #expect(view.accessibilitySelectedText() == "pick-me")
-    // New output does not change the frozen selection or its text.
-    f.controller.send(.text("clear; echo replaced\r"), to: view.pane)
-    try await Task.sleep(for: .milliseconds(300))
-    view.draw(in: view)
+    // Live selection (spec.multiplexer.md §4): new output keeps drawing
+    // and the selection keeps its text while its row is unchanged.
+    f.controller.send(.text("echo more-output\r"), to: view.pane)
+    #expect(
+      await waitPresented(view) { $0.lines.contains("more-output") } != nil
+    )
     #expect(view.accessibilitySelectedText() == "pick-me")
     #expect(
-      (view.accessibilityValue() as? String)?.contains("replaced") == false
+      (view.accessibilityValue() as? String)?.contains("more-output") == true
     )
-    view.clearSelection()
+    // A clear renumbers history: the selection ends rather than marking
+    // unrelated text.
+    f.controller.send(.text("clear; echo replaced\r"), to: view.pane)
     #expect(await waitPresented(view) { $0.lines.contains("replaced") } != nil)
+    #expect(view.selection == nil)
   }
 
   @Test(.enabled(if: hasMetal))

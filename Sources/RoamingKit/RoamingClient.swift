@@ -1,6 +1,7 @@
 import Foundation
 import ScreenProtocol
 import SessionCore
+import SwiftMuxProtocol
 import SwifttyEngine
 
 /// The direct-client RST/1 state machine (spec §8, §9): the single
@@ -26,6 +27,21 @@ public actor RoamingClient {
   struct DecodedScreen: Sendable {
     var snapshot: ScreenSnapshot
     var frame: PresentationFrame
+    /// The shared-model frame it came from (`paneFrames`): a delta base.
+    var paneFrame: PaneFrame? = nil
+  }
+
+  /// One decoded screen stream: a complete screen, or a delta that needs
+  /// a retained base first.
+  enum DecodedRecord: Sendable {
+    case screen(DecodedScreen)
+    case delta(FrameDelta, RSTFrameHeader)
+  }
+
+  /// Copy failures (spec.roaming.md §7.5).
+  public struct CopyError: Error, Equatable, Sendable {
+    public var code: RSTErrorCode
+    public init(_ code: RSTErrorCode) { self.code = code }
   }
 
   enum AttachOutcome: Sendable {
@@ -65,6 +81,24 @@ public actor RoamingClient {
   private var epoch: UInt64?
   /// What the attached host accepts beyond plain RST/1.
   private var hostFeatures: RSTFeatures = []
+  /// What both sides listed for this attachment.
+  private var agreedFeatures: RSTFeatures {
+    hostFeatures.agreed(with: RSTFeatures.supported)
+  }
+  /// Recently installed shared-model frames: the bases a delta may name
+  /// (at most 16, for 2 seconds; §7.4).
+  private var frameBases: [(frame: PaneFrame, at: Instant)] = []
+  static let retainedFrameBases = 16
+  static let frameBaseLifetime: Duration = .seconds(2)
+  /// Deltas applied and full screens requested (tests, diagnostics).
+  package private(set) var deltaStatistics = (applied: 0, requestedFull: 0)
+  /// The copy in flight: its request, epoch, received text and waiter.
+  private var copy:
+    (
+      id: UInt64, epoch: UInt64, text: String, next: UInt64,
+      waiter: CheckedContinuation<String, any Error>
+    )?
+  private var nextCopyID: UInt64 = 1
   private var earlySnapshot: DecodedScreen?
   private var outbox: [[UInt8]] = []
   private var pumpGeneration: UInt64?
@@ -558,7 +592,8 @@ public actor RoamingClient {
           sessionID: grant.sessionID,
           serverInstanceID: grant.serverInstanceID,
           writerID: queue?.writerID ?? grant.writerID,
-          applicationToken: grant.applicationToken
+          applicationToken: grant.applicationToken,
+          features: .supported
         )
       )
     )
@@ -715,8 +750,13 @@ public actor RoamingClient {
         },
         onSnapshot: { [weak self] bytes in
           // Decode, validate and map off the actor and the UI executor.
-          let decoded = Self.decode(bytes, limits: limits)
-          await self?.handleSnapshot(decoded, generation: gen)
+          switch Self.decodeRecord(bytes, limits: limits) {
+          case let .screen(decoded)?:
+            await self?.handleSnapshot(decoded, generation: gen)
+          case let .delta(delta, header)?:
+            await self?.handleDelta(delta, header: header, generation: gen)
+          case nil: await self?.handleSnapshot(nil, generation: gen)
+          }
         },
         onClosed: { [weak self] _ in
           Task { await self?.connectionClosed(generation: gen) }
@@ -730,6 +770,8 @@ public actor RoamingClient {
       connectionGeneration &+= 1
       connection.close()
     }
+    frameBases = []
+    failCopy(CopyError(.staleEpoch))
     connection = nil
     outbox = []
     pumpGeneration = nil
@@ -881,7 +923,33 @@ public actor RoamingClient {
     case let .error(error):
       heard()
       handleError(error)
-    case .attach, .input, .screenAck, .detach, .terminate, .viewport:
+    case let .copyChunk(e, id, index, text):
+      guard e == epoch else { return }
+      heard()
+      guard var current = copy, current.id == id, current.epoch == e,
+        current.next == index,
+        current.text.utf8.count + text.utf8.count <= ControlMessage.maxCopyBytes
+      else {
+        failCopy(CopyError(.malformed))
+        return
+      }
+      current.text += text
+      current.next += 1
+      copy = current
+    case let .copyResult(e, id, total, error):
+      guard e == epoch else { return }
+      heard()
+      guard let current = copy, current.id == id else { return }
+      copy = nil
+      if let error {
+        current.waiter.resume(throwing: CopyError(error))
+      } else if total == UInt64(current.text.utf8.count) {
+        current.waiter.resume(returning: current.text)
+      } else {
+        current.waiter.resume(throwing: CopyError(.malformed))
+      }
+    case .attach, .input, .screenAck, .detach, .terminate, .viewport,
+      .requestFullScreen, .copySelection:
       // Client-to-server messages are never valid from the host.
       connectionFailed(.protocolViolation)
     }
@@ -901,6 +969,8 @@ public actor RoamingClient {
     }
     epoch = attached.attachmentEpoch
     hostFeatures = attached.features
+    frameBases = []
+    failCopy(CopyError(.staleEpoch))
     heard()
     store.fence(epoch: attached.attachmentEpoch)
     self.store = store
@@ -1011,6 +1081,7 @@ public actor RoamingClient {
         return
       }
       self.store = store
+      if let frame = decoded.paneFrame { retainBase(frame) }
       if decoded.snapshot.attachmentEpoch == epoch { heard() }
       send(
         .screenAck(
@@ -1033,6 +1104,172 @@ public actor RoamingClient {
     case .stale: break
     case .rejected: noteFailure(.snapshotRejected)
     }
+  }
+
+  /// Any screen record: legacy snapshots and complete frames are mapped
+  /// here, off the actor; a delta is applied on the actor to its base.
+  nonisolated static func decodeRecord(
+    _ bytes: [UInt8],
+    limits: NegotiatedLimits = NegotiatedLimits()
+  ) -> DecodedRecord? {
+    guard let record = try? SnapshotFrame.decodeRecord(bytes, limits: limits)
+    else { return nil }
+    switch record {
+    case let .snapshot(snapshot):
+      return .screen(
+        DecodedScreen(
+          snapshot: snapshot,
+          frame: PresentationMapper.map(snapshot)
+        )
+      )
+    case let .frame(frame, header):
+      return screen(frame, header: header).map { .screen($0) }
+    case let .delta(delta, header): return .delta(delta, header)
+    }
+  }
+
+  nonisolated static func screen(
+    _ frame: PaneFrame,
+    header: RSTFrameHeader
+  ) -> DecodedScreen? {
+    guard let snapshot = try? FrameScreenMapper.snapshot(frame, header: header)
+    else { return nil }
+    var presentation = PresentationMapper.map(snapshot)
+    let screenTop = frame.history.viewportTop + frame.history.viewportOffset
+    presentation.rowKeys = frame.rowIdentities?
+      .map {
+        [
+          $0.address.generation, $0.address.alternateScreen ? 1 : 0,
+          UInt64(bitPattern: Int64($0.address.row)), $0.version,
+          $0.address.alternateScreen || $0.address.row >= screenTop ? 1 : 0,
+        ]
+      }
+    return DecodedScreen(
+      snapshot: snapshot,
+      frame: presentation,
+      paneFrame: frame
+    )
+  }
+
+  // MARK: Deltas (spec.roaming.md §7.4)
+
+  private func retainBase(_ frame: PaneFrame) {
+    let now = timing.now()
+    frameBases.removeAll {
+      $0.frame.identity.revision == frame.identity.revision
+        || now - $0.at > Self.frameBaseLifetime
+    }
+    frameBases.append((frame, now))
+    if frameBases.count > Self.retainedFrameBases {
+      frameBases.removeFirst(frameBases.count - Self.retainedFrameBases)
+    }
+  }
+
+  private func handleDelta(
+    _ delta: FrameDelta,
+    header: RSTFrameHeader,
+    generation: UInt64
+  ) {
+    guard generation == connectionGeneration else { return }
+    guard agreedFeatures.contains(.screenDeltas), let epoch,
+      header.sessionID == store?.sessionID
+    else {
+      noteFailure(.snapshotRejected)
+      publish()
+      return
+    }
+    // Only an attachment's current screens are bases; an older epoch's
+    // delta is stale like its snapshots.
+    guard header.attachmentEpoch == epoch else { return }
+    let now = timing.now()
+    if let base = frameBases.last(where: {
+      $0.frame.identity.revision == delta.baseRevision
+        && now - $0.at <= Self.frameBaseLifetime
+    })?
+    .frame,
+      let frame = try? FrameDeltaApplier.apply(
+        delta,
+        to: base,
+        limits: SnapshotFrame.frameLimits
+      ), let decoded = Self.screen(frame, header: header)
+    {
+      deltaStatistics.applied += 1
+      install(decoded)
+    } else {
+      // No partial screen. Acknowledge the delta so its stream retires
+      // (otherwise both in-flight streams stay held), then ask for a
+      // complete screen; the request follows the acknowledgement, so the
+      // host drops the base the acknowledgement named.
+      deltaStatistics.requestedFull += 1
+      send(.screenAck(epoch: epoch, screenRevision: header.screenRevision))
+      send(.requestFullScreen(epoch: epoch))
+    }
+    publish()
+  }
+
+  // MARK: Copy (spec.roaming.md §7.5)
+
+  /// The newest installed screen in the shared frame model, from which a
+  /// selection takes its addresses and row versions.
+  public var currentPaneFrame: PaneFrame? { frameBases.last?.frame }
+
+  /// Copies a selection's text from the host's grid. Fails with
+  /// `selectionChanged`, `historyUnavailable`, `limitExceeded` or `busy`;
+  /// a reattachment cancels it and no partial text is returned.
+  public func copySelection(
+    _ request: CopySelectionRequest
+  ) async throws -> String {
+    guard agreedFeatures.contains(.copySelection), let epoch,
+      request.screenRowVersions.count <= ControlMessage.maxCopyScreenRows
+    else { throw CopyError(.unsupported) }
+    guard copy == nil else { throw CopyError(.busy) }
+    let ordered =
+      (request.start.address.row, request.start.column) <= (
+        request.end.address.row, request.end.column
+      ) ? (request.start, request.end) : (request.end, request.start)
+    guard ordered.0.address.row >= 0, ordered.0.column >= 0,
+      ordered.1.column >= 0
+    else { throw CopyError(.malformed) }
+    let id = nextCopyID
+    nextCopyID &+= 1
+    let unit: ControlMessage.CopySelection.Unit =
+      switch request.unit {
+      case .character: .character
+      case .word: .word
+      case .line: .line
+      }
+    let message = ControlMessage.CopySelection(
+      attachmentEpoch: epoch,
+      requestID: id,
+      generation: ordered.0.address.generation,
+      alternateScreen: ordered.0.address.alternateScreen,
+      startRow: UInt64(ordered.0.address.row),
+      startColumn: UInt64(ordered.0.column),
+      endRow: UInt64(ordered.1.address.row),
+      endColumn: UInt64(ordered.1.column),
+      unit: unit,
+      screenRowVersions: request.screenRowVersions.map {
+        [UInt64(max($0.address.row, 0)), $0.version]
+      }
+    )
+    return try await withCheckedThrowingContinuation { waiter in
+      copy = (id, epoch, "", 0, waiter)
+      send(.copySelection(message))
+    }
+  }
+
+  /// Copies a presentation selection (in host addresses) that reaches
+  /// beyond the shown frame: `TerminalSession.remoteCopyHandler`.
+  public func copySelection(
+    _ selection: PresentationSelection
+  ) async throws -> String {
+    try await copySelection(CopySelectionRequest(selection))
+  }
+
+  private func failCopy(_ error: CopyError) {
+    guard let current = copy else { return }
+    copy = nil
+    current.waiter.resume(throwing: error)
   }
 
   nonisolated static func decode(

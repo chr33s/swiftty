@@ -3,6 +3,7 @@ import Dispatch
 import Foundation
 import ScreenProtocol
 import SessionCore
+import SwiftMuxExport
 import SwiftMuxProtocol
 import SwiftMuxService
 import SwifttyEngine
@@ -106,10 +107,31 @@ public final class RoamingSession: @unchecked Sendable {
       for send in snapshotSends.values { send.task.cancel() }
     }
   }
+  /// A captured screen: a legacy snapshot, or the shared frame model with
+  /// its envelope (`paneFrames`).
+  enum CapturedScreen: Sendable {
+    case snapshot(ScreenSnapshot)
+    case frame(PaneFrame, RSTFrameHeader)
+
+    var screenRevision: UInt64 {
+      switch self {
+      case let .snapshot(s): s.screenRevision
+      case let .frame(_, h): h.screenRevision
+      }
+    }
+  }
   private struct SnapshotEncoding: Sendable {
-    let snapshot: ScreenSnapshot
+    let screen: CapturedScreen
     let stream: UInt64
     let attachment: HostAttachment
+    /// The acknowledged frame a delta may name; nil sends a full screen.
+    let baseline: FrameBaseline?
+  }
+  /// An encoded record, and for a frame the baseline it establishes.
+  private struct EncodedScreen: Sendable {
+    let payload: [UInt8]
+    let baseline: FrameBaseline?
+    let full: Bool
   }
   private struct SnapshotSend {
     let stream: UInt64
@@ -535,6 +557,13 @@ public final class RoamingSession: @unchecked Sendable {
     a.scheduler.reset()
     a.highestSubmittedScreenRevision = 0
     a.exitNoticeSent = false
+    a.features = RSTFeatures.supported.agreed(
+      with: a.clientFeatures.withLock { $0 }
+    )
+    a.submittedBaselines = [:]
+    a.deltaBaseline = nil
+    a.fullScreenPending = false
+    a.copyInFlight = false
     touch(state: exitStatus == nil ? .attached : .exited, attached: true)
     statusBox.withLock { $0.isAttached = true }
     a.send(
@@ -763,7 +792,30 @@ public final class RoamingSession: @unchecked Sendable {
       for stream in a.scheduler.acknowledged(revision: revision) {
         a.connection.cancelSnapshot(stream: stream)
       }
+      if let baseline = a.submittedBaselines[revision] {
+        a.deltaBaseline = baseline
+      }
+      a.submittedBaselines = a.submittedBaselines.filter { $0.key > revision }
       pumpSnapshots(a)
+    case .requestFullScreen:
+      guard a.features.contains(.screenDeltas) else {
+        a.fail(.malformed)
+        detachOnQueue(a)
+        return
+      }
+      // One full screen answers every request made before it is sent.
+      a.deltaBaseline = nil
+      if !a.fullScreenPending {
+        a.fullScreenPending = true
+        contentChanged()
+      }
+    case let .copySelection(request):
+      guard a.features.contains(.copySelection) else {
+        a.fail(.malformed)
+        detachOnQueue(a)
+        return
+      }
+      copySelection(request, for: a)
     case let .ping(_, nonce): a.send(.pong(epoch: a.epoch, nonce: nonce))
     case .detach:
       a.send(.detached(epoch: a.epoch))
@@ -779,6 +831,214 @@ public final class RoamingSession: @unchecked Sendable {
       a.fail(.malformed)
       detachOnQueue(a)
     }
+  }
+
+  /// Copies a selection from the pane's grid (spec.roaming.md §7.5): one
+  /// copy per attachment, its text sent in ordered chunks, each in its own
+  /// turn so input acknowledgements are not held behind a large copy.
+  private func copySelection(
+    _ request: ControlMessage.CopySelection,
+    for a: HostAttachment
+  ) {
+    let epoch = a.epoch
+    let requestID = request.requestID
+    func finish(_ error: RSTErrorCode) {
+      finishCopy(a, epoch: epoch, requestID: requestID, error: error)
+    }
+    guard !a.copyInFlight else {
+      return a.send(
+        .copyResult(
+          epoch: epoch,
+          requestID: request.requestID,
+          totalBytes: nil,
+          error: .busy
+        )
+      )
+    }
+    guard let pane = activePane, let startRow = Int(exactly: request.startRow),
+      let endRow = Int(exactly: request.endRow),
+      let startColumn = Int(exactly: request.startColumn),
+      let endColumn = Int(exactly: request.endColumn)
+    else { return finish(.historyUnavailable) }
+    var identities: [RowIdentity] = []
+    for pair in request.screenRowVersions {
+      guard let row = Int(exactly: pair[0]) else {
+        return finish(.selectionChanged)
+      }
+      identities.append(
+        RowIdentity(
+          address: HistoryAddress(
+            generation: request.generation,
+            alternateScreen: request.alternateScreen,
+            row: row
+          ),
+          version: pair[1]
+        )
+      )
+    }
+    func point(_ row: Int, _ column: Int) -> SelectionPoint {
+      SelectionPoint(
+        address: HistoryAddress(
+          generation: request.generation,
+          alternateScreen: request.alternateScreen,
+          row: row
+        ),
+        column: column
+      )
+    }
+    let unit: CopySelectionRequest.Unit =
+      switch request.unit {
+      case .character: .character
+      case .word: .word
+      case .line: .line
+      }
+    let copy = CopySelectionRequest(
+      pane: pane,
+      start: point(startRow, startColumn),
+      end: point(endRow, endColumn),
+      unit: unit,
+      screenRowVersions: identities
+    )
+    a.copyInFlight = true
+    let versions = a.rowVersions
+    service.inspect(
+      pane: pane,
+      { state in
+        SelectionCopy.text(copy, in: state) { versions.matches($0, in: state) }
+      },
+      completion: { [weak self] result in
+        self?.queue
+          .async { [weak self] in
+            guard let self, a === self.attachment, a.isCurrent, a.epoch == epoch
+            else {
+              a.copyInFlight = false
+              return
+            }
+            switch result {
+            case nil:
+              self.finishCopy(
+                a,
+                epoch: epoch,
+                requestID: requestID,
+                error: .historyUnavailable
+              )
+            case let .failure(error)?:
+              let code: RSTErrorCode =
+                switch error.code {
+                case .selectionChanged: .selectionChanged
+                case .resourceLimit: .limitExceeded
+                default: .historyUnavailable
+                }
+              self.finishCopy(
+                a,
+                epoch: epoch,
+                requestID: requestID,
+                error: code
+              )
+            case let .success(text)?:
+              guard text.utf8.count <= ControlMessage.maxCopyBytes else {
+                return self.finishCopy(
+                  a,
+                  epoch: epoch,
+                  requestID: requestID,
+                  error: .limitExceeded
+                )
+              }
+              self.sendCopy(
+                Self.chunks(text),
+                index: 0,
+                total: UInt64(text.utf8.count),
+                request: request.requestID,
+                epoch: epoch,
+                to: a
+              )
+            }
+          }
+      }
+    )
+  }
+
+  private func finishCopy(
+    _ a: HostAttachment,
+    epoch: UInt64,
+    requestID: UInt64,
+    error: RSTErrorCode
+  ) {
+    a.copyInFlight = false
+    a.send(
+      .copyResult(
+        epoch: epoch,
+        requestID: requestID,
+        totalBytes: nil,
+        error: error
+      )
+    )
+  }
+
+  private func sendCopy(
+    _ chunks: [String],
+    index: Int,
+    total: UInt64,
+    request: UInt64,
+    epoch: UInt64,
+    to a: HostAttachment
+  ) {
+    // A new epoch cancels the copy; its client discards partial text.
+    guard a === attachment, a.isCurrent, a.epoch == epoch else {
+      a.copyInFlight = false
+      return
+    }
+    guard index < chunks.count else {
+      a.copyInFlight = false
+      a.send(
+        .copyResult(
+          epoch: epoch,
+          requestID: request,
+          totalBytes: total,
+          error: nil
+        )
+      )
+      return
+    }
+    a.send(
+      .copyChunk(
+        epoch: epoch,
+        requestID: request,
+        index: UInt64(index),
+        text: chunks[index]
+      )
+    )
+    queue.async { [weak self] in
+      self?
+        .sendCopy(
+          chunks,
+          index: index + 1,
+          total: total,
+          request: request,
+          epoch: epoch,
+          to: a
+        )
+    }
+  }
+
+  /// Splits on scalar boundaries into pieces of at most
+  /// `ControlMessage.maxCopyChunkBytes` UTF-8 bytes.
+  static func chunks(_ text: String) -> [String] {
+    var out: [String] = []
+    var current = String.UnicodeScalarView()
+    var bytes = 0
+    for scalar in text.unicodeScalars {
+      let size = UTF8.width(scalar)
+      if bytes + size > ControlMessage.maxCopyChunkBytes {
+        out.append(String(current))
+        current = String.UnicodeScalarView()
+        bytes = 0
+      }
+      current.append(scalar)
+      bytes += size
+    }
+    if !current.isEmpty || out.isEmpty { out.append(String(current)) }
+    return out
   }
 
   /// Moves `a`'s history window. Requests that arrive while a move is
@@ -1116,15 +1376,31 @@ public final class RoamingSession: @unchecked Sendable {
       a.scheduler.started(stream: stream, revision: stamp.screenRevision)
       pruneSnapshotWork()
       let exit = exitStatus
+      let frames = a.features.contains(.paneFrames)
+      let versions = a.rowVersions
       // Exported in the pane's order, so every byte parsed before this
       // point (including final output after exit) is included.
       service.inspect(
         pane: pane,
-        { ScreenExporter.export($0, stamp: stamp, historyTop: historyTop) },
-        completion: { [weak self] snapshot in
+        { state -> CapturedScreen? in
+          guard frames else {
+            return .snapshot(
+              ScreenExporter.export(state, stamp: stamp, historyTop: historyTop)
+            )
+          }
+          return
+            ScreenExporter.frame(
+              state,
+              stamp: stamp,
+              historyTop: historyTop,
+              versions: versions
+            )
+            .map { .frame($0.0, $0.1) }
+        },
+        completion: { [weak self] screen in
           self?.queue
             .async { [weak self] in
-              self?.captured(snapshot, stream: stream, exit: exit, to: a)
+              self?.captured(screen ?? nil, stream: stream, exit: exit, to: a)
             }
         }
       )
@@ -1132,13 +1408,13 @@ public final class RoamingSession: @unchecked Sendable {
   }
 
   private func captured(
-    _ snapshot: ScreenSnapshot?,
+    _ screen: CapturedScreen?,
     stream: UInt64,
     exit: Int32?,
     to a: HostAttachment
   ) {
     guard wantsSnapshot(stream: stream, from: a) else { return }
-    guard let snapshot else {
+    guard let screen else {
       a.scheduler.failed(stream: stream)
       return
     }
@@ -1148,25 +1424,60 @@ public final class RoamingSession: @unchecked Sendable {
         .sessionExited(
           epoch: a.epoch,
           status: exit,
-          finalScreenRevision: snapshot.screenRevision
+          finalScreenRevision: screen.screenRevision
         )
       )
     }
-    transmit(snapshot, stream: stream, to: a)
+    transmit(screen, stream: stream, to: a)
   }
 
   /// Retains only captures still owned by the bounded scheduler, rather than
   /// queueing one encoding closure for every superseded screen revision.
   private func transmit(
-    _ snapshot: ScreenSnapshot,
+    _ screen: CapturedScreen,
     stream: UInt64,
     to a: HostAttachment
   ) {
     pruneSnapshotWork()
+    let deltas = a.features.contains(.screenDeltas) && !a.fullScreenPending
     pendingSnapshotEncodes.append(
-      SnapshotEncoding(snapshot: snapshot, stream: stream, attachment: a)
+      SnapshotEncoding(
+        screen: screen,
+        stream: stream,
+        attachment: a,
+        baseline: deltas ? a.deltaBaseline : nil
+      )
     )
     startNextSnapshotEncoding()
+  }
+
+  /// Encodes a legacy snapshot, or a frame as a delta against `baseline`
+  /// when that is smaller than half the frame, otherwise in full.
+  private static func encode(
+    _ job: SnapshotEncoding,
+    legacy: @Sendable (ScreenSnapshot) throws -> [UInt8]
+  ) throws -> EncodedScreen {
+    switch job.screen {
+    case let .snapshot(snapshot):
+      return EncodedScreen(
+        payload: try legacy(snapshot),
+        baseline: nil,
+        full: true
+      )
+    case let .frame(frame, header):
+      let envelope = SMXB.Envelope.rst(header.bytes)
+      let delta = job.baseline.flatMap {
+        FrameDeltaBuilder.delta(from: frame, base: $0)
+      }
+      let record =
+        delta.map { SMXB.encode($0, envelope: envelope) }
+        ?? SMXB.encode(frame, envelope: envelope)
+      return EncodedScreen(
+        payload: try SnapshotFrame.encode(frame: [UInt8](record)),
+        baseline: FrameBaseline(frame),
+        full: delta == nil
+      )
+    }
   }
 
   private func wantsSnapshot(stream: UInt64, from a: HostAttachment) -> Bool {
@@ -1193,14 +1504,14 @@ public final class RoamingSession: @unchecked Sendable {
     encodingSnapshot = true
     let encode = snapshotEncoder
     encodeQueue.async { [weak self] in
-      let result = Result { try encode(job.snapshot) }
+      let result = Result { try Self.encode(job, legacy: encode) }
       self?.queue
         .async { [weak self] in self?.snapshotEncoded(result, job: job) }
     }
   }
 
   private func snapshotEncoded(
-    _ result: Result<[UInt8], any Error>,
+    _ result: Result<EncodedScreen, any Error>,
     job: SnapshotEncoding
   ) {
     encodingSnapshot = false
@@ -1210,14 +1521,25 @@ public final class RoamingSession: @unchecked Sendable {
     guard wantsSnapshot(stream: stream, from: a) else { return }
     switch result {
     case .failure: snapshotFailed(stream: stream, to: a, retry: true)
-    case let .success(payload):
+    case let .success(encoded):
+      let payload = encoded.payload
       // A peer can acknowledge before the send's completion reaches this
       // queue. Publish the bound before starting transport work, but never
       // include captures still waiting for encoding or an available slot.
+      let revision = job.screen.screenRevision
       a.highestSubmittedScreenRevision = max(
         a.highestSubmittedScreenRevision,
-        job.snapshot.screenRevision
+        revision
       )
+      if let baseline = encoded.baseline {
+        a.submittedBaselines[revision] = baseline
+        if a.submittedBaselines.count > 8,
+          let oldest = a.submittedBaselines.keys.min()
+        {
+          a.submittedBaselines.removeValue(forKey: oldest)
+        }
+      }
+      if encoded.full { a.fullScreenPending = false }
       let id = UUID()
       let task = Task { [weak self] in
         let retry: Bool?

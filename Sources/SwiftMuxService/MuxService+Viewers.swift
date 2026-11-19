@@ -367,6 +367,13 @@ extension MuxService {
           reply: reply,
         )
       }
+    case let .copySelection(request):
+      copySelection(
+        request,
+        attachment: viewers[wsID]?.first { $0.client == client }?.attachment,
+        workspace: wsID,
+        reply: reply
+      )
     default: reply(.success(.ok))
     }
   }
@@ -857,6 +864,8 @@ extension MuxService {
         attachment: attachment,
         layoutRevision: layoutRevision,
         viewport: capture,
+        encoding: clients[client]?.frameEncoding ?? PaneRuntime.FrameEncoding(),
+        baseline: slot.baseline,
       ) { [weak self] result in
         self?
           .onQueue {
@@ -960,6 +969,7 @@ extension MuxService {
         let inflight = slot.inflight, inflight.revision == revision
       else { return nil }
       viewer.frames[pane]?.inflight = nil
+      viewer.frames[pane]?.baseline = inflight.baseline
       if let queued = slot.queued {
         viewer.frames[pane]?.queued = nil
         viewer.frames[pane]?.sent(queued.frame)

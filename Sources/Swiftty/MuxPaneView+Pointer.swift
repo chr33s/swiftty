@@ -111,6 +111,7 @@ extension MuxPaneView {
     guard let base = frozen ?? presented else { return }
     let at = cell(for: event)
     selectionDragged = unit != .cell
+    liveSeen = [:]
     if unit == .cell {
       selection = nil
       frozen = nil
@@ -139,6 +140,14 @@ extension MuxPaneView {
     selection?.head = at
     selectionDragged = true
     needsDisplay = true
+    // Live selection extends across pages: dragging past an edge scrolls
+    // history, one request until the next frame is drawn.
+    if liveSelecting, !autoscrollPending, let rows = frozen?.frame.grid.rows,
+      at.row < 0 || at.row >= rows
+    {
+      autoscrollPending = true
+      controller?.scroll(pane, lines: at.row < 0 ? 1 : -1)
+    }
   }
 
   override func mouseUp(with event: NSEvent) {
@@ -182,6 +191,9 @@ extension MuxPaneView {
     frozen = nil
     pendingAnchor = nil
     selectionDragged = false
+    liveSeen = [:]
+    autoscrollPending = false
+    copyToken &+= 1
     needsDisplay = true
   }
 

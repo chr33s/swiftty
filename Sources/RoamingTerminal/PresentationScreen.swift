@@ -51,6 +51,31 @@ extension ScreenBuffer {
         )
       }
     }
+    // Keyed row diffing (spec.multiplexer.md §6): the row's identity,
+    // the clip, and the resolved styles it uses (a palette change alters
+    // them without changing the identity).
+    if let keys = frame.rowKeys, keys.count == frame.rows {
+      for y in 0 ..< shownRows {
+        var key = RowKey(keys[y])
+        key.append(shownColumns)
+        key.append(frame.columns)
+        key.append(frame.reverseVideo ? 1 : 0)
+        var seen: Set<Int> = []
+        let base = y * frame.columns
+        for x in 0 ..< shownColumns {
+          let index = frame.cells[base + x].style
+          guard seen.insert(index).inserted, styles.indices.contains(index)
+          else { continue }
+          let style = frame.styles[index]
+          key.append(UInt64(index))
+          key.append(UInt64(style.foreground ?? 0x100_0000))
+          key.append(UInt64(style.background ?? 0x100_0000))
+          key.append(UInt64(style.underlineColor ?? 0x100_0000))
+          key.append(UInt64(style.flags.rawValue))
+        }
+        rowKeys[y] = key
+      }
+    }
     if frame.cursorVisible, frame.cursorX < self.columns,
       frame.cursorY < self.rows
     {

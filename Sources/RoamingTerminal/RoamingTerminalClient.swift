@@ -229,6 +229,7 @@ public final class RoamingTerminalClient {
         style: style
       )
       screen.write(" swroam: " + banner, x: 0, y: 0, style: style)
+      screen.rowKeys[0] = nil
     }
     let bytes = renderer.update(to: screen)
     if tty.write(bytes) {

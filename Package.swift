@@ -287,7 +287,7 @@ let package = Package(
       name: "TerminalHost",
       dependencies: [
         "SessionCore", "ScreenProtocol", "AppleTransport", "SwifttyEngine",
-        "SwiftMuxProtocol", "SwiftMuxService",
+        "SwiftMuxProtocol", "SwiftMuxService", "SwiftMuxExport",
       ],
       swiftSettings: core
     ),

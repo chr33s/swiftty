@@ -64,7 +64,8 @@ public struct Compositor {
     frames: [PaneID: PaneFrame],
     overlays: [PaneID: PaneOverlay] = [:],
     status: StatusLine,
-    showCursor: Bool
+    showCursor: Bool,
+    paletteTokens: [PaneID: UInt64] = [:]
   ) -> ScreenBuffer {
     var screen = ScreenBuffer(columns: columns, rows: rows)
     guard let tab = workspace.activeTabSnapshot else {
@@ -99,6 +100,14 @@ public struct Compositor {
         rect.x + frame.cursor.x, rect.y + frame.cursor.y, frame.cursor.style
       )
     }
+    keyRows(
+      of: &screen,
+      workspace: workspace,
+      tab: tab,
+      frames: frames,
+      overlays: overlays,
+      paletteTokens: paletteTokens
+    )
     return screen
   }
 
@@ -187,6 +196,105 @@ public struct Compositor {
           }
         }
       }
+    }
+  }
+
+  /// Keys every pane row whose inputs are exact values: frame row
+  /// identities, rectangles, palette tokens, overlays and search spans, plus
+  /// the layout that places dividers. Rows with an exit note, a frame
+  /// without versions or an unknown palette, and the status row stay
+  /// unkeyed and are compared cell by cell.
+  func keyRows(
+    of screen: inout ScreenBuffer,
+    workspace: WorkspaceSnapshot,
+    tab: TabSnapshot,
+    frames: [PaneID: PaneFrame],
+    overlays: [PaneID: PaneOverlay],
+    paletteTokens: [PaneID: UInt64]
+  ) {
+    var base = RowKey()
+    base.append(workspace.layoutRevision)
+    Self.append(tab.id.rawValue, to: &base)
+    Self.append(tab.activePane.rawValue, to: &base)
+    Self.append(tab.zoomedPane?.rawValue ?? Self.none, to: &base)
+    base.append(columns)
+    base.append(rows)
+    let rects = self.frames(for: tab)
+      .sorted { ($0.value.x, $0.value.y) < ($1.value.x, $1.value.y) }
+    for y in 0 ..< paneArea.height {
+      var key = base
+      var keyed = true
+      for (pane, rect) in rects
+      where rect.height > 0 && y >= rect.y && y < rect.y + rect.height {
+        let fy = y - rect.y
+        if fy == 0, workspace.pane(pane)?.exitStatus != nil {
+          keyed = false
+          break
+        }
+        Self.append(pane.rawValue, to: &key)
+        key.append(rect.x)
+        key.append(rect.width)
+        guard let frame = frames[pane] else {
+          key.append(UInt64(1))
+          continue
+        }
+        let g = frame.grid
+        key.append(g.columns)
+        guard fy < min(rect.height, g.rows) else {
+          key.append(UInt64(2))
+          continue
+        }
+        guard let identity = frame.rowIdentity(fy),
+          let palette = paletteTokens[pane]
+        else {
+          keyed = false
+          break
+        }
+        key.append(UInt64(3))
+        key.append(identity.address.generation)
+        key.append(identity.address.alternateScreen ? 1 : 0)
+        key.append(identity.address.row)
+        key.append(identity.version)
+        key.append(palette)
+        key.append(frame.modes.contains(.reverseVideo) ? 1 : 0)
+        let overlay = overlays[pane]
+        var selected: [Int] = []
+        if let overlay {
+          for x in 0 ..< g.columns
+          where Self.selected(overlay, row: fy, column: x, columns: g.columns) {
+            selected.append(x)
+          }
+        }
+        key.append(selected.first.map { $0 + 1 } ?? 0)
+        key.append(selected.last.map { $0 + 1 } ?? 0)
+        key.append(selected.count)
+        if let c = overlay?.cursor, c.row == fy {
+          key.append(c.column + 1)
+        } else {
+          key.append(0)
+        }
+        if let search = frame.search {
+          for (n, span) in search.visible.enumerated()
+          where span.startRow <= fy && span.endRow >= fy {
+            key.append(span.startRow == fy ? span.startColumn + 1 : 0)
+            key.append(span.endRow == fy ? span.endColumn + 1 : 0)
+            key.append(n == search.selectedVisible ? 1 : 0)
+          }
+        }
+        key.append(UInt64.max)
+      }
+      screen.rowKeys[y] = keyed ? key : nil
+    }
+  }
+
+  private static let none = UUID(
+    uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+  )
+
+  private static func append(_ u: UUID, to key: inout RowKey) {
+    withUnsafeBytes(of: u.uuid) { raw in
+      key.append(raw.loadUnaligned(fromByteOffset: 0, as: UInt64.self))
+      key.append(raw.loadUnaligned(fromByteOffset: 8, as: UInt64.self))
     }
   }
 

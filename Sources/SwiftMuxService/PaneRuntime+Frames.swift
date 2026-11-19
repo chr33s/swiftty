@@ -18,6 +18,8 @@ extension PaneRuntime {
     var geometry: UInt64
     /// The viewport (a viewer's window) the frame shows.
     var viewportRevision: UInt64
+    /// What the client holds once it acknowledges this frame.
+    var baseline: FrameBaseline?
 
     var sent: SentFrame {
       SentFrame(
@@ -25,8 +27,15 @@ extension PaneRuntime {
         bytes: data.count,
         geometry: geometry,
         viewport: viewportRevision,
+        baseline: baseline,
       )
     }
+  }
+
+  /// How one client receives frames (negotiated at hello).
+  struct FrameEncoding: Sendable {
+    var binary = false
+    var deltas = false
   }
 
   /// Result of applying a viewer's anchor without touching the engine
@@ -48,6 +57,8 @@ extension PaneRuntime {
     attachment: AttachmentID,
     layoutRevision: UInt64,
     viewport: ViewerViewport? = nil,
+    encoding: FrameEncoding = FrameEncoding(),
+    baseline: FrameBaseline? = nil,
     completion: @escaping @Sendable (Result<CapturedFrame, MuxError>) -> Void,
   ) {
     queue.async { [self] in
@@ -97,10 +108,36 @@ extension PaneRuntime {
           limits: limits,
         )
         frame.search?.selected = selected
-        let data = try SMXCodec.encode(
-          ServerMessage.event(.frame(frame)),
-          limit: limits.maxFrameBytes,
-        )
+        if rowTrackers[attachment] == nil, rowTrackers.count >= 8 {
+          rowTrackers.removeAll()
+        }
+        frame.rowVersions = rowTrackers[
+          attachment,
+          default: RowVersionTracker()
+        ]
+        .stamp(screen)
+        let delta =
+          encoding.deltas
+          ? baseline.flatMap { FrameDeltaBuilder.delta(from: frame, base: $0) }
+          : nil
+        let data: Data
+        switch (encoding.binary, delta) {
+        case (true, let delta?): data = SMXB.encode(delta)
+        case (true, nil): data = SMXB.encode(frame)
+        case (false, let delta?):
+          data = try SMXCodec.encode(
+            ServerMessage.event(.frameDelta(delta)),
+            limit: limits.maxFrameBytes,
+          )
+        case (false, nil):
+          data = try SMXCodec.encode(
+            ServerMessage.event(.frame(frame)),
+            limit: limits.maxFrameBytes,
+          )
+        }
+        guard data.count <= limits.maxFrameBytes else {
+          throw MuxError(.resourceLimit, "frame of \(data.count) bytes")
+        }
         completion(
           .success(
             CapturedFrame(
@@ -108,6 +145,7 @@ extension PaneRuntime {
               revision: revision,
               geometry: geometry,
               viewportRevision: shownRevision,
+              baseline: FrameBaseline(frame),
             )
           )
         )

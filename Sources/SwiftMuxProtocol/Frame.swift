@@ -302,6 +302,11 @@ public struct PaneFrame: Codable, Sendable, Equatable {
   public var title: String
   /// The program's drop registration (`dropTargets`); nil when none.
   public var dropTarget: FrameDropTarget?
+  /// Per row, the service's edit version (spec.multiplexer.md §4, "Row
+  /// identity and versions"). With the row's address it identifies the
+  /// row's content: equal identities mean equal content. Nil from a
+  /// service that does not track versions.
+  public var rowVersions: [UInt64]?
 
   public init(
     identity: FrameIdentity,
@@ -315,7 +320,8 @@ public struct PaneFrame: Codable, Sendable, Equatable {
     history: HistoryWindow,
     search: FrameSearch?,
     title: String,
-    dropTarget: FrameDropTarget? = nil
+    dropTarget: FrameDropTarget? = nil,
+    rowVersions: [UInt64]? = nil
   ) {
     self.identity = identity
     self.grid = grid
@@ -329,6 +335,25 @@ public struct PaneFrame: Codable, Sendable, Equatable {
     self.search = search
     self.title = title
     self.dropTarget = dropTarget
+    self.rowVersions = rowVersions
+  }
+
+  /// Identity of row `y`, or nil when the frame carries no versions.
+  public func rowIdentity(_ y: Int) -> RowIdentity? {
+    guard let rowVersions, y >= 0, y < rowVersions.count else { return nil }
+    return RowIdentity(
+      address: history.address(
+        viewportRow: y,
+        alternateScreen: grid.alternateScreen
+      ),
+      version: rowVersions[y]
+    )
+  }
+
+  /// Identities of every row, or nil without versions.
+  public var rowIdentities: [RowIdentity]? {
+    guard let rowVersions, rowVersions.count == grid.rows else { return nil }
+    return (0 ..< grid.rows).map { rowIdentity($0)! }
   }
 
   /// Text of row `y`, trailing blanks trimmed.

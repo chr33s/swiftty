@@ -80,6 +80,34 @@ package struct OwnedScreen: Sendable, Equatable {
     self.dropAccepted = dropAccepted
   }
 
+  /// The top-left `columns` × `rows` cells, padded with blanks; row
+  /// addressing is unchanged (viewer windows, protocol size limits).
+  package func cropped(columns: Int, rows: Int) -> OwnedScreen {
+    guard columns > 0, rows > 0, columns != self.columns || rows != self.rows
+    else { return self }
+    var out = self
+    var cells: [Cell] = []
+    cells.reserveCapacity(columns * rows)
+    var wrapped: [Bool] = []
+    wrapped.reserveCapacity(rows)
+    for y in 0 ..< rows {
+      let source = y < self.rows
+      wrapped.append(source && y < self.wrapped.count ? self.wrapped[y] : false)
+      for x in 0 ..< columns {
+        cells.append(
+          source && x < self.columns ? self.cells[y * self.columns + x] : .blank
+        )
+      }
+    }
+    out.cells = cells
+    out.wrapped = wrapped
+    out.columns = columns
+    out.rows = rows
+    out.cursor.x = min(max(0, cursor.x), columns - 1)
+    out.cursor.y = min(max(0, cursor.y), rows - 1)
+    return out
+  }
+
   /// Text of row `y` with trailing blanks trimmed.
   package func text(row y: Int) -> String {
     var s = String.UnicodeScalarView()
@@ -101,6 +129,72 @@ package struct OwnedScreen: Sendable, Equatable {
 }
 
 extension TerminalState {
+  /// Copies a window of `rows` lines starting at absolute row `top` (the
+  /// live screen when nil or on the alternate screen) without moving the
+  /// terminal's own viewport. Search state is not included; the cursor
+  /// shows only on the live screen.
+  package func captureOwnedWindow(top requested: Int?) -> OwnedScreen {
+    let live = firstAbsoluteRow + scrollbackCount
+    let top =
+      isAlternateScreen
+      ? firstAbsoluteRow : min(max(requested ?? live, firstAbsoluteRow), live)
+    var cells: [Cell] = []
+    cells.reserveCapacity(columns * rows)
+    var wrapped: [Bool] = []
+    wrapped.reserveCapacity(rows)
+    var graphemes: [[UInt32]] = []
+    for y in 0 ..< rows {
+      let copied: Bool? = withLine(absoluteRow: top + y) { row, isWrapped in
+        wrapped.append(isWrapped)
+        for x in 0 ..< columns {
+          guard x < row.count else {
+            cells.append(.blank)
+            continue
+          }
+          var cell = row[x]
+          if cell.isGrapheme {
+            var copy: [UInt32] = []
+            appendScalars(of: cell, to: &copy)
+            cell.glyph = UInt32(graphemes.count)
+            graphemes.append(copy)
+          }
+          cell.attributes.link = 0
+          cells.append(cell)
+        }
+        return true
+      }
+      if copied == nil {
+        wrapped.append(false)
+        cells.append(contentsOf: repeatElement(.blank, count: columns))
+      }
+    }
+    let atLive = top >= live
+    return OwnedScreen(
+      columns: columns,
+      rows: rows,
+      cells: cells,
+      wrapped: wrapped,
+      graphemes: graphemes,
+      cursor: CursorState(
+        x: min(cursor.x, columns - 1),
+        y: min(cursor.y, rows - 1),
+        isVisible: modes.contains(.cursorVisible) && atLive,
+        style: cursorStyle,
+        isBlinking: modes.contains(.cursorBlink),
+      ),
+      palette: palette,
+      underlineColors: underlineColors,
+      modes: modes,
+      title: title,
+      isAlternateScreen: isAlternateScreen,
+      addressingGeneration: addressingGeneration,
+      firstAbsoluteRow: firstAbsoluteRow,
+      viewportTopRow: top,
+      viewportOffset: isAlternateScreen ? 0 : live - top,
+      scrollbackCount: scrollbackCount,
+    )
+  }
+
   /// Copies the visible viewport and its metadata into owned values.
   /// - Complexity: O(columns * rows) plus visible grapheme scalars.
   package func captureOwnedScreen() -> OwnedScreen {

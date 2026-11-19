@@ -316,7 +316,7 @@ Persist the helper identity in an owner-only directory. Validate the opened dire
 
 ### 5.3 Application attachment
 
-Use ALPN `rst/1`. Wait for the authenticated TLS handshake, then send `Attach(sessionID, serverInstanceID, writerID, applicationToken)` on the control stream. Reject all other application messages before successful attachment.
+Use ALPN `rst/1`. Wait for the authenticated TLS handshake, then send `Attach(sessionID, serverInstanceID, writerID, applicationToken, features)` on the control stream. The optional `features` list names additive behaviours the client can receive (`paneFrames`, `screenDeltas`, `copySelection`). Hosts ignore names they do not know, and older hosts ignore the field. Reject all other application messages before successful attachment.
 
 The server validates the capability, expiry, instance, and session, then assigns a monotonically increasing `attachmentEpoch`. A successful attachment atomically fences the previous connection: subsequent input from its epoch is rejected.
 
@@ -330,7 +330,7 @@ Store SSH private keys in Keychain. Tokens, credentials, terminal contents, and 
 
 The server terminal engine is the only parser of the persistent PTY's output. It retains hidden emulator state, including inactive buffers and modes. The client receives only the presentation needed to draw the selected viewport.
 
-A full `ScreenSnapshot` contains:
+With `paneFrames` (§7.2), a screen is the shared terminal frame: an `rstHeader` envelope plus the common frame body ([spec.multiplexer.md §4, "One frame model"](spec.multiplexer.md#one-frame-model-for-swiftmux-and-rst1)). That body carries the same content as the list below, plus row identities, the palette and palette-tagged colors. Without the feature, a full legacy `ScreenSnapshot` contains:
 
 ```text
 sessionID, attachmentEpoch, screenRevision, resizeRevision
@@ -354,7 +354,7 @@ The supported terminal profile includes cursor movement, erase, scroll regions, 
 
 The client sends semantic text, keys, and paste requests. The server encodes them using its current keyboard and paste modes. IME composition remains local until text is committed. Mouse reporting is deferred.
 
-Version 1 exposes the current viewport and, where the platform profile permits it, local selection/copy. It does not promise complete historical scrollback, byte-exact terminal recording, or delivery of transient bells/titles. Users needing complete command output can redirect it into a file and retrieve it through SFTP on a full client.
+Version 1 exposes the current viewport and, where the platform profile permits it, local selection/copy. With `copySelection` (§7.5), selection also spans history the client has not fetched. It does not promise complete historical scrollback, byte-exact terminal recording, or delivery of transient bells/titles. Users needing complete command output can redirect it into a file and retrieve it through SFTP on a full client.
 
 ## 7. RST/1 transport and framing
 
@@ -364,7 +364,7 @@ QUIC provides independently ordered streams and connection migration; TLS integr
 
 Use one bidirectional stream for control and input. Send each screen snapshot on a new server-initiated unidirectional stream. QUIC DATAGRAM, application-level packet retransmission, FEC, and custom congestion control are excluded from v1.
 
-A snapshot stream is reliable while useful, but may be canceled when superseded. Loss within that stream can delay its completion; independent streams do not remove shared congestion or all latency. This is intentionally simpler than a generic state-delta protocol.
+A snapshot stream is reliable while useful, but may be canceled when superseded. Loss within that stream can delay its completion; independent streams do not remove shared congestion or all latency. Each stream is self-contained: a full snapshot or, with `screenDeltas` (§7.4), a delta against a screen the client has already acknowledged, never against another in-flight stream. Cancelling any stream therefore never invalidates another.
 
 Snapshot bytes and control records in the same direction also share connection-level
 flow-control credit. A peer withholding reads can exhaust that credit and delay
@@ -379,11 +379,14 @@ Control records are `UInt32BE(length)` followed by a UTF-8 JSON object. The leng
 A snapshot stream contains exactly one record followed by FIN:
 
 ```text
-UInt8       encoding: 0 = plain UTF-8 JSON, 1 = RFC 1950 zlib
+UInt8       encoding: 0 = plain UTF-8 JSON, 1 = RFC 1950 zlib JSON,
+                      2 = SMXB/1, 3 = RFC 1950 zlib SMXB/1
 UInt32BE    decodedLength
 UInt32BE    encodedLength
-Byte[]      encoded snapshot JSON
+Byte[]      encoded screen
 ```
+
+Encodings 0 and 1 carry a legacy JSON `ScreenSnapshot`. Encodings 2 and 3 carry an `SMXB/1` payload with an `rstHeader` envelope: a full frame, or a delta when `screenDeltas` is also negotiated. They are valid only on an attachment where both `Attach` and `Attached` list `paneFrames`. The host chooses zlib per record when it shrinks the payload. A record whose encoding was not negotiated is malformed.
 
 A sender that abandons a snapshot before writing its record ends the stream with an empty FIN instead; the receiver releases that stream without delivering anything.
 
@@ -394,6 +397,8 @@ Compression is independent per snapshot, without a cross-snapshot dictionary. Bo
 | `Attach` / `Attached` | Authorize one connection and return epoch plus input progress |
 | `Input` / `InputAck` | Submit an ordered operation and acknowledge completed PTY application |
 | `ScreenAck` | Report the highest fully decoded and accepted screen revision |
+| `RequestFullScreen` | With `screenDeltas`: discard delta state and ask for a full snapshot of current state |
+| `CopySelection` / `CopyChunk` / `CopyResult` | With `copySelection`: copy a selection's text from the host's grid (§7.5) |
 | `Ping` / `Pong` | Application liveness and round-trip sampling |
 | `Detach` / `Detached` | Stop this attachment without destroying the shell |
 | `Terminate` / `Terminated` | Explicitly destroy the owned session |
@@ -443,7 +448,44 @@ that already ran.
 
 Capture at most 30 times/second, only while attached and dirty. Lower cadence under backpressure. All send paths must respect QUIC flow control, and control/input processing must not wait for compression or rendering.
 
-After an outage, discard old transport streams and send a full snapshot of **current** state. Do not replay missed screens. Deltas, baseline caches, and snapshot-fragment protocols are deferred until measurements justify their complexity.
+After an outage, discard old transport streams and send a full snapshot of **current** state. Do not replay missed screens. A new attachment epoch always starts from a full snapshot; delta baselines never survive an epoch. Snapshot-fragment protocols and cross-snapshot compression dictionaries remain deferred.
+
+### 7.4 Screen deltas
+
+`screenDeltas` requires `paneFrames`. A peer that lists `screenDeltas` without it is treated as listing neither. With both features listed by both `Attach` and `Attached`, the host may send a `FrameDelta` in place of a full frame. The delta rules are the multiplexer's ([spec.multiplexer.md §4, "Row identity and versions" and "Frame deltas"](spec.multiplexer.md#frame-deltas)), applied with one shared implementation. This section states only what differs for RST/1.
+
+**Row identity.** Every frame row carries the host engine's `(HistoryAddress, version)` identity. With `historyViewport`, rows exported from the attachment's history window carry their history addresses, so moving the window becomes row moves too.
+
+**Delta record.** An `SMXB/1` delta (`kind` 1) whose `rstHeader` envelope adds `baseRevision`. Its body is the shared `FrameDelta`: row map, replaced rows, tables for those rows only, complete metadata and the row-identity CRC-32C. There is no JSON delta form.
+
+**Baseline.** The base is the latest revision the client reported in `ScreenAck`, which already means "fully decoded and accepted". The host keeps only that revision's row identities. A delta is never based on an unacknowledged revision or on another delta in flight.
+
+**Client retention.** On a wide-area path, several revisions are installed while an acknowledgement is in flight. At 30 captures per second and 300 ms RTT that is about nine. The client keeps its installed revisions from the last 2 seconds, up to 16, sharing storage for rows with equal identity. A delta whose base is no longer retained, whose identity or checksum does not match, or whose decoded result fails frame validation under the RST/1 limits is discarded. The client acknowledges it with `ScreenAck`, so its stream retires instead of holding one of the two in-flight slots, and then sends `RequestFullScreen`; the request follows the acknowledgement, so the host drops the base the acknowledgement named. A valid result whose revision is not newer than the displayed one is discarded silently, as for full snapshots.
+
+**Scheduling.** §7.3 is unchanged. Deltas count as snapshots for the two in-flight streams and the single unsent reference, and the protected stream may be a delta. The host sends a full snapshot instead of a delta when it would encode to at least half the size of the full snapshot, on the first screen of an attachment epoch, after a resize revision changes, when `activeBuffer` or the history generation changes, and in answer to `RequestFullScreen`. It answers at most one `RequestFullScreen` per in-flight full snapshot, so repeated requests cannot multiply work.
+
+**Limits.** A delta obeys the snapshot size limits in §12. Retained baselines are bounded by the 200×80 grid limit and the 16-revision cap.
+
+### 7.5 Selection across history
+
+With `copySelection` listed by both sides (it requires `paneFrames` and `historyViewport`), clients that support selection follow the multiplexer's live-selection rules ([spec.multiplexer.md §4, "Live selection across pages"](spec.multiplexer.md#live-selection-across-pages)). The selection is client-local, keyed by row identity, and the overlay follows output. It clears on an in-place edit, a history-generation change or eviction. Dragging past an edge sends `Viewport`, with at most one outstanding. A selection inside the displayed frame is copied locally. Otherwise the client sends:
+
+```text
+CopySelection: attachmentEpoch, requestID, generation, start {row, column},
+               end {row, column}, unit (character | word | line),
+               screenRowVersions: [[row, version], ...]
+```
+
+The host validates it on the session's ordered path and extracts text from its own grid with the shared copy rules. It answers with ordered `CopyChunk { requestID, index, text }` records of at most 48 KiB of UTF-8 each, so every record stays under the 64 KiB control limit. A final `CopyResult { requestID, totalBytes }` ends a successful copy; otherwise `CopyResult` carries `historyUnavailable`, `selectionChanged` or `resourceLimit`. Copied text is capped at 2 MiB, and the host never truncates silently.
+
+Rules specific to RST/1:
+
+- At most one copy is in flight per attachment; a second request fails with `busy`.
+- Chunks yield to input and acknowledgement records on the control stream, so a large copy cannot delay typing behind more than one chunk.
+- A new attachment epoch cancels an unfinished copy. The client discards any partial text and never writes it to the pasteboard.
+- Copied text is terminal content. It follows §5.3's rule: never logged, put in analytics or kept in unprotected state.
+- Copy is read-only and needs no writer lease. Clients without a selection UI (tvOS, the watch companion) do not list the feature.
+
 
 ## 8. Reliable input across reattachment
 
@@ -651,7 +693,9 @@ These checks do not replace the remaining platform-wide release matrix in §2.4.
 | Grid | 200 columns × 80 rows maximum |
 | Control record | 64 KiB decoded JSON |
 | Snapshot | 4 MiB encoded and 4 MiB decoded maximum |
-| In-flight snapshots | 2, plus one replaceable unsent reference |
+| In-flight snapshots | 2, plus one replaceable unsent reference (deltas included) |
+| Client retained delta baselines | 16 revisions or 2 s, whichever is fewer; unchanged rows shared |
+| `CopySelection` | 1 in flight per attachment; 48 KiB per `CopyChunk`; 2 MiB total |
 | Client/server pending input | 64 KiB generated/pending data each; admission must account for expansion |
 | Paste operation | 32 KiB committed UTF-8 maximum |
 | Cell grapheme | 64 UTF-8 bytes; over-limit display uses a documented placeholder |
@@ -696,10 +740,13 @@ All tests below are release gates for their applicable platform profile unless l
 | A17 | Exercise platform-specific profiles | Catalyst desktop input/file access, visionOS window/input/accessibility, and tvOS focus/keyboard/trust prompts pass; tvOS exposes no SFTP; no direct client has a local PTY; all direct clients use identical RST semantics |
 | A18 | Pair physical Apple Watch and iPhone; force unreachable/stale state, lifecycle changes, malformed previews, and opt-out | Companion remains read-only; timestamps stay honest; no network credentials or RST lease exposed; bounds enforced; preview privacy honored; phone is not kept alive or logged in by watch refresh |
 | A19 | Attempt attachment from two client platforms | The existing one-writer policy is enforced; rejected or replaced attachment cannot replay stale input; watch refresh creates no attachment |
+| A20 | With `screenDeltas`, run typing, full-screen scrolling, CR progress bars, alternate-screen switches, resizes and `historyViewport` moves under the A3 loss/duplication/reordering profile, with stream cancellation and reattachment | Every displayed screen equals the host's full snapshot at that revision; a missing base or checksum mismatch recovers through one full snapshot; no old-frame regression; a host without the feature, or a client without it, exchanges full snapshots only |
+| A21 | With `paneFrames`, run the A8 corpus and malformed-payload fuzzing | Each `SMXB/1` frame displays the same cells, widths, colors, cursor and wraps as the legacy snapshot of the same state; payloads outside RST/1 limits, with the wrong envelope or with an un-negotiated encoding are rejected without partial display; a peer without the feature exchanges legacy snapshots only |
+| A22 | With `copySelection`, select across unfetched history during output, then copy under the A3 network profile, with edits under the selection, eviction, oversize text and reattachment mid-copy | Copied text equals the host's grid text; `selectionChanged`/`historyUnavailable`/`resourceLimit` yield no text; a copy cut off by reattachment writes nothing; typing latency during a 2 MiB copy stays within one chunk of delay |
 
 **Recovery target, not a measured claim:** after a path becomes usable, warm reattachment plus an 80×24 current screen should complete within 3 seconds at p95 under 200 ms RTT, 5% independent loss, 2% reordering, and 1 Mbit/s available bandwidth. Test at least 100 recoveries. Exclude time during which neither endpoint has a usable path, but include handshake and application attachment.
 
-Measure typing latency, data usage, CPU, wakeups, and memory separately. Do not reuse historical Mosh measurements as product benchmarks. Standard remote echo remains the v1 behavior.
+Measure typing latency, data usage, CPU, wakeups, and memory separately. For `screenDeltas`, report bytes per screen and client CPU with and without deltas (both zlib-encoded) for 80×24 typing and 200×80 scrolling under the recovery-target network profile. Do not reuse historical Mosh measurements as product benchmarks. Standard remote echo remains the v1 behavior.
 
 ## 14. Implementation gates and independent-development record
 
@@ -708,6 +755,8 @@ Measure typing latency, data usage, CPU, wakeups, and memory separately. Do not 
 **Gate 1 — first vertical slice.** One configured host, one shell, full snapshot display, semantic keyboard input, resize, and explicit detach/reattach. Match server/client cell models. No prediction, deltas, or feature expansion.
 
 **Gate 2 — client continuity correctness.** Input ledger, epoch fencing, partial writes, snapshot bounds, real handover where applicable, each client lifecycle/cold launch, and loss reporting. Pass applicable A0–A13, A16, and A19.
+
+**Gate 2a — shared frames, deltas and copy (additive, in this order).** (1) `paneFrames`: the shared frame model and `SMXB/1` codec; pass A21. (2) `screenDeltas`: the multiplexer's shared delta builder and applier; pass A20 and the A3/A5/A6 tests with the feature on. (3) `copySelection`; pass A22. Each step remains compatible with peers that lack it. Remove the legacy JSON `ScreenSnapshot` only in a later protocol version, once no supported client needs it. *Status 2026-11-19:* the protocol, host, `RoamingClient`, `swroam` and Apple client selection parts are implemented with A20–A22 evidence (spec.multiplexer.md §11, "Frames, deltas and live selection"). Presentation sessions carry their selection in host addresses across frames and copy beyond the shown rows through `RoamingClient.copySelection`.
 
 **Gate 3 — feature-profile completion.** Add the bounded SFTP subset on full clients, safe resume/publication, ordinary-SSH fallback UX on direct clients, and transfer interaction tests. Complete tvOS focus/input and the bounded read-only watch companion; pass A14–A18 where applicable. Freeze per-profile capabilities and dependency pins. Linux and Windows clients have no implementation gate in this revision.
 
@@ -718,6 +767,8 @@ Maintain the design-provenance record (Appendix B) citing the paper and public s
 ---
 
 ## Revision record
+
+**2026-11-19 — Shared frames, deltas and copy:** Add three additive features. `paneFrames` (§6, §7.2) adopts the multiplexer's frame model and `SMXB/1` codec under an `rstHeader` envelope. `screenDeltas` (§7.4) adds deltas in that format against the last acknowledged screen, with client baseline retention and `RequestFullScreen`. `copySelection` (§7.5) adds live selection across history and chunked host-side copy. Also adds A20–A22 and Gate 2a. Legacy JSON snapshots, outage recovery and the rest of RST/1 are unchanged.
 
 **2026-11-01 — Shared attachment implementation:** Record `RoamingScreenBackend`
 as the production frame/input/lifecycle binding, with submission-time callback
@@ -939,7 +990,7 @@ For RST/1 v1, selection/copy is current-viewport-only where the platform profile
 
 `RenderSnapshot` contains retained pooled storage, raw pointers, borrowed spans, cells with side-table references, and local rendering metadata. Its construction initializer and `SnapshotStorage` are internal to SwifttyCore. It is not an externally constructible network DTO. [R5]
 
-Add an export adapter that produces the existing RST/1 `ScreenSnapshot` representation:
+Add an export adapter that produces the RST/1 screen representation. With `paneFrames`, this is the multiplexer's shared frame exporter (`SwiftMuxExport`) with an `rstHeader` envelope, which keeps palette-tagged colors and row identities. The rules below describe the legacy `ScreenSnapshot` export and still apply to both:
 
 - Copy complete grapheme text, cell widths/continuations, and row-wrap information.
 - Resolve palette, underline-color, and other internal table references into bounded semantic style values.

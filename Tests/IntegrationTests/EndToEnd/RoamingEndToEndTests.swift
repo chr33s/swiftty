@@ -160,6 +160,114 @@ struct RoamingEndToEndTests {
     await harness.shutdown()
   }
 
+  @Test
+  func `shared frames arrive as deltas and copy spans unfetched history`()
+    async throws
+  {
+    let harness = try await Harness()
+    let display = TerminalSession(presentationColumns: 40, rows: 8)
+    let client = harness.makeClient(display: display)
+    try await client.start(.create(GridSize(columns: 40, rows: 8)))
+    try await waitFor("active") { await client.state == .active }
+    _ = await client.submit(.text("seq 1 3000; echo done-mark"))
+    _ = await client.submit(.key(SemanticKey(.enter)))
+    try await waitFor("output") { screen(display).contains("done-mark") }
+    for word in ["one", "two", "three"] {
+      _ = await client.submit(.text("echo \(word)-x"))
+      _ = await client.submit(.key(SemanticKey(.enter)))
+      try await waitFor(word) { screen(display).contains("\(word)-x") }
+    }
+    let stats = await client.deltaStatistics
+    #expect(stats.applied > 0)
+    #expect(stats.requestedFull == 0)
+    // Copy from the oldest retained row to the newest output: rows the
+    // client never received come from the host's grid.
+    let frame = try #require(await client.currentPaneFrame)
+    let h = frame.history
+    let last = try #require(frame.lines.lastIndex(of: "three-x"))
+    let screenRows = (0 ... last).compactMap { frame.rowIdentity($0) }
+      .filter { $0.address.row >= h.viewportTop + h.viewportOffset }
+    func request(_ rows: [RowIdentity]) -> CopySelectionRequest {
+      CopySelectionRequest(
+        pane: PaneID(),
+        start: SelectionPoint(
+          address: HistoryAddress(
+            generation: h.generation,
+            alternateScreen: false,
+            row: h.firstRow
+          ),
+          column: 0
+        ),
+        end: SelectionPoint(
+          address: h.address(viewportRow: last, alternateScreen: false),
+          column: 39
+        ),
+        unit: .character,
+        screenRowVersions: rows
+      )
+    }
+    let text = try await client.copySelection(request(screenRows))
+    let lines = text.split(separator: "\n")
+    #expect(lines.contains("1500"))
+    #expect(lines.contains("done-mark"))
+    #expect(lines.last == "three-x")
+    var stale = screenRows
+    stale[stale.count - 1].version &+= 1000
+    await #expect(throws: RoamingClient.CopyError(.selectionChanged)) {
+      try await client.copySelection(request(stale))
+    }
+    await client.close(.terminate)
+    await harness.shutdown()
+  }
+
+  @Test
+  func `a display selection scrolled out of view is copied from the host`()
+    async throws
+  {
+    let harness = try await Harness()
+    let display = TerminalSession(presentationColumns: 40, rows: 8)
+    let client = harness.makeClient(display: display)
+    display.remoteCopyHandler = { selection, done in
+      Task { done(try? await client.copySelection(selection)) }
+    }
+    try await client.start(.create(GridSize(columns: 40, rows: 8)))
+    try await waitFor("active") { await client.state == .active }
+    _ = await client.submit(.text("seq 1 200; echo done-mark"))
+    _ = await client.submit(.key(SemanticKey(.enter)))
+    try await waitFor("output") { screen(display).contains("done-mark") }
+    // Select every shown row, then scroll this client's window back so
+    // the selection's end lies below what is shown.
+    let shown = display.withState { $0.screenLines }
+    display.mutate { state in
+      state.setSelection(
+        Selection(
+          anchor: state.viewportPoint(row: 0, column: 0),
+          head: state.viewportPoint(row: state.rows - 1, column: 39)
+        )
+      )
+    }
+    await client.scrollViewport(by: 3)
+    try await waitFor("window moved") {
+      display.withState { $0.presentationSelectionBeyondView } != nil
+    }
+    let text: String? = await withCheckedContinuation { continuation in
+      DispatchQueue.main.async {
+        display.copySelectedText { continuation.resume(returning: $0) }
+      }
+    }
+    let expected = shown.map { line in
+      var line = line
+      while line.last == " " { line.removeLast() }
+      return line
+    }
+    #expect(
+      text?.split(separator: "\n", omittingEmptySubsequences: false)
+        .map(String.init) == expected
+    )
+    await client.close(.terminate)
+    await harness.shutdown()
+  }
+
   @Test(arguments: [false, true])
   func `per-key echo keeps screens flowing`(loginShell: Bool) async throws {
     let harness = try await Harness(loginShell: loginShell)

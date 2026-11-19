@@ -112,6 +112,16 @@ final class Client {
   /// Bridged from the roaming transport rather than local XPC.
   var remote = false
 
+  /// Negotiated frame encoding: binary and deltas only when the hello
+  /// asked for them (the service supports both).
+  var frameEncoding: PaneRuntime.FrameEncoding {
+    let capabilities = hello?.capabilities ?? []
+    return PaneRuntime.FrameEncoding(
+      binary: capabilities.contains(.binaryFrames),
+      deltas: capabilities.contains(.frameDeltas)
+    )
+  }
+
   init(channel: SMXChannel) {
     id = UUID()
     transport = .xpc(channel)
@@ -143,6 +153,8 @@ struct SentFrame {
   /// The viewport revision it shows: a viewer's window, or the
   /// controller's scroll position and search.
   var viewport: UInt64
+  /// The base for later deltas once the client acknowledges this frame.
+  var baseline: FrameBaseline? = nil
 }
 
 struct QueuedFrame {
@@ -169,6 +181,9 @@ struct FrameSlot {
   var queued: QueuedFrame?
   var lastSent: UInt64 = 0
   var lastCapture: UInt64 = 0
+  /// The newest frame the client acknowledged: the base of the next delta.
+  /// Nil forces a complete frame.
+  var baseline: FrameBaseline?
 
   /// Records `frame` as sent now.
   mutating func sent(_ frame: SentFrame) {

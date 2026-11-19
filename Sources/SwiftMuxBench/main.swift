@@ -236,9 +236,159 @@ func filledState(columns: Int, rows: Int) -> TerminalSession {
   return session
 }
 
-func exportImport(
+/// p95 of each frame stage at one size (export, version stamping,
+/// encode, decode with validation, renderer import).
+func frameStages(columns: Int, rows: Int) throws -> [(String, Double)] {
+  let session = filledState(columns: columns, rows: rows)
+  let identity = FrameIdentity(
+    server: ServerInstanceID(),
+    attachment: AttachmentID(),
+    pane: PaneID(),
+    revision: 1,
+    layoutRevision: 1,
+    geometryGeneration: 1,
+    viewportRevision: 0
+  )
+  var times: [String: [Double]] = [:]
+  func timed<T>(_ name: String, _ body: () throws -> T) rethrows -> T {
+    let t0 = now()
+    let value = try body()
+    times[name, default: []].append((now() - t0) * 1000)
+    return value
+  }
+  var tracker = RowVersionTracker()
+  for _ in 0 ..< 50 {
+    let owned = timed("capture") {
+      session.withState { $0.captureOwnedScreen() }
+    }
+    var frame = try timed("export") {
+      try FrameExporter.frame(from: owned, identity: identity)
+    }
+    frame.rowVersions = timed("stamp") { tracker.stamp(owned) }
+    let data = timed("encode") { SMXB.encode(frame) }
+    let record = try timed("decode+validate") { try SMXB.decode(data) }
+    guard case let .frame(decoded) = record.payload else { continue }
+    _ = try timed("import") {
+      try FrameImporter.snapshot(from: decoded, sequence: 1)
+    }
+  }
+  return ["capture", "export", "stamp", "encode", "decode+validate", "import"]
+    .map { ($0, percentile(times[$0] ?? [], 0.95)) }
+}
+
+/// `copySelection` text extraction over a pane's whole history at the
+/// service's history budgets (10,000 rows, 16 MiB), with every screen
+/// row's version checked: p50, p95, rows and bytes copied.
+func copyLatency(
   columns: Int,
   rows: Int
+) throws -> (p50: Double, p95: Double, rows: Int, bytes: Int) {
+  let limits = MuxLimits.standard
+  var state = TerminalState(
+    columns: columns,
+    rows: rows,
+    scrollbackLimitBytes: limits.historyBytesPerPane,
+    scrollbackLimitRows: limits.historyRowsPerPane
+  )
+  var parser = Parser()
+  let line = String(repeating: "x", count: max(1, columns - 12))
+  var text = ""
+  for n in 0 ..< limits.historyRowsPerPane + rows + 10 {
+    text += "\(n) \(line)\r\n"
+  }
+  let bytes = Array(text.utf8)
+  bytes.withUnsafeBufferPointer {
+    parser.consume(Span(_unsafeElements: $0), into: &state)
+  }
+  let tracker = RowVersionBox()
+  let versions = tracker.stamp(state.captureOwnedScreen())
+  let generation = state.addressingGeneration
+  let top = state.firstAbsoluteRow
+  let screenTop = state.absoluteRow(viewportRow: 0)
+  func address(_ row: Int) -> HistoryAddress {
+    HistoryAddress(generation: generation, alternateScreen: false, row: row)
+  }
+  let request = CopySelectionRequest(
+    pane: PaneID(),
+    start: SelectionPoint(address: address(top), column: 0),
+    end: SelectionPoint(
+      address: address(screenTop + rows - 1),
+      column: columns - 1
+    ),
+    unit: .character,
+    screenRowVersions: (0 ..< rows)
+      .map {
+        RowIdentity(address: address(screenTop + $0), version: versions[$0])
+      }
+  )
+  var times: [Double] = []
+  var copied = 0
+  for _ in 0 ..< 20 {
+    let t0 = now()
+    let result = SelectionCopy.text(request, in: state) {
+      tracker.matches($0, in: state)
+    }
+    times.append((now() - t0) * 1000)
+    guard case let .success(text) = result else {
+      throw MuxError(.invalidRequest, "copy refused")
+    }
+    copied = text.utf8.count
+  }
+  return (
+    percentile(times, 0.5), percentile(times, 0.95),
+    state.scrollbackCount + rows, copied
+  )
+}
+
+/// Encoded `SMXB/1` delta sizes for typical updates of a 200x50 pane.
+func deltaSizes() throws -> [(String, Int)] {
+  let session = TerminalSession(columns: 200, rows: 50)
+  for n in 1 ... 40 {
+    session.feed(Array("line \(n) of earlier output\r\n".utf8))
+  }
+  session.feed(Array("$ ".utf8))
+  var tracker = RowVersionTracker()
+  var revision: UInt64 = 0
+  func frame() throws -> PaneFrame {
+    revision += 1
+    let owned = session.withState { $0.captureOwnedScreen() }
+    var f = try FrameExporter.frame(
+      from: owned,
+      identity: FrameIdentity(
+        server: ServerInstanceID(),
+        attachment: AttachmentID(),
+        pane: PaneID(),
+        revision: revision,
+        layoutRevision: 1,
+        geometryGeneration: 1,
+        viewportRevision: 0
+      )
+    )
+    f.rowVersions = tracker.stamp(owned)
+    return f
+  }
+  var results: [(String, Int)] = []
+  func measure(_ name: String, _ text: String) throws {
+    let base = try frame()
+    session.feed(Array(text.utf8))
+    let next = try frame()
+    let size =
+      FrameBaseline(base)
+      .flatMap { FrameDeltaBuilder.delta(from: next, base: $0) }
+      .map { SMXB.encode($0).count } ?? SMXB.encode(next).count
+    results.append((name, size))
+  }
+  try measure("typing echo", "e")
+  try measure("one-line scroll", "\r\nnext line of output")
+  try measure("CR progress bar", "\r[##########          ]")
+  results.append(("full frame", SMXB.encode(try frame()).count))
+  return results
+}
+
+func exportImport(
+  columns: Int,
+  rows: Int,
+  binary: Bool = false
 ) throws -> (export: [Double], importing: [Double], bytes: Int, gpu: [Double]) {
   let session = filledState(columns: columns, rows: rows)
   var exportTimes: [Double] = []
@@ -254,13 +404,15 @@ func exportImport(
     geometryGeneration: 1,
     viewportRevision: 0
   )
+  var tracker = RowVersionTracker()
   for _ in 0 ..< 50 {
     let t0 = now()
     let data = try session.withState { state in
-      let f = try FrameExporter.frame(
-        from: state.captureOwnedScreen(),
-        identity: identity
-      )
+      let owned = state.captureOwnedScreen()
+      var f = try FrameExporter.frame(from: owned, identity: identity)
+      // The service stamps row versions on every exported frame.
+      f.rowVersions = tracker.stamp(owned)
+      if binary { return SMXB.encode(f) }
       return try SMXCodec.encode(
         ServerMessage.event(.frame(f)),
         limit: 32 << 20
@@ -269,13 +421,22 @@ func exportImport(
     exportTimes.append((now() - t0) * 1000)
     bytes = data.count
     let t1 = now()
-    guard
-      case let .event(.frame(decoded)) = try SMXCodec.decode(
-        ServerMessage.self,
-        from: data,
-        limit: 32 << 20
-      )
-    else { throw MuxError(.invalidRequest, "unexpected benchmark reply") }
+    let decoded: PaneFrame
+    if binary {
+      guard case let .frame(f) = try SMXB.decode(data).payload else {
+        throw MuxError(.invalidRequest, "unexpected benchmark record")
+      }
+      decoded = f
+    } else {
+      guard
+        case let .event(.frame(f)) = try SMXCodec.decode(
+          ServerMessage.self,
+          from: data,
+          limit: 32 << 20
+        )
+      else { throw MuxError(.invalidRequest, "unexpected benchmark reply") }
+      decoded = f
+    }
     _ = try FrameImporter.snapshot(from: decoded, sequence: 1)
     importTimes.append((now() - t1) * 1000)
     frame = decoded
@@ -615,6 +776,23 @@ do {
   #endif
   print("corpus: \(corpusBytes / 1_048_576) MiB of SGR/UTF-8/wide text")
   let idleMB = footprint()
+  if CommandLine.arguments.contains("--frame-stages") {
+    for (cols, rows) in [(200, 50), (512, 256)] {
+      let stages = try frameStages(columns: cols, rows: rows)
+      print(
+        "stages \(cols)x\(rows) p95: "
+          + stages.map { "\($0.0) \(ms($0.1))" }.joined(separator: ", ")
+      )
+    }
+    for (cols, rows) in [(80, 24), (512, 256)] {
+      let copy = try copyLatency(columns: cols, rows: rows)
+      print(
+        "copySelection \(cols)x\(rows) over \(copy.rows) rows "
+          + "(\(copy.bytes / 1024) KiB): p50 \(ms(copy.p50)) p95 \(ms(copy.p95))"
+      )
+    }
+    exit(0)
+  }
   let detached = try await throughput(attached: false)
   print(
     String(
@@ -634,10 +812,12 @@ do {
   print(
     "input-to-frame latency (XPC, PTY echo, export, decode): p50 \(ms(percentile(lat, 0.5))) p95 \(ms(percentile(lat, 0.95))) p99 \(ms(percentile(lat, 0.99)))"
   )
-  for (cols, rows) in [(200, 50), (512, 256)] {
-    let r = try exportImport(columns: cols, rows: rows)
+  for (cols, rows, binary) in [
+    (200, 50, false), (200, 50, true), (512, 256, false), (512, 256, true),
+  ] {
+    let r = try exportImport(columns: cols, rows: rows, binary: binary)
     print(
-      "frame \(cols)x\(rows): \(r.bytes / 1024) KiB; "
+      "frame \(cols)x\(rows) \(binary ? "SMXB/1" : "JSON  "): \(r.bytes / 1024) KiB; "
         + "export+encode p50 \(ms(percentile(r.export, 0.5))) "
         + "p95 \(ms(percentile(r.export, 0.95))); "
         + "decode+validate+import p50 \(ms(percentile(r.importing, 0.5))) "
@@ -646,6 +826,9 @@ do {
           ? ""
           : "; GPU render p50 \(ms(percentile(r.gpu, 0.5))) p95 \(ms(percentile(r.gpu, 0.95)))")
     )
+  }
+  for (name, bytes) in try deltaSizes() {
+    print("delta 200x50 \(name): \(bytes) bytes")
   }
   let noClient = try await load(seconds: 5, visible: 0)
   print(

@@ -57,6 +57,13 @@ public struct PresentationFrame: Sendable, Equatable {
   public var reverseVideo: Bool
   public var alternateScreen: Bool
   public var title: String
+  /// Per row, the host's row identity `[generation, alternate, row,
+  /// version, screen]` when the host sends shared frames (spec.roaming.md
+  /// §6): equal identities mean equal row content, so a terminal frontend
+  /// can skip comparing the row, and a selection can follow its rows
+  /// across frames. `screen` is 1 for a row that can still change in
+  /// place. Nil otherwise.
+  public var rowKeys: [[UInt64]]? = nil
 
   public init(
     columns: Int,

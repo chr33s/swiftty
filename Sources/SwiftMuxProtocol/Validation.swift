@@ -99,6 +99,9 @@ public enum FrameValidator {
     guard frame.title.utf8.count <= 4096 else {
       throw MuxError(.invalidRequest, "title length")
     }
+    if let versions = frame.rowVersions, versions.count != g.rows {
+      throw MuxError(.invalidRequest, "row versions")
+    }
     if let target = frame.dropTarget {
       guard target.types.count <= FrameDropTarget.maxTypes,
         target.types.allSatisfy({

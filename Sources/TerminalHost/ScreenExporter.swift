@@ -1,6 +1,8 @@
 #if os(macOS)
 import ScreenProtocol
 import SessionCore
+import SwiftMuxExport
+import SwiftMuxProtocol
 import SwifttyEngine
 
 /// Converts the authoritative `TerminalState` into an owned RST/1
@@ -164,6 +166,46 @@ public enum ScreenExporter {
       cells: cells,
       lastFullyAppliedInputSequence: stamp.lastFullyAppliedInputSequence
     )
+  }
+
+  /// The shared frame model of the same window (`paneFrames`,
+  /// spec.roaming.md §6): palette-tagged colors, row versions from
+  /// `versions`, clipped to the RST/1 grid, with the RST/1 profile's
+  /// title bound and without search, drop targets or mouse modes. Nil only
+  /// when the frame exceeds an export budget.
+  package static func frame(
+    _ state: borrowing TerminalState,
+    stamp: Stamp,
+    historyTop: Int? = nil,
+    versions: RowVersionBox
+  ) -> (PaneFrame, RSTFrameHeader)? {
+    let owned = state.captureOwnedWindow(top: historyTop)
+      .cropped(
+        columns: min(max(state.columns, 1), RSTLimits.maxColumns),
+        rows: min(max(state.rows, 1), RSTLimits.maxRows)
+      )
+    let header = RSTFrameHeader(
+      sessionID: stamp.sessionID,
+      attachmentEpoch: stamp.attachmentEpoch,
+      screenRevision: stamp.screenRevision,
+      resizeRevision: stamp.resizeRevision,
+      lastFullyAppliedInputSequence: stamp.lastFullyAppliedInputSequence
+    )
+    guard
+      var frame = try? FrameExporter.frame(
+        from: owned,
+        identity: header.frameIdentity,
+        limits: SnapshotFrame.frameLimits
+      )
+    else { return nil }
+    frame.title = boundedTitle(frame.title)
+    frame.search = nil
+    frame.dropTarget = nil
+    frame.modes.subtract([
+      .mouseTracking, .mouseButtonMotion, .mouseAnyMotion, .kittyPasteEvents,
+    ])
+    frame.rowVersions = versions.stamp(owned)
+    return (frame, header)
   }
 
   /// Complete grapheme text without control scalars; clusters over the

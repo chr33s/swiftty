@@ -131,7 +131,7 @@ def require_test_result(bundle, output):
     ], timeout=10)
     output.write_bytes(report)
     summary = json.loads(report)
-    expected = {"totalTestCount": 1, "passedTests": 1, "failedTests": 0,
+    expected = {"totalTestCount": 2, "passedTests": 2, "failedTests": 0,
                 "skippedTests": 0, "expectedFailures": 0}
     if (not isinstance(summary, dict) or summary.get("result") != "Passed"
             or any(type(summary.get(key)) is not int or summary[key] != value
@@ -182,8 +182,7 @@ def run(root, udid, platform, configuration="debug"):
                     "-configuration", xcode_configuration,
                     "-derivedDataPath", str(workspace / "build"),
                     "-resultBundlePath", str(bundle), "-collect-test-diagnostics", "never",
-                    "-only-testing:RoamingRuntimeTests/RoamingRuntimeTests/"
-                    "testRoamingSessionSurvivesBackgroundingInSimulatorRuntime", "test",
+                    "-only-testing:RoamingRuntimeTests/RoamingRuntimeTests", "test",
                 ], cwd=workspace, env={**os.environ,
                     "TEST_RUNNER_RST_CONTROL_SOCKET": str(workspace / "state/control.sock")},
                     stdout=log, stderr=log)

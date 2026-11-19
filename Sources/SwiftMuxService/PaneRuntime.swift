@@ -117,6 +117,9 @@ final class PaneRuntime: @unchecked Sendable {
   var changeCount: UInt64 = 0
   /// Matches of the last viewer search, valid while `changeCount` holds.
   var viewerSearchCache: ViewerSearchCache?
+  /// Row versions per attachment (frames are cropped per viewer, so each
+  /// attachment numbers its own rows). Pane queue only.
+  var rowTrackers: [AttachmentID: RowVersionTracker] = [:]
 
   struct ViewerSearchCache {
     var query: String

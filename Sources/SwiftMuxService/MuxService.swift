@@ -289,6 +289,8 @@ public actor MuxService {
     case let .frameAck(pane, revision, attachment):
       frameAck(pane, revision, attachment: attachment, from: id)
     case .inboxAck: inboxAcknowledged(by: id)
+    case let .requestFullFrame(pane, attachment):
+      requestFullFrame(pane, attachment: attachment, from: id)
     }
   }
 
@@ -900,12 +902,41 @@ public actor MuxService {
     case .clearScreen, .resetTerminal, .link, .commandOutput,
       .clipboardReadResult, .clipboardWriteResult:
       handleTerminal(command, workspace: leased, reply: reply)
+    case let .copySelection(request):
+      copySelection(
+        request,
+        attachment: leases[leased]?.attachment,
+        workspace: leased,
+        reply: reply
+      )
     case .status, .listWorkspaces, .newWorkspace, .endWorkspace,
       .renameWorkspace, .detachActive, .endAllWorkspaces, .attach, .detach,
       .switchWorkspace, .quiesce, .setTheme, .takeover, .observeWorkspaces,
       .subscribeAutomation, .subscribeInbox, .inbox, .locateAttention,
       .markSeen, .snooze, .markReviewed:
       ok()  // handled by `handle`
+    }
+  }
+
+  /// Copies a client-local selection from the authoritative grid, for the
+  /// lease or an observer (`attachment` keys the row versions it saw).
+  func copySelection(
+    _ request: CopySelectionRequest,
+    attachment: AttachmentID?,
+    workspace: WorkspaceID,
+    reply: @escaping Reply,
+  ) {
+    guard let attachment,
+      let runtime = attachedRuntime(request.pane, in: workspace)
+    else { return reply(.failure(MuxError(.notFound, "pane"))) }
+    guard request.screenRowVersions.count <= CopySelectionRequest.maxScreenRows,
+      request.start.column >= 0, request.end.column >= 0
+    else { return reply(.failure(MuxError(.invalidRequest, "copy request"))) }
+    runtime.copySelection(request, attachment: attachment) { result in
+      switch result {
+      case let .success(text): reply(.success(.copied(text)))
+      case let .failure(error): reply(.failure(error))
+      }
     }
   }
 

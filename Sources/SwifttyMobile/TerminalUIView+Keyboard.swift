@@ -553,9 +553,17 @@ extension TerminalUIView {
     return false
     #else
     guard effectiveCapabilities.localCopy,
-      let text = session.withState({ $0.selectionText }), !text.isEmpty
+      session.withState({
+        $0.selection != nil || $0.presentationSelectionBeyondView != nil
+      })
     else { return false }
-    pasteboard.string = text
+    // A remote selection reaching beyond the shown rows is copied from the
+    // host; the pasteboard is written once the text arrives.
+    let pasteboard = pasteboard
+    session.copySelectedText { text in
+      guard let text, !text.isEmpty else { return }
+      pasteboard.string = text
+    }
     return true
     #endif
   }

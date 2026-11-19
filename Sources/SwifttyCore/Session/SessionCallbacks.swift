@@ -20,6 +20,11 @@ final class SessionCallbacks: @unchecked Sendable {
     var ptyInputAdmission: PTYInputAdmission?
     var gridProposal: (@Sendable (Int, Int) -> Void)?
     var viewportScroll: (@Sendable (Int) -> Void)?
+    var remoteCopy:
+      (
+        @Sendable (PresentationSelection, @escaping @Sendable (String?) -> Void)
+          -> Void
+      )?
   }
 
   private let lock = NSLock()
@@ -210,6 +215,27 @@ final class SessionCallbacks: @unchecked Sendable {
       lock.lock()
       let previous = state.viewportScroll
       state.viewportScroll = newValue
+      lock.unlock()
+      withExtendedLifetime(previous) {}
+    }
+  }
+
+  var remoteCopy:
+    (
+      @Sendable (PresentationSelection, @escaping @Sendable (String?) -> Void)
+        -> Void
+    )?
+  {
+    get {
+      lock.lock()
+      let handler = state.remoteCopy
+      lock.unlock()
+      return handler
+    }
+    set {
+      lock.lock()
+      let previous = state.remoteCopy
+      state.remoteCopy = newValue
       lock.unlock()
       withExtendedLifetime(previous) {}
     }
