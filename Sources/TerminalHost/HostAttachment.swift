@@ -83,6 +83,11 @@ final class HostAttachment: @unchecked Sendable {
 
   func send(_ message: ControlMessage) { sender.send(message) }
 
+  /// Runs `body` once this attachment's queued control records are sent.
+  func whenControlIdle(_ body: @escaping @Sendable () -> Void) {
+    sender.whenIdle(body)
+  }
+
   func closeAfterFlush() {
     phase.withLock { $0 = .closed }
     sender.closeAfterFlush()

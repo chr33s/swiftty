@@ -289,8 +289,8 @@ public actor MuxService {
     case let .frameAck(pane, revision, attachment):
       frameAck(pane, revision, attachment: attachment, from: id)
     case .inboxAck: inboxAcknowledged(by: id)
-    case let .requestFullFrame(pane, attachment):
-      requestFullFrame(pane, attachment: attachment, from: id)
+    case let .requestFullFrame(pane, revision, attachment):
+      requestFullFrame(pane, revision, attachment: attachment, from: id)
     }
   }
 
@@ -1355,6 +1355,7 @@ public actor MuxService {
     // Cancellation cleanup is queued on each pane ahead of any later input.
     cancelPastes(wsID, discardDeferredInput: fence)
     resetViewports(wsID)
+    forgetRowVersions(wsID, of: current.attachment)
     for slot in current.frames.values { releaseBudget(slot) }
     leases.removeValue(forKey: wsID)
     leaseOrder.removeAll { $0 == wsID }
@@ -1362,6 +1363,14 @@ public actor MuxService {
     if notify { send(.event(.detached(reason: reason)), to: current.client) }
     publishWorkspaces()
     checkIdle()
+  }
+
+  /// A detached attachment's row versions are no longer needed.
+  func forgetRowVersions(_ wsID: WorkspaceID, of attachment: AttachmentID) {
+    guard let ws = workspaces.first(where: { $0.id == wsID }) else { return }
+    for pane in ws.allPanes {
+      panes[pane]?.runtime.forgetRowVersions(of: attachment)
+    }
   }
 
   private func resetViewports(_ wsID: WorkspaceID) {

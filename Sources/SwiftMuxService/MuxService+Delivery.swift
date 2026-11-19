@@ -216,28 +216,45 @@ extension MuxService {
     acknowledgeViewer(pane, revision, attachment: attachment, from: id)
   }
 
-  /// A delta could not be applied: forget the base so the next frame of
-  /// the pane is complete. Applies to the lease or the viewer `attachment`
-  /// names; anything else is ignored.
+  /// A delta could not be applied. Releases the refused frame's credit
+  /// (`revision`, as an acknowledgement would) without adopting it as a
+  /// base, and forgets the base, so the next frame of the pane is
+  /// complete. A viewer's queued frame was encoded against the same
+  /// unusable base and is dropped. Applies to the lease or the viewer
+  /// `attachment` names; anything else is ignored.
   func requestFullFrame(
     _ pane: PaneID,
+    _ revision: UInt64,
     attachment: AttachmentID,
     from id: UUID,
   ) {
     if let wsID = clientLeases[id], leases[wsID]?.attachment == attachment,
-      leases[wsID]?.frames[pane] != nil
+      let slot = leases[wsID]?.frames[pane]
     {
+      if let inflight = slot.inflight, inflight.revision == revision {
+        leases[wsID]?.frames[pane]?.inflight = nil
+        inflightFrameBytes -= inflight.bytes
+      }
       leases[wsID]?.frames[pane]?.baseline = nil
       leases[wsID]?.frames[pane]?.dirty = true
     } else if let wsID = clientViewers[id] {
-      _ = withViewer(id, in: wsID) { viewer -> Bool in
-        guard viewer.attachment == attachment, viewer.frames[pane] != nil else {
-          return false
+      let released = withViewer(id, in: wsID) { viewer -> Int in
+        guard viewer.attachment == attachment, let slot = viewer.frames[pane]
+        else { return 0 }
+        var bytes = 0
+        if let inflight = slot.inflight, inflight.revision == revision {
+          viewer.frames[pane]?.inflight = nil
+          bytes += inflight.bytes
+          if let queued = slot.queued {
+            viewer.frames[pane]?.queued = nil
+            bytes += queued.frame.bytes
+          }
         }
         viewer.frames[pane]?.baseline = nil
         viewer.frames[pane]?.dirty = true
-        return true
+        return bytes
       }
+      inflightFrameBytes -= released ?? 0
     }
     pump()
   }

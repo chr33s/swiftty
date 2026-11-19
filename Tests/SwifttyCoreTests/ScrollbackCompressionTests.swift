@@ -1,3 +1,4 @@
+import Checksum
 @testable import SwifttyCore
 @testable import SwifttyEngine
 import Testing

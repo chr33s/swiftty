@@ -419,6 +419,29 @@ extension TerminalUIView {
   ) {
     guard let origin = selectionOrigin else { return }
     let c = geometry.cell(at: point)
+    // A remote (presentation) selection follows the host's rows across
+    // frames, so it extends by host address rather than from an origin
+    // that each installed frame invalidates.
+    if session.isPresentation,
+      session.withState({ $0.hasLivePresentationSelection })
+    {
+      let extended = session.mutate { state in
+        state.extendPresentationSelection(
+          toViewportRow: c.row,
+          column: c.column,
+          rectangle: rectangle
+        )
+      }
+      hasSelection = extended
+      if !extended {
+        selectionOrigin = nil
+      } else if scrollEdges {
+        let rows = session.withState { $0.rows }
+        let lines = SelectionMath.edgeScroll(row: c.row, rows: rows)
+        if lines != 0 { session.scrollViewport(by: lines) }
+      }
+      return
+    }
     let unit = selectionUnit
     let requiresSelection = hasSelection
     let scrollback = effectiveCapabilities.scrollback

@@ -80,6 +80,11 @@ extension SnapshotFrame {
     limits.maxColumns = RSTLimits.maxColumns
     limits.maxRows = RSTLimits.maxRows
     limits.maxFrameBytes = RSTLimits.maxSnapshotDecodedBytes
+    // The legacy snapshot's bounds: a style per cell at the grid limit,
+    // and graphemes up to the RST/1 byte limit (one scalar per byte at
+    // most); longer clusters export as the placeholder.
+    limits.maxStyles = RSTLimits.maxStyles
+    limits.maxGraphemeScalars = RSTLimits.maxGraphemeBytes
     return limits
   }()
 

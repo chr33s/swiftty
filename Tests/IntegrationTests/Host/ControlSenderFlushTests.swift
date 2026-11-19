@@ -37,6 +37,34 @@ struct ControlSenderFlushTests {
     try await hostEventually("bounded flush close", timeout: .milliseconds(500))
     { connection.isClosed ? true : nil }
   }
+
+  /// A paced transfer (copy chunks) waits for the queue to drain, so a
+  /// stalled send holds back the next chunk instead of growing the queue
+  /// past its byte limit and closing the connection.
+  @Test
+  func idleWaitersRunOnlyAfterTheQueueDrains() async throws {
+    let connection = ParkedConnection()
+    let sender = ControlSender(connection: connection)
+    let ran = Atomic(false)
+    sender.send(.ping(epoch: 1, nonce: 2))
+    try await hostEventually("send parked", timeout: .seconds(2)) {
+      connection.isParked ? true : nil
+    }
+    sender.whenIdle { ran.store(true, ordering: .releasing) }
+    try await Task.sleep(for: .milliseconds(50))
+    let early = ran.load(ordering: .acquiring)
+    #expect(!early)
+    connection.release()
+    try await hostEventually("idle after drain", timeout: .seconds(2)) {
+      ran.load(ordering: .acquiring) ? true : nil
+    }
+    // With nothing queued it runs at once.
+    let immediate = Atomic(false)
+    sender.whenIdle { immediate.store(true, ordering: .releasing) }
+    let atOnce = immediate.load(ordering: .acquiring)
+    #expect(atOnce)
+    #expect(!connection.isClosed)
+  }
 }
 
 private final class RecordingConnection: RSTConnection, @unchecked Sendable {
@@ -79,6 +107,16 @@ private final class ParkedConnection: RSTConnection, @unchecked Sendable {
       self.continuation = continuation
       lock.unlock()
     }
+  }
+
+  /// Completes the parked send.
+  func release() {
+    lock.lock()
+    let continuation = self.continuation
+    self.continuation = nil
+    parked = false
+    lock.unlock()
+    continuation?.resume()
   }
 
   func sendSnapshot(_ payload: [UInt8], stream id: UInt64) async throws {}

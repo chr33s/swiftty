@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import MetalKit
+import SwiftMuxBridge
 import SwiftMuxClient
 import SwiftMuxProtocol
 import SwiftMuxXPC
@@ -216,6 +217,67 @@ struct MuxNativeTests {
     f.controller.send(.text("clear; echo replaced\r"), to: view.pane)
     #expect(await waitPresented(view) { $0.lines.contains("replaced") } != nil)
     #expect(view.selection == nil)
+  }
+
+  @Test(.enabled(if: hasMetal))
+  func `a selection scrolled out of view copies while output streams`()
+    async throws
+  {
+    let f = try await open()
+    defer { f.controller.close() }
+    let view = try #require(activeView(f.controller))
+    f.controller.send(.text("echo pick-me\r"), to: view.pane)
+    _ = await waitPresented(view) { $0.lines.contains("pick-me") }
+    try await Task.sleep(for: .milliseconds(300))
+    let frame = try #require(
+      await waitPresented(view) { $0.lines.contains("pick-me") }
+    )
+    let row = try #require(frame.lines.firstIndex(of: "pick-me"))
+    // Select the word as a double click would.
+    view.frozen = view.presented
+    view.selection = FrozenSelection(
+      anchor: (row, 2),
+      head: (row, 2),
+      unit: .word
+    )
+    view.draw(in: view)
+    // Scroll it out of view, and keep output streaming while copying.
+    f.controller.send(
+      .text(
+        "seq 1 200; i=0; while [ $i -lt 40 ]; do echo tick-$i; sleep 0.05; i=$((i+1)); done\r"
+      ),
+      to: view.pane
+    )
+    _ = await waitPresented(view) { $0.lines.contains("200") }
+    #expect(view.selection == nil)  // hidden: above the shown rows
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString("sentinel", forType: .string)
+    view.copy(nil)
+    var copied: String?
+    for _ in 0 ..< 200 {
+      view.draw(in: view)
+      copied = NSPasteboard.general.string(forType: .string)
+      if copied != "sentinel" { break }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    // The reply is matched in the service's addresses, which do not move
+    // as output scrolls the viewport.
+    #expect(copied == "pick-me")
+  }
+
+  @Test
+  func `ends dragged past an edge clamp to that edge's cells`() throws {
+    let frame = try FrameExporter.frame(
+      from: TerminalSession(columns: 10, rows: 4)
+        .withState { $0.captureOwnedScreen() },
+      identity: .unbound
+    )
+    let above = FrozenSelection(anchor: (-3, 7), head: (1, 4), unit: .cell)
+      .span(in: frame)
+    #expect(above.startRow == 0 && above.startColumn == 0)
+    let below = FrozenSelection(anchor: (1, 4), head: (9, 2), unit: .cell)
+      .span(in: frame)
+    #expect(below.endRow == 3 && below.endColumn == 9)
   }
 
   @Test(.enabled(if: hasMetal))

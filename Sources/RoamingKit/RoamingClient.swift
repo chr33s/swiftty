@@ -1,6 +1,7 @@
 import Foundation
 import ScreenProtocol
 import SessionCore
+import SwiftMuxExport
 import SwiftMuxProtocol
 import SwifttyEngine
 
@@ -754,7 +755,24 @@ public actor RoamingClient {
           case let .screen(decoded)?:
             await self?.handleSnapshot(decoded, generation: gen)
           case let .delta(delta, header)?:
-            await self?.handleDelta(delta, header: header, generation: gen)
+            // The base is looked up on the actor; applying, validating and
+            // mapping run here, off it, as for complete screens.
+            let base = await self?.deltaBase(for: delta)
+            let decoded = base.flatMap { base in
+              (try? FrameDeltaApplier.apply(
+                delta,
+                to: base,
+                limits: SnapshotFrame.frameLimits
+              ))
+              .flatMap { Self.screen($0, header: header) }
+            }
+            await self?
+              .handleDelta(
+                delta,
+                header: header,
+                decoded: decoded,
+                generation: gen
+              )
           case nil: await self?.handleSnapshot(nil, generation: gen)
           }
         },
@@ -1135,15 +1153,7 @@ public actor RoamingClient {
     guard let snapshot = try? FrameScreenMapper.snapshot(frame, header: header)
     else { return nil }
     var presentation = PresentationMapper.map(snapshot)
-    let screenTop = frame.history.viewportTop + frame.history.viewportOffset
-    presentation.rowKeys = frame.rowIdentities?
-      .map {
-        [
-          $0.address.generation, $0.address.alternateScreen ? 1 : 0,
-          UInt64(bitPattern: Int64($0.address.row)), $0.version,
-          $0.address.alternateScreen || $0.address.row >= screenTop ? 1 : 0,
-        ]
-      }
+    presentation.rowKeys = frame.rowKeys
     return DecodedScreen(
       snapshot: snapshot,
       frame: presentation,
@@ -1165,9 +1175,27 @@ public actor RoamingClient {
     }
   }
 
+  /// The retained frame `delta` names. The newest base is kept however
+  /// old it is: the host bases each delta on the last acknowledged screen,
+  /// which after an idle pause is older than the retention window.
+  private func deltaBase(for delta: FrameDelta) -> PaneFrame? {
+    let now = timing.now()
+    guard
+      let index = frameBases.lastIndex(where: {
+        $0.frame.identity.revision == delta.baseRevision
+      })
+    else { return nil }
+    let entry = frameBases[index]
+    guard
+      index == frameBases.count - 1 || now - entry.at <= Self.frameBaseLifetime
+    else { return nil }
+    return entry.frame
+  }
+
   private func handleDelta(
     _ delta: FrameDelta,
     header: RSTFrameHeader,
+    decoded: DecodedScreen?,
     generation: UInt64
   ) {
     guard generation == connectionGeneration else { return }
@@ -1181,28 +1209,17 @@ public actor RoamingClient {
     // Only an attachment's current screens are bases; an older epoch's
     // delta is stale like its snapshots.
     guard header.attachmentEpoch == epoch else { return }
-    let now = timing.now()
-    if let base = frameBases.last(where: {
-      $0.frame.identity.revision == delta.baseRevision
-        && now - $0.at <= Self.frameBaseLifetime
-    })?
-    .frame,
-      let frame = try? FrameDeltaApplier.apply(
-        delta,
-        to: base,
-        limits: SnapshotFrame.frameLimits
-      ), let decoded = Self.screen(frame, header: header)
-    {
+    if let decoded {
       deltaStatistics.applied += 1
       install(decoded)
     } else {
-      // No partial screen. Acknowledge the delta so its stream retires
-      // (otherwise both in-flight streams stay held), then ask for a
-      // complete screen; the request follows the acknowledgement, so the
-      // host drops the base the acknowledgement named.
+      // No partial screen. The request retires the delta's stream (both
+      // in-flight slots would otherwise stay held) without the host
+      // adopting it as a base, as a `ScreenAck` would.
       deltaStatistics.requestedFull += 1
-      send(.screenAck(epoch: epoch, screenRevision: header.screenRevision))
-      send(.requestFullScreen(epoch: epoch))
+      send(
+        .requestFullScreen(epoch: epoch, screenRevision: header.screenRevision)
+      )
     }
     publish()
   }
@@ -1232,12 +1249,6 @@ public actor RoamingClient {
     else { throw CopyError(.malformed) }
     let id = nextCopyID
     nextCopyID &+= 1
-    let unit: ControlMessage.CopySelection.Unit =
-      switch request.unit {
-      case .character: .character
-      case .word: .word
-      case .line: .line
-      }
     let message = ControlMessage.CopySelection(
       attachmentEpoch: epoch,
       requestID: id,
@@ -1247,7 +1258,7 @@ public actor RoamingClient {
       startColumn: UInt64(ordered.0.column),
       endRow: UInt64(ordered.1.address.row),
       endColumn: UInt64(ordered.1.column),
-      unit: unit,
+      unit: request.unit,
       screenRowVersions: request.screenRowVersions.map {
         [UInt64(max($0.address.row, 0)), $0.version]
       }

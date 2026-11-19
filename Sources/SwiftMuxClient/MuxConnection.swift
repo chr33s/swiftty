@@ -174,6 +174,9 @@ public actor MuxConnection {
   /// (spec.multiplexer.md §4, "Frame deltas").
   private var deltaBases: [PaneID: [PaneFrame]] = [:]
   static let retainedDeltaBases = 4
+  /// Forgets every retained base, as a client that lost them (tests).
+  package func dropDeltaBasesForTesting() { deltaBases = [:] }
+
   /// Deltas applied and full frames requested (tests, diagnostics).
   package private(set) var deltaStatistics = (applied: 0, requestedFull: 0)
 
@@ -191,8 +194,8 @@ public actor MuxConnection {
   }
 
   /// The complete frame `delta` describes, or nil after asking for one:
-  /// the delta is acknowledged (its credit is released) and the service
-  /// is told to forget its base.
+  /// the request releases the delta's credit and tells the service to
+  /// forget its base.
   private func resolve(_ delta: FrameDelta) -> PaneFrame? {
     let limits = welcome?.limits ?? .standard
     if let base = deltaBases[delta.identity.pane]?
@@ -203,10 +206,12 @@ public actor MuxConnection {
       return frame
     }
     deltaStatistics.requestedFull += 1
-    if !suppressesFrameAcknowledgement { acknowledgeFrame(delta.identity) }
+    // The request releases this delta's credit itself; a separate
+    // acknowledgement would first make it the service's base.
     transmit(
       .requestFullFrame(
         pane: delta.identity.pane,
+        revision: delta.identity.revision,
         attachment: delta.identity.attachment
       )
     )

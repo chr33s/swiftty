@@ -18,6 +18,8 @@ final class ControlSender: Sendable {
     var closeWhenDrained = false
     var flushLimitArmed = false
     var closed = false
+    /// Called once the queue has fully drained (or the sender closed).
+    var idleWaiters: [@Sendable () -> Void] = []
   }
 
   static let byteLimit = 1 << 20
@@ -104,6 +106,25 @@ final class ControlSender: Sendable {
     }
   }
 
+  /// Calls `body` once every queued record has been sent, at once when
+  /// nothing is queued, or when the sender closes. Lets a long transfer
+  /// (a copy's chunks) keep at most one record ahead of other messages.
+  func whenIdle(_ body: @escaping @Sendable () -> Void) {
+    let now = state.withLock { s -> Bool in
+      if s.closed || !s.draining { return true }
+      s.idleWaiters.append(body)
+      return false
+    }
+    if now { body() }
+  }
+
+  private func takeIdleWaiters() -> [@Sendable () -> Void] {
+    state.withLock { s in
+      defer { s.idleWaiters = [] }
+      return s.idleWaiters
+    }
+  }
+
   /// Closes immediately, discarding unsent records. Idempotent.
   func close() {
     state.withLock { s in
@@ -113,6 +134,7 @@ final class ControlSender: Sendable {
       s.bytes = 0
     }
     connection.close()
+    for waiter in takeIdleWaiters() { waiter() }
   }
 
   private func drain() async {
@@ -146,9 +168,12 @@ final class ControlSender: Sendable {
         return .send(record)
       }
       switch step {
-      case .finish: return
+      case .finish:
+        for waiter in takeIdleWaiters() { waiter() }
+        return
       case .closeConnection:
         connection.close()
+        for waiter in takeIdleWaiters() { waiter() }
         return
       case let .send(record):
         do { try await connection.sendControl(record) } catch {

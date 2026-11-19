@@ -1004,7 +1004,14 @@ public enum ClientMessage: Codable, Sendable {
   case inboxAck(revision: UInt64)
   /// With `ServiceFeatures.frameDeltas`: a delta could not be applied, so
   /// the next frame of the pane must be complete.
-  case requestFullFrame(pane: PaneID, attachment: AttachmentID)
+  /// It also releases the credit of `revision`, the refused delta, in
+  /// place of a `frameAck`: an acknowledgement would adopt the refused
+  /// frame as the base before this request arrived.
+  case requestFullFrame(
+    pane: PaneID,
+    revision: UInt64,
+    attachment: AttachmentID
+  )
 }
 
 public enum MuxEvent: Codable, Sendable {

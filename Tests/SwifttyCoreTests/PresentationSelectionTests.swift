@@ -128,4 +128,91 @@ struct PresentationSelectionTests {
     }
     #expect(text == "row 11")
   }
+
+  @Test
+  func
+    `changing a carried selection before the next frame still copies it all`()
+  {
+    let s = TerminalSession(presentationColumns: 10, rows: 4)
+    #expect(s.installPresentation(Self.window(top: 10)))
+    Self.select(s, from: 0, to: 2)  // rows 10 to 12
+    // Scroll on: row 10 is above the window, the anchor shows clamped.
+    #expect(s.installPresentation(Self.window(top: 12)))
+    // The user moves the head to the last shown row; no frame follows.
+    s.mutate { state in
+      let anchor = state.selection!.anchor
+      state.setSelection(
+        Selection(anchor: anchor, head: state.viewportPoint(row: 3, column: 9))
+      )
+    }
+    let beyond = s.withState { $0.presentationSelectionBeyondView }
+    #expect(beyond?.anchor.row == 10)
+    #expect(beyond?.head.row == 15)
+  }
+
+  @Test
+  func `dragging extends from the anchor's host row across frames`() {
+    let s = TerminalSession(presentationColumns: 10, rows: 4)
+    #expect(s.installPresentation(Self.window(top: 10)))
+    Self.select(s, from: 1, to: 1)  // row 11
+    // The window moves back while dragging up, twice.
+    #expect(s.installPresentation(Self.window(top: 8)))
+    #expect(
+      s.mutate {
+        $0.extendPresentationSelection(
+          toViewportRow: 0,
+          column: 0,
+          rectangle: false
+        )
+      }
+    )
+    #expect(s.installPresentation(Self.window(top: 5)))
+    #expect(
+      s.mutate {
+        $0.extendPresentationSelection(
+          toViewportRow: 0,
+          column: 0,
+          rectangle: false
+        )
+      }
+    )
+    #expect(s.installPresentation(Self.window(top: 10)))
+    let beyond = s.withState { $0.presentationSelectionBeyondView }
+    #expect(beyond?.anchor.row == 11)
+    #expect(beyond?.head.row == 5)
+  }
+
+  @Test
+  func `placement clamps off-frame ends and checks only selected rows`() {
+    func keys(top: Int, versions: [Int: UInt64] = [:]) -> [[UInt64]] {
+      (top ..< top + 4).map { [3, 0, UInt64($0), versions[$0] ?? 1, 1] }
+    }
+    var selection = PresentationSelection(
+      generation: 3,
+      alternateScreen: false,
+      anchor: (row: 5, column: 7),
+      head: (row: 11, column: 2),
+      rectangle: false
+    )
+    // Anchor above the frame: the shown part starts at its first cell.
+    #expect(
+      selection.place(in: keys(top: 10), columns: 10)
+        == .shown(
+          anchor: .init(row: 0, column: 0),
+          head: .init(row: 1, column: 2)
+        )
+    )
+    // Wholly above the frame: hidden, never drawn on row 0.
+    #expect(selection.place(in: keys(top: 20), columns: 10) == .hidden)
+    // An edit to a row outside the selection does not end it.
+    #expect(
+      selection.place(in: keys(top: 20, versions: [20: 9]), columns: 10)
+        == .hidden
+    )
+    // An edit to a selected row does.
+    #expect(
+      selection.place(in: keys(top: 10, versions: [11: 9]), columns: 10)
+        == .ended
+    )
+  }
 }

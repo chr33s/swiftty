@@ -18,9 +18,11 @@ extension MuxNativeTests {
       head: reverse ? outside : inside,
       unit: .cell
     )
+    // An end above the frame starts at its first cell, whatever column
+    // the pointer was in.
     #expect(
       selection.span(in: frame)
-        == HighlightSpan(startRow: 0, startColumn: 3, endRow: 0, endColumn: 5)
+        == HighlightSpan(startRow: 0, startColumn: 0, endRow: 0, endColumn: 3)
     )
   }
 

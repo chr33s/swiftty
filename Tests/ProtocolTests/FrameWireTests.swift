@@ -150,7 +150,7 @@ struct FrameWireTests {
   @Test
   func `new control messages round-trip`() throws {
     let messages: [ControlMessage] = [
-      .requestFullScreen(epoch: 4),
+      .requestFullScreen(epoch: 4, screenRevision: 9),
       .copySelection(
         .init(
           attachmentEpoch: 4,

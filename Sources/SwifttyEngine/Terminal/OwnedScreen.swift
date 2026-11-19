@@ -138,36 +138,15 @@ extension TerminalState {
     let top =
       isAlternateScreen
       ? firstAbsoluteRow : min(max(requested ?? live, firstAbsoluteRow), live)
-    var cells: [Cell] = []
-    cells.reserveCapacity(columns * rows)
-    var wrapped: [Bool] = []
-    wrapped.reserveCapacity(rows)
-    var graphemes: [[UInt32]] = []
+    var copy = OwnedRows(columns: columns, rows: rows)
     for y in 0 ..< rows {
       let copied: Bool? = withLine(absoluteRow: top + y) { row, isWrapped in
-        wrapped.append(isWrapped)
-        for x in 0 ..< columns {
-          guard x < row.count else {
-            cells.append(.blank)
-            continue
-          }
-          var cell = row[x]
-          if cell.isGrapheme {
-            var copy: [UInt32] = []
-            appendScalars(of: cell, to: &copy)
-            cell.glyph = UInt32(graphemes.count)
-            graphemes.append(copy)
-          }
-          cell.attributes.link = 0
-          cells.append(cell)
-        }
+        copy.append(row, wrapped: isWrapped, in: self)
         return true
       }
-      if copied == nil {
-        wrapped.append(false)
-        cells.append(contentsOf: repeatElement(.blank, count: columns))
-      }
+      if copied == nil { copy.appendBlank() }
     }
+    let (cells, wrapped, graphemes) = (copy.cells, copy.wrapped, copy.graphemes)
     let atLive = top >= live
     return OwnedScreen(
       columns: columns,
@@ -198,32 +177,12 @@ extension TerminalState {
   /// Copies the visible viewport and its metadata into owned values.
   /// - Complexity: O(columns * rows) plus visible grapheme scalars.
   package func captureOwnedScreen() -> OwnedScreen {
-    var cells: [Cell] = []
-    cells.reserveCapacity(columns * rows)
-    var wrapped: [Bool] = []
-    wrapped.reserveCapacity(rows)
-    var graphemes: [[UInt32]] = []
+    var copy = OwnedRows(columns: columns, rows: rows)
     for y in 0 ..< rows {
       let (row, isWrapped) = viewportRow(y)
-      wrapped.append(isWrapped)
-      for x in 0 ..< columns {
-        guard x < row.count else {
-          cells.append(.blank)
-          continue
-        }
-        var cell = row[x]
-        if cell.isGrapheme {
-          let scalars = graphemeScalars(cell.glyph)
-          var copy: [UInt32] = []
-          copy.reserveCapacity(scalars.count)
-          for i in 0 ..< scalars.count { copy.append(scalars[i]) }
-          cell.glyph = UInt32(graphemes.count)
-          graphemes.append(copy)
-        }
-        cell.attributes.link = 0
-        cells.append(cell)
-      }
+      copy.append(row, wrapped: isWrapped, in: self)
     }
+    let (cells, wrapped, graphemes) = (copy.cells, copy.wrapped, copy.graphemes)
     let top = absoluteRow(viewportRow: 0)
     var matches: [HighlightSpan] = []
     var selected: Int?
@@ -270,5 +229,48 @@ extension TerminalState {
       dropTypes: dragAndDrop?.registeredMimes,
       dropAccepted: dragAndDrop?.clientAccepted,
     )
+  }
+}
+
+/// Owned copies of terminal rows: cells padded to the width, graphemes
+/// moved to a local table and hyperlinks dropped.
+private struct OwnedRows {
+  let columns: Int
+  var cells: [Cell] = []
+  var wrapped: [Bool] = []
+  var graphemes: [[UInt32]] = []
+
+  init(columns: Int, rows: Int) {
+    self.columns = columns
+    cells.reserveCapacity(columns * rows)
+    wrapped.reserveCapacity(rows)
+  }
+
+  mutating func append(
+    _ row: UnsafeBufferPointer<Cell>,
+    wrapped isWrapped: Bool,
+    in state: borrowing TerminalState
+  ) {
+    wrapped.append(isWrapped)
+    for x in 0 ..< columns {
+      guard x < row.count else {
+        cells.append(.blank)
+        continue
+      }
+      var cell = row[x]
+      if cell.isGrapheme {
+        var copy: [UInt32] = []
+        state.appendScalars(of: cell, to: &copy)
+        cell.glyph = UInt32(graphemes.count)
+        graphemes.append(copy)
+      }
+      cell.attributes.link = 0
+      cells.append(cell)
+    }
+  }
+
+  mutating func appendBlank() {
+    wrapped.append(false)
+    cells.append(contentsOf: repeatElement(.blank, count: columns))
   }
 }

@@ -1,5 +1,6 @@
 import SwiftMuxProtocol
 import SwifttyEngine
+import Synchronization
 
 /// Assigns row edit versions at export time (spec.multiplexer.md §4, "Row
 /// identity and versions"), one tracker per attachment.
@@ -8,8 +9,8 @@ import SwifttyEngine
 /// content last exported at the same address, so the engine's write paths
 /// stay untouched. Screen rows can change in place and keep their content;
 /// history rows are immutable within a generation and keep only their
-/// version. Versions are never reused: a cleared tracker continues from
-/// its last value.
+/// version. Versions come from one process-wide sequence and are never
+/// reused, even by a new tracker for the same rows.
 package struct RowVersionTracker: Sendable {
   struct ScreenRow: Sendable {
     var version: UInt64
@@ -21,10 +22,18 @@ package struct RowVersionTracker: Sendable {
   private var generation: UInt64?
   private var screen: [HistoryAddress: ScreenRow] = [:]
   private var history: [HistoryAddress: UInt64] = [:]
-  private var next: UInt64 = 1
+  /// One sequence for every tracker in the process: a replaced tracker
+  /// (a reconnect, a new attachment) never reissues an identity that a
+  /// client may still hold for other content.
+  private static let sequence = Atomic<UInt64>(1)
   private var scratch: [UInt32] = []
 
   package init() {}
+
+  /// Rows held with their content, and with a version only (tests).
+  package var trackedRows: (content: Int, versions: Int) {
+    (screen.count, history.count)
+  }
 
   /// Versions for every row of `owned`, the screen a frame was exported
   /// from (after any viewer crop).
@@ -61,8 +70,7 @@ package struct RowVersionTracker: Sendable {
       if let known = screen[address], known.content == scratch {
         version = known.version
       } else {
-        version = next
-        next &+= 1
+        version = Self.sequence.wrappingAdd(1, ordering: .relaxed).oldValue
       }
       if isScreen {
         screen[address] = ScreenRow(
@@ -80,18 +88,23 @@ package struct RowVersionTracker: Sendable {
     return versions
   }
 
-  /// Screen rows that scrolled into history keep only their version, once
-  /// a stamp has seen them there; rows that left history are forgotten.
+  /// Bounds what the tracker keeps, amortized over the rows that scroll.
+  /// Screen rows that scrolled into history unseen keep their content (a
+  /// copy may still list them) until they are two screens above the
+  /// screen; older ones are dropped, and a later export gives them a new
+  /// version. Versions of rows that left history are forgotten.
   private mutating func prune(
     firstRow: Int,
     screenTop: Int,
     _ owned: OwnedScreen
   ) {
-    let limit = 4 * max(owned.rows, 1) + owned.scrollbackCount
-    if screen.count > 2 * max(owned.rows, 1) {
-      screen = screen.filter { $0.key.row >= firstRow }
+    let rows = max(owned.rows, 1)
+    if screen.count > 4 * rows {
+      let oldest = screenTop - 2 * rows
+      screen = screen.filter { $0.key.row >= oldest && $0.key.row >= firstRow }
     }
-    if history.count > limit {
+    let available = owned.scrollbackCount + rows
+    if history.count > 2 * available {
       history = history.filter { $0.key.row >= firstRow }
     }
   }

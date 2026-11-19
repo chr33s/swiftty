@@ -397,7 +397,7 @@ Compression is independent per snapshot, without a cross-snapshot dictionary. Bo
 | `Attach` / `Attached` | Authorize one connection and return epoch plus input progress |
 | `Input` / `InputAck` | Submit an ordered operation and acknowledge completed PTY application |
 | `ScreenAck` | Report the highest fully decoded and accepted screen revision |
-| `RequestFullScreen` | With `screenDeltas`: discard delta state and ask for a full snapshot of current state |
+| `RequestFullScreen` | With `screenDeltas`: acknowledge a refused delta's `screenRevision` without adopting it as a base, discard delta state and ask for a full snapshot of current state |
 | `CopySelection` / `CopyChunk` / `CopyResult` | With `copySelection`: copy a selection's text from the host's grid (§7.5) |
 | `Ping` / `Pong` | Application liveness and round-trip sampling |
 | `Detach` / `Detached` | Stop this attachment without destroying the shell |
@@ -460,11 +460,11 @@ After an outage, discard old transport streams and send a full snapshot of **cur
 
 **Baseline.** The base is the latest revision the client reported in `ScreenAck`, which already means "fully decoded and accepted". The host keeps only that revision's row identities. A delta is never based on an unacknowledged revision or on another delta in flight.
 
-**Client retention.** On a wide-area path, several revisions are installed while an acknowledgement is in flight. At 30 captures per second and 300 ms RTT that is about nine. The client keeps its installed revisions from the last 2 seconds, up to 16, sharing storage for rows with equal identity. A delta whose base is no longer retained, whose identity or checksum does not match, or whose decoded result fails frame validation under the RST/1 limits is discarded. The client acknowledges it with `ScreenAck`, so its stream retires instead of holding one of the two in-flight slots, and then sends `RequestFullScreen`; the request follows the acknowledgement, so the host drops the base the acknowledgement named. A valid result whose revision is not newer than the displayed one is discarded silently, as for full snapshots.
+**Client retention.** On a wide-area path, several revisions are installed while an acknowledgement is in flight. At 30 captures per second and 300 ms RTT that is about nine. The client keeps its installed revisions from the last 2 seconds, up to 16, sharing storage for rows with equal identity, and always its newest one, however old: after an idle pause the host still bases the next delta on it. A delta whose base is no longer retained, whose identity or checksum does not match, or whose decoded result fails frame validation under the RST/1 limits is discarded. The client sends `RequestFullScreen` with that delta's `screenRevision` instead of a `ScreenAck`: the request retires the stream (it would otherwise hold one of the two in-flight slots) without the host adopting the refused screen as a base, which a separate acknowledgement could do before the request arrived. A valid result whose revision is not newer than the displayed one is discarded silently, as for full snapshots.
 
 **Scheduling.** §7.3 is unchanged. Deltas count as snapshots for the two in-flight streams and the single unsent reference, and the protected stream may be a delta. The host sends a full snapshot instead of a delta when it would encode to at least half the size of the full snapshot, on the first screen of an attachment epoch, after a resize revision changes, when `activeBuffer` or the history generation changes, and in answer to `RequestFullScreen`. It answers at most one `RequestFullScreen` per in-flight full snapshot, so repeated requests cannot multiply work.
 
-**Limits.** A delta obeys the snapshot size limits in §12. Retained baselines are bounded by the 200×80 grid limit and the 16-revision cap.
+**Limits.** A delta obeys the snapshot size limits in §12. Retained baselines are bounded by the 200×80 grid limit and the 16-revision cap. Shared frames use the legacy snapshot's bounds: up to one style per cell (16,000) and graphemes up to 64 bytes, longer clusters exporting as the placeholder. A screen the frame budgets still cannot express is sent as a legacy snapshot, which a `paneFrames` client also accepts.
 
 ### 7.5 Selection across history
 
@@ -476,12 +476,12 @@ CopySelection: attachmentEpoch, requestID, generation, start {row, column},
                screenRowVersions: [[row, version], ...]
 ```
 
-The host validates it on the session's ordered path and extracts text from its own grid with the shared copy rules. It answers with ordered `CopyChunk { requestID, index, text }` records of at most 48 KiB of UTF-8 each, so every record stays under the 64 KiB control limit. A final `CopyResult { requestID, totalBytes }` ends a successful copy; otherwise `CopyResult` carries `historyUnavailable`, `selectionChanged` or `resourceLimit`. Copied text is capped at 2 MiB, and the host never truncates silently.
+The host validates it on the session's ordered path and extracts text from its own grid with the shared copy rules. It answers with ordered `CopyChunk { requestID, index, text }` records whose text is at most 48 KiB as JSON encodes it (an escaped newline, quote or backslash counts two bytes, another control character six), so every record stays under the 64 KiB control limit. A final `CopyResult { requestID, totalBytes }` ends a successful copy; otherwise `CopyResult` carries `historyUnavailable`, `selectionChanged` or `resourceLimit`. Copied text is capped at 2 MiB, and the host never truncates silently.
 
 Rules specific to RST/1:
 
 - At most one copy is in flight per attachment; a second request fails with `busy`.
-- Chunks yield to input and acknowledgement records on the control stream, so a large copy cannot delay typing behind more than one chunk.
+- The host queues the next chunk only after the previous one has been sent, so typing waits behind at most one chunk and a large copy never fills the control queue.
 - A new attachment epoch cancels an unfinished copy. The client discards any partial text and never writes it to the pasteboard.
 - Copied text is terminal content. It follows §5.3's rule: never logged, put in analytics or kept in unprotected state.
 - Copy is read-only and needs no writer lease. Clients without a selection UI (tvOS, the watch companion) do not list the feature.

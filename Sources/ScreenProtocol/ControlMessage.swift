@@ -1,5 +1,6 @@
 import Foundation
 import SessionCore
+import SwiftMuxProtocol
 
 /// Bounded, typed failure codes. Never carries stack traces or secrets.
 public enum RSTErrorCode: String, Hashable, Sendable, Codable {
@@ -59,7 +60,10 @@ public enum ControlMessage: Hashable, Sendable {
   case viewport(epoch: UInt64, lines: Int64)
   /// Client to host, with `screenDeltas`: a delta could not be applied;
   /// discard delta state and send a full screen of current state (§7.4).
-  case requestFullScreen(epoch: UInt64)
+  /// It also acknowledges `screenRevision`, the refused delta, so its
+  /// stream retires; a separate `ScreenAck` would first make that screen
+  /// the host's base.
+  case requestFullScreen(epoch: UInt64, screenRevision: UInt64)
   /// Client to host, with `copySelection` (§7.5).
   case copySelection(CopySelection)
   /// Host to client: one ordered piece of a copy's text.
@@ -82,9 +86,8 @@ public enum ControlMessage: Hashable, Sendable {
 
   /// A selection in absolute history rows (§7.5).
   public struct CopySelection: Hashable, Sendable {
-    public enum Unit: String, Hashable, Sendable, Codable {
-      case character, word, line
-    }
+    /// The same units, and wire names, as SwiftMux's copy request.
+    public typealias Unit = CopySelectionRequest.Unit
 
     public var attachmentEpoch: UInt64
     public var requestID: UInt64
@@ -128,7 +131,7 @@ public enum ControlMessage: Hashable, Sendable {
 
   public struct Attach: Hashable, Sendable {
     public var sessionID: SessionID
-    public var serverInstanceID: ServerInstanceID
+    public var serverInstanceID: SessionCore.ServerInstanceID
     public var writerID: WriterID
     public var applicationToken: ApplicationToken
     /// Additions the client can receive (§5.3); empty from older clients.
@@ -136,7 +139,7 @@ public enum ControlMessage: Hashable, Sendable {
 
     public init(
       sessionID: SessionID,
-      serverInstanceID: ServerInstanceID,
+      serverInstanceID: SessionCore.ServerInstanceID,
       writerID: WriterID,
       applicationToken: ApplicationToken,
       features: RSTFeatures = []
@@ -242,7 +245,7 @@ public enum ControlMessage: Hashable, Sendable {
     case let .inputAck(e, _), let .screenAck(e, _), let .ping(e, _),
       let .pong(e, _), let .detach(e), let .detached(e), let .terminate(e),
       let .terminated(e), let .sessionExited(e, _, _), let .viewport(e, _),
-      let .requestFullScreen(e), let .copyChunk(e, _, _, _),
+      let .requestFullScreen(e, _), let .copyChunk(e, _, _, _),
       let .copyResult(e, _, _, _):
       e
     case let .copySelection(c): c.attachmentEpoch
@@ -272,7 +275,7 @@ extension ControlMessage: Codable {
         Attach(
           sessionID: try c.decode(SessionID.self, forKey: .sessionID),
           serverInstanceID: try c.decode(
-            ServerInstanceID.self,
+            SessionCore.ServerInstanceID.self,
             forKey: .serverInstanceID
           ),
           writerID: try c.decode(WriterID.self, forKey: .writerID),
@@ -347,7 +350,10 @@ extension ControlMessage: Codable {
       }
       self = .viewport(epoch: try u64(.attachmentEpoch), lines: lines)
     case "RequestFullScreen":
-      self = .requestFullScreen(epoch: try u64(.attachmentEpoch))
+      self = .requestFullScreen(
+        epoch: try u64(.attachmentEpoch),
+        screenRevision: try u64(.screenRevision)
+      )
     case "CopySelection":
       let rows = try c.decode([[WireUInt64]].self, forKey: .screenRowVersions)
       guard rows.count <= Self.maxCopyScreenRows,
@@ -470,7 +476,9 @@ extension ControlMessage: Codable {
     case let .viewport(e, lines):
       try u64(e, .attachmentEpoch)
       try c.encode(lines, forKey: .lines)
-    case let .requestFullScreen(e): try u64(e, .attachmentEpoch)
+    case let .requestFullScreen(e, revision):
+      try u64(e, .attachmentEpoch)
+      try u64(revision, .screenRevision)
     case let .copySelection(s):
       try u64(s.attachmentEpoch, .attachmentEpoch)
       try u64(s.requestID, .requestID)

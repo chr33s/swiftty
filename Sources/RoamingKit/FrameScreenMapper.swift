@@ -1,4 +1,5 @@
 import ScreenProtocol
+import SwiftMuxExport
 import SessionCore
 import SwiftMuxProtocol
 import SwifttyEngine
@@ -81,28 +82,14 @@ public enum FrameScreenMapper {
     return snapshot
   }
 
-  /// Grapheme text without control scalars; over-long clusters show the
-  /// RST/1 placeholder, as the host's legacy export does.
+  /// Grapheme text as the host's legacy export shows it.
   static func text(_ frame: PaneFrame, _ y: Int, _ x: Int) -> String {
-    let i = y * frame.grid.columns + x
-    let glyph = frame.grid.glyph(at: i)
-    let scalars: [UInt32] =
+    let glyph = frame.grid.glyph(at: y * frame.grid.columns + x)
+    return RSTPresentation.text(
       glyph & FrameGrid.graphemeFlag != 0
-      ? frame.graphemes[Int(glyph & ~FrameGrid.graphemeFlag)]
-      : glyph == 0 ? [] : [glyph]
-    var view = String.UnicodeScalarView()
-    var bytes = 0
-    for value in scalars {
-      guard let scalar = Unicode.Scalar(value), scalar.value >= 0x20,
-        !(0x7F ... 0x9F).contains(scalar.value)
-      else { continue }
-      bytes += UTF8.width(scalar)
-      guard bytes <= RSTLimits.maxGraphemeBytes else {
-        return RSTLimits.graphemePlaceholder
-      }
-      view.append(scalar)
-    }
-    return String(view)
+        ? frame.graphemes[Int(glyph & ~FrameGrid.graphemeFlag)]
+        : glyph == 0 ? [] : [glyph]
+    )
   }
 
   static func cellStyle(_ style: FrameStyle, frame: PaneFrame) -> CellStyle {
@@ -120,33 +107,8 @@ public enum FrameScreenMapper {
       foreground: resolve(style.foreground),
       background: resolve(style.background),
       underlineColor: underline,
-      attributes: attributes(CellFlags(rawValue: style.flags))
+      attributes: RSTPresentation.attributes(CellFlags(rawValue: style.flags))
     )
   }
 
-  /// Presentation attributes, as the host's legacy export maps them.
-  static func attributes(_ flags: CellFlags) -> TextAttributes {
-    var out: TextAttributes = []
-    if flags.contains(.bold) { out.insert(.bold) }
-    if flags.contains(.faint) { out.insert(.faint) }
-    if flags.contains(.italic) { out.insert(.italic) }
-    if flags.contains(.blink) { out.insert(.blink) }
-    if flags.contains(.inverse) { out.insert(.inverse) }
-    if flags.contains(.invisible) { out.insert(.invisible) }
-    if flags.contains(.strikethrough) { out.insert(.strikethrough) }
-    if flags.contains(.overline) { out.insert(.overline) }
-    if flags.contains(.doubleUnderline) {
-      out.insert(.doubleUnderline)
-    } else if flags.contains(.underline) {
-      let a = flags.contains(.underlineStyleA)
-      let b = flags.contains(.underlineStyleB)
-      switch (a, b) {
-      case (true, true): out.insert(.dashedUnderline)
-      case (true, false): out.insert(.curlyUnderline)
-      case (false, true): out.insert(.dottedUnderline)
-      case (false, false): out.insert(.underline)
-      }
-    }
-    return out
-  }
 }

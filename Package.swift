@@ -107,11 +107,14 @@ let package = Package(
     // links only this.
     .target(
       name: "SwifttyEngine",
-      dependencies: ["CScrollbackChecksum"],
+      dependencies: ["Checksum"],
       swiftSettings: core
     ),
     // CRC-32C instructions for verifying compressed scrollback.
     .target(name: "CScrollbackChecksum"),
+    // CRC-32C with those instructions or a portable fallback: scrollback
+    // units and frame-delta row identities.
+    .target(name: "Checksum", dependencies: ["CScrollbackChecksum"]),
     .target(
       name: "SwifttyCore",
       dependencies: ["SwifttyEngine", "SwifttyConfig"],
@@ -133,7 +136,7 @@ let package = Package(
     // SwiftMux (spec.multiplexer.md): shared messages, engine bridge,
     // service, PTY launcher, client connection and frontends.
     // Foundation only: every platform that shows attention links it.
-    .target(name: "SwiftMuxProtocol"),
+    .target(name: "SwiftMuxProtocol", dependencies: ["Checksum"]),
     // The local XPC channel and launchd job description; macOS only.
     .target(name: "SwiftMuxXPC", dependencies: ["SwiftMuxProtocol"]),
     // OSC 7501 attention reducer (spec.inbox.md §3): pure, no I/O.
@@ -141,7 +144,7 @@ let package = Package(
     // Frame export needs only the engine; import needs the renderer.
     .target(
       name: "SwiftMuxExport",
-      dependencies: ["SwifttyEngine", "SwiftMuxProtocol"]
+      dependencies: ["SwifttyEngine", "SwiftMuxProtocol", "ScreenProtocol"]
     ),
     .target(
       name: "SwiftMuxBridge",
@@ -296,7 +299,9 @@ let package = Package(
     // engine, never the renderer, NIO, Network or a UI framework.
     .target(
       name: "RoamingKit",
-      dependencies: ["SessionCore", "ScreenProtocol", "SwifttyEngine"],
+      dependencies: [
+        "SessionCore", "ScreenProtocol", "SwifttyEngine", "SwiftMuxExport",
+      ],
       swiftSettings: core
     ),
     // RoamingKit's seams bound to SSHClient (bootstrap, shell channel) and
@@ -388,7 +393,7 @@ let package = Package(
       name: "SwifttyCoreTests",
       dependencies: [
         "CoreTestSupport", "SwifttyCore", "SwifttyEngine", "CAllocCounter",
-        "TestSupport", "StorageBoundsProbe",
+        "TestSupport", "StorageBoundsProbe", "Checksum",
       ],
       swiftSettings: core,
     ),
@@ -453,6 +458,7 @@ let package = Package(
         "TerminalSurface", "RoamingTerminal", "TTYKit", "SwifttyCore",
         "TestSupport", "RoamingApp", "SwiftMuxProtocol", "SwiftMuxService",
         "SwiftMuxClient", "HostConnection", "MuxNavigation", "SSHIdentity",
+        "SwiftMuxExport", "SwifttyEngine",
         .product(name: "NIOCore", package: "swift-nio"),
         .product(name: "NIOPosix", package: "swift-nio"),
         .product(name: "NIOSSH", package: "swift-nio-ssh"),

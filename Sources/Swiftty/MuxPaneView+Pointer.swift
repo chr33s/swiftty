@@ -111,7 +111,8 @@ extension MuxPaneView {
     guard let base = frozen ?? presented else { return }
     let at = cell(for: event)
     selectionDragged = unit != .cell
-    liveSeen = [:]
+    live = nil
+    placedSelection = nil
     if unit == .cell {
       selection = nil
       frozen = nil
@@ -191,7 +192,8 @@ extension MuxPaneView {
     frozen = nil
     pendingAnchor = nil
     selectionDragged = false
-    liveSeen = [:]
+    live = nil
+    placedSelection = nil
     autoscrollPending = false
     copyToken &+= 1
     needsDisplay = true

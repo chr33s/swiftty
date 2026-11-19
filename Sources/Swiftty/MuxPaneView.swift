@@ -26,8 +26,12 @@ struct FrozenSelection: Equatable {
   /// Ordered, unit-expanded bounds clamped to the frame.
   func span(in frame: PaneFrame) -> HighlightSpan {
     let cols = frame.grid.columns
+    // An end above the frame starts at its first cell, one below ends at
+    // its last, whatever column the pointer was in.
     func clamp(_ p: (row: Int, column: Int)) -> (row: Int, column: Int) {
-      (min(max(p.row, 0), frame.grid.rows - 1), min(max(p.column, 0), cols - 1))
+      if p.row < 0 { return (0, 0) }
+      if p.row >= frame.grid.rows { return (frame.grid.rows - 1, cols - 1) }
+      return (p.row, min(max(p.column, 0), cols - 1))
     }
     let a = clamp(anchor)
     let b = clamp(head)
@@ -116,7 +120,11 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
   var frozen: MuxPresentation?
   /// Versions of selected rows when first seen, and whether each was a
   /// screen row then (only those are sent with a copy).
-  var liveSeen: [HistoryAddress: (version: UInt64, screen: Bool)] = [:]
+  /// The live selection in the service's addresses (the shared
+  /// `PresentationSelection`), and the viewport selection it was last
+  /// placed as: a different `selection` means the user changed it.
+  var live: PresentationSelection?
+  var placedSelection: FrozenSelection?
   /// Identifies the copy whose reply may still write the pasteboard.
   var copyToken: UInt64 = 0
   /// A drag past an edge asked to scroll; the next frame admits another.
@@ -371,17 +379,35 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
   func draw(in view: MTKView) {
     let candidate: MuxPresentation?
     var drawn: RenderSnapshot?
-    let live = liveSelecting
-    var remapped: FrozenSelection?
-    if live, let base = frozen {
+    let isLive = liveSelecting
+    // A live selection placed on the frame to draw: its viewport
+    // selection (nil when wholly off the frame) and its addresses.
+    var placed: (selection: FrozenSelection?, carried: PresentationSelection)?
+    if isLive, let base = frozen {
       let target = pending ?? presented ?? base
-      if let moved = remapSelection(from: base, to: target) {
-        remapped = moved
+      if var carried = carriedSelection(on: base),
+        let keys = target.frame.rowKeys
+      {
+        let unit = selection?.unit ?? Self.unit(carried.unit)
+        switch carried.place(in: keys, columns: target.frame.grid.columns) {
+        case .ended: break
+        case .hidden: placed = (nil, carried)
+        case let .shown(anchor, head):
+          placed = (
+            FrozenSelection(
+              anchor: (anchor.row, anchor.column),
+              head: (head.row, head.column),
+              unit: unit
+            ), carried
+          )
+        }
+      }
+      if let placed {
         candidate = target
         localSequence &+= 1
         drawn = try? FrameImporter.snapshot(
           from: target.frame,
-          selection: moved.span(in: target.frame),
+          selection: placed.selection?.span(in: target.frame),
           sequence: localSequence
         )
       } else {
@@ -412,22 +438,19 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
     )
     switch result {
     case .submitted:
-      if live, frozen != nil, let remapped {
+      if isLive, frozen != nil, let placed {
         // The selection's coordinates now refer to what was drawn.
-        let shift = remapped.anchor.row - (selection?.anchor.row ?? 0)
-        if let output = outputSelection, output.selection == selection {
-          var moved = output.selection
-          moved.anchor.row += shift
-          moved.head.row += shift
-          selection = remapped
+        let output = outputSelection
+        self.live = placed.carried
+        selection = placed.selection
+        placedSelection = placed.selection
+        if let output, let moved = placed.selection {
           outputSelection = (moved, output.text)
-        } else {
-          selection = remapped
         }
         frozen = candidate
         autoscrollPending = false
       }
-      if frozen == nil || live {
+      if frozen == nil || isLive {
         let tracking = presented?.frame.modes.contains(.mouseTracking)
         presented = candidate
         if tracking != candidate.frame.modes.contains(.mouseTracking) {
@@ -556,11 +579,10 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
     if let output = outputSelection, output.selection == selection {
       return output.text
     }
-    if liveSelecting {
-      let rows = 0 ..< frame.grid.rows
-      guard rows.contains(selection.anchor.row),
-        rows.contains(selection.head.row)
-      else { return nil }
+    if liveSelecting, let keys = frame.rowKeys,
+      carriedSelection(on: frozen!)?.isShown(in: keys) == false
+    {
+      return nil
     }
     return selection.text(in: frame)
   }
@@ -573,16 +595,20 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
       NSPasteboard.general.setString(text, forType: .string)
       return
     }
-    guard let request = copyRequest() else { return }
+    guard liveSelecting, let base = frozen,
+      let selected = carriedSelection(on: base)
+    else { return }
     copyToken &+= 1
     let token = copyToken
-    let selected = selection
     controller?
-      .copySelection(request) { [weak self] result in
+      .copySelection(CopySelectionRequest(selected, pane: pane)) {
+        [weak self] result in
         // Only the selection this copy was made for writes the pasteboard.
-        guard let self, copyToken == token, selection == selected else {
-          return
-        }
+        // It is compared in the service's addresses, which do not move as
+        // output scrolls it.
+        guard let self, copyToken == token, let base = frozen,
+          carriedSelection(on: base) == selected
+        else { return }
         switch result {
         case let .success(text):
           guard !text.isEmpty else { return }
@@ -603,103 +629,37 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
     features.contains(.liveSelection) && frozen?.frame.rowVersions != nil
   }
 
-  /// The selection in `target`'s viewport coordinates, after checking the
-  /// rows it covers there; it is applied only once `target` is drawn. Nil
-  /// when it must end: another history generation or screen, an evicted
-  /// end, or a selected row edited in place since it was first seen.
-  func remapSelection(
-    from base: MuxPresentation,
-    to target: MuxPresentation
-  ) -> FrozenSelection? {
-    guard var current = selection else { return nil }
-    let b = base.frame
-    let t = target.frame
-    guard b.history.generation == t.history.generation,
-      b.grid.alternateScreen == t.grid.alternateScreen,
-      let versions = t.rowVersions
-    else { return nil }
-    // Versions are recorded from the frame the user selected on first, so
-    // an edit before the next frame arrived still ends the selection.
-    if let seen = b.rowVersions {
-      let baseTop = b.history.viewportTop + b.history.viewportOffset
-      let lo = max(min(current.anchor.row, current.head.row), 0)
-      let hi = min(max(current.anchor.row, current.head.row), b.grid.rows - 1)
-      if lo <= hi {
-        for row in lo ... hi {
-          let address = b.history.address(
-            viewportRow: row,
-            alternateScreen: b.grid.alternateScreen
-          )
-          if liveSeen[address] == nil {
-            liveSeen[address] = (
-              seen[row], b.grid.alternateScreen || address.row >= baseTop
-            )
-          }
-        }
-      }
-    }
-    let shift = b.history.viewportTop - t.history.viewportTop
-    current.anchor.row += shift
-    current.head.row += shift
-    let top = min(current.anchor.row, current.head.row)
-    let bottom = max(current.anchor.row, current.head.row)
-    guard t.history.viewportTop + top >= t.history.firstRow else { return nil }
-    let screenTop = t.history.viewportTop + t.history.viewportOffset
-    for row in max(top, 0) ... max(min(bottom, t.grid.rows - 1), max(top, 0))
-    where row < t.grid.rows {
-      let address = t.history.address(
-        viewportRow: row,
-        alternateScreen: t.grid.alternateScreen
-      )
-      if let seen = liveSeen[address] {
-        guard seen.version == versions[row] else { return nil }
-      } else {
-        liveSeen[address] = (
-          versions[row], t.grid.alternateScreen || address.row >= screenTop
-        )
-      }
-    }
-    return current
+  /// The live selection in the service's addresses, as currently shown
+  /// on `base`: the one last placed while the user has not changed it,
+  /// otherwise the shown selection with each unmoved end kept.
+  func carriedSelection(on base: MuxPresentation) -> PresentationSelection? {
+    if let live, selection == placedSelection { return live }
+    guard let selection, let keys = base.frame.rowKeys else { return nil }
+    return PresentationSelection.carrying(
+      anchor: selection.anchor,
+      head: selection.head,
+      placed: placedSelection.map { ($0.anchor, $0.head) },
+      previous: live,
+      keys: keys,
+      rectangle: false,
+      unit: Self.unit(selection.unit)
+    )
   }
 
-  /// The service request for the current live selection.
-  func copyRequest() -> CopySelectionRequest? {
-    guard liveSelecting, let selection, let frame = frozen?.frame else {
-      return nil
+  static func unit(_ unit: FrozenSelection.Unit) -> PresentationSelection.Unit {
+    switch unit {
+    case .cell: .character
+    case .word: .word
+    case .line: .line
     }
-    let h = frame.history
-    func point(_ p: (row: Int, column: Int)) -> SelectionPoint {
-      SelectionPoint(
-        address: HistoryAddress(
-          generation: h.generation,
-          alternateScreen: frame.grid.alternateScreen,
-          row: h.viewportTop + p.row
-        ),
-        column: min(max(p.column, 0), frame.grid.columns - 1)
-      )
+  }
+
+  static func unit(_ unit: PresentationSelection.Unit) -> FrozenSelection.Unit {
+    switch unit {
+    case .character: .cell
+    case .word: .word
+    case .line: .line
     }
-    let a = point(selection.anchor)
-    let b = point(selection.head)
-    let ordered =
-      (a.address.row, a.column) <= (b.address.row, b.column) ? (a, b) : (b, a)
-    let rows = ordered.0.address.row ... ordered.1.address.row
-    let screen =
-      liveSeen.filter { $0.value.screen && rows.contains($0.key.row) }
-      .prefix(CopySelectionRequest.maxScreenRows)
-      .map { RowIdentity(address: $0.key, version: $0.value.version) }
-    let unit: CopySelectionRequest.Unit =
-      switch selection.unit {
-      case .cell: .character
-      case .word: .word
-      case .line: .line
-      }
-    return CopySelectionRequest(
-      pane: pane,
-      start: ordered.0,
-      end: ordered.1,
-      unit: unit,
-      screenRowVersions: Array(screen)
-    )
   }
 
   @objc

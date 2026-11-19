@@ -177,6 +177,14 @@ struct RoamingEndToEndTests {
       _ = await client.submit(.key(SemanticKey(.enter)))
       try await waitFor(word) { screen(display).contains("\(word)-x") }
     }
+    // A pause longer than the base retention window: the newest base is
+    // kept, so the next keystroke still arrives as a delta.
+    try await Task.sleep(for: .milliseconds(2_500))
+    _ = await client.submit(.text("echo after-pause"))
+    _ = await client.submit(.key(SemanticKey(.enter)))
+    try await waitFor("after pause") {
+      screen(display).contains("after-pause\n")
+    }
     let stats = await client.deltaStatistics
     #expect(stats.applied > 0)
     #expect(stats.requestedFull == 0)

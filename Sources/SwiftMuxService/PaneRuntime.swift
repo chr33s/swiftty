@@ -120,6 +120,18 @@ final class PaneRuntime: @unchecked Sendable {
   /// Row versions per attachment (frames are cropped per viewer, so each
   /// attachment numbers its own rows). Pane queue only.
   var rowTrackers: [AttachmentID: RowVersionTracker] = [:]
+  /// Attachments by most recent capture, oldest first (eviction order).
+  var rowTrackerOrder: [AttachmentID] = []
+  /// Trackers kept for attachments that never detach cleanly.
+  static let maxRowTrackers = 16
+
+  /// Drops a detached attachment's row versions (pane queue).
+  func forgetRowVersions(of attachment: AttachmentID) {
+    queue.async { [self] in
+      rowTrackers.removeValue(forKey: attachment)
+      rowTrackerOrder.removeAll { $0 == attachment }
+    }
+  }
 
   struct ViewerSearchCache {
     var query: String

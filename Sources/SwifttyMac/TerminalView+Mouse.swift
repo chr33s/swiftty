@@ -127,6 +127,30 @@ extension TerminalView {
     guard let origin = selectionOrigin else { return }
     let c = unclampedCell(for: event)
     let rectangle = event.modifierFlags.contains(.option)
+    // A remote (presentation) selection follows the host's rows across
+    // frames, so it extends by host address rather than from an origin
+    // that each installed frame invalidates.
+    if session.isPresentation,
+      session.withState({ $0.hasLivePresentationSelection })
+    {
+      selectionDragged = true
+      let extended = session.mutate { state in
+        state.extendPresentationSelection(
+          toViewportRow: c.row,
+          column: c.column,
+          rectangle: rectangle
+        )
+      }
+      hasSelection = extended
+      if !extended {
+        selectionOrigin = nil
+      } else if scrollEdges {
+        let rows = session.withState { $0.rows }
+        let lines = SelectionMath.edgeScroll(row: c.row, rows: rows)
+        if lines != 0 { session.scrollViewport(by: lines) }
+      }
+      return
+    }
     let unit = selectionUnit
     let requiresSelection = hasSelection
     selectionDragged = true

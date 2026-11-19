@@ -784,31 +784,20 @@ public final class RoamingSession: @unchecked Sendable {
       admit(input, from: a)
     case let .viewport(_, lines): moveHistoryWindow(by: Int(lines), for: a)
     case let .screenAck(_, revision):
-      guard revision <= a.highestSubmittedScreenRevision else {
-        a.fail(.malformed)
-        detachOnQueue(a)
-        return
-      }
-      for stream in a.scheduler.acknowledged(revision: revision) {
-        a.connection.cancelSnapshot(stream: stream)
-      }
-      if let baseline = a.submittedBaselines[revision] {
-        a.deltaBaseline = baseline
-      }
-      a.submittedBaselines = a.submittedBaselines.filter { $0.key > revision }
-      pumpSnapshots(a)
-    case .requestFullScreen:
+      acknowledgeScreen(revision, adoptingBase: true, from: a)
+    case let .requestFullScreen(_, revision):
       guard a.features.contains(.screenDeltas) else {
         a.fail(.malformed)
         detachOnQueue(a)
         return
       }
-      // One full screen answers every request made before it is sent.
+      // Retires the refused delta's stream without making it the base; one
+      // full screen answers every request made before it is sent.
       a.deltaBaseline = nil
-      if !a.fullScreenPending {
-        a.fullScreenPending = true
-        contentChanged()
-      }
+      a.fullScreenPending = true
+      acknowledgeScreen(revision, adoptingBase: false, from: a)
+      a.scheduler.markDirty()
+      pumpSnapshots(a)
     case let .copySelection(request):
       guard a.features.contains(.copySelection) else {
         a.fail(.malformed)
@@ -886,17 +875,11 @@ public final class RoamingSession: @unchecked Sendable {
         column: column
       )
     }
-    let unit: CopySelectionRequest.Unit =
-      switch request.unit {
-      case .character: .character
-      case .word: .word
-      case .line: .line
-      }
     let copy = CopySelectionRequest(
       pane: pane,
       start: point(startRow, startColumn),
       end: point(endRow, endColumn),
-      unit: unit,
+      unit: request.unit,
       screenRowVersions: identities
     )
     a.copyInFlight = true
@@ -1008,27 +991,37 @@ public final class RoamingSession: @unchecked Sendable {
         text: chunks[index]
       )
     )
-    queue.async { [weak self] in
-      self?
-        .sendCopy(
-          chunks,
-          index: index + 1,
-          total: total,
-          request: request,
-          epoch: epoch,
-          to: a
-        )
+    // The next chunk waits until this one has left: the control queue
+    // never holds more than one chunk, so input and screen
+    // acknowledgements are delayed by at most one chunk and a large copy
+    // cannot overflow the queue's byte limit.
+    a.whenControlIdle { [weak self] in
+      self?.queue
+        .async { [weak self] in
+          self?
+            .sendCopy(
+              chunks,
+              index: index + 1,
+              total: total,
+              request: request,
+              epoch: epoch,
+              to: a
+            )
+        }
     }
   }
 
-  /// Splits on scalar boundaries into pieces of at most
-  /// `ControlMessage.maxCopyChunkBytes` UTF-8 bytes.
+  /// Splits on scalar boundaries into pieces whose JSON encoding stays
+  /// within `ControlMessage.maxCopyChunkBytes`: escaped characters (a
+  /// newline, quote or backslash takes two bytes, another control
+  /// character six) count at their encoded size, so a chunk always fits
+  /// one control record.
   static func chunks(_ text: String) -> [String] {
     var out: [String] = []
     var current = String.UnicodeScalarView()
     var bytes = 0
     for scalar in text.unicodeScalars {
-      let size = UTF8.width(scalar)
+      let size = jsonWidth(scalar)
       if bytes + size > ControlMessage.maxCopyChunkBytes {
         out.append(String(current))
         current = String.UnicodeScalarView()
@@ -1039,6 +1032,37 @@ public final class RoamingSession: @unchecked Sendable {
     }
     if !current.isEmpty || out.isEmpty { out.append(String(current)) }
     return out
+  }
+
+  /// Encoded size of `scalar` inside a JSON string.
+  static func jsonWidth(_ scalar: Unicode.Scalar) -> Int {
+    switch scalar.value {
+    case 0x22, 0x5C, 0x08, 0x09, 0x0A, 0x0C, 0x0D: 2
+    case 0 ..< 0x20: 6
+    default: UTF8.width(scalar)
+    }
+  }
+
+  /// Retires streams up to `revision`; with `adoptingBase` the screen at
+  /// `revision` becomes the base of later deltas.
+  private func acknowledgeScreen(
+    _ revision: UInt64,
+    adoptingBase: Bool,
+    from a: HostAttachment
+  ) {
+    guard revision <= a.highestSubmittedScreenRevision else {
+      a.fail(.malformed)
+      detachOnQueue(a)
+      return
+    }
+    for stream in a.scheduler.acknowledged(revision: revision) {
+      a.connection.cancelSnapshot(stream: stream)
+    }
+    if adoptingBase, let baseline = a.submittedBaselines[revision] {
+      a.deltaBaseline = baseline
+    }
+    a.submittedBaselines = a.submittedBaselines.filter { $0.key > revision }
+    pumpSnapshots(a)
   }
 
   /// Moves `a`'s history window. Requests that arrive while a move is
@@ -1388,14 +1412,20 @@ public final class RoamingSession: @unchecked Sendable {
               ScreenExporter.export(state, stamp: stamp, historyTop: historyTop)
             )
           }
-          return
-            ScreenExporter.frame(
-              state,
-              stamp: stamp,
-              historyTop: historyTop,
-              versions: versions
-            )
-            .map { .frame($0.0, $0.1) }
+          // A screen the frame budgets cannot express goes as a legacy
+          // snapshot, which the client also accepts, rather than failing
+          // and retrying every capture.
+          if let (frame, header) = ScreenExporter.frame(
+            state,
+            stamp: stamp,
+            historyTop: historyTop,
+            versions: versions
+          ) {
+            return .frame(frame, header)
+          }
+          return .snapshot(
+            ScreenExporter.export(state, stamp: stamp, historyTop: historyTop)
+          )
         },
         completion: { [weak self] screen in
           self?.queue

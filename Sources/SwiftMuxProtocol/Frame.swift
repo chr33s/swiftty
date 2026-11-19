@@ -239,6 +239,17 @@ public struct HistoryWindow: Codable, Sendable, Equatable {
     self.scrollbackRows = scrollbackRows
   }
 
+  /// Largest absolute row, count or offset a frame may carry. Far beyond
+  /// any history, and small enough that row arithmetic cannot overflow.
+  public static let maxRow = 1 << 48
+
+  /// Every field is non-negative and at most `maxRow`, so sums of a field
+  /// and a grid coordinate (`viewportTop + y`) cannot overflow.
+  public var isBounded: Bool {
+    [firstRow, availableRows, viewportTop, viewportOffset, scrollbackRows]
+      .allSatisfy { $0 >= 0 && $0 <= Self.maxRow }
+  }
+
   public func address(
     viewportRow y: Int,
     alternateScreen: Bool
@@ -348,6 +359,21 @@ public struct PaneFrame: Codable, Sendable, Equatable {
       ),
       version: rowVersions[y]
     )
+  }
+
+  /// Row keys `[generation, alternate, row, version, screen]` for
+  /// address-based selections (`PresentationSelection`) and keyed diffs;
+  /// `screen` is 1 for a row that can still change in place.
+  public var rowKeys: [[UInt64]]? {
+    guard let identities = rowIdentities else { return nil }
+    let screenTop = history.viewportTop + history.viewportOffset
+    return identities.map {
+      [
+        $0.address.generation, $0.address.alternateScreen ? 1 : 0,
+        UInt64(bitPattern: Int64($0.address.row)), $0.version,
+        $0.address.alternateScreen || $0.address.row >= screenTop ? 1 : 0,
+      ]
+    }
   }
 
   /// Identities of every row, or nil without versions.

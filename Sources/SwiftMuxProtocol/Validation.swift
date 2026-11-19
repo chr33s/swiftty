@@ -81,8 +81,8 @@ public enum FrameValidator {
       throw MuxError(.invalidRequest, "cursor")
     }
     let h = frame.history
-    guard h.firstRow >= 0, h.availableRows >= g.rows, h.viewportOffset >= 0,
-      h.scrollbackRows >= 0, h.viewportOffset <= h.scrollbackRows
+    guard h.isBounded, h.availableRows >= g.rows,
+      h.viewportOffset <= h.scrollbackRows
     else { throw MuxError(.invalidRequest, "history window") }
     if let search = frame.search {
       guard search.matchCount >= 0, search.visible.count <= count,

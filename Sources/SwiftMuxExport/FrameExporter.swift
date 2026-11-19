@@ -9,7 +9,8 @@ public enum FrameExporter {
   package static func frame(
     from screen: OwnedScreen,
     identity: FrameIdentity,
-    limits: MuxLimits = .standard
+    limits: MuxLimits = .standard,
+    overlongGrapheme: UInt32? = nil
   ) throws(MuxError) -> PaneFrame {
     guard
       let count = limits.cellCount(columns: screen.columns, rows: screen.rows)
@@ -60,11 +61,16 @@ public enum FrameExporter {
         if cell.width == 2 { kinds[i] = CellKind.wideLead.rawValue }
         if cell.isGrapheme {
           let scalars = screen.graphemes[Int(cell.glyph)]
-          guard scalars.count <= limits.maxGraphemeScalars else {
-            throw MuxError(.resourceLimit, "grapheme cluster length")
+          if scalars.count > limits.maxGraphemeScalars {
+            // A profile with a placeholder shows it instead of failing.
+            guard let overlongGrapheme else {
+              throw MuxError(.resourceLimit, "grapheme cluster length")
+            }
+            glyphs[i] = overlongGrapheme
+          } else {
+            glyphs[i] = FrameGrid.graphemeFlag | UInt32(graphemes.count)
+            graphemes.append(scalars)
           }
-          glyphs[i] = FrameGrid.graphemeFlag | UInt32(graphemes.count)
-          graphemes.append(scalars)
         } else {
           glyphs[i] = cell.glyph
         }

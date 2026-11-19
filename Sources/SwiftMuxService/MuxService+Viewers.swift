@@ -64,6 +64,7 @@ extension MuxService {
   /// budget, and its waiting window commands fail.
   func tearDown(_ viewer: Viewer) {
     for slot in viewer.frames.values { releaseBudget(slot) }
+    forgetRowVersions(viewer.workspace, of: viewer.attachment)
     clientViewers.removeValue(forKey: viewer.client)
     failWindowCommands(
       viewer.windowCommands.values.flatMap(\.waiting),

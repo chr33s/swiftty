@@ -1,3 +1,4 @@
+import Checksum
 import Darwin
 
 /// Unique owner of one logical 64-row chunk's cell backing: a dedicated

@@ -86,10 +86,9 @@ extension PaneRuntime {
       if let saved { restore(offset: saved.offset, search: saved.search) }
       rearmScrollbackMaintenanceIfNeeded()
       if let viewport {
-        fit(
-          &screen,
+        screen = screen.cropped(
           columns: viewport.columns ?? screen.columns,
-          rows: viewport.rows ?? screen.rows,
+          rows: viewport.rows ?? screen.rows
         )
       }
       let identity = FrameIdentity(
@@ -108,8 +107,12 @@ extension PaneRuntime {
           limits: limits,
         )
         frame.search?.selected = selected
-        if rowTrackers[attachment] == nil, rowTrackers.count >= 8 {
-          rowTrackers.removeAll()
+        // Detach forgets a tracker; this bound only evicts the attachment
+        // least recently captured, never every live one.
+        rowTrackerOrder.removeAll { $0 == attachment }
+        rowTrackerOrder.append(attachment)
+        while rowTrackerOrder.count > Self.maxRowTrackers {
+          rowTrackers.removeValue(forKey: rowTrackerOrder.removeFirst())
         }
         frame.rowVersions = rowTrackers[
           attachment,
@@ -315,37 +318,6 @@ extension PaneRuntime {
     state.restoreSearch(search)
     let delta = offset - state.viewportOffset
     if delta != 0 { state.scrollViewport(by: delta) }
-  }
-
-  /// Crops or pads a captured grid. Does not change addressing of the
-  /// rows that remain; the PTY size is the caller's responsibility.
-  private func fit(_ screen: inout OwnedScreen, columns: Int, rows: Int) {
-    guard columns > 0, rows > 0,
-      columns != screen.columns || rows != screen.rows
-    else { return }
-    var cells: [Cell] = []
-    cells.reserveCapacity(columns * rows)
-    var wrapped: [Bool] = []
-    wrapped.reserveCapacity(rows)
-    for y in 0 ..< rows {
-      let source = y < screen.rows
-      wrapped.append(
-        source && y < screen.wrapped.count ? screen.wrapped[y] : false
-      )
-      for x in 0 ..< columns {
-        if source, x < screen.columns {
-          cells.append(screen.cells[y * screen.columns + x])
-        } else {
-          cells.append(.blank)
-        }
-      }
-    }
-    screen.cells = cells
-    screen.wrapped = wrapped
-    screen.columns = columns
-    screen.rows = rows
-    screen.cursor.x = min(max(0, screen.cursor.x), columns - 1)
-    screen.cursor.y = min(max(0, screen.cursor.y), rows - 1)
   }
 
   /// Plain text of the visible screen (tests, diagnostics).

@@ -3,7 +3,9 @@ import Foundation
 import RoamingKit
 import ScreenProtocol
 import SessionCore
+import SwiftMuxExport
 import SwiftMuxProtocol
+import SwifttyEngine
 import Synchronization
 @testable import TerminalHost
 import Testing
@@ -83,17 +85,19 @@ struct HostFrameTests {
         bad.add(1, ordering: .relaxed)
         return
       }
-      // As RoamingClient: a refused delta is acknowledged, so its stream
-      // retires, and a complete screen is requested after it.
+      // As RoamingClient: a refused delta is released by the request for
+      // a complete screen, never acknowledged as a base.
       try? await send(
-        .screenAck(
-          epoch: header.attachmentEpoch,
-          screenRevision: header.screenRevision
-        )
+        refused
+          ? .requestFullScreen(
+            epoch: header.attachmentEpoch,
+            screenRevision: header.screenRevision
+          )
+          : .screenAck(
+            epoch: header.attachmentEpoch,
+            screenRevision: header.screenRevision
+          )
       )
-      if refused {
-        try? await send(.requestFullScreen(epoch: header.attachmentEpoch))
-      }
     }
 
     func send(_ message: ControlMessage) async throws {
@@ -275,6 +279,112 @@ struct HostFrameTests {
           )
       )
     }
+  }
+
+  @Test
+  func `chunks always fit one control record`() throws {
+    // Short lines and escaped characters at least double in JSON.
+    for text in [
+      String(repeating: "y\n", count: 60_000),
+      String(repeating: "\\\"", count: 40_000),
+      String(repeating: "\u{1}", count: 20_000),
+      String(repeating: "漢", count: 40_000),
+    ] {
+      let chunks = RoamingSession.chunks(text)
+      #expect(chunks.joined() == text)
+      for (index, chunk) in chunks.enumerated() {
+        let record = try ControlRecord.encode(
+          .copyChunk(epoch: 1, requestID: 1, index: UInt64(index), text: chunk)
+        )
+        #expect(record.count <= RSTLimits.maxControlRecordBytes)
+      }
+    }
+  }
+
+  @Test
+  func `a multi-chunk copy completes alongside typing`() async throws {
+    try await withRegistry { registry in
+      let grant = try await registry.create(
+        grid: GridSize(columns: 200, rows: 8)
+      )
+      let client = FrameClient(registry)
+      defer { client.connection.close() }
+      _ = try await client.attached(grant)
+      _ = try await client.frame("prompt") {
+        $0.lines.contains { $0.contains("$") }
+      }
+      // As much history as the pane's budget keeps at 200 columns.
+      try await client.send(
+        Self.input(
+          1,
+          .committedText(
+            "i=0; while [ $i -lt 9000 ]; do printf '%0190d\\n' $i; i=$((i+1)); done; echo done-mark"
+          )
+        )
+      )
+      try await client.send(Self.input(2, .key(SemanticKey(.enter))))
+      let frame = try await client.frame("output") {
+        $0.lines.contains("done-mark")
+      }
+      let h = frame.history
+      let done = try #require(frame.lines.firstIndex(of: "done-mark"))
+      try await client.send(
+        .copySelection(
+          .init(
+            attachmentEpoch: 1,
+            requestID: 7,
+            generation: h.generation,
+            alternateScreen: false,
+            startRow: UInt64(h.firstRow),
+            startColumn: 0,
+            endRow: UInt64(h.viewportTop + done),
+            endColumn: 199,
+            unit: .character,
+            screenRowVersions: []
+          )
+        )
+      )
+      // Typing during the copy is acknowledged between chunks.
+      try await client.send(Self.input(3, .committedText("x")))
+      let result = try await client.message("copy result") {
+        if case .copyResult(_, 7, _, _) = $0 { true } else { false }
+      }
+      guard case let .copyResult(_, _, total, error) = result else { return }
+      #expect(error == nil)
+      // Several chunks, each sent only after the previous one left.
+      #expect((total ?? 0) > 4 * ControlMessage.maxCopyChunkBytes)
+      #expect(!client.connection.isClosed)
+      _ = try await client.message("input acknowledged") {
+        if case .inputAck(_, 3) = $0 { true } else { false }
+      }
+    }
+  }
+
+  @Test
+  func `screens beyond the mux frame budgets still export`() throws {
+    var state = TerminalState(columns: 200, rows: 80)
+    var parser = Parser()
+    // A distinct truecolor background per cell, and an over-long cluster.
+    var text = ""
+    for y in 0 ..< 80 {
+      for x in 0 ..< 200 { text += "\u{1B}[48;2;\(y);\(x);7mx" }
+    }
+    text += "\u{1B}[0m\u{1B}[1;1He" + String(repeating: "\u{301}", count: 40)
+    let bytes = Array(text.utf8)
+    bytes.withUnsafeBufferPointer {
+      parser.consume(Span(_unsafeElements: $0), into: &state)
+    }
+    let exported = ScreenExporter.frame(
+      state,
+      stamp: ScreenExporter.Stamp(sessionID: .random()),
+      versions: RowVersionBox()
+    )
+    let (frame, _) = try #require(exported)
+    #expect(frame.styles.count > 4096)
+    let wire = try SnapshotFrame.encode(
+      frame: [UInt8](SMXB.encode(frame, envelope: .rst(Data())))
+    )
+    _ = wire
   }
 }
 #endif

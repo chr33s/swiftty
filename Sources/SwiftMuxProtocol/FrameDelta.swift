@@ -1,3 +1,4 @@
+import Checksum
 import Foundation
 
 /// A row's address plus its edit version (spec.multiplexer.md §4, "Row
@@ -434,7 +435,7 @@ public enum FrameDeltaApplier {
     limits: MuxLimits
   ) throws(MuxError) {
     guard limits.cellCount(columns: delta.columns, rows: delta.rows) != nil,
-      delta.rowSources.count == delta.rows
+      delta.rowSources.count == delta.rows, delta.history.isBounded
     else { throw MuxError(.invalidRequest, "delta rows") }
     var replaced = 0
     for source in delta.rowSources {
@@ -480,24 +481,8 @@ public enum FrameDeltaApplier {
 
 // MARK: Checksum
 
-/// CRC-32C (Castagnoli), software table: small inputs only.
+/// CRC-32C over row identities (`Checksum.CRC32C`).
 public enum RowChecksum {
-  private static let table: [UInt32] = (0 ..< 256)
-    .map { n -> UInt32 in
-      var c = UInt32(n)
-      for _ in 0 ..< 8 { c = c & 1 != 0 ? 0x82F6_3B78 ^ (c >> 1) : c >> 1 }
-      return c
-    }
-
-  public static func crc32c<S: Sequence>(_ bytes: S) -> UInt32
-  where S.Element == UInt8 {
-    var crc: UInt32 = 0xFFFF_FFFF
-    for byte in bytes {
-      crc = table[Int((crc ^ UInt32(byte)) & 0xFF)] ^ (crc >> 8)
-    }
-    return ~crc
-  }
-
   /// Checksum over ordered identities: generation, screen, row, version.
   public static func identities(_ identities: [RowIdentity]) -> UInt32 {
     var bytes: [UInt8] = []
@@ -514,6 +499,6 @@ public enum RowChecksum {
         bytes.append(contentsOf: $0)
       }
     }
-    return crc32c(bytes)
+    return CRC32C.checksum(bytes)
   }
 }

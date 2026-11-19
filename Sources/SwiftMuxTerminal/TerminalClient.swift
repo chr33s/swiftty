@@ -220,7 +220,6 @@ public final class TerminalClient {
     switch event {
     case let .frame(frame):
       guard frame.identity.attachment == attachment else { return }
-      notePalette(frame)
       frames[frame.identity.pane] = frame
       if let state = copying, state.pane == frame.identity.pane {
         setCopying(following(state, frame))
@@ -389,18 +388,23 @@ public final class TerminalClient {
     }
   }
 
-  /// Palette tokens for keyed row diffing: a pane's token changes with
-  /// its palette, so rows keyed under the old colors are redrawn.
-  private var paletteTokens: [PaneID: UInt64] = [:]
-  private var palettes: [PaneID: FramePalette] = [:]
+  /// Tokens of recently drawn palettes, for keyed row diffing: equal
+  /// tokens mean equal palettes, so a row keys the colors it was drawn
+  /// with, whether from a live frame or a frozen copy-mode one.
+  private var paletteTokens: [(palette: FramePalette, token: UInt64)] = []
   private var nextPaletteToken: UInt64 = 1
 
-  private func notePalette(_ frame: PaneFrame) {
-    let pane = frame.identity.pane
-    guard palettes[pane] != frame.palette else { return }
-    palettes[pane] = frame.palette
-    paletteTokens[pane] = nextPaletteToken
+  private func paletteToken(_ palette: FramePalette) -> UInt64 {
+    if let index = paletteTokens.firstIndex(where: { $0.palette == palette }) {
+      let entry = paletteTokens.remove(at: index)
+      paletteTokens.append(entry)
+      return entry.token
+    }
+    let token = nextPaletteToken
     nextPaletteToken &+= 1
+    paletteTokens.append((palette, token))
+    if paletteTokens.count > 8 { paletteTokens.removeFirst() }
+    return token
   }
 
   func compose() -> ScreenBuffer {
@@ -427,7 +431,7 @@ public final class TerminalClient {
       overlays: overlays,
       status: status,
       showCursor: showCursor,
-      paletteTokens: paletteTokens
+      paletteTokens: shown.mapValues { paletteToken($0.palette) }
     )
     if case .help = mode {
       drawHelp(into: &screen)

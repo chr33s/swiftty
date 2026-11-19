@@ -38,9 +38,10 @@ let package = Package(
         .library(name: "CoreTestSupport", targets: ["CoreTestSupport"]),
     ],
     targets: [
-        .target(name: "SwifttyEngine", dependencies: ["CScrollbackChecksum"],
+        .target(name: "SwifttyEngine", dependencies: ["Checksum"],
                 swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
         .target(name: "CScrollbackChecksum"),
+        .target(name: "Checksum", dependencies: ["CScrollbackChecksum"]),
         .target(name: "SwifttyConfig"),
         .target(name: "SwifttyCore", dependencies: ["SwifttyEngine", "SwifttyConfig"],
                 resources: [.copy("Renderer/Shaders.metal")],
