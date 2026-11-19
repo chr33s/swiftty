@@ -17,21 +17,29 @@ let loopbackIdentity: HostIdentity = {
   } catch { fatalError("identity generation failed: \(error)") }
 }()
 
-/// Runs `body`, recording both ends' termination diagnostics if it throws.
-/// Release builds on CI have seen loopback connections close mid-transfer;
-/// this names which side ended the connection and why.
+/// Runs `body`, recording both ends' diagnostics only if it throws:
+/// termination and native application errors, stream credit, flow-control
+/// settings, admission and retirement state, and each connection's always-on
+/// lifecycle log (bounded, monotonic timestamps). Release builds on CI have
+/// seen loopback connections close mid-transfer; this names which side ended
+/// the connection, why, and in what order. The elapsed time is reported beside
+/// any `TimedOut` deadline carried by the error.
 func withConnectionDiagnostics<T>(
+  _ label: String = "body",
   client: QUICRSTConnection,
-  server: QUICRSTConnection,
+  server: QUICRSTConnection?,
   _ body: () async throws -> T
 ) async throws -> T {
+  let started = ContinuousClock.now
   do { return try await body() } catch {
     Issue.record(
-      """
-      failed: \(error)
-      client: \(client.snapshotDiagnosticsForTesting)
-      server: \(server.snapshotDiagnosticsForTesting)
-      """
+      Comment(
+        rawValue: """
+          \(label) failed after \(ContinuousClock.now - started): \(error)
+          client: \(client.snapshotDiagnosticsForTesting)
+          server: \(server?.snapshotDiagnosticsForTesting ?? "not accepted")
+          """
+      )
     )
     throw error
   }
@@ -94,7 +102,10 @@ final class Accepted: Sendable {
   var count: Int { state.withLock { $0.count } }
 }
 
-struct TimedOut: Error { var line: Int }
+struct TimedOut: Error {
+  var line: Int
+  var timeout: Duration?
+}
 
 /// Polls `condition` until it holds or the deadline passes.
 func transportEventually(
@@ -104,7 +115,9 @@ func transportEventually(
 ) async throws {
   let deadline = ContinuousClock.now + timeout
   while !condition() {
-    guard ContinuousClock.now < deadline else { throw TimedOut(line: line) }
+    guard ContinuousClock.now < deadline else {
+      throw TimedOut(line: line, timeout: timeout)
+    }
     try await Task.sleep(for: .milliseconds(10))
   }
 }

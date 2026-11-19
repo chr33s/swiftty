@@ -82,6 +82,13 @@ public final class RoamingSession: @unchecked Sendable {
   /// terminate; the registry revokes credentials and ends the workspace.
   var onTerminateRequested: (@Sendable (SessionID) -> Void)?
 
+  /// Tests: sees each captured screen in full when it is submitted for
+  /// sending, the only place a delta's complete screen exists. Nil in
+  /// production.
+  let submittedScreenObserver = Mutex<(@Sendable (CapturedScreen) -> Void)?>(
+    nil
+  )
+
   // MARK: Owner-queue state
 
   /// Revocation is visible to the service without entering the owner queue.
@@ -563,6 +570,7 @@ public final class RoamingSession: @unchecked Sendable {
     a.submittedBaselines = [:]
     a.deltaBaseline = nil
     a.fullScreenPending = false
+    a.lastFullScreenRevision = 0
     a.copyInFlight = false
     touch(state: exitStatus == nil ? .attached : .exited, attached: true)
     statusBox.withLock { $0.isAttached = true }
@@ -791,11 +799,17 @@ public final class RoamingSession: @unchecked Sendable {
         detachOnQueue(a)
         return
       }
-      // Retires the refused delta's stream without making it the base; one
-      // full screen answers every request made before it is sent.
-      a.deltaBaseline = nil
-      a.fullScreenPending = true
+      // Retires the refused delta's stream without making it the base. One
+      // full screen answers every request made before it is sent, and a
+      // full screen already submitted after the refused delta answers it
+      // too, so repeated requests cannot multiply work.
+      let answered = a.fullScreenPending || revision < a.lastFullScreenRevision
+      if !answered {
+        a.deltaBaseline = nil
+        a.fullScreenPending = true
+      }
       acknowledgeScreen(revision, adoptingBase: false, from: a)
+      guard !answered else { return }
       a.scheduler.markDirty()
       pumpSnapshots(a)
     case let .copySelection(request):
@@ -1569,7 +1583,11 @@ public final class RoamingSession: @unchecked Sendable {
           a.submittedBaselines.removeValue(forKey: oldest)
         }
       }
-      if encoded.full { a.fullScreenPending = false }
+      if encoded.full {
+        a.fullScreenPending = false
+        a.lastFullScreenRevision = max(a.lastFullScreenRevision, revision)
+      }
+      submittedScreenObserver.withLock { $0 }?(job.screen)
       let id = UUID()
       let task = Task { [weak self] in
         let retry: Bool?

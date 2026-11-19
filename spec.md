@@ -257,8 +257,7 @@ OSC 52 accepts padded/unpadded Base64 and an empty clipboard clear; invalid
 characters, whitespace or malformed explicit padding reject the entire write.
 Clipboard reads are refused. Paste replaces editing, signal and escape controls
 with spaces. Unbracketed LF/CRLF becomes one CR; bracketed paste preserves line
-endings and frames empty input. Unsupported upstream protocols/API cases are
-tracked in [the deferred terminal checks](todo.md#deferred-terminal-feature-checks).
+endings and frames empty input.
 
 Committed typing/IME text without a physical key uses key code zero when Kitty
 flag 8 is set; flag 16 adds its Unicode scalars as associated text. Other flags

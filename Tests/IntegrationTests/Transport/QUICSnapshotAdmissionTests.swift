@@ -107,6 +107,116 @@ extension QUICTransportTests {
     }
   }
 
+  /// An external cancellation can claim a registered stream (marking it to
+  /// finish after its send) before the sender stores its continuation. The
+  /// sender must still be settled and its admission slot returned, whether
+  /// its native write or the cancellation's admission close runs first.
+  /// Previously the late continuation was stored and then dropped: the
+  /// sender hung and, when no write was submitted, kept its slot forever.
+  @Test(arguments: [false, true])
+  func cancellationBeforeWriteAdmissionSettlesTheSender(
+    writeFirst: Bool
+  ) async throws {
+    let (listener, accepted) = try await startListener()
+    defer { listener.stop() }
+    let client = try await connector()
+      .connectQUIC(
+        host: "127.0.0.1",
+        port: listener.port,
+        pin: loopbackIdentity.pin
+      )
+    defer { client.close() }
+    let inbox = Inbox()
+    client.start(inbox.handler)
+    try await client.sendControl(
+      ControlRecord.encode(.ping(epoch: 1, nonce: 1))
+    )
+    try await transportEventually { accepted.count == 1 }
+    let (server, _) = try #require(accepted.all.first)
+    let decided = DispatchSemaphore(value: 0)
+    let proceed = DispatchSemaphore(value: 0)
+    let cancelDone = DispatchSemaphore(value: 0)
+    let cancellationFinished = Mutex(false)
+    defer { proceed.signal() }
+    // Claim the stream between registration and continuation storage, then
+    // hold the cancellation before it closes write admission.
+    let afterRegistration: @Sendable () -> Void = {
+      Thread.detachNewThread {
+        server.cancelSnapshot(
+          stream: 1,
+          matching: nil,
+          afterDecisionForTesting: {
+            decided.signal()
+            proceed.wait()
+          }
+        )
+        cancellationFinished.withLock { $0 = true }
+        cancelDone.signal()
+      }
+      decided.wait()
+    }
+    // Cancellation first: it closes admission before the write is attempted.
+    let beforeWrite: @Sendable () -> Void = {
+      guard !writeFirst else { return }
+      proceed.signal()
+      cancelDone.wait()
+      cancelDone.signal()
+    }
+    // Write first: admission is held while this runs, so the cancellation
+    // sees a submitted write; complete it only after the cancellation returns.
+    let write: QUICRSTConnection.ControlWrite = { _, _, completed in
+      proceed.signal()
+      DispatchQueue.global()
+        .async {
+          cancelDone.wait()
+          cancelDone.signal()
+          completed(nil)
+        }
+    }
+    let result = Mutex<Result<Void, any Error>?>(nil)
+    let send = Task {
+      do {
+        try await server.sendSnapshot(
+          snapshotPayload(bodyLength: 100, fill: 1),
+          stream: 1,
+          beforeRegistration: nil,
+          afterRegistration: afterRegistration,
+          beforeWrite: beforeWrite,
+          write: write
+        )
+        result.withLock { $0 = .success(()) }
+      } catch { result.withLock { $0 = .failure(error) } }
+    }
+    try await withConnectionDiagnostics(client: client, server: server) {
+      try await transportEventually(.seconds(2)) {
+        result.withLock { $0 != nil }
+      }
+      proceed.signal()
+      try await transportEventually(.seconds(2)) {
+        cancellationFinished.withLock { $0 }
+      }
+      try await transportEventually(.seconds(2)) {
+        server.admittedSnapshotSendsForTesting == 0
+      }
+      #expect(server.pendingSnapshotSendsForTesting == 0)
+      #expect(server.snapshotStreamForTesting(1) == nil)
+      #expect(server.parkedSnapshotFinishesForTesting == 0)
+      let replacement = snapshotPayload(bodyLength: 100, fill: 2)
+      try await server.sendSnapshot(replacement, stream: 2)
+      try await transportEventually(.seconds(2)) {
+        inbox.snapshots.contains(replacement)
+      }
+    }
+    await send.value
+    if case let .failure(error) = result.withLock({ $0 }) {
+      #expect(error as? RSTTransportError == .canceled)
+    } else {
+      Issue.record("cancelled snapshot sender completed successfully")
+    }
+    #expect(!client.isClosed)
+    #expect(!server.isClosed)
+  }
+
   @Test
   func supersededNativeCompletionCannotBeLostBeforeParking() async throws {
     let (listener, accepted) = try await startListener()

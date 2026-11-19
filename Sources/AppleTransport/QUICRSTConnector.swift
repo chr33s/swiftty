@@ -116,7 +116,12 @@ public struct QUICRSTConnector: Sendable {
       role: .client,
       group: group,
       queue: queue,
-      limits: limits
+      limits: limits,
+      settings: QUICOptions.describe(
+        role: "client",
+        idleTimeout: idleTimeout,
+        initialMaxData: initialMaxDataForTesting
+      )
     )
     connection.attachGroupHandlers()
     // Why Network framework is waiting (no usable path, local network

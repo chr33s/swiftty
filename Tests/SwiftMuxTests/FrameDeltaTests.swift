@@ -1,8 +1,12 @@
+import Dispatch
 import Foundation
 import SwiftMuxBridge
+import SwiftMuxClient
 import SwiftMuxExport
 import SwiftMuxProtocol
+import SwiftMuxXPC
 import SwifttyCore
+import Synchronization
 import Testing
 
 /// Row versions, `SMXB/1` and frame deltas (spec.multiplexer.md §4, gate C11).
@@ -310,5 +314,233 @@ struct FrameDeltaTests {
       try FrameDeltaApplier.apply(badSource, to: base)
     }
     #expect(try FrameDeltaApplier.apply(delta, to: base) != base)
+  }
+
+  // MARK: Hostile peers
+
+  /// A delta whose history window puts its rows past `Int.max` is
+  /// rejected before row addresses are computed, rather than trapping.
+  @Test
+  func overflowingHistoryWindowsAreRejected() throws {
+    var e = Exporter()
+    e.feed("a\r\nb\r\nc")
+    let base = try e.frame()
+    e.feed("d")
+    let next = try e.frame()
+    let delta = try #require(
+      FrameDeltaBuilder.delta(from: next, base: FrameBaseline(base)!)
+    )
+    var hostile = delta
+    hostile.history.viewportTop = Int.max - 1
+    #expect(throws: MuxError.self) {
+      try FrameDeltaApplier.apply(hostile, to: base)
+    }
+    var frame = next
+    frame.history.viewportTop = Int.max - 1
+    #expect(throws: MuxError.self) { try FrameValidator.validate(frame) }
+    #expect(throws: MuxError.self) { try SMXB.decode(SMXB.encode(frame)) }
+    frame.history.viewportTop = -1
+    #expect(throws: MuxError.self) { try FrameValidator.validate(frame) }
+  }
+
+  /// Base and delta style tables each within a peer's `maxStyles` (at
+  /// most `UInt16.max`) can merge into more styles than a cell's 16-bit
+  /// style index holds; the delta is rejected instead of trapping.
+  @Test
+  func mergedStyleTablesBeyondTheLimitAreRejected() throws {
+    var limits = MuxLimits.standard
+    limits.maxStyles = Int(UInt16.max)
+    let columns = limits.maxColumns
+    let rows = limits.maxRows
+    func grid(rows: Int, style: (Int) -> UInt16) -> FrameGrid {
+      let count = rows * columns
+      let glyphs = [UInt32](repeating: 0x41, count: count)
+      let styles = (0 ..< count).map(style)
+      return FrameGrid(
+        columns: columns,
+        rows: rows,
+        alternateScreen: false,
+        wrapped: Data(repeating: 0, count: rows),
+        glyphs: glyphs.withUnsafeBytes { Data($0) },
+        styles: styles.withUnsafeBytes { Data($0) },
+        kinds: Data(repeating: CellKind.narrow.rawValue, count: count)
+      )
+    }
+    func style(_ n: Int) -> FrameStyle {
+      FrameStyle(
+        foreground: 0x0200_0000 | UInt32(n),
+        background: 0,
+        flags: 0,
+        underlineColor: 0
+      )
+    }
+    let history = HistoryWindow(
+      generation: 1,
+      firstRow: 0,
+      availableRows: rows,
+      viewportTop: 0,
+      viewportOffset: 0,
+      scrollbackRows: 0
+    )
+    // Base: the first half of the rows use 65535 distinct styles.
+    let baseStyles = Int(UInt16.max)
+    let base = PaneFrame(
+      identity: BridgeTests.identity(),
+      grid: grid(rows: rows) { $0 < baseStyles ? UInt16($0) : 0 },
+      graphemes: [],
+      styles: (0 ..< baseStyles).map(style),
+      underlineColors: [],
+      palette: try BridgeTests.validFrame().palette,
+      cursor: FrameCursor(x: 0, y: 0, visible: true, style: 0, blinking: false),
+      modes: [],
+      history: history,
+      search: nil,
+      title: "",
+      rowVersions: (0 ..< rows).map { UInt64($0 + 1) }
+    )
+    try FrameValidator.validate(base, limits: limits)
+    // Delta: keeps the first half, replaces just under half of the rows
+    // with distinct styles of its own.
+    let replacedRows = Array(rows / 2 ..< rows - 1)
+    let replacedCells = replacedRows.count * columns
+    var sources = (0 ..< rows).map { Int32($0) }
+    for y in replacedRows { sources[y] = FrameDelta.replacedRow }
+    var identity = base.identity
+    identity.revision += 1
+    var versions = base.rowVersions!
+    for y in replacedRows { versions[y] = UInt64(1000 + y) }
+    let identities = versions.enumerated()
+      .map { y, version in
+        RowIdentity(
+          address: history.address(viewportRow: y, alternateScreen: false),
+          version: version
+        )
+      }
+    let delta = FrameDelta(
+      identity: identity,
+      baseRevision: base.identity.revision,
+      columns: columns,
+      rows: rows,
+      alternateScreen: false,
+      rowSources: sources,
+      replaced: grid(rows: replacedRows.count) { UInt16($0) },
+      graphemes: [],
+      styles: (0 ..< replacedCells).map { style(0x10000 + $0) },
+      underlineColors: [],
+      replacedVersions: replacedRows.map { versions[$0] },
+      palette: nil,
+      cursor: base.cursor,
+      modes: [],
+      history: history,
+      search: nil,
+      title: "",
+      dropTarget: nil,
+      identityChecksum: RowChecksum.identities(identities)
+    )
+    #expect(throws: MuxError.self) {
+      try FrameDeltaApplier.apply(delta, to: base, limits: limits)
+    }
+  }
+
+  /// A delta's own tables are checked the same way whichever codec
+  /// carried it: a malformed grapheme is rejected even when unreferenced.
+  @Test
+  func deltaTablesAreValidatedAlikeForBothCodecs() throws {
+    var e = Exporter()
+    e.feed("a\r\nb\r\nc")
+    let base = try e.frame()
+    e.feed("d")
+    let next = try e.frame()
+    var delta = try #require(
+      FrameDeltaBuilder.delta(from: next, base: FrameBaseline(base)!)
+    )
+    delta.graphemes.append([])
+    #expect(throws: MuxError.self) { try SMXB.decode(SMXB.encode(delta)) }
+    #expect(throws: MuxError.self) {
+      try FrameDeltaApplier.apply(delta, to: base)
+    }
+    delta.graphemes[delta.graphemes.count - 1] = [0xD800]
+    #expect(throws: MuxError.self) { try SMXB.decode(SMXB.encode(delta)) }
+    #expect(throws: MuxError.self) {
+      try FrameDeltaApplier.apply(delta, to: base)
+    }
+  }
+
+  /// A JSON frame is not validated on arrival, so an invalid one must not
+  /// become a delta base: a delta naming it is answered with a full-frame
+  /// request instead of indexing the invalid base.
+  @Test(.timeLimit(.minutes(1)))
+  func invalidJSONFramesAreNotDeltaBases() async throws {
+    var e = Exporter()
+    e.feed("a\r\nb\r\nc")
+    let base = try e.frame()
+    e.feed("d")
+    let next = try e.frame()
+    let delta = try #require(
+      FrameDeltaBuilder.delta(from: next, base: FrameBaseline(base)!)
+    )
+    var invalid = base
+    invalid.grid.kinds = Data()
+    invalid.grid.styles = Data()
+    let peer = ScriptedPeer(before: [.frame(invalid), .frameDelta(delta)])
+    defer { peer.close() }
+    var capabilities = ClientCapabilities.supported
+    capabilities.remove(.binaryFrames)
+    let connection = try await MuxConnection.connect(
+      endpoint: peer.listener.endpoint,
+      frontend: .native,
+      capabilities: capabilities
+    )
+    let stats = await connection.deltaStatistics
+    #expect(stats.applied == 0)
+    #expect(stats.requestedFull == 1)
+    await connection.close()
+  }
+}
+
+/// Sends `events` ahead of its welcome, so the client handles them before
+/// `connect` returns.
+private final class ScriptedPeer: Sendable {
+  let queue = DispatchQueue(label: "frame-delta-peer")
+  let listener: SMXListener
+  private let channels = Mutex<[SMXChannel]>([])
+
+  init(before events: [MuxEvent]) {
+    listener = SMXListener(anonymousOn: queue)
+    listener.activate(connectionQueue: queue) { [self] channel in
+      channels.withLock { $0.append(channel) }
+      channel.activate { event in
+        guard case let .message(data) = event,
+          case .hello = try? SMXCodec.decode(
+            ClientMessage.self,
+            from: data,
+            limit: 1 << 20
+          )
+        else { return }
+        var messages = events.map { ServerMessage.event($0) }
+        messages.append(
+          .welcome(
+            Welcome(
+              protocolVersion: SMX.protocolVersion,
+              build: SMX.build,
+              server: ServerInstanceID(),
+              acceptedProfile: nil,
+              limits: .standard,
+              innerTerm: "xterm-256color"
+            )
+          )
+        )
+        for message in messages {
+          if let encoded = try? SMXCodec.encode(message, limit: 1 << 24) {
+            channel.send(encoded)
+          }
+        }
+      }
+    }
+  }
+
+  func close() {
+    channels.withLock { $0 }.forEach { $0.cancel() }
+    listener.cancel()
   }
 }

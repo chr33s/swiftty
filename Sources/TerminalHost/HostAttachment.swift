@@ -64,6 +64,9 @@ final class HostAttachment: @unchecked Sendable {
   var deltaBaseline: FrameBaseline?
   /// A full screen was requested and has not been submitted yet.
   var fullScreenPending = false
+  /// The newest full screen submitted on this attachment: it answers a
+  /// `RequestFullScreen` for any older refused delta.
+  var lastFullScreenRevision: UInt64 = 0
   var copyInFlight = false
 
   init(connection: any RSTConnection, registry: SessionRegistry) {

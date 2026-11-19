@@ -210,6 +210,36 @@ struct QUICTransportTests {
   }
 
   @Test
+  func lifecycleLogKeepsSetupAndLatestEventsInOrder() {
+    var log = LifecycleLog()
+    let count = LifecycleLog.headCapacity + LifecycleLog.tailCapacity + 10
+    for index in 0 ..< count {
+      log.append("event \(index)", at: UInt64(index) * 1000)
+    }
+    log.append(String(repeating: "x", count: 1000), at: UInt64(count) * 1000)
+    let rendered = log.render(since: 0)
+    #expect(log.total == count + 1)
+    #expect(rendered.hasPrefix("[+0us event 0; +1us event 1;"))
+    #expect(rendered.contains("... 11 events dropped ..."))
+    // The ring drops the oldest non-setup events and stays oldest-first.
+    #expect(!rendered.contains("event \(LifecycleLog.headCapacity);"))
+    let latest = rendered.range(of: "event \(count - 1);")
+    let earlier = rendered.range(of: "event \(count - 2);")
+    #expect(latest != nil && earlier != nil)
+    if let latest, let earlier {
+      #expect(earlier.lowerBound < latest.lowerBound)
+    }
+    #expect(
+      rendered.contains(String(repeating: "x", count: LifecycleLog.maxDetail))
+    )
+    #expect(
+      !rendered.contains(
+        String(repeating: "x", count: LifecycleLog.maxDetail + 1)
+      )
+    )
+  }
+
+  @Test
   func peerClosureBeforeConnectionHandoffIsRejected() async throws {
     let (listener, accepted) = try await startListener()
     defer { listener.stop() }
@@ -472,27 +502,46 @@ struct QUICTransportTests {
       let stream = try #require(server.snapshotStreamForTesting(1))
       firstStream.withLock { $0.value = stream }
     }
-    try await withConnectionDiagnostics(client: client, server: server) {
-      try await sendAndCapture()
-      if cancel {
+    // Each stage names itself so a stalled native send (which has no deadline
+    // of its own and ends only when the connection does) is attributable.
+    func stage<T>(
+      _ label: String,
+      _ body: () async throws -> T
+    ) async throws -> T {
+      try await withConnectionDiagnostics(
+        "\(label), delivered=\(inbox.snapshots.count)",
+        client: client,
+        server: server,
+        body
+      )
+    }
+    try await stage("first send") { try await sendAndCapture() }
+    if cancel {
+      try await stage("first delivery") {
         try await transportEventually { inbox.snapshots.count == 1 }
-        server.cancelSnapshot(stream: 1)
-      } else {
-        for id in 2 ... (QUICRSTConnection.maxTrackedOutbound + 1) {
+      }
+      server.cancelSnapshot(stream: 1)
+    } else {
+      for id in 2 ... (QUICRSTConnection.maxTrackedOutbound + 1) {
+        try await stage("send \(id)") {
           try await server.sendSnapshot(payload, stream: UInt64(id))
         }
+      }
+      try await stage("delivery") {
         try await transportEventually {
           inbox.snapshots.count == QUICRSTConnection.maxTrackedOutbound + 1
         }
       }
     }
-    #expect(inbox.snapshots.allSatisfy { $0 == payload })
-    #expect(server.snapshotStreamForTesting(1) == nil)
-    try await transportEventually(.seconds(1)) {
-      firstStream.withLock { $0.value == nil }
+    try await stage("first stream release") {
+      #expect(inbox.snapshots.allSatisfy { $0 == payload })
+      #expect(server.snapshotStreamForTesting(1) == nil)
+      try await transportEventually(.seconds(1)) {
+        firstStream.withLock { $0.value == nil }
+      }
+      try #require(!client.isClosed)
+      try #require(!server.isClosed)
     }
-    #expect(!client.isClosed)
-    #expect(!server.isClosed)
   }
 
   @Test
@@ -1008,6 +1057,8 @@ struct QUICTransportTests {
     async throws
   {
     var stage = "listener"
+    let started = ContinuousClock.now
+    var describe: () -> String = { "not connected" }
     do {
       let (listener, accepted) = try await startListener()
       defer { listener.stop() }
@@ -1030,6 +1081,12 @@ struct QUICTransportTests {
       let (server, _) = try #require(accepted.all.first)
       client.enableSnapshotReadDiagnosticsForTesting()
       server.enableSnapshotReadDiagnosticsForTesting()
+      describe = {
+        """
+        client: \(client.snapshotDiagnosticsForTesting)
+        server: \(server.snapshotDiagnosticsForTesting)
+        """
+      }
 
       let small = snapshotPayload(bodyLength: 1000, fill: 0xA1)
       let medium = snapshotPayload(bodyLength: 300_000, fill: 0xB2)
@@ -1095,8 +1152,22 @@ struct QUICTransportTests {
       #expect(received.count(where: { $0 == huge }) <= 1)
       // Canceled before its send completed (bytes already queued in QUIC
       // may still arrive whole, which is allowed).
-      if case let .failure(error) = hugeResult {
-        #expect(error as? RSTTransportError == .canceled)
+      if case let .failure(error) = hugeResult,
+        error as? RSTTransportError != .canceled
+      {
+        Issue.record(
+          Comment(
+            rawValue: """
+              canceled huge snapshot returned \(error), expected canceled
+              before cancellation:
+              \(beforeCancellation)
+              after cancellation:
+              \(afterCancellation)
+              now:
+              \(describe())
+              """
+          )
+        )
       }
       // A pre-canceled id never opens a stream.
       stage = "pre-canceled snapshot"
@@ -1105,7 +1176,14 @@ struct QUICTransportTests {
         try await server.sendSnapshot(small, stream: 9)
       }
     } catch {
-      Issue.record("snapshot scenario failed during \(stage): \(error)")
+      Issue.record(
+        Comment(
+          rawValue: """
+            snapshot scenario failed during \(stage) after \(ContinuousClock.now - started): \(error)
+            \(describe())
+            """
+        )
+      )
       throw error
     }
   }

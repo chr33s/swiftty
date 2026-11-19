@@ -147,6 +147,28 @@ struct FrameWireTests {
     #expect(throws: FramingError.self) { try SnapshotFrame.decodeRecord(mux) }
   }
 
+  /// Row addresses are `viewportTop + row`; a host-supplied window whose
+  /// rows would pass `Int.max` (or precede row 0) is malformed, so the
+  /// client never computes a row identity that traps.
+  @Test
+  func `frames whose history window overflows are rejected`() throws {
+    for top in [Int.max, Int.max - 1, -1] {
+      var frame = Self.frame()
+      frame.history.viewportTop = top
+      let wire = try SnapshotFrame.encode(
+        frame: [UInt8](SMXB.encode(frame, envelope: .rst(Self.header.bytes)))
+      )
+      #expect(throws: FramingError.self) {
+        try SnapshotFrame.decodeRecord(wire)
+      }
+    }
+    var scrolled = Self.frame()
+    scrolled.history.viewportTop = Int.max - 2
+    scrolled.history.scrollbackRows = 1
+    scrolled.history.viewportOffset = 1
+    #expect(throws: MuxError.self) { try FrameValidator.validate(scrolled) }
+  }
+
   @Test
   func `new control messages round-trip`() throws {
     let messages: [ControlMessage] = [

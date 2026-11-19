@@ -180,9 +180,16 @@ public actor MuxConnection {
   /// Deltas applied and full frames requested (tests, diagnostics).
   package private(set) var deltaStatistics = (applied: 0, requestedFull: 0)
 
-  private func retainBase(_ frame: PaneFrame) {
+  private func retainBase(_ frame: PaneFrame, validated: Bool) {
     guard capabilities.contains(.frameDeltas), frame.rowVersions != nil else {
       return
+    }
+    // A delta copies cells out of its base by index, so only a valid
+    // frame may become one. JSON frames are not validated on arrival.
+    if !validated {
+      do {
+        try FrameValidator.validate(frame, limits: welcome?.limits ?? .standard)
+      } catch { return }
     }
     var list = deltaBases[frame.identity.pane, default: []]
     list.removeAll { $0.identity.revision == frame.identity.revision }
@@ -432,7 +439,7 @@ public actor MuxConnection {
         return fail(MuxError(.invalidRequest, "frame record envelope"))
       }
       switch record.payload {
-      case let .frame(frame): dispatch(.event(.frame(frame)))
+      case let .frame(frame): dispatch(.event(.frame(frame)), validated: true)
       case let .delta(delta): dispatch(.event(.frameDelta(delta)))
       }
     case let .message(data):
@@ -451,7 +458,9 @@ public actor MuxConnection {
     }
   }
 
-  private func dispatch(_ message: ServerMessage) {
+  /// `validated`: a frame in `message` already passed `FrameValidator`
+  /// (decoded from `SMXB/1`, or a delta's result).
+  private func dispatch(_ message: ServerMessage, validated: Bool = false) {
     switch message {
     case let .welcome(w):
       // A late reply must not win just because timeout delivery is delayed.
@@ -540,10 +549,12 @@ public actor MuxConnection {
         let shown = Set(snapshot.panes.map(\.id))
         deltaBases = deltaBases.filter { shown.contains($0.key) }
       case let .frameDelta(delta):
-        if let frame = resolve(delta) { dispatch(.event(.frame(frame))) }
+        if let frame = resolve(delta) {
+          dispatch(.event(.frame(frame)), validated: true)
+        }
         return
       case let .frame(frame):
-        retainBase(frame)
+        retainBase(frame, validated: validated)
         guard
           installation.install(
             frame,

@@ -1,0 +1,258 @@
+#if os(macOS)
+import Foundation
+@testable import RoamingKit
+import ScreenProtocol
+import SessionCore
+import SwiftMuxProtocol
+import SwifttyEngine
+@testable import TerminalHost
+import Testing
+
+/// A20 (spec.roaming.md §7.4, §13): `screenDeltas` between a real host
+/// and a real `RoamingClient` over the A3 impaired path, with stream
+/// cancellation and reattachment.
+@Suite(.serialized, .timeLimit(.minutes(5)))
+struct ImpairedScreenDeltaTests {
+  static let seeds: [UInt64] = [0xA20_0001, 0xA20_0002, 0xA20_0003, 0xA20_0004]
+
+  /// Repeats `request` until the newest installed screen satisfies
+  /// `predicate`: a reattachment can drop a request (a history window
+  /// belongs to its attachment).
+  static func until(
+    _ rig: ImpairedRoamingRig,
+    _ what: String,
+    request: () async throws -> Void,
+    where predicate: @escaping (PresentationFrame) -> Bool
+  ) async throws {
+    for _ in 0 ..< 10 {
+      try await rig.active()
+      try await request()
+      let shown = try? await hostEventually(what, timeout: .seconds(4)) {
+        rig.installs.last.map(predicate) == true ? true : nil
+      }
+      if shown != nil { return }
+    }
+    Issue.record("seed \(rig.link.seed): never showed \(what)")
+    throw HostTestTimeout(what: what)
+  }
+
+  /// Typing, scrolling, a progress bar, history moves, an alternate screen
+  /// and resizes, with two forced kills at acknowledgement boundaries.
+  static func workload(_ rig: ImpairedRoamingRig) async throws {
+    let link = rig.link
+    // Typing, one key at a time.
+    for ch in "echo key-$((6*7))" { try await rig.submit(.text(String(ch))) }
+    try await rig.submit(.key(SemanticKey(.enter)))
+    try await rig.shows("key-42")
+
+    // Full-screen scrolling, fast then line by line. Lose the connection
+    // just after the client acknowledges a screen.
+    link.killAt(.screenAck(afterForward: true))
+    try await rig.run("seq 1 500; echo scroll-$((2+3))")
+    try await rig.shows("scroll-5")
+    try await rig.run(
+      "i=0; while [ $i -lt 150 ]; do i=$((i+1)); echo line-$i; sleep 0.01; "
+        + "done; echo slow-$((3+4))"
+    )
+    try await rig.shows("slow-7")
+
+    // A carriage-return progress bar. Lose the connection just before the
+    // client hears an input acknowledgement.
+    link.killAt(.inputAck(afterForward: false))
+    try await rig.run(
+      "i=0; while [ $i -lt 50 ]; do i=$((i+1)); printf '\\rprogress %d/50' "
+        + "$i; sleep 0.01; done; echo; echo bar-$((4+5))"
+    )
+    try await rig.shows("bar-9")
+
+    // History window moves: rows from history, then back to live.
+    func showsHistory(_ frame: PresentationFrame) -> Bool {
+      frame.rowKeys?.contains { $0[4] == 0 } == true
+    }
+    try await until(rig, "history window") {
+      await rig.client.scrollViewport(by: 30)
+    } where: {
+      showsHistory($0)
+    }
+    try await until(rig, "older history") {
+      await rig.client.scrollViewport(by: 25)
+    } where: { frame in
+      showsHistory(frame)
+        && (0 ..< frame.rows).contains { frame.line($0) == "line-1" }
+    }
+    try await until(rig, "live output") {
+      await rig.client.scrollViewport(by: -1000)
+    } where: {
+      $0.rowKeys?.allSatisfy { $0[4] == 1 } == true
+    }
+
+    // The alternate screen, resized while shown, then left.
+    try await rig.run(
+      "printf '\\033[?1049h\\033[2J\\033[HALT-%d' 77; read x; "
+        + "printf '\\033[?1049l'; echo alt-$((5+6))"
+    )
+    try await rig.screen("alternate screen") { lines in
+      lines.first?.hasPrefix("ALT-77") == true
+    }
+    #expect(rig.installs.last?.alternateScreen == true)
+    try await until(rig, "alternate resize") {
+      await rig.client.proposeGrid(columns: 48, rows: 10)
+    } where: {
+      $0.alternateScreen && $0.columns == 48 && $0.rows == 10
+    }
+    try await rig.submit(.key(SemanticKey(.enter)))
+    try await rig.shows("alt-11")
+
+    // Resizes on the primary screen.
+    for (columns, rows) in [(70, 14), (60, 12)] {
+      try await until(rig, "\(columns)x\(rows)") {
+        await rig.client.proposeGrid(columns: columns, rows: rows)
+      } where: {
+        !$0.alternateScreen && $0.columns == columns && $0.rows == rows
+      }
+    }
+    try await rig.run("echo end-$((6+7))")
+    try await rig.shows("end-13")
+  }
+
+  @Test(arguments: seeds)
+  func `every installed screen is the host's screen at that revision`(
+    seed: UInt64
+  ) async throws {
+    try await withRegistry { registry in
+      let grid = GridSize(columns: 60, rows: 12)
+      let rig = ImpairedRoamingRig(
+        registry: registry,
+        seed: seed,
+        profile: .a3Kills,
+        grid: grid
+      )
+      try await rig.start(grid)
+      try await Self.workload(rig)
+
+      let link = rig.link
+      let stats = await rig.client.deltaStatistics
+      #expect(stats.applied > 0, "seed \(seed)")
+      // Both forced kills happened, and the client reattached after each.
+      #expect(link.killed.count >= 2, "seed \(seed)")
+      #expect(link.connections >= 3, "seed \(seed)")
+      // The impairments were exercised.
+      let fates = link.snapshots.map(\.fate)
+      #expect(fates.contains(.reset), "seed \(seed)")
+      #expect(link.control.contains { $0.duplicate }, "seed \(seed)")
+      // Every installed screen is the host's complete screen at a strictly
+      // increasing revision: no partial, mixed or older screen is shown.
+      let revisions = rig.expectInstallsMatchHost()
+      #expect(
+        revisions == revisions.sorted()
+          && Set(revisions).count == revisions.count
+      )
+      await rig.client.close(.detach)
+    }
+  }
+
+  @Test(arguments: seeds, [false, true])
+  func `a missing base or checksum mismatch recovers through one full screen`(
+    seed: UInt64,
+    repeated: Bool
+  ) async throws {
+    try await withRegistry { registry in
+      let grid = GridSize(columns: 60, rows: 12)
+      let rig = ImpairedRoamingRig(
+        registry: registry,
+        seed: seed,
+        profile: .a3,
+        grid: grid
+      )
+      try await rig.start(grid)
+      let link = rig.link
+      // Every request repeated, as when several in-flight deltas are
+      // refused: one full screen must still answer them all.
+      if repeated { link.profile.duplicateRate = 1 }
+      try await rig.run("echo ready-$((1+1))")
+      try await rig.shows("ready-2")
+      var typed = ""
+      /// Types one key and waits for its echo and a quiet path.
+      func key(_ ch: Character) async throws {
+        typed.append(ch)
+        let expected = "$ " + typed
+        try await rig.submit(.text(String(ch)))
+        try await rig.screen("echo of \(typed)") { $0.contains(expected) }
+        try await Task.sleep(for: .milliseconds(300))
+      }
+      for (n, kind) in [ImpairedLink.Corruption.missingBase, .badChecksum]
+        .enumerated()
+      {
+        try await key("a")
+        let before = await rig.client.deltaStatistics
+        let mark = link.snapshots.count
+        link.corruptNextDelta(kind)
+        try await key("b")
+        try await hostEventually("corrupted delta delivered") {
+          link.corrupted.count == n + 1 ? true : nil
+        }
+        try await key("c")
+        try await key("d")
+        let after = await rig.client.deltaStatistics
+        let since = link.snapshots[mark...]
+        let fulls = since.filter {
+          !$0.delta && ($0.fate == .delivered || $0.fate == .lateAfterCancel)
+        }
+        // One refusal, answered by one complete screen, after which
+        // deltas apply again.
+        #expect(
+          after.requestedFull - before.requestedFull == 1,
+          "seed \(seed) \(kind): \(after) from \(before)"
+        )
+        #expect(
+          fulls.count == 1,
+          "seed \(seed) repeated \(repeated) \(kind): full screens \(fulls.map(\.revision)) in \(Array(since))"
+        )
+        let recovered = link.messages(.toHost)
+          .filter { if case .requestFullScreen = $0 { true } else { false } }
+        #expect(!recovered.isEmpty)
+        #expect(after.applied > before.applied, "seed \(seed) \(kind)")
+      }
+      for _ in typed { try await rig.submit(.key(SemanticKey(.backspace))) }
+      _ = rig.expectInstallsMatchHost()
+      await rig.client.close(.detach)
+    }
+  }
+
+  enum MissingSide: String, CaseIterable, Sendable { case client, host }
+
+  @Test(arguments: MissingSide.allCases, [seeds[0], seeds[1]])
+  func `a peer without screenDeltas exchanges full screens only`(
+    side: MissingSide,
+    seed: UInt64
+  ) async throws {
+    try await withRegistry { registry in
+      var profile = ImpairmentProfile.a3Kills
+      // The client's list as the host sees it; for a host without the
+      // feature, also the host's list as the client sees it.
+      profile.stripFromAttach = [.screenDeltas]
+      if side == .host { profile.stripFromAttached = [.screenDeltas] }
+      let grid = GridSize(columns: 60, rows: 12)
+      let rig = ImpairedRoamingRig(
+        registry: registry,
+        seed: seed,
+        profile: profile,
+        grid: grid
+      )
+      try await rig.start(grid)
+      try await Self.workload(rig)
+      let link = rig.link
+      #expect(!link.snapshots.isEmpty)
+      #expect(link.snapshots.allSatisfy { !$0.delta }, "seed \(seed) \(side)")
+      let stats = await rig.client.deltaStatistics
+      #expect(stats.applied == 0 && stats.requestedFull == 0)
+      #expect(
+        !link.messages(.toHost)
+          .contains { if case .requestFullScreen = $0 { true } else { false } }
+      )
+      _ = rig.expectInstallsMatchHost()
+      await rig.client.close(.detach)
+    }
+  }
+}
+#endif

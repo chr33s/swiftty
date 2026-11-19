@@ -304,6 +304,10 @@ public enum FrameDeltaApplier {
     guard let count = limits.cellCount(columns: columns, rows: delta.rows)
     else { throw MuxError(.invalidRequest, "delta dimensions") }
     var tables = TableInterner()
+    // Base and delta tables merge; each may be within `maxStyles` while
+    // their union is not. Checked as entries are added, so every index
+    // fits a cell's 16-bit style.
+    let styleCap = min(limits.maxStyles, Int(UInt16.max) + 1)
     var baseStyles = [Int32](repeating: -1, count: base.styles.count)
     var deltaStyles = [Int32](repeating: -1, count: delta.styles.count)
     var glyphs = [UInt32](repeating: 0, count: count)
@@ -357,6 +361,9 @@ public enum FrameDeltaApplier {
                 underlineColors: delta.underlineColors
               )
             )
+            guard tables.styles.count <= styleCap else {
+              throw MuxError(.invalidRequest, "delta tables")
+            }
           }
           styles[o] = UInt16(deltaStyles[s])
           let glyph = r.glyph(at: i)
@@ -384,6 +391,9 @@ public enum FrameDeltaApplier {
                 underlineColors: base.underlineColors
               )
             )
+            guard tables.styles.count <= styleCap else {
+              throw MuxError(.invalidRequest, "delta tables")
+            }
           }
           styles[o] = UInt16(baseStyles[s])
           let glyph = b.glyph(at: i)
@@ -465,6 +475,13 @@ public enum FrameDeltaApplier {
     for style in delta.styles
     where Int(style.underlineColor) > delta.underlineColors.count {
       throw MuxError(.invalidRequest, "delta style entry")
+    }
+    // The frame rules for grapheme entries, referenced or not, so a delta
+    // is accepted or rejected alike whichever codec carried it.
+    for scalars in delta.graphemes {
+      guard !scalars.isEmpty, scalars.count <= limits.maxGraphemeScalars,
+        scalars.allSatisfy({ Unicode.Scalar($0) != nil })
+      else { throw MuxError(.invalidRequest, "delta grapheme scalars") }
     }
     for i in 0 ..< cells {
       guard r.style(at: i) < delta.styles.count else {

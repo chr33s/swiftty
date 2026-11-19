@@ -951,6 +951,9 @@ public actor RoamingClient {
         failCopy(CopyError(.malformed))
         return
       }
+      // Release the stored copy first, so the append mutates a uniquely
+      // referenced buffer instead of copying the whole text per chunk.
+      copy = nil
       current.text += text
       current.next += 1
       copy = current

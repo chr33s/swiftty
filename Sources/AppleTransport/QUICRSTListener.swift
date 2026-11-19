@@ -121,6 +121,10 @@ public final class QUICRSTListener: RSTListener {
       idleTimeout: configuration.idleTimeout
     )
     let parameters = QUICOptions.parameters(quic)
+    let settings = QUICOptions.describe(
+      role: "server",
+      idleTimeout: configuration.idleTimeout
+    )
     guard let nwPort = NWEndpoint.Port(rawValue: configuration.port) else {
       throw RSTTransportError.handshake("invalid port")
     }
@@ -146,7 +150,7 @@ public final class QUICRSTListener: RSTListener {
         group.cancel()
         return
       }
-      self.admit(group, onConnection: onConnection)
+      self.admit(group, settings: settings, onConnection: onConnection)
     }
     let waiter = OneShot()
     listener.stateUpdateHandler = { [weak self] newState in
@@ -182,13 +186,15 @@ public final class QUICRSTListener: RSTListener {
 
   private func admit(
     _ group: NWConnectionGroup,
+    settings: String,
     onConnection: @escaping @Sendable (any RSTConnection) -> Void
   ) {
     let groupQueue = DispatchQueue(label: "rst.quic.server", target: queue)
     let connection = QUICRSTConnection(
       role: .server,
       group: group,
-      queue: groupQueue
+      queue: groupQueue,
+      settings: settings
     )
     let key = ObjectIdentifier(connection)
     let admitted = state.withLock { s -> Bool in

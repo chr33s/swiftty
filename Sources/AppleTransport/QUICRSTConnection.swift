@@ -15,6 +15,51 @@ public protocol RSTPathEvents: AnyObject, Sendable {
   var onBetterPath: (@Sendable (Bool) -> Void)? { get set }
 }
 
+/// Always-on, bounded lifecycle trace with monotonic timestamps. Keeps the
+/// first `headCapacity` events, which carry setup ordering, and a ring of the
+/// latest `tailCapacity`; the rendering reports how many fell in between.
+/// Events are short strings recorded only at stream and connection
+/// transitions, never per received chunk.
+struct LifecycleLog: Sendable {
+  static let headCapacity = 32
+  static let tailCapacity = 224
+  static let maxDetail = 320
+
+  private var head: [(time: UInt64, detail: String)] = []
+  private var tail: [(time: UInt64, detail: String)] = []
+  private var next = 0
+  private(set) var total = 0
+
+  static func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+
+  mutating func append(_ detail: String, at time: UInt64 = Self.now()) {
+    total += 1
+    let entry = (time: time, detail: String(detail.prefix(Self.maxDetail)))
+    if head.count < Self.headCapacity {
+      head.append(entry)
+    } else if tail.count < Self.tailCapacity {
+      tail.append(entry)
+    } else {
+      tail[next] = entry
+      next = (next + 1) % Self.tailCapacity
+    }
+  }
+
+  /// Events oldest first, as microseconds since `origin`.
+  func render(since origin: UInt64) -> String {
+    func line(_ entry: (time: UInt64, detail: String)) -> String {
+      let micros = entry.time >= origin ? (entry.time - origin) / 1000 : 0
+      return "+\(micros)us \(entry.detail)"
+    }
+    let ordered = Array(tail[next...]) + Array(tail[..<next])
+    var lines = head.map(line)
+    let dropped = total - head.count - tail.count
+    if dropped > 0 { lines.append("... \(dropped) events dropped ...") }
+    lines += ordered.map(line)
+    return "[" + lines.joined(separator: "; ") + "]"
+  }
+}
+
 /// One RST/1 connection over a Network framework QUIC connection group
 /// (spec §7.1): the first client-initiated bidirectional stream carries
 /// control records; each snapshot travels on its own server-initiated
@@ -105,7 +150,10 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     var preCanceled: [UInt64] = []
     var inbound: [ObjectIdentifier: NWConnection] = [:]
     var snapshotReads: [ObjectIdentifier: SnapshotReadProgress] = [:]
-    var streamLifecycle: [String] = []
+    /// Always recorded; see `LifecycleLog`.
+    var lifecycle = LifecycleLog()
+    /// Last retirement wait recorded, so the 100 ms recheck logs only changes.
+    var lastRetireWait: (released: Int?, opened: Int)?
     var beforeInboundStartForTesting: (@Sendable () -> Void)?
     var beforeSnapshotReadForTesting: SnapshotReadGate?
     /// Server snapshot streams released so far (client side).
@@ -160,6 +208,11 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
   }
   static let maxPreCanceledSnapshots = 64
 
+  /// Monotonic origin for lifecycle timestamps.
+  private let createdAt = LifecycleLog.now()
+  /// QUIC flow-control and idle settings, for diagnostics.
+  let settings: String
+
   var preCanceledSnapshotCount: Int { state.withLock { $0.preCanceled.count } }
   /// Application error code for a rejected inbound stream.
   static let streamRejectedCode: UInt64 = 0x11
@@ -177,12 +230,14 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     role: Role,
     group: NWConnectionGroup,
     queue: DispatchQueue,
-    limits: NegotiatedLimits = NegotiatedLimits()
+    limits: NegotiatedLimits = NegotiatedLimits(),
+    settings: String = "unknown"
   ) {
     self.role = role
     self.group = group
     self.queue = queue
     self.limits = limits.effective
+    self.settings = settings
     self.mailbox = EventMailbox()
   }
 
@@ -252,6 +307,7 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
   /// Group state after `ready` (the connector/listener owns the handshake
   /// phase).
   func groupStateChanged(_ newState: NWConnectionGroup.State) {
+    record("group state \(newState)")
     switch newState {
     case let .failed(error): terminate(error: error, source: "group failed")
     case .cancelled: terminate(error: nil, source: "group cancelled")
@@ -271,7 +327,12 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
       }
     }
     let accepted = state.withLock { s -> Bool in
-      guard !s.closed, s.inbound.count < 16 else { return false }
+      guard !s.closed, s.inbound.count < 16 else {
+        s.lifecycle.append(
+          "inbound refused,closed=\(s.closed),inbound=\(s.inbound.count)"
+        )
+        return false
+      }
       s.inbound[ObjectIdentifier(stream)] = stream
       return true
     }
@@ -293,24 +354,28 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     withExtendedLifetime(previous) {}
   }
 
+  /// Records a stream transition in the always-on lifecycle log, with the
+  /// native stream ID and any application error code the peer sent. Call
+  /// outside the state lock; reads Network metadata.
   private func traceStream(
     _ stream: NWConnection,
     event: @autoclosure () -> String
   ) {
-    guard traceSnapshotReads.load(ordering: .relaxed) else { return }
-    let timestamp = DispatchTime.now().uptimeNanoseconds
+    let time = LifecycleLog.now()
     let metadata =
       stream.metadata(definition: NWProtocolQUIC.definition)
       as? NWProtocolQUIC.Metadata
     let detail =
-      "\(event()),time=\(timestamp),object=\(ObjectIdentifier(stream)),"
+      "\(event()),object=\(ObjectIdentifier(stream)),"
       + "id=\(String(describing: metadata?.streamIdentifier)),"
       + "streamError=\(String(describing: metadata?.streamApplicationErrorCode))"
-    state.withLock { s in
-      // Keep the first eight events and the latest eight, with no native captures.
-      if s.streamLifecycle.count == 16 { s.streamLifecycle.remove(at: 8) }
-      s.streamLifecycle.append(String(detail.prefix(256)))
-    }
+    state.withLock { $0.lifecycle.append(detail, at: time) }
+  }
+
+  /// Records a connection-level transition. Call outside the state lock.
+  private func record(_ event: String) {
+    let time = LifecycleLog.now()
+    state.withLock { $0.lifecycle.append(event, at: time) }
   }
 
   private func forget(inbound stream: NWConnection) {
@@ -397,6 +462,13 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
   private func installControlHandlers(_ stream: NWConnection) {
     stream.stateUpdateHandler = { [weak self, weak stream] newState in
       switch newState {
+      case .failed, .cancelled: break
+      default:
+        if let stream {
+          self?.traceStream(stream, event: "control \(newState)")
+        }
+      }
+      switch newState {
       case let .failed(error):
         if let stream {
           self?.traceStream(stream, event: "control failed \(error)")
@@ -409,6 +481,7 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
       }
     }
     stream.viabilityUpdateHandler = { [weak self] viable in
+      self?.record("control viable=\(viable)")
       self?.onViabilityChange?(viable)
     }
     stream.betterPathUpdateHandler = { [weak self] better in
@@ -601,11 +674,19 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     let admissionID = UUID()
     let canceled = try state.withLock { s -> Bool in
       if s.closed { throw RSTTransportError.closed }
-      if s.takePreCancellation(id) { return true }
+      if s.takePreCancellation(id) {
+        s.lifecycle.append("snapshot \(id) pre-canceled")
+        return true
+      }
       guard s.admittedSnapshotSends.count < Self.maxPendingSnapshotSends else {
+        s.lifecycle.append("snapshot \(id) refused,admission full")
         throw RSTTransportError.resourceLimit
       }
       s.admittedSnapshotSends.insert(admissionID)
+      s.lifecycle.append(
+        "snapshot \(id) admitted,bytes=\(payload.count),"
+          + "slots=\(s.admittedSnapshotSends.count)"
+      )
       return false
     }
     if canceled { throw RSTTransportError.canceled }
@@ -614,7 +695,13 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     var submitted = false
     defer {
       if !submitted {
-        state.withLock { _ = $0.admittedSnapshotSends.remove(admissionID) }
+        state.withLock { s in
+          s.admittedSnapshotSends.remove(admissionID)
+          s.lifecycle.append(
+            "snapshot \(id) slot released unsubmitted,"
+              + "slots=\(s.admittedSnapshotSends.count)"
+          )
+        }
       }
     }
     await beforeStreamCreation?()
@@ -625,7 +712,10 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
         from: group,
         using: QUICOptions.unidirectionalStream()
       )
-    else { throw RSTTransportError.closed }
+    else {
+      record("snapshot \(id) stream creation failed,group=\(group.state)")
+      throw RSTTransportError.closed
+    }
 
     beforeRegistration?()
 
@@ -667,6 +757,11 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
         s.outboundOrder.removeAll { $0 == id }
         s.outboundOrder.append(id)
         s.openedSnapshotStreams += 1
+        s.lifecycle.append(
+          "snapshot \(id) registered,object=\(ObjectIdentifier(stream)),"
+            + "opened=\(s.openedSnapshotStreams),"
+            + "superseded=\(previous.map { "\(ObjectIdentifier($0.stream)),sent=\($0.sent)" } ?? "none")"
+        )
         return previous
       }
     } catch {
@@ -680,13 +775,41 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     }
     stream.start(queue: queue)
 
+    do {
+      try await awaitSnapshotWrite(
+        payload,
+        id: id,
+        stream: stream,
+        admissionID: admissionID,
+        submitted: &submitted,
+        beforeWrite: beforeWrite,
+        write: write
+      )
+      record("snapshot \(id) send returned")
+    } catch {
+      record("snapshot \(id) send threw \(error)")
+      throw error
+    }
+  }
+
+  private func awaitSnapshotWrite(
+    _ payload: [UInt8],
+    id: UInt64,
+    stream: NWConnection,
+    admissionID: UUID,
+    submitted: inout Bool,
+    beforeWrite: (@Sendable () -> Void)?,
+    write: ControlWrite?
+  ) async throws {
     try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation {
         (continuation: CheckedContinuation<Void, any Error>) in
         let admission = state.withLock { s -> SnapshotWriteAdmission? in
-          guard let entry = s.outbound[id], entry.stream === stream else {
-            return nil
-          }
+          // A cancellation that already claimed this stream (finishAfterSend)
+          // drops any continuation stored after its decision, so refuse here.
+          guard let entry = s.outbound[id], entry.stream === stream,
+            !entry.finishAfterSend
+          else { return nil }
           s.outbound[id]?.continuation = continuation
           return entry.writeAdmission
         }
@@ -698,8 +821,12 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
         let completed: @Sendable (NWError?) -> Void = {
           [weak self, weak stream] error in
           guard let self else { return }
-          self.state.withLock {
-            _ = $0.admittedSnapshotSends.remove(admissionID)
+          self.state.withLock { s in
+            s.admittedSnapshotSends.remove(admissionID)
+            s.lifecycle.append(
+              "snapshot \(id) slot released by completion,"
+                + "slots=\(s.admittedSnapshotSends.count)"
+            )
           }
           guard let stream else { return }
           self.sendCompleted(id: id, stream: stream, error: error)
@@ -759,7 +886,8 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
           as? NWProtocolQUIC.Metadata
         return
           "\(id):\(entry.stream.state),nativeID=\(String(describing: metadata?.streamIdentifier)),"
-          + "sent=\(entry.sent),waiting=\(entry.continuation != nil)"
+          + "sent=\(entry.sent),waiting=\(entry.continuation != nil),"
+          + "finishing=\(entry.finishAfterSend)"
       }
     let inbound = snapshot.inbound
       .map { id, stream in
@@ -776,15 +904,28 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     let metadata =
       snapshot.control?.metadata(definition: NWProtocolQUIC.definition)
       as? NWProtocolQUIC.Metadata
+    let groupMetadata =
+      group.metadata(definition: NWProtocolQUIC.definition)
+      as? NWProtocolQUIC.Metadata
+    let now = LifecycleLog.now()
     return "closed=\(snapshot.closed),group=\(group.state),control=\(control),"
       + "termination=\(snapshot.termination ?? "none"),"
       + "nativeTermination=\(snapshot.nativeTermination ?? "none"),"
-      + "lifecycle=\(snapshot.streamLifecycle),"
       + "admitted=\(snapshot.admittedSnapshotSends.count),outbound=\(outbound),"
+      + "parked=\(snapshot.parkedFinishes.count),"
+      + "preCanceled=\(snapshot.preCanceled),"
       + "retiring=\(snapshot.retiring.count),"
+      + "retireCheckScheduled=\(snapshot.retireCheckScheduled),"
+      + "opened=\(snapshot.openedSnapshotStreams),"
       + "inbound=\(inbound),released=\(snapshot.releasedSnapshotStreams),"
       + "localMaxStreams=\(String(describing: metadata?.localMaxStreamsUnidirectional)),"
-      + "remoteMaxStreams=\(String(describing: metadata?.remoteMaxStreamsUnidirectional))"
+      + "remoteMaxStreams=\(String(describing: metadata?.remoteMaxStreamsUnidirectional)),"
+      + "remoteIdleTimeoutMs=\(String(describing: groupMetadata?.remoteIdleTimeout)),"
+      + "settings=[\(settings),snapshotStreamWindow=\(QUICOptions.snapshotStreamWindow),"
+      + "concurrentSnapshotStreams=\(QUICOptions.concurrentSnapshotStreams)],"
+      + "age=\((now - createdAt) / 1000)us,"
+      + "lifecycle(\(snapshot.lifecycle.total))="
+      + snapshot.lifecycle.render(since: createdAt)
   }
 
   private func sendCompleted(id: UInt64, stream: NWConnection, error: NWError?)
@@ -793,6 +934,7 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
       stream,
       event: "outbound sent,snapshot=\(id),error=\(String(describing: error))"
     )
+    var canceled = false
     let (continuation, evicted, finishIncludesFIN) = state.withLock {
       s -> (CheckedContinuation<Void, any Error>?, [NWConnection], Bool?) in
       let parked = s.parkedFinishes.removeValue(
@@ -806,7 +948,9 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
       if entry.finishAfterSend {
         s.outbound.removeValue(forKey: id)
         s.outboundOrder.removeAll { $0 == id }
-        return (nil, Self.evictSentSnapshots(&s), entry.writeIncludesFIN)
+        // Cancellation resumed its waiter; never strand a later one.
+        canceled = true
+        return (c, Self.evictSentSnapshots(&s), entry.writeIncludesFIN)
       }
       entry.sent = true
       s.outbound[id] = entry
@@ -817,7 +961,9 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
       finishSnapshotStream(stream, finQueued: finishIncludesFIN && error == nil)
     }
     for stream in evicted { queue.async { stream.cancel() } }
-    if let error {
+    if canceled {
+      continuation?.resume(throwing: RSTTransportError.canceled)
+    } else if let error {
       continuation?.resume(throwing: error)
     } else {
       continuation?.resume()
@@ -856,12 +1002,18 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     cancelSnapshot(stream: id, matching: nil)
   }
 
-  private func cancelSnapshot(stream id: UInt64, matching stream: NWConnection?)
-  {
+  /// Test seam: `afterDecisionForTesting` runs after a cancellation claims a
+  /// stream whose write may not have started, before it closes write admission.
+  func cancelSnapshot(
+    stream id: UInt64,
+    matching stream: NWConnection?,
+    afterDecisionForTesting: (@Sendable () -> Void)? = nil
+  ) {
     guard role == .server else { return }
     let decision = state.withLock { s -> SnapshotCancellation in
       if let stream, s.outbound[id]?.stream !== stream { return .absent }
       guard var entry = s.outbound[id] else {
+        s.lifecycle.append("cancel \(id) untracked,closed=\(s.closed)")
         if !s.closed, !s.preCanceled.contains(id) {
           // Keep recent registration races without flushing unrelated
           // cancellations when the history reaches its capacity.
@@ -872,6 +1024,11 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
         }
         return .absent
       }
+      s.lifecycle.append(
+        "cancel \(id) object=\(ObjectIdentifier(entry.stream)),"
+          + "sent=\(entry.sent),finishing=\(entry.finishAfterSend),"
+          + "waiting=\(entry.continuation != nil)"
+      )
       if entry.finishAfterSend { return .absent }
       let continuation = entry.continuation
       entry.continuation = nil
@@ -891,17 +1048,20 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
       finishSnapshotStream(stream, finQueued: writeIncludesFIN)
     case let .afterSend(admission, id, stream, continuation):
       continuation?.resume(throwing: RSTTransportError.canceled)
+      afterDecisionForTesting?()
       guard !admission.cancel() else { return }
-      let pending = state.withLock { s -> NWConnection? in
+      let pending = state.withLock {
+        s -> (NWConnection, CheckedContinuation<Void, any Error>?)? in
         guard let entry = s.outbound[id], entry.stream === stream,
           entry.finishAfterSend, !entry.sent
         else { return nil }
         s.outbound.removeValue(forKey: id)
         s.outboundOrder.removeAll { $0 == id }
-        return stream
+        return (stream, entry.continuation)
       }
+      pending?.1?.resume(throwing: RSTTransportError.canceled)
       // No native write was submitted, so FIN has not been queued.
-      if let pending { finishSnapshotStream(pending, finQueued: false) }
+      if let pending { finishSnapshotStream(pending.0, finQueued: false) }
     }
   }
 
@@ -926,6 +1086,9 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     {
       state.outboundOrder.removeAll { $0 == oldest }
       if let entry = state.outbound.removeValue(forKey: oldest) {
+        state.lifecycle.append(
+          "snapshot \(oldest) evicted,object=\(ObjectIdentifier(entry.stream))"
+        )
         evicted.append(entry.stream)
       }
     }
@@ -988,6 +1151,15 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     }
     let (expired, recheck) = state.withLock { s -> ([NWConnection], Bool) in
       s.retireCheckScheduled = false
+      if s.lastRetireWait?.released != released
+        || s.lastRetireWait?.opened != opened
+      {
+        s.lastRetireWait = (released, opened)
+        s.lifecycle.append(
+          "retire check,released=\(String(describing: released)),"
+            + "opened=\(opened),retiring=\(s.retiring.count)"
+        )
+      }
       if let released, released >= opened {
         defer { s.retiring.removeAll() }
         return (s.retiring, false)
@@ -1104,12 +1276,10 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     from stream: NWConnection,
     into accumulator: SnapshotStreamAccumulator
   ) {
-    if traceSnapshotReads.load(ordering: .relaxed) {
-      state.withLock { s in
-        let id = ObjectIdentifier(stream)
-        guard s.inbound[id] != nil else { return }
-        s.snapshotReads[id, default: SnapshotReadProgress()].pending = true
-      }
+    state.withLock { s in
+      let id = ObjectIdentifier(stream)
+      guard s.inbound[id] != nil else { return }
+      s.snapshotReads[id, default: SnapshotReadProgress()].pending = true
     }
     stream.receive(
       minimumIncompleteLength: 1,
@@ -1119,22 +1289,26 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
         stream.cancel()
         return
       }
-      self.traceStream(
-        stream,
-        event:
-          "receive complete=\(isComplete),bytes=\(data?.count ?? 0),error=\(String(describing: error))"
-      )
-      if self.traceSnapshotReads.load(ordering: .relaxed) {
-        self.state.withLock { s in
-          let id = ObjectIdentifier(stream)
-          guard s.inbound[id] != nil else { return }
-          var progress = s.snapshotReads[id] ?? SnapshotReadProgress()
-          progress.callbacks += 1
-          progress.bytes += data?.count ?? 0
-          progress.pending = false
-          progress.complete = isComplete
-          s.snapshotReads[id] = progress
-        }
+      // Every chunk only when tracing; otherwise the first and the last.
+      if self.traceSnapshotReads.load(ordering: .relaxed) || isComplete
+        || error != nil || accumulator.bytes.isEmpty
+      {
+        self.traceStream(
+          stream,
+          event: "receive complete=\(isComplete),bytes=\(data?.count ?? 0),"
+            + "total=\(accumulator.bytes.count + (data?.count ?? 0)),"
+            + "error=\(String(describing: error))"
+        )
+      }
+      self.state.withLock { s in
+        let id = ObjectIdentifier(stream)
+        guard s.inbound[id] != nil else { return }
+        var progress = s.snapshotReads[id] ?? SnapshotReadProgress()
+        progress.callbacks += 1
+        progress.bytes += data?.count ?? 0
+        progress.pending = false
+        progress.complete = isComplete
+        s.snapshotReads[id] = progress
       }
       var accumulator = accumulator
       if error != nil {
@@ -1199,7 +1373,9 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
         as? NWProtocolQUIC.Metadata
     else { return }
     let limit = released + QUICOptions.concurrentSnapshotStreams
-    if metadata.localMaxStreamsUnidirectional < limit {
+    let current = metadata.localMaxStreamsUnidirectional
+    record("credit released=\(released),limit=\(limit),local=\(current)")
+    if current < limit {
       beforeUpdateForTesting?()
       metadata.localMaxStreamsUnidirectional = limit
     }
@@ -1211,6 +1387,7 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
         stream.cancel()
         return
       }
+      self.traceStream(stream, event: "inbound release,reject=\(reject)")
       if reject {
         self.discard(stream)
       } else {
@@ -1252,6 +1429,7 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
       s.closed = true
       s.termination =
         source + ": " + String(String(describing: error).prefix(256))
+      s.lifecycle.append("terminate \(s.termination ?? "")")
       let copy = s
       s.control = nil
       s.controlSends = [:]
@@ -1289,7 +1467,10 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
       + "nativeReason=\(String((applicationError?.reason ?? "none").prefix(256))),"
       + "nativeControlApplicationCode=\(String(describing: controlMetadata?.applicationError.code)),"
       + "nativeControlStreamCode=\(String(describing: controlMetadata?.streamApplicationErrorCode))"
-    state.withLock { $0.nativeTermination = native }
+    state.withLock { s in
+      s.nativeTermination = native
+      s.lifecycle.append("terminate native \(native)")
+    }
     for entry in snapshot.controlSends.values {
       entry.waiter?.resume(throwing: RSTTransportError.closed)
       entry.completion?.resume(throwing: RSTTransportError.closed)

@@ -41,6 +41,23 @@ enum QUICOptions {
     return parameters
   }
 
+  /// Flow-control and idle settings this side configured, recorded with a
+  /// connection's lifecycle diagnostics. Built from the values set here:
+  /// Network traps when reading a limit that was never set.
+  static func describe(
+    role: String,
+    idleTimeout: Duration,
+    initialMaxData: Int? = nil
+  ) -> String {
+    let limits =
+      role == "client"
+      ? "initialMaxStreamsUni=\(concurrentSnapshotStreams),"
+        + "initialMaxStreamDataUni=\(snapshotStreamWindow)"
+      : "initialMaxStreamsBidi=4"
+    return "role=\(role),idleTimeout=\(idleTimeout),\(limits),"
+      + "initialMaxData=\(initialMaxData.map(String.init) ?? "default")"
+  }
+
   /// Options for a server-initiated unidirectional stream within a group.
   static func unidirectionalStream() -> NWProtocolQUIC.Options {
     let options = NWProtocolQUIC.Options()

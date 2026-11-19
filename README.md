@@ -1262,5 +1262,3 @@ both devices. Scripted and hands-on USB shell checks with `vim`, `less`, `tmux`
 and `top` passed on the physical iPad. The user reported typing and scrolling
 equally responsive alongside Ghostty in the two-drawable Mac build.
 Battery consumption has not been measured.
-[The consolidated backlog](todo.md#deferred-terminal-feature-checks) lists deferred
-checks that need protocols or APIs Swiftty does not implement yet.
