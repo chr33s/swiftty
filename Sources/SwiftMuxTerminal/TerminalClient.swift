@@ -95,8 +95,8 @@ public final class TerminalClient {
 
   /// Runs until detach, cancellation or connection loss. A concurrent call
   /// fails; after completion, later calls return the original outcome.
-  /// The outer tty is restored
-  /// before returning, and before waiting on any service cleanup.
+  /// The outer tty is restored before returning and before waiting on any
+  /// service cleanup.
   public func run() async -> Outcome {
     guard !running else { return .failed("terminal client is already running") }
     if let outcome { return outcome }

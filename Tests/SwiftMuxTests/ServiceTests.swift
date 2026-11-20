@@ -577,9 +577,8 @@ struct FrameFairnessTests {
           while let event = try await c.nextEvent() {
             if case let .frame(f) = event, f.identity.pane == pane {
               counts.withLock { $0[i] += 1 }
-              // Let another update queue while both producers keep writing.
-              // Taking the queued frame on the next iteration releases its
-              // budget, with both leases competing for the next admission.
+              // Let another update queue; taking it next iteration releases
+              // its budget, so both leases compete for the next admission.
               try await Task.sleep(for: .milliseconds(20))
             }
           }

@@ -505,7 +505,6 @@ final class RoamingAppUITests: XCTestCase {
 }
 
 extension XCUIElement {
-  /// Whether this element currently receives typed text.
   fileprivate var hasFocusForTyping: Bool {
     (value(forKey: "hasKeyboardFocus") as? Bool) ?? false
   }

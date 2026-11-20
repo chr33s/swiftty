@@ -9,9 +9,8 @@ import SwifttyCore
 import Synchronization
 import TerminalSurface
 
-// The live terminal surfaces behind `TerminalScreen` (replacing the
-// former placeholder): one MainActor controller per opened
-// `TerminalScreenModel`, owning the display session and its backend.
+// Live surfaces behind `TerminalScreen`: one MainActor controller per
+// opened `TerminalScreenModel`, owning the display session and its backend.
 
 /// Real surfaces for `app`'s sessions: a roaming presentation fed by
 /// `RoamingClient`, or an ordinary SSH shell.

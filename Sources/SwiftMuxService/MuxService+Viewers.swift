@@ -554,7 +554,6 @@ extension MuxService {
     viewers[wsID]?.first { $0.client == client }
   }
 
-  /// Writes `viewer` back over its stored copy.
   func store(_ viewer: Viewer) {
     withViewer(viewer.client, in: viewer.workspace) { $0 = viewer }
   }

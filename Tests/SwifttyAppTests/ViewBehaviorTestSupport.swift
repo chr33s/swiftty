@@ -7,8 +7,6 @@ import Synchronization
 import Testing
 import TestSupport
 
-/// VoiceOver throttling and text caching, and render options surviving a
-/// configuration reload, in the macOS view.
 final class ReviewScrollEvent: NSEvent {
   var distance: CGFloat = 0
   override var scrollingDeltaX: CGFloat { distance }

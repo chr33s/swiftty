@@ -58,7 +58,6 @@ public struct DemoShell: Sendable {
 
   /// The line being edited.
   public private(set) var line: [Unicode.Scalar] = []
-  /// Cursor position in `line`.
   public private(set) var cursor = 0
   private var escape = EscapeState.none
   private var parameters: [UInt8] = []

@@ -55,7 +55,6 @@ public struct LeaseState: Sendable, Equatable {
 public enum AttentionServiceError: Error, Sendable, Equatable {
   /// Not reachable now; retrying may succeed.
   case offline(String)
-  /// Authentication or authorization failed.
   case unauthorized
   /// The service no longer knows this item, pane or workspace.
   case notFound

@@ -5,7 +5,6 @@ import Foundation
 // writes to the controlling app (`ClientCapabilities.clipboardRequests`)
 // and takes drags as input (`ServiceFeatures.dropTargets`).
 
-/// One clipboard representation.
 public struct MuxClipboardContent: Codable, Sendable, Hashable {
   public var mime: String
   public var data: Data

@@ -281,7 +281,7 @@ final class PaneRuntime: @unchecked Sendable {
 
   // MARK: Launch
 
-  /// Spawns the pane's process. Call on `queue`.
+  /// Call on `queue`.
   func launch(_ spec: LaunchSpec, launcher: PaneLauncher) throws(MuxError) {
     dispatchPrecondition(condition: .onQueue(queue))
     let p = try launcher.launch(

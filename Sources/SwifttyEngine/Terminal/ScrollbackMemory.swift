@@ -5,7 +5,6 @@ import Darwin
 /// Only regions returned by `map` may be reclaimed, reused or unmapped.
 /// Swift heap, `Array` and shared allocations never reach `madvise`.
 enum ScrollbackMemory {
-  /// Runtime VM page size.
   static let pageSize = Int(getpagesize())
 
   /// Whether the mapped (reclaimable, compressible) backend is validated

@@ -235,7 +235,7 @@ public enum ConfigLoader {
     return config
   }
 
-  /// Emits canonical JSON (also valid JSONC). Comments are intentionally not retained.
+  /// Emits canonical JSON (also valid JSONC), dropping comments.
   public static func encode(_ config: SwifttyConfig) throws -> Data {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [

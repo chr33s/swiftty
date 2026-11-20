@@ -141,7 +141,6 @@ public enum CompanionApplicationContext: Hashable, Sendable {
     }
   }
 
-  /// The single key under which the encoded context is stored.
   public static let dictionaryKey = "swiftty.companion.context"
 
   /// The `WCSession.updateApplicationContext` dictionary.

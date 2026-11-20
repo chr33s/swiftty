@@ -12,11 +12,11 @@ import TerminalSurface
 import Testing
 import TestSupport
 
-/// Runs against a real OpenSSH server and a real SwiftMux service with roaming
-/// (`swiftmux-agent --roaming-config`), set up
-/// by Scripts/test-real-ssh.sh (an apple/container Linux VM whose fixed
-/// helper path relays `bootstrap --stdio` to the Mac's agent). Skipped
-/// unless that script provides the environment.
+/// Real OpenSSH server plus a SwiftMux service with roaming
+/// (`swiftmux-agent --roaming-config`), set up by Scripts/test-real-ssh.sh
+/// (an apple/container Linux VM whose fixed helper path relays
+/// `bootstrap --stdio` to the Mac's agent). Skipped unless that script
+/// provides the environment.
 struct RealOpenSSHTests {
   struct Environment {
     var host: String

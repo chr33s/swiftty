@@ -7,8 +7,6 @@ import Synchronization
 import Testing
 import TestSupport
 
-/// VoiceOver throttling and text caching, and render options surviving a
-/// configuration reload, in the macOS view.
 extension ViewBehaviorTests {
   @Test(.enabled(if: hasMetal))
   func `accessibility point queries exclude the search overlay`() throws {

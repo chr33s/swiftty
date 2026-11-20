@@ -235,7 +235,6 @@ public struct ScreenSnapshot: Hashable, Sendable, Codable {
     self.lastFullyAppliedInputSequence = lastFullyAppliedInputSequence
   }
 
-  /// A blank screen of the given size.
   public static func blank(
     sessionID: SessionID,
     columns: Int,

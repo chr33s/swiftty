@@ -59,7 +59,6 @@ public enum WorkspaceIntent: Hashable, Sendable {
   case resume(SessionID, ResumeTarget?)
 }
 
-/// The user's answer to a `TrustPrompt`.
 public enum TrustDecision: Hashable, Sendable {
   case trust
   case reject
@@ -127,7 +126,6 @@ public final class TerminalScreenModel: Identifiable {
   public private(set) var sessionID: SessionID?
   /// Remote window title; display only, never interpreted.
   public private(set) var title = ""
-  /// Exit status of the shell, when it exited with one.
   public private(set) var exitStatus: Int32?
   /// Latest nonsecret failure reported by the roaming client.
   public private(set) var lastFailure: RoamingFailure?
@@ -269,7 +267,6 @@ public final class TerminalScreenModel: Identifiable {
     onChange?(self)
   }
 
-  /// A complete screen was installed.
   public func screenInstalled(at now: Date = .now) {
     lastScreenAt = now
     companionObservedAt = now
@@ -288,7 +285,6 @@ public final class TerminalScreenModel: Identifiable {
     connectionState.acceptsInput && capabilities.textInput
   }
 
-  /// This model as an iPhone companion observation.
   public var companionObservation: PhoneCompanionBridge.Observation {
     PhoneCompanionBridge.Observation(
       sessionToken: id,
@@ -315,7 +311,6 @@ public struct PasswordPrompt: Hashable, Sendable, Identifiable {
 }
 
 extension CompanionConnectionState {
-  /// Maps the direct-client state onto the companion's mirror.
   public init(_ state: ClientConnectionState) {
     self =
       switch state {
@@ -372,9 +367,7 @@ public final class RoamingAppModel {
     get { activeSession }
     set { if newValue == nil { close() } }
   }
-  /// A host-key decision awaiting the user.
   public var pendingTrust: TrustPrompt?
-  /// A password awaiting the user.
   public var pendingPassword: PasswordPrompt?
   /// Sheets presented above the root; while nonzero the topmost one
   /// presents connection prompts.
@@ -951,7 +944,6 @@ public final class RoamingAppModel {
 
   // MARK: Resume (non-secret session identifiers only)
 
-  /// The remembered roaming session for `host`, if any.
   public func resumableSessionID(for host: HostProfile) -> SessionID? {
     let selection = connectionSelection(for: host)
     guard hostMutationIsCurrent(selection.context) else { return nil }
@@ -1164,8 +1156,7 @@ public final class RoamingAppModel {
     for id in ids { cancelPassword(id) }
   }
 
-  /// Answers `pendingPassword`; `nil` cancels.
-  /// View callbacks pass the prompt id to reject stale answers.
+  /// `nil` cancels; the prompt id rejects stale answers.
   public func resolvePassword(_ password: String?, for id: UUID? = nil) {
     guard let prompt = pendingPassword, id == nil || id == prompt.id else {
       return
@@ -1209,7 +1200,6 @@ public final class RoamingAppModel {
 @Observable
 public final class TransferPausePolicy {
   public let gate = TransferPauseGate()
-  /// Whether bulk transfers are currently held.
   public private(set) var isPaused = false
   @ObservationIgnored
   private var pendingInput = false

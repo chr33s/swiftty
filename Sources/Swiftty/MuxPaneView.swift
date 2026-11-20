@@ -118,8 +118,6 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
   /// With live selection it is instead the presentation the selection's
   /// viewport coordinates refer to, and newer frames keep drawing.
   var frozen: MuxPresentation?
-  /// Versions of selected rows when first seen, and whether each was a
-  /// screen row then (only those are sent with a copy).
   /// The live selection in the service's addresses (the shared
   /// `PresentationSelection`), and the viewport selection it was last
   /// placed as: a different `selection` means the user changed it.

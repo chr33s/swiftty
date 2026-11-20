@@ -109,7 +109,6 @@ private final class ParkedConnection: RSTConnection, @unchecked Sendable {
     }
   }
 
-  /// Completes the parked send.
   func release() {
     lock.lock()
     let continuation = self.continuation

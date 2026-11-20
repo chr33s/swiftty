@@ -8,8 +8,7 @@ private func bytes(_ s: String) -> [UInt8] { Array(s.utf8) }
 
 private func text(_ b: [UInt8]) -> String { String(decoding: b, as: UTF8.self) }
 
-/// Feeds `input` through a demo shell into a terminal and returns the
-/// terminal, as the frontend would see it.
+/// Runs `input` through a demo shell into a terminal, as the frontend sees it.
 private func run(
   _ input: [String],
   columns: Int = 60,

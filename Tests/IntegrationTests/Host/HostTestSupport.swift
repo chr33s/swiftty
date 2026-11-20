@@ -259,7 +259,6 @@ final class TestClient: @unchecked Sendable {
     )
   }
 
-  /// Attaches and returns `Attached`.
   func attached(_ grant: BootstrapGrant) async throws -> ControlMessage.Attached
   {
     try await attach(grant)

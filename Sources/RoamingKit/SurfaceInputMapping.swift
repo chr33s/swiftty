@@ -131,7 +131,6 @@ public final class OrderedInputPump: Sendable {
     self.onResult = onResult
   }
 
-  /// Operations waiting for submission.
   public var queuedCount: Int { state.withLock { $0.queue.count } }
 
   /// Queues `input`; returns false (and reports a refusal) when the pump

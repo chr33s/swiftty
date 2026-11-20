@@ -302,7 +302,6 @@ public protocol HostTrustDecider: Sendable {
   func decide(_ request: HostTrustRequest) async -> HostTrustDecision
 }
 
-/// Decider backed by a closure.
 public struct ClosureHostTrustDecider: HostTrustDecider {
   let body: @Sendable (HostTrustRequest) async -> HostTrustDecision
   public init(

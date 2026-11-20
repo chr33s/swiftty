@@ -68,7 +68,6 @@ public struct HostConnectionDescriptor: Hashable, Sendable {
     self.hostKeys = hostKeys
   }
 
-  /// The expected fingerprints, for SSH host-key verification.
   public var expectedFingerprints: Set<String> { Set(hostKeys.map(\.sha256)) }
 
   public enum DecodingError: Error, Hashable, Sendable {

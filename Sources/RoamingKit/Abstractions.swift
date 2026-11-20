@@ -28,7 +28,6 @@ public enum RemoteBootstrapError: Error, Hashable, Sendable {
   /// The SSH host key is unknown or changed: automatic reconnection is
   /// blocked until the user decides (spec §5.1).
   case hostKeyRejected
-  /// SSH authentication failed.
   case authenticationFailed
   /// The selected client key could not be read (deleted, not on this
   /// device, or the device is locked). No credential was offered.

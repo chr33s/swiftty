@@ -5,7 +5,6 @@ import Foundation
 /// behaviour: they isolate on-disk state and expose the visible terminal
 /// text to UI automation.
 public enum UITesting {
-  /// Whether the app was launched by the UI test suite.
   public static let isEnabled = ProcessInfo.processInfo.arguments.contains("-ui-testing")
 
   /// A fresh, empty state directory for this launch (saved hosts, trusted

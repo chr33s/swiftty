@@ -491,8 +491,8 @@ func load(
   var frames = 0
   if visible > 0 {
     let target = workspaces[0]
-    // Reuse other workspaces' panes is not possible; attach to one and
-    // subscribe its single pane, the remaining load runs detached.
+    // Other workspaces' panes cannot be reused: attach to one, subscribe its
+    // single pane, and run the remaining load detached.
     try await show(
       c,
       target,

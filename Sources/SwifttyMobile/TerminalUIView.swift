@@ -155,7 +155,6 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
   var momentumModifiers: KeyModifiers = []
   var pinchStartSize: CGFloat = 0
 
-  /// Pointer.
   /// Last cell the pointer hovered over.
   var hoverCell: (column: Int, row: Int)?
   var hoverPoint: CGPoint?
@@ -178,7 +177,6 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
   /// The cursor blinks (DECSCUSR / mode 12, or `cursor-style-blink`).
   private var cursorBlinks = false
 
-  /// Accessibility.
   /// UIKit's text-input defaults must not turn the container into a
   /// single element that hides its reading element and find controls.
   override public var isAccessibilityElement: Bool {

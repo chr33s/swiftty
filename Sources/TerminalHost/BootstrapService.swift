@@ -23,7 +23,6 @@ public struct BootstrapService: Sendable {
     return Self.envelope(response)
   }
 
-  /// Decodes and validates a request envelope.
   public static func decodeRequest(
     _ bytes: [UInt8]
   ) -> Result<BootstrapRequest, BootstrapErrorCode> {

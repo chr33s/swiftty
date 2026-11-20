@@ -4,8 +4,7 @@ import ObjectiveC
 
 /// Reads an accessibility attribute through the legacy informal protocol.
 /// Attributes such as `AXEnhancedUserInterface` have no NSAccessibility
-/// protocol method, so send the selector directly rather than reference the
-/// deprecated declaration.
+/// method, so the selector is sent directly, avoiding the deprecated API.
 func legacyAccessibilityValue(
   _ object: NSObject,
   _ attribute: NSAccessibility.Attribute
@@ -21,7 +20,6 @@ func legacyAccessibilityValue(
     .takeUnretainedValue()
 }
 
-/// Writes an accessibility attribute through the legacy informal protocol.
 func setLegacyAccessibilityValue(
   _ object: NSObject,
   _ value: Any?,

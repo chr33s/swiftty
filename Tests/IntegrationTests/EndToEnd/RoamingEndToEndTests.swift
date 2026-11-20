@@ -375,7 +375,6 @@ struct RoamingEndToEndTests {
     _ = await client.submit(.key(SemanticKey(.enter)))
     try await waitFor("second output") { screen(display).contains("second-4") }
     let text = screen(display)
-    // Each command ran exactly once.
     #expect(text.components(separatedBy: "first-2").count - 1 == 1)
     #expect(text.components(separatedBy: "second-4").count - 1 == 1)
 

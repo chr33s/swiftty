@@ -124,6 +124,5 @@ public struct PlatformProfile: Hashable, Sendable {
     }
   }
 
-  /// The profile of the running build.
   public static var current: PlatformProfile { profile(for: .current) }
 }

@@ -242,7 +242,6 @@ extension TerminalState {
     hyperlinks.closedHead = 0
   }
 
-  /// Switches the pen's link.
   private mutating func setLink(_ id: UInt32) {
     penLinkWillChange(to: id)
     cursor.pen.link = id

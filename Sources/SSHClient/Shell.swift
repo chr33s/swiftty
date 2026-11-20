@@ -86,9 +86,8 @@ public final class SSHShellChannel: Sendable {
     }
   }
 
-  /// Closes the channel. Idempotent.
-  /// If the peer does not acknowledge within five seconds, closes SSH too.
-  /// A failed close on an activated channel also closes SSH.
+  /// Closes the channel. Idempotent. SSH closes too if the peer does not
+  /// acknowledge within five seconds, or if closing an activated channel fails.
   public func close() async {
     channel.close(promise: nil)
     try? await channel.closeFuture.get()
@@ -313,10 +312,9 @@ extension SSHConnection {
   ///   - initialReadCredit: nonnegative bytes of output the caller is ready to
   ///     accept before its first `grantReadCredit`. Zero starts paused.
   ///   - setupTimeout: Total bound on channel acceptance, PTY, and shell
-  ///     replies. Aborting before acceptance closes SSH. After acceptance
-  ///     the child closes. SSH also closes if its close acknowledgement
-  ///     takes more than five seconds
-  ///     (`ChannelCloseHandler.acknowledgementTimeout`).
+  ///     replies. Aborting before acceptance closes SSH; after it the child
+  ///     closes, and SSH too if the close acknowledgement takes more than
+  ///     five seconds (`ChannelCloseHandler.acknowledgementTimeout`).
   ///   - onEvent: Called on the event loop; must return quickly.
   /// - Returns: The accepted channel after PTY and shell setup succeed.
   /// - Throws: An error for invalid dimensions, cancellation, setup timeout,

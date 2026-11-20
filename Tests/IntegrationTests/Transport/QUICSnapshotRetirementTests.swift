@@ -83,10 +83,10 @@ extension QUICTransportTests {
         }
         return false
       } catch let timeout as TimedOut {
-        // RFC 9000 §4: all streams in this direction share connection credit.
-        // A deliberately held reader can exhaust it before retirement overflow.
-        // This branch is allowed only while that reader is held. Once it resumes,
-        // every remaining snapshot must meet the ordinary two-second deadline.
+        // RFC 9000 §4: streams in this direction share connection credit,
+        // which a held reader can exhaust before retirement overflow. Allowed
+        // only while that reader is held; afterwards every snapshot must meet
+        // the two-second deadline.
         guard gate.isHolding, !client.isClosed, !server.isClosed else {
           throw timeout
         }

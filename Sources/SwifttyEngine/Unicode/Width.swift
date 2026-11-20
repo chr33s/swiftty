@@ -1,6 +1,4 @@
 /// Terminal column widths for Unicode scalars (wcwidth semantics).
-///
-/// Lookups use the generated two-stage table in `Tables.swift`.
 public enum UnicodeWidth {
   /// Width of a printable scalar: 0 (combining/format), 1, or 2 (wide).
   /// C0/C1 controls are the parser's business and report 1 here.

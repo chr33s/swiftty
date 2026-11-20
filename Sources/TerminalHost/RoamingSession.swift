@@ -266,7 +266,6 @@ public final class RoamingSession: @unchecked Sendable {
     }
   }
 
-  /// The writer currently authorized for input, if any.
   public var writerID: WriterID? { queue.sync { ledger.writerID } }
 
   /// Installs `writer` for subsequent input (bootstrap create/resume). A
@@ -1005,10 +1004,8 @@ public final class RoamingSession: @unchecked Sendable {
         text: chunks[index]
       )
     )
-    // The next chunk waits until this one has left: the control queue
-    // never holds more than one chunk, so input and screen
-    // acknowledgements are delayed by at most one chunk and a large copy
-    // cannot overflow the queue's byte limit.
+    // One chunk in the control queue at a time: input and screen acks wait
+    // at most one chunk, and a large copy cannot overflow the byte limit.
     a.whenControlIdle { [weak self] in
       self?.queue
         .async { [weak self] in
@@ -1025,11 +1022,9 @@ public final class RoamingSession: @unchecked Sendable {
     }
   }
 
-  /// Splits on scalar boundaries into pieces whose JSON encoding stays
-  /// within `ControlMessage.maxCopyChunkBytes`: escaped characters (a
-  /// newline, quote or backslash takes two bytes, another control
-  /// character six) count at their encoded size, so a chunk always fits
-  /// one control record.
+  /// Splits on scalar boundaries into pieces whose JSON encoding fits
+  /// `ControlMessage.maxCopyChunkBytes`. Escapes count at encoded size
+  /// (newline, quote, backslash: 2 bytes; other controls: 6).
   static func chunks(_ text: String) -> [String] {
     var out: [String] = []
     var current = String.UnicodeScalarView()

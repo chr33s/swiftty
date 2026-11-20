@@ -15,8 +15,6 @@ extension Duration {
   }
 }
 
-/// The single concrete connection to the SwiftMux service.
-///
 /// Exactly one bounded event consumer (`nextEvent`). Frames are delivered
 /// one per pane at a time: the service sends the next only after this
 /// connection acknowledges the previous, which happens when the consumer
@@ -26,8 +24,8 @@ extension Duration {
 /// Each input record has a five-second acknowledgment deadline. Missing one
 /// fails the channel and releases its lease; transmitted input is not replayed.
 /// Commands share 64 slots and four MiB of payload charges through dispatch
-/// and wire replies. Cancelling a
-/// caller or ending its wait does not refund a transmitted command slot.
+/// and wire replies. Cancelling a caller or ending its wait does not refund
+/// a transmitted command slot.
 public actor MuxConnection {
   public nonisolated let queue: DispatchSerialQueue
   public nonisolated var unownedExecutor: UnownedSerialExecutor {
@@ -1403,7 +1401,6 @@ public actor MuxConnection {
     failPendingInputs(MuxError(.notAttached))
   }
 
-  /// How long `detach` waits for the service.
   private var detachTimeout: Duration = .seconds(2)
 
   /// Shortens the detach bound (tests).

@@ -142,8 +142,8 @@ struct ChannelCloseTests {
           server.state.lastExecCommand.withLock { $0 == "wait-forever" }
         }
       )
-      // The first close timer must be disarmed; exec's stdin EOF must not arm
-      // one.
+      // The first close timer must be disarmed; exec's stdin EOF must
+      // not arm one.
       try await Task.sleep(for: .milliseconds(5200))
       #expect(connection.isActive)
       #expect(!finished.withLock { $0 })
@@ -196,8 +196,7 @@ struct ChannelCloseTests {
         try await waitUntil(timeout: .seconds(7)) { finished.withLock { $0 } }
       )
       #expect(!connection.isActive)
-      // Release the old implementation as well: no test-owned close task
-      // escapes.
+      // Also release the old implementation: no close task escapes.
       await connection.close()
       await closing.value
     } catch {

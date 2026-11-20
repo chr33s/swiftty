@@ -110,11 +110,7 @@ public enum TerminalGeometry {
 // MARK: - Key-binding actions
 
 public enum ActionDispatch {
-  /// - Parameters:
-  ///   - action: Requested keybinding action.
-  ///   - rows: Visible rows.
-  ///   - history: Available history rows.
-  /// - Returns: Viewport lines (positive towards history), or nil for other actions.
+  /// Viewport lines (positive towards history), or nil for non-scroll actions.
   public static func viewportDelta(
     for action: KeyAction,
     rows: Int,

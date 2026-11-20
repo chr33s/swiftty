@@ -149,15 +149,12 @@ final class ImpairedLink: Sendable {
 
   // MARK: Test controls
 
-  /// Enables or pauses the profile's random kills.
   func setRandomKills(_ on: Bool) { state.withLock { $0.randomKills = on } }
 
-  /// Corrupts the next delta the host sends.
   func corruptNextDelta(_ kind: Corruption) {
     state.withLock { $0.corrupt = kind }
   }
 
-  /// Kills the connection at the next matching point.
   func killAt(_ point: KillPoint) { state.withLock { $0.killAt = point } }
 
   /// Paces host-to-client control records at `interval` each (a slow
@@ -575,7 +572,6 @@ final class ImpairedConnector: RSTConnector {
     return end
   }
 
-  /// Abruptly ends the current connection.
   func sever() { current.withLock { $0 }?.sever() }
 }
 

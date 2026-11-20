@@ -17,13 +17,11 @@ let loopbackIdentity: HostIdentity = {
   } catch { fatalError("identity generation failed: \(error)") }
 }()
 
-/// Runs `body`, recording both ends' diagnostics only if it throws:
-/// termination and native application errors, stream credit, flow-control
-/// settings, admission and retirement state, and each connection's always-on
-/// lifecycle log (bounded, monotonic timestamps). Release builds on CI have
-/// seen loopback connections close mid-transfer; this names which side ended
-/// the connection, why, and in what order. The elapsed time is reported beside
-/// any `TimedOut` deadline carried by the error.
+/// Runs `body`; if it throws, records both ends' diagnostics (errors,
+/// stream credit, flow control, admission/retirement state, lifecycle log)
+/// and elapsed time beside any `TimedOut` deadline. CI release builds have
+/// seen loopback connections close mid-transfer; this shows which side
+/// ended it, why, and in what order.
 func withConnectionDiagnostics<T>(
   _ label: String = "body",
   client: QUICRSTConnection,

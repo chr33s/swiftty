@@ -20,8 +20,7 @@ extension DisplayAccommodations {
     )
   }
 
-  /// Posted on `NSWorkspace.shared.notificationCenter` when any of them
-  /// changes.
+  /// Posted on `NSWorkspace.shared.notificationCenter` when any changes.
   public static let didChangeNotification = NSWorkspace
     .accessibilityDisplayOptionsDidChangeNotification
 }

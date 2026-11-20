@@ -59,7 +59,6 @@ public struct Parser: ~Copyable {
   /// In `controlMode`: the next byte starts a line.
   private var controlModeLineStart = true
 
-  // UTF-8 decoding state.
   private var codepoint: UInt32 = 0
   private var utf8Remaining = 0
   private var utf8Minimum: UInt32 = 0

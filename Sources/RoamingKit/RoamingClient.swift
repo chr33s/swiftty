@@ -341,7 +341,6 @@ public actor RoamingClient {
     send(.viewport(epoch: epoch, lines: Int64(min(max(lines, -bound), bound))))
   }
 
-  /// Whether the attached host can present history windows.
   public var supportsHistoryViewport: Bool {
     epoch != nil && hostFeatures.contains(.historyViewport)
   }

@@ -303,7 +303,6 @@ struct TerminalSurfacePlaceholder: View {
 }
 
 extension ClientConnectionState {
-  /// User-facing state name.
   public var displayName: LocalizedStringResource {
     switch self {
     case .idle: .localized("Not connected")

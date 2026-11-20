@@ -31,10 +31,10 @@ struct StorageBoundsTests {
       try? errors.close()
       try? reader.close()
     }
-    // Debugger hosts may hold a trap instead of letting the child exit.
-    // Read finite chunks from a regular file; stop once its diagnostic lands.
-    // The deadline only bounds a missing diagnostic; loaded CI runners have
-    // taken over five seconds to launch the probe and reach its trap.
+    // Debugger hosts may hold a trap instead of letting the child exit, so
+    // read a regular file in chunks until the diagnostic lands. The deadline
+    // only bounds a missing diagnostic; loaded CI runners have taken over
+    // five seconds to reach the trap.
     var diagnostic = Data()
     _ = try TestCommand.run(
       command.path,

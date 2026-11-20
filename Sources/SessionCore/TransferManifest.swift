@@ -72,7 +72,6 @@ public struct TransferManifest: Hashable, Sendable, Codable, Identifiable {
   /// Lowercase hex SHA-256 of the staged source (uploads). Downloads
   /// fill it in only once the complete file is verified.
   public var sourceSHA256: String?
-  /// Highest contiguous acknowledged offset.
   public var acknowledgedOffset: UInt64
   /// Lowercase hex SHA-256 of bytes `0 ..< acknowledgedOffset` as
   /// written locally (downloads); checked again on resume.
@@ -119,7 +118,6 @@ public struct TransferManifest: Hashable, Sendable, Codable, Identifiable {
     acknowledgedOffset <= sourceSize && restartCount >= 0
   }
 
-  /// Encodes the manifest for durable, non-secret storage.
   public func encoded() throws -> Data {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]

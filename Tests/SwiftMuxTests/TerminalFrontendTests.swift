@@ -1148,7 +1148,6 @@ struct TerminalClientTests {
   }
 }
 
-/// The composed status line (bottom row) as text.
 private func statusText(_ screen: ScreenBuffer) -> String {
   (0 ..< screen.columns).map { screen[$0, screen.rows - 1].text }.joined()
 }

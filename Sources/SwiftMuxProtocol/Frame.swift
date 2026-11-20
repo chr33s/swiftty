@@ -412,9 +412,9 @@ public struct PaneFrame: Codable, Sendable, Equatable {
   }
 }
 
-/// Decides which owned frame is visible. Nothing installs while
-/// unattached. A stale server instance, attachment, geometry revision, layout revision, or older frame
-/// revision never replaces a newer installed frame. A frame with the
+/// Decides which owned frame is visible. Nothing installs while unattached.
+/// A stale server instance, attachment, geometry or layout revision, or older
+/// frame revision never replaces a newer installed frame. A frame with the
 /// installed revision is accepted again: the service resends a complete
 /// frame on resubscription without advancing the revision.
 public struct FrameInstallation: Sendable, Equatable {
@@ -445,7 +445,6 @@ public struct FrameInstallation: Sendable, Equatable {
     return true
   }
 
-  /// Keeps only frames of `attachment`.
   public mutating func retain(attachment: AttachmentID) {
     visible = visible.filter { $0.value.attachment == attachment }
   }

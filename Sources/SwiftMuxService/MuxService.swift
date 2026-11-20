@@ -1193,7 +1193,6 @@ public actor MuxService {
     locate(pane: pane).flatMap { workspaces[$0.0].id == workspace ? $0 : nil }
   }
 
-  /// A pane of the attached workspace.
   func attachedRuntime(
     _ pane: PaneID,
     in workspace: WorkspaceID,

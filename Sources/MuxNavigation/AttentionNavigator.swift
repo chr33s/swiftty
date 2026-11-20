@@ -192,7 +192,6 @@ public final class AttentionNavigator {
     await activate(preview, takeover: nil, generation: generation)
   }
 
-  /// The user confirmed the takeover offer.
   public func confirmTakeover() async {
     guard case let .confirmTakeover(offer) = state else { return }
     await activate(

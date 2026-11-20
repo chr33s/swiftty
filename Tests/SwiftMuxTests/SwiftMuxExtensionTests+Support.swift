@@ -5,7 +5,6 @@ import SwiftMuxProtocol
 import Synchronization
 import Testing
 
-/// Helpers shared by the SwiftMuxExtensionTests files.
 final class LeakFlag: @unchecked Sendable { var value = false }
 
 func create(_ c: MuxConnection) async throws -> (WorkspaceID, PaneID) {

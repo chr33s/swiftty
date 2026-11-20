@@ -1013,7 +1013,6 @@ struct RendererTests {
     #expect(
       frame.inkCount(column: 1, row: 0, renderer: renderer, background: bg) == 0
     )  // space
-    // Red background cell.
     let cw = Int(renderer.cellSize.width)
     let ch = Int(renderer.cellSize.height)
     let red = frame.pixel(8 + 2 * cw + cw / 2, 8 + ch / 2)
@@ -1027,7 +1026,6 @@ struct RendererTests {
     #expect(
       frame.inkCount(column: 7, row: 0, renderer: renderer, background: bg) > 10
     )  // é cluster
-    // Block cursor at column 8.
     let cursor = frame.pixel(8 + 8 * cw + cw / 2, 8 + ch / 2)
     #expect(cursor.r > 200 && cursor.g > 200 && cursor.b > 200)
   }

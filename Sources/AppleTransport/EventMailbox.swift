@@ -3,13 +3,12 @@ import Synchronization
 
 /// Serializes `RSTConnectionHandler` callbacks for one connection.
 ///
-/// Events are delivered one at a time, in order, by a single drain task;
-/// a handler call finishes before the next starts. Control bytes carry a
-/// completion that the transport uses to issue its next read, so a slow
-/// `onControl` stops reading (backpressure) instead of queueing. Complete
-/// snapshots retain their QUIC stream credit until delivery completes, so
-/// the transport bounds their count. Preserve every admitted payload: stream
-/// arrival order does not establish which encoded screen revision is newest.
+/// A single drain task delivers events in order; each handler call finishes
+/// before the next starts. Control bytes carry a completion the transport
+/// uses to issue its next read, so a slow `onControl` applies backpressure
+/// instead of queueing. Complete snapshots hold their QUIC stream credit
+/// until delivered, which bounds their count. Preserve every admitted
+/// payload: stream arrival order does not say which revision is newest.
 final class EventMailbox: Sendable {
   enum Event: Sendable {
     case control([UInt8], done: @Sendable () -> Void)
@@ -34,8 +33,8 @@ final class EventMailbox: Sendable {
     }
   }
 
-  /// Installs the handler and starts delivery. Only the first call counts.
-  /// Returns false on a repeated call.
+  /// Installs the handler and starts delivery. Only the first call counts;
+  /// later calls return false.
   @discardableResult
   func start(_ handler: RSTConnectionHandler) -> Bool {
     let installed = state.withLock { s -> Bool in
@@ -48,8 +47,8 @@ final class EventMailbox: Sendable {
     return installed
   }
 
-  /// Queues an event. Events after `.closed` are dropped (their completion
-  /// still runs so no reader waits forever).
+  /// Queues an event. Events after `.closed` are dropped, but their
+  /// completion still runs so no reader waits forever.
   func post(_ event: Event) {
     let dropped = state.withLock { s -> Bool in
       if s.closePosted { return true }

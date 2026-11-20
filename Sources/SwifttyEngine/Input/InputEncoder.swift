@@ -231,8 +231,6 @@ public enum InputEncoder {
       appendCSI(out: &out, params, 0x75)
     case let .bytes(b): out.append(contentsOf: b)
     case let .key(event):
-      // Kitty encoding needs "disambiguate" or "all keys"; other flags alone
-      // only refine those.
       if isKittyKeyboardActive(keyboardFlags) {
         return encodeKittyKey(
           event,

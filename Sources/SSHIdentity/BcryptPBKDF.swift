@@ -128,7 +128,6 @@ struct Blowfish {
 /// (spec.ssh-identity.md §6.4). Callers bound `rounds` before calling.
 enum BcryptPBKDF {
   static let hashSize = 32
-  /// "OxychromaticBlowfishSwatDynamite"
   private static let magic = Array("OxychromaticBlowfishSwatDynamite".utf8)
 
   enum Failure: Error, Equatable { case invalidParameters, cancelled }

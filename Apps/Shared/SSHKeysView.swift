@@ -739,7 +739,6 @@ private struct KeyActionsSection: View {
   }
 }
 
-/// Generate or import.
 enum KeyCreationMode: String, Identifiable, Hashable {
   case generate
   case importKey

@@ -1238,7 +1238,6 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     }
   }
 
-  /// Prompts for a workspace name.
   func beginRenamingWorkspace() {
     guard let window, attachedWorkspace != nil else { return }
     let alert = NSAlert()

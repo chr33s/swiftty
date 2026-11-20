@@ -78,7 +78,6 @@ public struct TokenBucket: Sendable {
     self.tokens = self.capacity
   }
 
-  /// Takes one token if available.
   public mutating func take(now: ContinuousClock.Instant = .now) -> Bool {
     if let last {
       let elapsed = last.duration(to: now)

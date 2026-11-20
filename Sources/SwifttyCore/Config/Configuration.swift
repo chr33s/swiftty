@@ -15,7 +15,6 @@ public struct ColorSet: Sendable, Equatable {
 
   public init() {}
 
-  /// Applies this layer on top of `base`.
   public func applied(to base: Palette) -> Palette {
     var p = base
     p.foreground = foreground ?? p.foreground
@@ -187,7 +186,6 @@ public struct ThemeSelection: Sendable, Equatable {
 public struct Configuration: Sendable, Equatable {
   /// Maximum UTF-8 bytes in a configuration file.
   public static let maxFileBytes = 1024 * 1024
-  /// Fonts.
   /// Supported point sizes for configuration and interactive zoom.
   public static let fontSizeRange: ClosedRange<Double> = 1 ... 200
   /// Bounds a programmatic point size; NaN uses the default 13 pt.
@@ -603,13 +601,13 @@ public struct Configuration: Sendable, Equatable {
     return colors.applied(to: palette)
   }
 
-  /// Theme names that could not be loaded (missing, unreadable or invalid).
   /// Everything to report about this configuration, one line each.
   public var problems: [String] {
     diagnostics + missingThemes.map { "theme unavailable: \($0)" }
       + missingFontStyles.map { "font style unavailable: \($0)" }
   }
 
+  /// Theme names that could not be loaded (missing, unreadable or invalid).
   public var missingThemes: [String] {
     guard let theme else { return [] }
     return Set([theme.light, theme.dark]).sorted()

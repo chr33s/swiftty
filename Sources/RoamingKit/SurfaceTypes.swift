@@ -72,7 +72,6 @@ public enum InputRefusal: Hashable, Sendable {
   case backpressure
   /// Empty or over the size limits.
   case invalid
-  /// The session ended or was closed.
   case closed
 }
 

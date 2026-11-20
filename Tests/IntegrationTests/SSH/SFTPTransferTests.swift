@@ -76,7 +76,6 @@ struct TransferFixture {
       .sorted() ?? []
   }
 
-  /// Opens a fresh connection and SFTP client.
   func session() async throws -> (SSHConnection, SFTPClient) {
     let connection = try await server.connect()
     do { return (connection, try await connection.openSFTP()) } catch {

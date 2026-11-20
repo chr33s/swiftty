@@ -13,7 +13,6 @@ public enum OpenSSHImportError: Error, Hashable, Sendable {
   case unsupportedFormat(String)
   /// A passphrase-protected key, opened without a passphrase.
   case passphraseRequired
-  /// The passphrase does not decrypt the key.
   case wrongPassphrase
   /// An encryption cipher other than the AES modes in §6.4.
   case unsupportedCipher(String)

@@ -443,7 +443,6 @@ extension TerminalState {
     let target = min(linear(p), end)
     let from = linear(cursorPoint)
     guard target != from else { return 0 }
-    // Count characters between the two positions.
     var moves = 0
     for i in min(target, from) ..< max(target, from) {
       let row = start.row + i / columns

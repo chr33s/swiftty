@@ -182,10 +182,9 @@ extension SSHConnection {
   /// Runs `command` on a no-PTY exec channel. `command` must be a fixed
   /// constant: never interpolate passwords, tokens, paths or session
   /// identifiers into it (spec §5.1); pass structured data via `stdin`.
-  /// The timeout includes channel acceptance. Aborting before acceptance
-  /// closes SSH. Once accepted, the exec channel closes; SSH also closes if
-  /// the peer does not acknowledge the close within five seconds.
-  /// A failed close on an activated channel also closes SSH.
+  /// The timeout includes channel acceptance; aborting before acceptance
+  /// closes SSH. Once accepted, the exec channel closes, and SSH closes too
+  /// if that close fails or is not acknowledged within five seconds.
   public func execute(
     command: String,
     stdin: [UInt8] = [],

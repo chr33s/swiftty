@@ -213,7 +213,7 @@ struct InputCancellationTests {
         retired,
         "ACK processing must enforce the oldest absolute deadline and fail the channel"
       )
-      // Collect deliberately delayed baseline waiters without leaving timers or tasks alive.
+      // Collect delayed baseline waiters without leaving timers or tasks alive.
       if !retired { await connection.close() }
       await #expect { try await first.value } throws: {
         ($0 as? MuxError)

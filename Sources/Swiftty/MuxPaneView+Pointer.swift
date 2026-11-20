@@ -10,7 +10,6 @@ import SwifttyMac
 extension MuxPaneView {
   var features: ServiceFeatures { controller?.features ?? [] }
 
-  /// Modes of the frame on screen.
   var modes: SupportedViewModes { presented?.frame.modes ?? [] }
 
   /// The program asked for mouse reports and the service can encode them.

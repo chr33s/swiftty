@@ -31,8 +31,7 @@ public struct QUICRSTConnector: Sendable {
     self.idleTimeout = idleTimeout
   }
 
-  /// Connects and returns an `RSTConnection`; it also conforms to
-  /// `RSTPathEvents`.
+  /// The returned connection also conforms to `RSTPathEvents`.
   public func connect(
     host: String,
     port: UInt16,

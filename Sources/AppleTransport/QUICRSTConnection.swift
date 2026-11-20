@@ -150,7 +150,6 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     var preCanceled: [UInt64] = []
     var inbound: [ObjectIdentifier: NWConnection] = [:]
     var snapshotReads: [ObjectIdentifier: SnapshotReadProgress] = [:]
-    /// Always recorded; see `LifecycleLog`.
     var lifecycle = LifecycleLog()
     /// Last retirement wait recorded, so the 100 ms recheck logs only changes.
     var lastRetireWait: (released: Int?, opened: Int)?
@@ -214,7 +213,6 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
   let settings: String
 
   var preCanceledSnapshotCount: Int { state.withLock { $0.preCanceled.count } }
-  /// Application error code for a rejected inbound stream.
   static let streamRejectedCode: UInt64 = 0x11
 
   let role: Role
@@ -273,7 +271,6 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     }
   }
 
-  /// Negotiated ALPN of the connection group, if known.
   public var negotiatedALPN: String? {
     (group.metadata(definition: NWProtocolQUIC.definition)
       as? NWProtocolQUIC.Metadata)?
@@ -648,10 +645,9 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     }
   }
 
-  /// At most eight unfinished sends (including stream creation and native
-  /// writes whose callers have cancelled) are admitted.
-  /// Additional sends fail with `resourceLimit`; completed stream history has
-  /// a separate bound for later cancellation.
+  /// Admits at most eight unfinished sends, including stream creation and
+  /// native writes whose callers cancelled; more fail with `resourceLimit`.
+  /// Completed stream history is bounded separately.
   public func sendSnapshot(_ payload: [UInt8], stream id: UInt64) async throws {
     try await sendSnapshot(payload, stream: id, beforeRegistration: nil)
   }
@@ -1095,14 +1091,13 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     return evicted
   }
 
-  /// Finishes a superseded stream with FIN, after the current Network
-  /// callback returns, and retires its connection wrapper later.
+  /// Finishes a superseded stream with FIN after the current Network callback
+  /// returns, and retires its connection wrapper later.
   ///
-  /// Network reports no peer acknowledgment, and cancelling a stream while
-  /// the peer is still reading it can abort the connection group. The stream
-  /// therefore waits in `retiring` until the peer has released every stream
-  /// opened so far, `maxTrackedOutbound` newer streams retire, or the
-  /// connection closes.
+  /// Network reports no peer acknowledgment, and cancelling a stream the peer
+  /// is still reading can abort the group. So the stream waits in `retiring`
+  /// until the peer has released every stream opened so far,
+  /// `maxTrackedOutbound` newer streams retire, or the connection closes.
   private func finishSnapshotStream(_ stream: NWConnection, finQueued: Bool) {
     queue.async { [weak self] in
       guard let self else {

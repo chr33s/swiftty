@@ -31,7 +31,6 @@ enum LocalConnectionInfo {
 
   // MARK: SSH host public keys
 
-  /// Where sshd keeps its host keys.
   static let hostKeyDirectory = URL(fileURLWithPath: "/etc/ssh")
 
   /// Fingerprints of the SSH server's configured host *public* keys, in

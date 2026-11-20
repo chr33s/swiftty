@@ -46,7 +46,6 @@ struct GraphemeTable: ~Copyable {
     return scalars.span.extracting(start ..< start + count)
   }
 
-  /// Scalars in `cell`'s content.
   @inline(__always)
   func scalarCount(ofCell cell: Cell) -> Int {
     cell.isGrapheme ? scalarCount(cell.glyph) : 1
@@ -124,7 +123,6 @@ struct GraphemeTable: ~Copyable {
     return UInt32(entries.count - 1)
   }
 
-  /// Last scalar of a cell's content.
   func lastScalar(of cell: Cell) -> UInt32 {
     guard cell.isGrapheme else { return cell.glyph }
     let entry = entries[Int(cell.glyph)]

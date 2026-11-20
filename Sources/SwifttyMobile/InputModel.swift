@@ -267,7 +267,6 @@ public struct StickyModifiers: Equatable, Sendable {
   public mutating func reset() { self = StickyModifiers() }
 }
 
-/// Keys on the input accessory bar.
 public enum AccessoryKey: Hashable, Sendable {
   case escape, control, alt, tab
   case left, down, up, right
@@ -306,7 +305,6 @@ public enum AccessoryKey: Hashable, Sendable {
     }
   }
 
-  /// What VoiceOver says for the key.
   public var accessibilityName: String {
     switch self {
     case .escape: "Escape"

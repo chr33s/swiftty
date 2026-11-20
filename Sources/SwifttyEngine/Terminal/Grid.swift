@@ -20,7 +20,7 @@ public struct Grid: ~Copyable {
 
   var storage: GridStorage
 
-  /// Creates a blank grid. Nonpositive dimensions become one.
+  /// Nonpositive dimensions become one.
   /// History cell allocation is lazy, in chunks of at most 64 usable rows;
   /// on supported platforms history uses reclaimable, compressible mappings.
   /// - Complexity: O(rows * columns + historyCapacity).
@@ -163,7 +163,6 @@ public struct Grid: ~Copyable {
     }
   }
 
-  /// Whether row `y` soft-wraps into row `y + 1`.
   @inline(__always)
   public func isWrapped(_ y: Int) -> Bool {
     checkRow(y)
@@ -176,7 +175,6 @@ public struct Grid: ~Copyable {
     storage.wrapped[Int(storage.rowMap[y])] = value
   }
 
-  /// Semantic mark of row `y` (OSC 133).
   @inline(__always)
   public func mark(_ y: Int) -> RowMark {
     checkRow(y)
@@ -209,7 +207,6 @@ public struct Grid: ~Copyable {
       : storage.marks[p] & ~GridStorage.inputLineBit
   }
 
-  /// Clears row `y`'s mark and input-line flag.
   public mutating func clearMarks(_ y: Int) {
     defer { _checkInvariants() }
     checkRow(y)
@@ -725,7 +722,6 @@ public struct Grid: ~Copyable {
     }
   }
 
-  /// Rotates rowMap[lo..<hi] left by k.
   private func rotate(_ lo: Int, _ hi: Int, by k: Int) {
     let n = hi - lo
     if k == 1 {  // the common line-feed case

@@ -154,9 +154,9 @@ struct PaneWriter {
   /// finishes its current UTF-8 scalar and drops the rest. A started input
   /// record finishes whole: cutting it could split a key's escape sequence
   /// and corrupt the next writer's first bytes. Replies and markers stay.
-  /// An open bracketed paste still receives its closing marker. Used when the writer lease ends,
-  /// including after `pasteEnd` has retired the lease's paste record while
-  /// bytes are still queued.
+  /// An open bracketed paste still receives its closing marker. Used when the
+  /// writer lease ends, including after `pasteEnd` has retired the lease's
+  /// paste record while bytes are still queued.
   mutating func discardUnwrittenInput() -> Int {
     var discarded = 0
     var kept: [Segment] = []

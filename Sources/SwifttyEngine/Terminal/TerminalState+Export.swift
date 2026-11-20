@@ -2,9 +2,7 @@
 /// presentation (spec.roaming.md §A.4.2). Read-only; callers copy
 /// what they need while the state is borrowed.
 extension TerminalState {
-  /// Appends the Unicode scalars of `cell`'s content: its grapheme cluster
-  /// when the cell stores one, its single scalar otherwise, nothing for an
-  /// empty cell. Returns the number of scalars appended.
+  /// Appends `cell`'s scalars (none for an empty cell); returns the count.
   @discardableResult
   package func appendScalars(of cell: Cell, to out: inout [UInt32]) -> Int {
     if cell.isGrapheme {

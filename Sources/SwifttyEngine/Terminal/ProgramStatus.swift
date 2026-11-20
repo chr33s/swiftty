@@ -246,7 +246,6 @@ extension ProgramStatusCommand {
     )
   }
 
-  /// `[A-Za-z0-9_.,+/=-]`: any value.
   private static func trimWhitespace(_ value: Substring) -> Substring {
     let trimmed = value.drop(while: { $0.isWhitespace })
     guard let last = trimmed.lastIndex(where: { !$0.isWhitespace }) else {
@@ -255,6 +254,7 @@ extension ProgramStatusCommand {
     return trimmed[...last]
   }
 
+  /// `[A-Za-z0-9_.,+/=-]`: any value.
   static func isValueByte(_ b: UInt8) -> Bool {
     isNameByte(b) || b == 0x2C || b == 0x2F || b == 0x3D
   }

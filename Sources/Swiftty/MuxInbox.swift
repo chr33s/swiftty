@@ -25,7 +25,6 @@ struct MuxInboxModel: Equatable {
   /// resolved history, which the window never lists).
   static let sections: [InboxQuery.Section] = [.needsYou, .results]
 
-  /// Whether any section has rows beyond those read so far.
   var hasMore: Bool { !cursors.isEmpty }
 
   /// Whether the inbox shows `item`; the rule every inbox shares.
@@ -391,7 +390,6 @@ final class MuxInboxViewController: NSViewController {
     override var isFlipped: Bool { true }
   }
 
-  /// A push button running a closure.
   final class ActionButton: NSButton {
     private var handler: () -> Void = {}
 
@@ -409,7 +407,6 @@ final class MuxInboxViewController: NSViewController {
     private func run() { handler() }
   }
 
-  /// A menu item running a closure.
   final class ActionMenuItem: NSMenuItem {
     private var handler: () -> Void = {}
 

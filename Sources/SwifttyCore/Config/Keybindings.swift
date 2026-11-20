@@ -345,7 +345,6 @@ public struct Keybindings: Sendable, Equatable {
     return nil
   }
 
-  /// The action bound to `trigger`.
   public func action(for trigger: KeyTrigger) -> KeyAction? {
     bindings[trigger]
   }

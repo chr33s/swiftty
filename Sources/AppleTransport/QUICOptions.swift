@@ -41,9 +41,9 @@ enum QUICOptions {
     return parameters
   }
 
-  /// Flow-control and idle settings this side configured, recorded with a
-  /// connection's lifecycle diagnostics. Built from the values set here:
-  /// Network traps when reading a limit that was never set.
+  /// Flow-control and idle settings this side configured, for lifecycle
+  /// diagnostics. Built from the values set here because Network traps when
+  /// reading a limit that was never set.
   static func describe(
     role: String,
     idleTimeout: Duration,
@@ -79,10 +79,9 @@ enum QUICOptions {
 
   /// Client options whose TLS verify block accepts only the pinned leaf.
   ///
-  /// The verify block replaces system trust entirely: it never calls
-  /// `SecTrustEvaluate`, consults no anchors, and fails closed on any
-  /// error. TLS 1.3 CertificateVerify (proof of possession of the pinned
-  /// certificate's key) is still enforced by the TLS stack.
+  /// The verify block replaces system trust: no `SecTrustEvaluate`, no
+  /// anchors, fail closed on any error. The TLS stack still enforces TLS 1.3
+  /// CertificateVerify (proof of possession of the pinned key).
   static func client(
     pin: CertificatePin,
     alpn: String,
@@ -129,10 +128,9 @@ enum QUICOptions {
     let milliseconds = try idleMilliseconds(idleTimeout)
     let quic = NWProtocolQUIC.Options(alpn: [alpn])
     quic.idleTimeout = milliseconds
-    // RST/1 needs one client bidirectional stream (control), but Network
-    // framework's multiplex group consumes stream 0 itself, so the
-    // control stream is typically ID 4. Keep a small concurrency cap;
-    // the connection rejects any bidirectional stream after the first.
+    // RST/1 needs one client bidirectional stream (control), but Network's
+    // multiplex group consumes stream 0, so control is typically ID 4. The
+    // connection rejects any bidirectional stream after the first.
     quic.initialMaxStreamsBidirectional = 4
     let security = quic.securityProtocolOptions
     harden(security)

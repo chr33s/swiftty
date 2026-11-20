@@ -13,7 +13,6 @@ public enum CompanionFreshness: String, Hashable, Sendable {
   case unavailable
 }
 
-/// Staleness thresholds for companion data.
 public struct CompanionStaleness: Hashable, Sendable {
   /// Age up to which data counts as `fresh`.
   public var freshFor: TimeInterval
@@ -34,8 +33,6 @@ public struct CompanionStaleness: Hashable, Sendable {
 
   public static let standard = CompanionStaleness()
 
-  /// Evaluates data captured at `capturedAt` as of `now`.
-  ///
   /// A timestamp further in the future than `futureSkew` cannot be
   /// trusted, so it is `stale` rather than `fresh`.
   public func evaluate(capturedAt: Date?, now: Date) -> CompanionFreshness {

@@ -1106,7 +1106,6 @@ struct SwiftMuxExtensionTests {
     try await o.execute(.setSubscriptions([other]))
     try await o.execute(.setSubscriptions([pane, other]))
     #expect(await h.service.observerFloor(ws, pane) == floor)
-    // A pane that leaves the layout is forgotten.
     _ = try await c.execute(.endPane(pane))
     #expect(await h.service.observerFloor(ws, pane) == nil)
     try await c.execute(.endWorkspace(.id(ws)))

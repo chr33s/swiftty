@@ -53,8 +53,8 @@ public final class SFTPClient: Sendable {
   public var isActive: Bool { channel.isActive }
 
   /// Closes the subsystem channel; outstanding requests fail. Idempotent.
-  /// If the peer does not acknowledge within five seconds, closes SSH too.
-  /// A failed close on an activated channel also closes SSH.
+  /// SSH closes too if the peer does not acknowledge within five seconds,
+  /// or if closing an activated channel fails.
   public func close() async {
     channel.close(promise: nil)
     try? await channel.closeFuture.get()
@@ -637,12 +637,11 @@ extension SFTPMessage {
 }
 
 extension SSHConnection {
-  /// Opens a new `sftp` subsystem channel and completes the v3
-  /// `INIT`/`VERSION` exchange.
-  /// Requests (including the handshake) have a 30-second default
-  /// deadline. Before channel acceptance, aborting must close SSH. Once
-  /// accepted, expiration closes this subsystem. SSH remains usable if the
-  /// peer acknowledges the close within five seconds; otherwise SSH closes too.
+  /// Opens an `sftp` subsystem channel and completes the v3
+  /// `INIT`/`VERSION` exchange. Requests, including the handshake, default
+  /// to a 30-second deadline. Before channel acceptance, aborting must close
+  /// SSH; after it, expiry closes this subsystem, and SSH too unless the
+  /// peer acknowledges that close within five seconds.
   public func openSFTP(
     requestTimeout: Duration = .seconds(30)
   ) async throws -> SFTPClient {

@@ -51,7 +51,6 @@ public final class PathMonitor: Sendable {
 
   public init() {}
 
-  /// The most recent status, if one was observed.
   public var current: NetworkPathStatus? { last.value }
 
   /// Starts monitoring; `onChange` runs on a private serial queue for

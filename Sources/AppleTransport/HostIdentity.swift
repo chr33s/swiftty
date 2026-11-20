@@ -17,43 +17,36 @@ public enum HostIdentityError: Error, Equatable, Sendable {
 
 /// The `swifttyd` QUIC/TLS server identity (spec §5.2, §14 Gate 0).
 ///
-/// The key is a fresh P-256 key owned by the helper and independent of
-/// the SSH host key. The certificate is self-issued with swift-certificates
-/// and trusted by clients only because its exact DER and SHA-256 travel
-/// inside the SSH-authenticated bootstrap grant (`CertificatePin`).
+/// A fresh P-256 key owned by the helper, independent of the SSH host key.
+/// The self-issued certificate is trusted only because its exact DER and
+/// SHA-256 travel inside the SSH-authenticated bootstrap grant
+/// (`CertificatePin`).
 ///
-/// ## Certificate/Keychain integration spike: the chosen approach
+/// ## Why `SecIdentityCreate`
 ///
-/// Network framework needs a `sec_identity_t`, i.e. a `SecIdentity`
-/// pairing the certificate with its private key. Candidates on macOS 27:
+/// Network framework needs a `SecIdentity`. Alternatives on macOS 27:
 ///
-/// - `SecPKCS12Import` with `kSecImportToMemoryOnly` keeps the identity
-///   out of the keychain, but needs a password-protected PKCS #12 blob
-///   that swift-certificates cannot produce; hand-rolling PKCS #12 PBE
-///   and MAC structures is needless crypto surface.
-/// - A private file keychain plus `SecIdentityCreateWithCertificate`
-///   relies on the deprecated `SecKeychain` API family.
-/// - The data-protection keychain requires a keychain-access-group
-///   entitlement that an unsigned/ad-hoc command-line helper and the
-///   test runner do not have (`errSecMissingEntitlement`).
-/// - **Chosen:** `SecIdentityCreate(_:_:_:)`, public in the OS 27 SDKs,
-///   combines an in-memory `SecCertificate` with an in-memory `SecKey`
-///   created by `SecKeyCreateWithData`. Nothing touches the keychain, so
-///   the helper works as a plain per-user launchd agent.
+/// - `SecPKCS12Import` with `kSecImportToMemoryOnly` needs a
+///   password-protected PKCS #12 blob that swift-certificates cannot
+///   produce; hand-rolling PKCS #12 is needless crypto surface.
+/// - A private file keychain relies on the deprecated `SecKeychain` APIs.
+/// - The data-protection keychain needs a keychain-access-group entitlement
+///   that an unsigned/ad-hoc helper and the test runner lack
+///   (`errSecMissingEntitlement`).
+/// - **Chosen:** `SecIdentityCreate(_:_:_:)` (public in the OS 27 SDKs)
+///   pairs an in-memory `SecCertificate` with a `SecKeyCreateWithData` key.
+///   Nothing touches the keychain, so the helper runs as a plain per-user
+///   launchd agent.
 ///
-/// Persistence is a pair of files in an owner-only directory (0700),
-/// each written 0600 atomically: `host-key.raw` (the 32-byte P-256
-/// scalar) and `host-cert.der`. Ownership and permissions are verified
-/// on load; a group/other-accessible file is refused rather than used.
-/// The certificate is replaced when it nears expiry or its subject
-/// alternative names change; replacement implies clients receive the new
-/// pin through fresh SSH authentication.
+/// Persisted as `host-key.raw` (32-byte P-256 scalar) and `host-cert.der`,
+/// each written 0600 atomically in an owner-only (0700) directory.
+/// Ownership and permissions are verified on load; a group/other-accessible
+/// file is refused. The certificate is replaced near expiry or when its
+/// SANs change; clients then get the new pin through fresh SSH auth.
 ///
-/// Sendable: none: immutable after init. The only non-Sendable field is the
-/// retained `SecIdentity`, an immutable, thread-safe CF object that lives as
-/// long as any copy of the identity.
+/// Sendable: immutable after init; the retained `SecIdentity` is an
+/// immutable, thread-safe CF object.
 public struct HostIdentity: @unchecked Sendable {
-  // SecIdentity is an immutable, thread-safe CF object.
   public let certificateDER: Data
   /// Lowercase hex SHA-256 of `certificateDER` for the bootstrap grant.
   public let certificateSHA256: String
@@ -64,7 +57,6 @@ public struct HostIdentity: @unchecked Sendable {
   public let notValidAfter: Date
   public let secIdentity: SecIdentity
 
-  /// Default certificate lifetime.
   public static let defaultValidity: TimeInterval = 30 * 24 * 3600
   /// Regenerate when less than this remains.
   public static let renewalMargin: TimeInterval = 3 * 24 * 3600
@@ -74,28 +66,22 @@ public struct HostIdentity: @unchecked Sendable {
   /// Local persistence and generated-certificate bound, in DER bytes.
   public static let maxCertificateBytes = 64 * 1024
 
-  /// The pin a client would use for this identity.
   public var pin: CertificatePin {
     CertificatePin(certificateDER: certificateDER)
   }
 
-  /// The Network framework representation.
   public var protocolIdentity: sec_identity_t? {
     sec_identity_create(secIdentity)
   }
 
-  /// Generates a fresh in-memory identity.
-  ///
   /// - Parameters:
-  ///   - hostnames: DNS names for the subject alternative names. Clients
-  ///     pin the exact DER, so names are descriptive, not trust inputs.
+  ///   - hostnames: SAN DNS names. Descriptive only: clients pin the exact DER.
   ///   - ipAddresses: Textual IPv4/IPv6 addresses for IP SANs.
-  ///   - validity: Certificate lifetime in seconds, greater than zero and
-  ///     no longer than 397 days.
+  ///   - validity: Lifetime in seconds, greater than zero, at most 397 days.
   ///   - now: Reference time for expiry and the backdated validity start.
   /// - Returns: A fresh key and certificate paired as an in-memory identity.
-  /// - Throws: An error if the lifetime is invalid, certificate construction
-  ///   fails, or Security cannot import and pair the key and certificate.
+  /// - Throws: If the lifetime is invalid, construction fails, or Security
+  ///   cannot pair the key and certificate.
   public static func generate(
     hostnames: [String] = [],
     ipAddresses: [String] = [],

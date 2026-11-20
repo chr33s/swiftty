@@ -736,7 +736,6 @@ public enum MuxCommand: Codable, Sendable, Equatable {
     }
   }
 
-  /// Whether this command needs the interactive lease.
   public var requiresLease: Bool {
     switch self {
     case .status, .listWorkspaces, .newWorkspace, .endWorkspace,
@@ -893,7 +892,6 @@ public enum MuxKey: Codable, Sendable, Hashable {
   case keypad(MuxKeypadKey)
 }
 
-/// Numeric keypad keys.
 public enum MuxKeypadKey: String, Codable, CaseIterable, Sendable, Hashable {
   case zero, one, two, three, four, five, six, seven, eight, nine
   case decimal, divide, multiply, subtract, add, enter, equal, separator

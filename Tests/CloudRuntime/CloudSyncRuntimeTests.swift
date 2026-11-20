@@ -41,7 +41,6 @@ final class CloudSyncRuntimeTests: XCTestCase {
     return model
   }
 
-  /// Refreshes until `done` holds or `seconds` pass.
   private func refresh(
     _ model: RoamingAppModel,
     seconds: Int,

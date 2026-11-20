@@ -252,7 +252,6 @@ struct GraphemeBreakTests {
     }
   }
 
-  /// Feeds `cps` through `isBreak`, returning the break decisions.
   static func breaks(_ cps: [UInt32]) -> [Bool] {
     var state = GB.State()
     return (1 ..< cps.count).map { GB.isBreak(cps[$0 - 1], cps[$0], &state) }

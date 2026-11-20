@@ -312,7 +312,6 @@ final class TestSSHServer: Sendable {
     )
   }
 
-  /// A store that already trusts this server's key.
   func trustingStore() -> InMemoryHostTrustStore {
     InMemoryHostTrustStore(keys: [identity: hostKeyLine])
   }

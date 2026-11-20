@@ -3,7 +3,6 @@ import SwifttyCore
 @testable import SwifttyMobile
 import Testing
 
-/// A manual clock for repeat scheduling.
 @MainActor
 final class ManualRepeatScheduler: KeyRepeatScheduling {
   final class Item: KeyRepeatCancellable {
@@ -44,8 +43,7 @@ final class ManualRepeatScheduler: KeyRepeatScheduling {
     now = end
   }
 
-  /// A late scheduler: callbacks due within `duration` run once, at its
-  /// end.
+  /// A late scheduler: callbacks due within `duration` run once, at its end.
   func advanceLate(by duration: Duration) {
     now += duration
     let due = pending.filter { $0.deadline <= now }

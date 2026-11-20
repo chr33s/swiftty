@@ -8,7 +8,6 @@ public enum CertificatePinError: Error, Equatable, Sendable {
   case malformedFingerprint
   /// The pinned DER does not hash to the pinned fingerprint.
   case inconsistentPin
-  /// The peer presented no certificate.
   case missingCertificate
   /// The peer's leaf hashes to a different fingerprint.
   case fingerprintMismatch
@@ -22,20 +21,17 @@ public enum CertificatePinError: Error, Equatable, Sendable {
   case expired
 }
 
-/// The server certificate delivered through the SSH-authenticated
-/// bootstrap (spec §5.2; spec.inbox.md §1.8). It is
-/// a connection-scoped trust anchor: no system trust, no other self-signed
-/// certificate, no chain building.
+/// Server certificate delivered through the SSH-authenticated bootstrap
+/// (spec §5.2; spec.inbox.md §1.8): a connection-scoped trust anchor with
+/// no system trust, no other self-signed certificate, no chain building.
 ///
 /// The QUIC pin is the SHA-256 of the leaf's DER SubjectPublicKeyInfo
-/// (`spkiSHA256`). When a grant carries it, the presented leaf must match
-/// it **and** — as defence in depth — be byte-identical to the delivered
-/// certificate. Matching the key alone is not enough: a certificate
-/// rotated under the same key still needs a fresh SSH-delivered grant.
-/// Grants from older hosts omit the SPKI pin and are checked by exact
-/// certificate only. Either way the check runs in the TLS verify block, so
-/// a changed pin fails the handshake before the resume capability (the
-/// application token in `Attach`) can be sent.
+/// (`spkiSHA256`). When a grant carries it, the leaf must match it and, as
+/// defence in depth, be byte-identical to the delivered certificate, so a
+/// certificate rotated under the same key still needs a fresh grant. Grants
+/// from older hosts omit the SPKI pin and are checked by exact certificate
+/// only. The check runs in the TLS verify block, so a changed pin fails the
+/// handshake before the resume capability (`Attach` token) can be sent.
 public struct CertificatePin: Hashable, Sendable {
   public let certificateDER: Data
   /// Lowercase hex SHA-256 of `certificateDER`.
@@ -44,18 +40,16 @@ public struct CertificatePin: Hashable, Sendable {
   /// when the grant carried one.
   public let spkiSHA256: String?
 
-  /// Pins `certificateDER`, computing its fingerprint and, when the DER
-  /// parses as X.509, its SPKI pin.
+  /// The SPKI pin is computed only when the DER parses as X.509.
   public init(certificateDER: Data) {
     self.certificateDER = certificateDER
     self.sha256 = Self.fingerprint(certificateDER)
     self.spkiSHA256 = try? Self.spkiFingerprint(certificateDER)
   }
 
-  /// Pins a bootstrap grant. Fails when its parts disagree — the DER does
-  /// not hash to `sha256`, or does not contain the key `spkiSHA256` names —
-  /// so an inconsistent grant is never trusted. `spkiSHA256`, when
-  /// present, must be exactly 64 lowercase hex digits.
+  /// Fails when the DER does not hash to `sha256` or does not contain the key
+  /// `spkiSHA256` names, so an inconsistent grant is never trusted.
+  /// `spkiSHA256`, when present, must be exactly 64 lowercase hex digits.
   public init(
     certificateDER: Data,
     sha256: String,
@@ -84,9 +78,8 @@ public struct CertificatePin: Hashable, Sendable {
     hexString(SHA256.hash(data: der))
   }
 
-  /// Lowercase hex SHA-256 of the DER SubjectPublicKeyInfo inside the X.509
-  /// certificate `der` — the QUIC pin (RFC 7469 style). The SPKI bytes are
-  /// hashed exactly as they appear in the certificate, never re-encoded.
+  /// The QUIC pin (RFC 7469 style): lowercase hex SHA-256 of the certificate's
+  /// SubjectPublicKeyInfo, hashed as it appears in the DER, never re-encoded.
   public static func spkiFingerprint(
     _ der: Data
   ) throws(CertificatePinError) -> String {
@@ -130,10 +123,8 @@ public struct CertificatePin: Hashable, Sendable {
     return spki.encoded
   }
 
-  /// Validates a presented leaf against the pin: equal SPKI pin (when
-  /// pinned), equal fingerprint, equal DER, and `now` within the
-  /// certificate's validity window. Pure; the TLS verify block calls this
-  /// and fails closed on any error.
+  /// Checks the SPKI pin (when pinned), fingerprint, DER, and validity window
+  /// at `now`. Pure; the TLS verify block fails closed on any error.
   public func validate(
     leafDER: Data?,
     now: Date = Date()

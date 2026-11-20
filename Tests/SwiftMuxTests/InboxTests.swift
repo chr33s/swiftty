@@ -42,7 +42,6 @@ struct InboxTests {
     return page
   }
 
-  /// Polls the inbox until `predicate` holds.
   private func poll(
     _ c: MuxConnection,
     timeout: Duration = .seconds(10),

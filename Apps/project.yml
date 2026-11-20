@@ -248,13 +248,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.chr33s.swiftty
         TARGETED_DEVICE_FAMILY: "3"
         ASSETCATALOG_COMPILER_APPICON_NAME: App Icon & Top Shelf Image
-        # Pointer authentication off for this target only: Xcode builds
-        # package products as arm64e only for the iOS-family SDKs it covers
-        # with iOSPackagesShouldBuildARM64e, not for tvOS, so an arm64e
-        # build cannot import RoamingApp ("Unable to resolve module
-        # dependency"). The rest of Enhanced Security still applies. Lift
-        # this when Xcode builds packages as arm64e here
-        # (spec.roaming.md §2.5).
+        # Pointer authentication off, as for CatalystClient: Xcode does not
+        # build package products as arm64e for tvOS (spec.roaming.md §2.5).
         ENABLE_POINTER_AUTHENTICATION: NO
         ENABLE_HARDWARE_CHECKED_POINTER_ARITHMETIC_SLICE: NO
         INFOPLIST_KEY_UILaunchScreen_Generation: YES

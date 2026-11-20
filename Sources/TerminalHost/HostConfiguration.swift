@@ -3,8 +3,8 @@ import Darwin
 import Foundation
 import ScreenProtocol
 
-/// Roaming configuration of the SwiftMux service (spec §4). The bind address and the
-/// endpoint advertised to clients are explicit; nothing changes firewall
+/// Roaming configuration of the SwiftMux service (spec §4). The bind
+/// address and advertised endpoint are explicit; nothing changes firewall
 /// policy.
 public struct HostConfiguration: Sendable, Hashable, Codable {
   /// Project default, not an assigned service port.

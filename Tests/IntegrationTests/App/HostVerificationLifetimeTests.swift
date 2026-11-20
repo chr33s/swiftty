@@ -156,8 +156,7 @@ extension MainActorIntegrationTests {
           await connection.close()
         }
       }
-      // Both tasks inherit MainActor: cancellation precedes the first attempt
-      // step.
+      // Both tasks inherit MainActor: cancellation precedes the first step.
       request.cancel()
       if case let .failure(error) = await request.result {
         #expect(error is CancellationError)
@@ -221,8 +220,7 @@ extension MainActorIntegrationTests {
             server.state.connections.withLock { $0.channels.isEmpty }
           }
         )
-        // Release the original implementation, whose caller cancellation did not
-        // close SSH.
+        // Release the original implementation (cancellation left SSH open).
         app.resolveTrust(.reject)
         await server.shutdown()
         if case let .failure(error) = await request.result {
@@ -286,8 +284,7 @@ extension MainActorIntegrationTests {
         }
         let removed = try await eventually { app.pendingTrust == nil }
         #expect(removed)
-        // Release the old detached verifier too, so the regression does not leak
-        // a task.
+        // Release the old detached verifier so a regression leaks no task.
         app.resolveTrust(.reject)
         await server.shutdown()
         #expect(await store.trustedKey(for: server.identity) == nil)

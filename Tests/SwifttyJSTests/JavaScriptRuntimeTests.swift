@@ -184,7 +184,6 @@ extension JavaScriptRuntimeTests {
     let errors = actions.take().filter { $0.kind == .error }
     #expect(errors.count == 3)
     #expect(errors.allSatisfy { $0.text?.contains("time limit") == true })
-    // The VM stays usable after a termination.
     // The VM stays usable, and the pane entered by the terminated filter
     // does not remain the active one.
     runtime.setActivePane("focused")

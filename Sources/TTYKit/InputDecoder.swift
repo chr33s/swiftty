@@ -1,6 +1,5 @@
 import SwiftMuxProtocol
 
-/// One decoded outer input event.
 public enum DecodedInput: Equatable, Sendable {
   case text(String)
   case key(MuxKey, MuxKeyModifiers)

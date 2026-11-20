@@ -770,7 +770,6 @@ public struct TerminalState: ~Copyable {
     return Cell(glyph: 0, attributes: attributes, width: 1)
   }
 
-  /// Copies the margin columns of row `src` onto row `dst`.
   private func copyMarginCells(from src: Int, to dst: Int) {
     let n = scrollRight - scrollLeft + 1
     (grid._unsafeRow(dst) + scrollLeft)

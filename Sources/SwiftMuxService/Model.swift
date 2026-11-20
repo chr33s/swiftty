@@ -185,7 +185,6 @@ struct FrameSlot {
   /// Nil forces a complete frame.
   var baseline: FrameBaseline?
 
-  /// Records `frame` as sent now.
   mutating func sent(_ frame: SentFrame) {
     inflight = frame
     lastSent = DispatchTime.now().uptimeNanoseconds
@@ -289,7 +288,6 @@ struct ViewerViewport: Sendable {
 }
 
 extension ViewerViewport {
-  /// This window as a request for `pane`.
   func request(_ pane: PaneID) -> ViewportRequest {
     ViewportRequest(
       pane: pane,

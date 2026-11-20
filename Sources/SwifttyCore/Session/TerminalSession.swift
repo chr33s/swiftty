@@ -43,7 +43,6 @@ public final class TerminalSession: @unchecked Sendable {
   /// Called on `queue` when new content is ready; coalesced for each handler
   /// until the next `snapshot()`. A replacement receives the next pending
   /// update even if the previous handler has not taken a snapshot.
-  /// Typically schedules a redraw.
   public var onUpdate: (@Sendable () -> Void)? {
     get { callbacks.onUpdate }
     set { callbacks.onUpdate = newValue }
@@ -231,9 +230,7 @@ public final class TerminalSession: @unchecked Sendable {
     )
   }
 
-  /// Presentation mode: shows frames produced by a remote authoritative
-  /// terminal. Never parses program output or encodes input.
-  ///
+  /// Creates a presentation session (see `isPresentation`).
   /// History is disabled; `configuration` supplies the palette. The
   /// screen starts blank until the first `installPresentation`.
   public convenience init(
@@ -720,10 +717,10 @@ public final class TerminalSession: @unchecked Sendable {
     }
   }
 
-  /// For external transports: the program exited or the connection
-  /// closed. Abandons incomplete parser sequences and drops transient program status (see
-  /// `TerminalState.programExited()`), ordered with `receive`. PTY
-  /// sessions do this themselves when the child exits.
+  /// For external transports: the program exited or the connection closed.
+  /// Abandons incomplete parser sequences and drops transient program status
+  /// (`TerminalState.programExited()`), ordered with `receive`. PTY sessions
+  /// do this themselves when the child exits.
   public func programExited() { queue.async { [self] in finishProgram() } }
 
   private func finishProgram() {
@@ -749,12 +746,12 @@ public final class TerminalSession: @unchecked Sendable {
     )
   }
 
-  /// Builds an immutable frame, reusing unretained storage when available.
+  /// Builds an immutable frame, reusing unretained storage when available;
+  /// retaining every frame may allocate more.
   /// - Parameter overscan: Extra rows below a scrolled viewport.
   /// - Returns: A snapshot whose borrowed views remain valid while it is retained.
-  /// - Complexity: O(rows + damaged cells); grapheme changes copy all cells.
-  /// A pending search refresh may also scan history.
-  /// Retaining every frame may allocate additional storage.
+  /// - Complexity: O(rows + damaged cells); grapheme changes copy all cells,
+  ///   and a pending search refresh may scan history.
   public func snapshot(overscan: Int = 0) -> RenderSnapshot {
     queue.sync {
       scheduledUpdateRevision = nil

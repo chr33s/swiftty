@@ -13,7 +13,6 @@ import JavaScriptCore
 /// (the workspace service and every pane's output path). A terminated entry
 /// reports one `.error` action and leaves the VM usable for the next entry.
 public final class JavaScriptRuntime: @unchecked Sendable {
-  /// The default bound on one entry into the VM.
   public static let defaultExecutionTimeLimit: TimeInterval = 2
 
   private let queue = DispatchQueue(label: "com.chr33s.swiftty.javascript")

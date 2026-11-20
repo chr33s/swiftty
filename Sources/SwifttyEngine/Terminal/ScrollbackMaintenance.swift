@@ -23,7 +23,6 @@ public struct ScrollbackCompressionPolicy: Sendable, Equatable {
   public var fallbackReason: String?
 }
 
-/// Outcome of one maintenance step.
 public enum ScrollbackMaintenanceResult: Sendable, Equatable {
   /// More eligible units may remain: run another step after a short delay.
   case pending
@@ -121,7 +120,6 @@ extension Grid {
   /// Identifies the current row pool; reset and resize replace it.
   var storageGeneration: UInt64 { storage.generation }
 
-  /// Whether this grid's history can be compressed.
   var isCompressible: Bool { storage.store.isMapped }
 
   var scrollbackFallbackReason: String? {
@@ -515,7 +513,6 @@ public final class ScrollbackMaintenanceCoordinator: Sendable {
   /// Minimum delay before another pending step.
   public let stepDelay: UInt64
 
-  /// Scheduling counters.
   public struct Counters: Sendable, Equatable {
     public var steps = 0
     public var wakeups = 0
@@ -609,7 +606,6 @@ public final class ScrollbackMaintenanceCoordinator: Sendable {
     state.withLock { $0.entries.values.count { $0.owner != nil } }
   }
 
-  /// Whether a wakeup is currently armed.
   public var isTimerArmed: Bool { state.withLock { $0.armedAt != nil } }
 
   public func register(_ owner: any ScrollbackMaintenanceOwner) -> Registration
@@ -652,7 +648,6 @@ public final class ScrollbackMaintenanceCoordinator: Sendable {
     pump()
   }
 
-  /// Timer callback.
   private func fire() {
     state.withLock {
       $0.armedAt = nil

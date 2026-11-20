@@ -113,8 +113,7 @@ struct SessionSetupTests {
           server.state.sessionChannels.withLock { !$0.isEmpty }
         }
       )
-      // Acceptance may still be in flight: observe actual exec setup in the
-      // handler.
+      // Acceptance may still be in flight: observe exec setup in the handler.
       #expect(
         try await waitUntil {
           server.state.lastExecCommand.withLock { $0 == "wait-forever" }
@@ -239,8 +238,7 @@ struct SessionSetupTests {
       #expect(
         try await waitUntil(timeout: .seconds(1)) { finished.withLock { $0 } }
       )
-      // Also release the old implementation so a regression leaves no blocked
-      // task.
+      // Release the old implementation too, so a regression blocks no task.
       let held = server.state.heldSessionOpens.withLock { value in
         let held = value
         value.removeAll()

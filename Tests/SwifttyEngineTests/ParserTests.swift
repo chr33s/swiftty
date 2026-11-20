@@ -560,7 +560,7 @@ struct ParserTests {
   func `utf 8 multibyte and split across buffers`() {
     var vt = VT()
     let bytes = Array("é€😀".utf8)
-    for b in bytes { vt.feed(bytes: [b]) }  // one byte at a time
+    for b in bytes { vt.feed(bytes: [b]) }
     #expect(TestFixture(vt.lines[0]) == TestFixture("é€😀"))
     #expect(vt.cursor == (4, 0))  // é(1) €(1) 😀(2)
   }

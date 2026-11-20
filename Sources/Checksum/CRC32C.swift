@@ -59,7 +59,6 @@ public enum CRC32C {
 }
 
 extension CRC32C {
-  /// Checksum of `bytes`.
   public static func checksum(_ bytes: [UInt8]) -> UInt32 {
     bytes.withUnsafeBytes { raw in
       guard let base = raw.baseAddress else { return 0 }

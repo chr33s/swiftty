@@ -97,7 +97,6 @@ public enum AttentionResolution: String, Codable, Sendable {
   case resolved
   /// A newer occurrence of the same source replaced this one.
   case superseded
-  /// The user reviewed it.
   case reviewed
   /// The pane exited; final output may still be retained.
   case paneExited

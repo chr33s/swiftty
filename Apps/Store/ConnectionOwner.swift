@@ -6,7 +6,6 @@ import SSHClient
 /// build and test without the app's UI and terminal dependencies.
 @MainActor
 package protocol ConnectionOwner: AnyObject, Sendable {
-  /// The committed connection state.
   var connections: ConnectionSnapshot { get }
   /// Bumped whenever the signed-in account may have changed.
   var accountGeneration: Int { get }
@@ -21,7 +20,6 @@ package protocol ConnectionOwner: AnyObject, Sendable {
   ) -> Bool
   /// The CloudKit database when metadata sync is configured.
   var cloudDatabase: (any ConnectionCloudDatabase)? { get }
-  /// The local file of trusted SSH host keys.
   var trustFile: FileHostTrustStore { get }
 }
 

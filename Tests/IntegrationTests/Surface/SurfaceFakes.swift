@@ -119,7 +119,6 @@ actor FakeHost {
   var links: [ObjectIdentifier: Link] = [:]
   var current: ObjectIdentifier?
 
-  // Knobs.
   var withholdAcks = false
   var dropInputsAfter: UInt64?
   var sendSnapshotOnAttach = true
@@ -262,7 +261,6 @@ actor FakeHost {
     try await link.connection.sendSnapshot(payload, stream: nextStream)
   }
 
-  /// Sends the current screen on the current connection.
   func sendScreen() async {
     guard let current, let epoch = links[current]?.epoch else { return }
     screenRevision += 1

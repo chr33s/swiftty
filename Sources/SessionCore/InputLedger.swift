@@ -156,12 +156,11 @@ public struct HostInputLedger: Sendable {
     }
     guard sequence == lastAdmitted + 1 else { return .rejected(.gap) }
     do { try operation.validate() } catch { return .rejected(.invalid) }
-    // An empty ledger always admits one valid operation: a maximal
-    // paste's bound (2 × 32 KiB + markers) exceeds the byte limit, and
-    // refusing it would stall the writer forever.
-    // Zero-byte effects still retain an operation. Bound their storage
-    // too, so resizes cannot accumulate without limit behind a blocked
-    // PTY write. Keep the single-operation exception for maximal pastes.
+    // An empty ledger always admits one valid operation: a maximal paste's
+    // bound (2 × 32 KiB + markers) exceeds the byte limit, and refusing it
+    // would stall the writer forever. Zero-byte effects still retain an
+    // operation, so their storage is bounded too: resizes must not pile up
+    // behind a blocked PTY write.
     let retainedBytes = admitted.reduce(0) { $0 + $1.operation.retainedBytes }
     guard
       admitted.isEmpty

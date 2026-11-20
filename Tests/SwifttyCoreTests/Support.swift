@@ -1,7 +1,6 @@
 @testable import SwifttyCore
 @testable import SwifttyEngine
 
-/// A terminal plus parser driven from strings.
 struct VT: ~Copyable {
   var state: TerminalState
   var parser = Parser()

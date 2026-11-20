@@ -55,7 +55,6 @@ export interface UIController {
 }
 
 export interface PaneController {
-  /** Unique pane identifier */
   readonly id: string;
 
   /** Write raw text or ANSI sequences directly to this pane's PTY */
@@ -64,7 +63,6 @@ export interface PaneController {
   /** Split this pane horizontally or vertically */
   split(direction: "horizontal" | "vertical"): PaneController;
 
-  /** Close the pane */
   close(): void;
 }
 
@@ -134,7 +132,6 @@ export interface SwifttyContext {
   readonly filter: StreamFilter;
   /** AppKit UI manipulation (Control Plane) */
   readonly ui: UIController;
-  /** Current active terminal pane */
   readonly currentPane: PaneController;
   /** Shell lifecycle and hotkey hooks */
   readonly events: LifecycleHooks;

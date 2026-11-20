@@ -230,7 +230,6 @@ final class JobSupervisor {
       jobs[id]!.setupSuspended = false
       jobs[id]!.assembling = false
       return id
-      // owners close all parent pipe endpoints before the caller can wait.
     } catch {
       jobs[id]!.assembling = false
       let cleaned = cleanup(ids: [id])
