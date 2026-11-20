@@ -1,13 +1,13 @@
 # SSH identity, Keychain storage, and iCloud sync
 
-**Status:** Proposed; documentation only, not an implementation or test report.  
+**Status:** Implemented (`Sources/SSHIdentity`, `Apps/Store`). [README.md](README.md) records verification status; open device and CloudKit validation is tracked in [todo.md](todo.md) and §12.  
 **Version:** 0.2  
 **Date:** 2026-10-16  
 **Target:** `chr33s/swiftty`  
 **Reference implementation:** `chr33s/shell`  
 **Reviewed revisions:** Swiftty `b45ebc40518d92ab87c0abc3507790e0401e5787`; Shell `8069632c971107c05330bd56da9e32bbb7866793`.
 
-MUST, MUST NOT, and SHOULD are normative. Numerical bounds below are proposed product limits, not measured performance or Apple platform limits.
+MUST, MUST NOT, and SHOULD are normative. Numerical bounds below are product limits enforced in code, not measured performance or Apple platform limits.
 
 ## 1. Goal and interpretation
 
@@ -87,7 +87,7 @@ Show separate metadata states (`off`, `pending`, `up to date`, `offline`, `accou
 
 ## 5. Models and ownership
 
-All names in this section are proposed interfaces, not claims of existing symbols.
+Names in this section describe contracts; §10 maps them to source files, and symbol names may differ.
 
 | Type | Required contract |
 |---|---|
@@ -104,7 +104,7 @@ Private key material belongs only to the Keychain adapter and short-lived authen
 
 Use a single atomic snapshot for related local data/outbox/checkpoint changes, not independently updated JSON files advertised as a transaction. Advance in-memory committed state only after the write succeeds. Keep corruption distinct from an empty store, retain a recoverable previous snapshot, and never overwrite an unreadable store with defaults.
 
-Proposed bounds: 256 live hosts, 256 live identities, 1,024 live trust entries, and 16 MiB per connection-state snapshot. Preserve existing host-field validation. Tombstones count toward storage bounds but cannot be silently pruned; storage exhaustion is a visible recoverable error, not successful saving or sync.
+Bounds: 256 live hosts, 256 live identities, 1,024 live trust entries, and 16 MiB per connection-state snapshot. Preserve existing host-field validation. Tombstones count toward storage bounds but cannot be silently pruned; storage exhaustion is a visible recoverable error, not successful saving or sync.
 
 ### 5.1 Identity invariants
 
@@ -166,7 +166,7 @@ A key rename alone remains compatible with reuse.
 
 Adapt the relevant Shell parser/normalizer logic, with provenance and security review, but do not carry over its Citadel-based decryption path. Required input is one `openssh-key-v1` Ed25519 identity, unencrypted or encrypted as §6.4 allows. Other ciphers or KDFs, other algorithms, certificates, and public-only files receive explicit unsupported-input errors. [S6]
 
-Validate every length before allocation, key count, check integers, deterministic padding, public/private consistency, and complete consumption of the input. Proposed limits: 64 KiB input, one key, and 1 KiB comment. Report keys exceeding limits rather than silently weakening them.
+Validate every length before allocation, key count, check integers, deterministic padding, public/private consistency, and complete consumption of the input. Limits: 64 KiB input, one key, and 1 KiB comment. Report keys exceeding limits rather than silently weakening them.
 
 Parsing runs off the main actor with bounded concurrency. Cancellation discards its eventual result and must prevent persistence or profile mutation.
 
@@ -195,7 +195,7 @@ Import reads encrypted `openssh-key-v1` files as `ssh-keygen` writes them, so us
 
 ### 7.1 Storage attributes
 
-Use `kSecClassGenericPassword` for canonical Ed25519 secret payloads. Proposed service: `dev.chr33s.swiftty.ssh-identity.v1`; account: lowercase identity UUID. Read the resolved access group from build configuration and specify it on every scoped operation.
+Use `kSecClassGenericPassword` for canonical Ed25519 secret payloads. Service: `dev.chr33s.swiftty.ssh-identity.v1`; account: lowercase identity UUID. Read the resolved access group from build configuration and specify it on every scoped operation.
 
 | Policy | Synchronizable | Accessibility for new items |
 |---|---|---|
@@ -230,7 +230,7 @@ Deleting a host never deletes a shared identity. Identity deletion shows referen
 
 ### 8.1 Container and records
 
-Use Swiftty's own proposed container `iCloud.dev.chr33s.swiftty`, the user's private database, and a custom zone `SwifttyConnectionsV1`. This is a proposed identifier, not a verified provisioned resource. Never reuse `iCloud.dev.chr33s.shell`. [S1, S5]
+Use Swiftty's own container (default `iCloud.dev.chr33s.swiftty`, selected per build with `SWIFTTY_CLOUDKIT_CONTAINER`), the user's private database, and a custom zone `SwifttyConnectionsV1`. The container must be provisioned for the signing team; builds without it omit sync. Never reuse `iCloud.dev.chr33s.shell`. [S1, S5]
 
 | Record type | Payload |
 |---|---|
@@ -308,7 +308,7 @@ A missing replacement can be repaired from the matching legacy item using the sa
 | `Package.swift`, `Apps/project.yml`, entitlement sources and `Scripts/configure-links.sh` | Wire client-only dependencies and configured capabilities; preserve generated Associated Domains entitlements. |
 | Tests plus `README.md`, `spec.roaming.md`, `spec.connection-setup.md` | Contract tests, migration fixtures, platform evidence, and accepted-scope cross-references. |
 
-Proposed access group: `$(AppIdentifierPrefix)dev.chr33s.swiftty`, expanded from one build setting into both entitlements and runtime configuration. Enable CloudKit only for participating direct clients; configure development/production containers and deploy the production schema before TestFlight verification. Missing capability errors must not fall back to plaintext files. Do not add client credential access to SwifttyEngine, SwiftMux services, `swifttyd`, or Watch. [W7, A6]
+Access group: `$(AppIdentifierPrefix)dev.chr33s.swiftty`, expanded from one build setting into both entitlements and runtime configuration. Enable CloudKit only for participating direct clients; configure development/production containers and deploy the production schema before TestFlight verification. Missing capability errors must not fall back to plaintext files. Do not add client credential access to SwifttyEngine, SwiftMux services, `swifttyd`, or Watch. [W7, A6]
 
 **P1 — Local identity foundation:** stable IDs, explicit creation/import, read-only resolution, migration, device-only Keychain tests. Ship no sync promises.
 

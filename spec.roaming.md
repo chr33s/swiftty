@@ -622,25 +622,35 @@ Local hashing and upload staging must observe cancellation before queued executi
 
 ## 11. Swift structure and ownership rules
 
+The provisional `rst-host` helper became the unified `swiftmux-agent`
+service plus the `swifttyd` bootstrap relay ([spec.inbox.md §1](spec.inbox.md#1-one-service-two-transports)).
+Other `rst-host` references in this document describe that role.
+
 ```text
 Sources/
   SessionCore/       IDs, policies, lifecycle, input ledger, transfer manifests
   SSHClient/         authentication, host trust, exec, SFTP codec/client
+  SSHIdentity/       SSH identities, Keychain storage, OpenSSH import (client-only)
   ScreenProtocol/    RST messages, validation, snapshots, bounded scheduler
   AppleTransport/    QUIC, TLS identity policy, Network callbacks
-  TerminalHost/      Swiftty adapter, macOS PTY ownership, semantic input
+  TerminalHost/      RST/1 host over the SwiftMux service (owns no PTYs)
   RoamingKit/        headless client core: RoamingClient, input, frames, seams
   RoamingConnect/    RoamingKit seams bound to SSHClient and AppleTransport
   TerminalSurface/   GUI frontend backends over TerminalSession
+  TTYKit/            outer-terminal I/O shared by swmux and swroam
   RoamingTerminal/   TTY frontend over TTYKit (swroam)
+  SwRoamCLI/         swroam executable
+  HostConnection/    pairing-code descriptor and discovery contract
   CompanionModel/    bounded watch/iPhone status DTOs; no SSH/RST secrets
 Apps/
+  Shared/            shared app model and SwiftUI for the direct clients
+  Store/             saved hosts, identities, CloudKit sync, transfer manifests
   MobileClient/      iOS/iPadOS full client and iPhone companion bridge
   CatalystClient/    UIKit-derived full remote client
   VisionClient/      windowed visionOS full remote client
   TVClient/          tvOS SSH/roaming terminal; no SFTP
   WatchCompanion/    watchOS SwiftUI status/preview; WatchConnectivity only
-  rst-host/          native macOS bootstrap CLI, user agent, session registry
+  swifttyd/          no-PTY SSH bootstrap relay to the SwiftMux service
 Tests/
   ProtocolTests/     generated fixtures, bounds, state-machine properties
   IntegrationTests/  OpenSSH, real PTY, two-endpoint network harness

@@ -372,7 +372,7 @@ The codec call itself is not preemptible. One bounded unit limits the amount of 
 
 Enable automatic compression first on validated native macOS builds. The engine API exposes requested and effective policy plus a diagnostic reason for fallback.
 
-Other Apple targets compile with a valid uncompressed backend. Enable mapped compression on iOS, iPadOS, Catalyst, visionOS, or tvOS only after checking platform API support, memory accounting, lifecycle behavior, and representative device latency/energy. Do not add a background execution entitlement or compression work while an app is suspended.
+Other Apple targets compile with a valid uncompressed backend. Enable mapped compression on iOS, iPadOS, Catalyst, visionOS, or tvOS only after checking platform API support, memory accounting, lifecycle behavior, and representative device latency/energy. iOS and iPadOS have since passed these checks (§17). Do not add a background execution entitlement or compression work while an app is suspended.
 
 The watch companion remains outside the terminal engine dependency graph. Linux support is not part of the current package's product promise. [R01]
 
@@ -577,7 +577,7 @@ Add explicit `scrollback-memory`, `scrollback-compression`, and `scrollback-resu
 
 ## 14. Commands and environment
 
-The inspected package uses Swift tools 6.4, a `mise` pin of Swift 6.4.1, and Apple platform deployment declarations at 27.0. Use the repository's supported Mac/Xcode environment. The commands below were checked against source; they were not executed during specification writing. [R01] [R30]
+The inspected package uses Swift tools 6.4, Xcode 27's Swift 6.4 toolchain (`mise.toml` pins the other tools, not Swift), and Apple platform deployment declarations at 27.0. Use the repository's supported Mac/Xcode environment. The commands below were checked against source; they were not executed during specification writing. [R01] [R30]
 
 ### Existing build and verification commands
 
@@ -695,7 +695,7 @@ Decisions taken where the specification left room, or deviated:
 - **Promotion reasons** are read, recycle, compaction and other; preserved scans are counted separately as scan decodes.
 - **Scheduling.** One process coordinator (weak registrations, one timer, round-robin, one step in flight) with an injectable clock. Output, input, viewport, resize and clear postpone work by 250 ms; a borrowed read that promoted cold history requests a pass without postponing pending work. Memory pressure releases idle workspace only.
 
-Default enablement was gated on the acceptance Mac: Mac17,7 (Apple M5 Max), 128 GB RAM, macOS 27.0.1, Xcode 27.1, Swift 6.4.1, AC power, 16 KiB VM pages, Release builds, LZ4 confirmed on the corpora below. Baseline is `5eef5ae5`. All gates below passed there, so `scrollback-compression` defaults to on for native macOS only.
+Default enablement was gated on the acceptance Mac: Mac17,7 (Apple M5 Max), 128 GB RAM, macOS 27.0.1, Xcode 27.1, Swift 6.4.1, AC power, 16 KiB VM pages, Release builds, LZ4 confirmed on the corpora below. Baseline is `5eef5ae5`. All gates below passed there, so `scrollback-compression` defaults to on for native macOS; the iPad evidence below later extended it to iOS and iPadOS.
 
 | Gate (§13) | Result |
 | --- | --- |
