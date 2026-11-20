@@ -97,7 +97,10 @@ extension MuxService {
       guard let slot = current.frames[pane], slot.dirty, slot.capture == nil,
         slot.inflight == nil, let record = panes[pane]
       else { continue }
-      if now &- slot.lastSent < interval, slot.lastSent != 0 {
+      let viewportMoved =
+        record.runtime.currentViewport.load(ordering: .acquiring)
+        != slot.lastViewport
+      if now &- slot.lastSent < interval, slot.lastSent != 0, !viewportMoved {
         let due = slot.lastSent + interval
         wake = min(wake ?? due, due)
         continue

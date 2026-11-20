@@ -46,11 +46,11 @@ description = "Assemble and sign Swiftty.app with the SwiftMux agent: mise run p
 run = "Scripts/package-swiftmux.sh"
 
 [tasks.install]
-description = "Install Swiftty.app, register the SwiftMux agent and install the iOS/iPadOS app on USB-connected devices; --roaming adds swifttyd, --no-devices skips devices: mise run install [options]"
+description = "Install Swiftty.app, register the SwiftMux agent and install the iOS/iPadOS app on devices connected by USB, then Wi-Fi; --roaming adds swifttyd, --no-devices skips devices: mise run install [options]"
 run = "Scripts/install.sh"
 
 [tasks.install-ios]
-description = "Install the iOS/iPadOS app on iPhones and iPads connected by USB: mise run install-ios --team TEAM [--device UDID]"
+description = "Install the iOS/iPadOS app on iPhones and iPads connected by USB, then Wi-Fi: mise run install-ios --team TEAM [--device UDID]"
 run = "Scripts/install-ios.sh"
 
 [tasks.uninstall]

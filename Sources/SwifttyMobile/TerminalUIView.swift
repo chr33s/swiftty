@@ -39,6 +39,13 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
   /// How far the whole terminal is lifted above a docked keyboard, in
   /// points. The grid keeps its size; its top scrolls out of view.
   private(set) var keyboardLift: CGFloat = 0
+  /// The lift that keeps the cursor visible at live output; held while
+  /// the viewport is in history, which hides the cursor.
+  private(set) var liveKeyboardLift: CGFloat = 0
+  /// Scrolling back lowers the lifted view before moving into history.
+  var keyboardReveal = KeyboardReveal()
+  /// Viewport offset of the last drawn frame (0 = live output).
+  private(set) var lastViewportOffset = 0
   /// Set while the scene is in the background: no frames are drawn.
   private(set) var isRenderingPaused = false
   private var isSceneActive = true
@@ -143,6 +150,11 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
   var isSearchVisible = false
 
   var scrollAccumulator = ScrollAccumulator()
+  /// Travel of the current one-finger pan.
+  var panTravel = CGPoint.zero
+  /// Whether the current pan drags between panes (`true`) or scrolls;
+  /// nil while undecided.
+  var panPages: Bool?
   var horizontalScrollAccumulator = ScrollAccumulator()
   var momentum = ScrollMomentum()
   var horizontalMomentum = ScrollMomentum()
@@ -203,6 +215,18 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
   /// safe-area margins around the view); its alpha is the configured
   /// background opacity.
   public var onBackgroundColor: ((UIColor) -> Void)?
+  /// A mostly sideways one-finger drag, for paging between panes. Nil
+  /// leaves every pan to scrolling.
+  public var onPaneDrag: ((PaneDrag) -> Void)?
+  /// Called once, then cleared, on the next frame that redraws most of the
+  /// screen: a different pane's screen has arrived.
+  public var onScreenReplaced: (() -> Void)?
+  /// While set, frames are not drawn: the picture stays as it is (a pane
+  /// switch slides it away). Damage accumulates; clearing it draws the
+  /// newest screen.
+  public var holdsFrames = false {
+    didSet { if oldValue, !holdsFrames { requestRedraw() } }
+  }
   private var lastBackground: UInt32?
 
   // Text input traits: a terminal wants keys as typed.
@@ -668,6 +692,7 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
     }
     guard inset != keyboardInset else { return }
     keyboardInset = inset
+    keyboardReveal.reset()
     let info = notification.userInfo
     let duration =
       (info?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?
@@ -681,6 +706,18 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
     )
   }
   #endif
+
+  /// Whether `damage` covers at least half of `rows`: a new screen rather
+  /// than output to the shown one.
+  nonisolated static func redrawsMostRows(
+    _ damage: DamageRegion,
+    rows: Int
+  ) -> Bool {
+    if damage.isFull { return true }
+    guard rows > 0 else { return false }
+    let damaged = (0 ..< rows).count { damage.contains(row: $0) }
+    return damaged * 2 >= rows
+  }
 
   /// Lift that keeps the cursor row (and the bottom padding) above the
   /// keyboard, at most the covered height.
@@ -704,12 +741,15 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
     duration: TimeInterval = 0,
     options: UIView.AnimationOptions = []
   ) {
-    let lift = Self.keyboardLift(
-      covered: keyboardInset,
-      height: bounds.height,
-      cursorRow: lastCursor?.y,
-      geometry: geometry
-    )
+    if lastViewportOffset == 0 {
+      liveKeyboardLift = Self.keyboardLift(
+        covered: keyboardInset,
+        height: bounds.height,
+        cursorRow: lastCursor?.y,
+        geometry: geometry
+      )
+    }
+    let lift = max(0, liveKeyboardLift - keyboardReveal.revealed)
     guard lift != keyboardLift else { return }
     keyboardLift = lift
     let apply = { [self] in
@@ -809,6 +849,8 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
   }
 
   private func drawPendingFrame() {
+    // Cleared later with a redraw request of its own.
+    guard !holdsFrames else { return }
     guard isSurfaceVisible, !isRenderingPaused else {
       updateFrameDriving()
       redraw.request()
@@ -824,7 +866,7 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
   public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
   public func draw(in view: MTKView) {
-    guard !isRenderingPaused else { return }
+    guard !isRenderingPaused, !holdsFrames else { return }
     let surfaceVisible = isSurfaceVisible
     let snapshot = session.snapshot()
     programModes = snapshot.modes
@@ -843,8 +885,21 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
     }
     hoverViewportOffset = snapshot.viewportOffset
     hoverGeometry = geometry
+    // Typing or output at live moves the cursor: lift it back into view.
+    if snapshot.viewportOffset == 0, lastViewportOffset == 0,
+      snapshot.cursor != lastCursor
+    {
+      keyboardReveal.reset()
+    }
+    if let replaced = onScreenReplaced,
+      Self.redrawsMostRows(snapshot.damage, rows: snapshot.rows.count)
+    {
+      onScreenReplaced = nil
+      replaced()
+    }
     lastCursor = snapshot.cursor
-    if keyboardInset > 0 { updateKeyboardLift() }
+    lastViewportOffset = snapshot.viewportOffset
+    if keyboardInset > 0 || keyboardLift > 0 { updateKeyboardLift() }
     if hasSelection, snapshot.selection == nil {
       hasSelection = false
       selectionOrigin = nil

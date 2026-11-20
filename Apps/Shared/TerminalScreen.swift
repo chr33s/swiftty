@@ -83,14 +83,11 @@ public struct TerminalScreen: View {
     }
     #if os(iOS) && !targetEnvironment(macCatalyst)
     // iPhone and iPad: the host name sits in the top row beside Back, and
-    // Close joins the session actions, so the terminal starts higher.
+    // closing is the surface menu's Detach (or Disconnect), so the
+    // terminal starts higher.
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
       ToolbarItem(placement: .principal) { TerminalTitle(model: model) }
-      ToolbarItem(placement: .primaryAction) {
-        Button(.localized("Close"), systemImage: "xmark", action: onClose)
-        .accessibilityIdentifier("terminal.close")
-      }
     }
     #else
     .toolbar {
@@ -127,32 +124,38 @@ private let terminalStatusInTitle: Bool = {
 /// background instead of the app's, with bar content legible on it. Only
 /// iPhone and iPad: Catalyst and visionOS keep their window chrome.
 ///
-/// Only the top and bottom insets are filled, and the bar's own background
-/// is hidden: a translucent terminal background (`background-opacity`
-/// below 1) would otherwise stack over the terminal's own, or the bar's.
+/// The fill is the terminal's color made opaque, behind the whole screen,
+/// and the bar's own background is hidden. A translucent terminal
+/// (`background-opacity` below 1) then shows its glass over the same color
+/// the bars show, instead of over black.
+///
+/// Zero-height strips grown into the insets by `ignoresSafeArea`, and
+/// inset-sized strips from a `GeometryReader`, both render nothing on
+/// iOS 27: the bars and the home-indicator area stayed black.
 private struct TerminalChromeBackground: ViewModifier {
   let color: Color?
 
   func body(content: Content) -> some View {
     #if os(iOS) && !targetEnvironment(macCatalyst)
-    if let color {
-      content
-        // Zero-height strips on the content's edges, grown into the insets
-        // by `ignoresSafeArea`. (A background `GeometryReader` sits inside
-        // the safe area, so its insets read as zero.) The terminal lifts
-        // itself above the keyboard; the bottom strip stays at the screen
-        // edge.
-        .background(alignment: .top) {
-          color.frame(height: 0).ignoresSafeArea(edges: .top)
+    // One structure with or without a color: branching on it would give
+    // `content` a new identity when the color arrives, recreating the
+    // terminal, whose fresh state reports no color, and so on.
+    content
+      // Full bleed, keyboard area included: the terminal lifts itself
+      // above the keyboard rather than shrinking.
+      .background {
+        if let color {
+          Color(uiColor: UIColor(color).withAlphaComponent(1)).ignoresSafeArea()
         }
-        .background(alignment: .bottom) {
-          color.frame(height: 0).ignoresSafeArea(edges: .bottom)
-        }
-        .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
-        .toolbarColorScheme(color.isDark ? .dark : .light, for: .navigationBar)
-    } else {
-      content
-    }
+      }
+      .toolbarBackgroundVisibility(
+        color == nil ? .automatic : .hidden,
+        for: .navigationBar
+      )
+      .toolbarColorScheme(
+        color.map { $0.isDark ? .dark : .light },
+        for: .navigationBar
+      )
     #else
     content
     #endif
@@ -163,7 +166,10 @@ private struct TerminalChromeBackground: ViewModifier {
 extension Color {
   /// Relative luminance below the midpoint (WCAG weights).
   fileprivate var isDark: Bool {
-    var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+    var r: CGFloat = 0
+    var g: CGFloat = 0
+    var b: CGFloat = 0
+    var a: CGFloat = 0
     guard UIColor(self).getRed(&r, green: &g, blue: &b, alpha: &a) else {
       return true
     }

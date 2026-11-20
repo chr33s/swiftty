@@ -451,7 +451,13 @@ extension TerminalView {
     } else {
       mode = capabilities.scrollback ? .history : .disabled
     }
-    pointer.scroll(event, in: self, renderer: renderer, mode: mode) { input in
+    pointer.scroll(
+      event,
+      in: self,
+      renderer: renderer,
+      mode: mode,
+      multiplier: config.mouseScrollMultiplier
+    ) { input in
       switch input {
       case let .wheel(button): sendMouse(.press, button, event)
       case let .key(key): submitInput(.key(KeyEvent(key)))

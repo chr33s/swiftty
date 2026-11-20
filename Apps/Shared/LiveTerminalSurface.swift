@@ -3,6 +3,7 @@ import Network
 import Observation
 import SSHClient
 import ScreenProtocol
+import SwiftMuxProtocol
 import SessionCore
 import SwiftUI
 import SwifttyCore
@@ -142,6 +143,18 @@ final class RoamingTerminalController: TerminalSurfaceController {
   let model: TerminalScreenModel
   let display: TerminalSession
   private(set) var phase: SurfacePhase = .preparing(.localized("Signing in"))
+  /// The workspace's tabs and panes, from a host with `layoutControl`;
+  /// nil hides the Panes and Tabs menus.
+  private(set) var layout: RemoteLayout?
+  /// Why the last layout action failed, until dismissed.
+  var layoutFailure: String?
+  /// Frames on their way to `display`, so a pane's screen can be kept
+  /// when it is left.
+  @ObservationIgnored
+  private lazy var frameTap = FrameTap(forward: display)
+  /// Each pane's last screen, shown beside the terminal while paging to it.
+  @ObservationIgnored
+  private var paneScreens: [PaneID: PresentationFrame] = [:]
 
   @ObservationIgnored
   private weak var app: RoamingAppModel?
@@ -290,7 +303,7 @@ final class RoamingTerminalController: TerminalSurfaceController {
     let backend = RoamingScreenBackend(
       bootstrapper: SSHBootstrapper(endpoint: endpoint),
       connector: QUICGrantConnector(fallbackHost: endpoint.configuration.host),
-      sink: display,
+      sink: frameTap,
       configuration: RoamingClientConfiguration(initialGrid: grid)
     )
     self.backend = backend
@@ -336,6 +349,12 @@ final class RoamingTerminalController: TerminalSurfaceController {
   private func apply(_ status: RoamingStatus, from token: ObjectIdentifier) {
     guard !closed, let client, ObjectIdentifier(client) == token else { return }
     model.observe(status)
+    if status.layout != layout {
+      layout = status.layout
+      // Forget closed panes' screens.
+      let live = Set(layout?.tabs.flatMap { $0.panes.map(\.id) } ?? [])
+      paneScreens = paneScreens.filter { live.contains($0.key) }
+    }
     guard let app else { return }
     switch status.state {
     case .sessionLost:
@@ -352,6 +371,95 @@ final class RoamingTerminalController: TerminalSurfaceController {
         if intent == .create { intent = .resume(id, nil) }
       }
       if status.state == .active, phase != .running { phase = .running }
+    }
+  }
+
+  /// Changes the workspace layout on the Mac; the screen follows the
+  /// active pane. A refusal is shown; a reattachment cancels silently.
+  func perform(_ action: LayoutAction) {
+    keepShownPaneScreen()
+    _ = serial { [weak self] client in
+      do { try await client.layout(action) } catch let error
+        as RoamingClient.LayoutError
+      {
+        guard error.code != .staleEpoch else { return }
+        let message = Self.describe(error.code)
+        DispatchQueue.main.async {
+          MainActor.assumeIsolated { self?.layoutFailure = message }
+        }
+      } catch {}
+    }
+  }
+
+  /// The shown tab has another pane to swipe to.
+  var canSwitchPanes: Bool { (layout?.activeTabLayout?.panes.count ?? 0) > 1 }
+
+  /// Shows the next (or previous) pane of the shown tab, wrapping around.
+  func switchPane(next: Bool) {
+    guard let tab = layout?.activeTabLayout,
+      let target = Self.neighbor(
+        of: tab.activePane,
+        in: tab.panes.map(\.id),
+        next: next
+      )
+    else { return }
+    perform(.focusPane(pane: target))
+  }
+
+  /// The last screen seen of the pane a page turn would show.
+  func neighborScreen(next: Bool) -> PresentationFrame? {
+    guard let tab = layout?.activeTabLayout,
+      let target = Self.neighbor(
+        of: tab.activePane,
+        in: tab.panes.map(\.id),
+        next: next
+      )
+    else { return nil }
+    return paneScreens[target]
+  }
+
+  /// Keeps the shown pane's screen for when the user pages back to it.
+  private func keepShownPaneScreen() {
+    guard let pane = layout?.activeTabLayout?.activePane,
+      let frame = frameTap.latest
+    else { return }
+    paneScreens[pane] = frame
+  }
+
+  /// The pane after (or before) `current`, wrapping; nil with no other.
+  nonisolated static func neighbor<ID: Equatable>(
+    of current: ID,
+    in panes: [ID],
+    next: Bool
+  ) -> ID? {
+    guard panes.count > 1, let index = panes.firstIndex(of: current) else {
+      return nil
+    }
+    let step = next ? 1 : panes.count - 1
+    return panes[(index + step) % panes.count]
+  }
+
+  nonisolated static func describe(_ code: RSTErrorCode) -> String {
+    switch code {
+    case .unsupported, .notAttached:
+      String(
+        localized: "The Mac isn't accepting layout changes right now.",
+        bundle: #bundle
+      )
+    case .writerBusy:
+      String(
+        localized: "Another device is controlling this workspace.",
+        bundle: #bundle
+      )
+    case .limitExceeded:
+      String(
+        localized: "The workspace can't hold any more panes or tabs.",
+        bundle: #bundle
+      )
+    case .inputInvalid:
+      String(localized: "That tab or pane is no longer there.", bundle: #bundle)
+    default:
+      String(localized: "The Mac couldn't change the layout.", bundle: #bundle)
     }
   }
 
@@ -854,4 +962,21 @@ final class SSHShellController: TerminalSurfaceController {
   }
 
   func dismissInputNotice() { inputNotice = nil }
+}
+
+/// Forwards roaming frames to the display, keeping the newest.
+final class FrameTap: PresentationSink {
+  private let forward: TerminalSession
+  private let newest = Mutex<PresentationFrame?>(nil)
+
+  init(forward: TerminalSession) { self.forward = forward }
+
+  var latest: PresentationFrame? { newest.withLock { $0 } }
+
+  @discardableResult
+  func install(_ frame: PresentationFrame) -> Bool {
+    guard forward.install(frame) else { return false }
+    newest.withLock { $0 = frame }
+    return true
+  }
 }

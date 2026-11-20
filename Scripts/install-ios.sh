@@ -1,16 +1,19 @@
 #!/bin/sh
 # Builds the iOS/iPadOS app (MobileClient, with its embedded watch
-# companion) for devices and installs it on every iPhone and iPad
-# connected over USB. Scripts/install.sh runs it after the Mac app.
+# companion) for devices and installs it on every paired iPhone and iPad:
+# those connected by USB first, then those reachable over Wi-Fi.
+# Scripts/install.sh runs it after the Mac app.
 #
 # usage: Scripts/install-ios.sh --team TEAM [--device UDID]...
 #   --team TEAM     Apple Developer team ID used for automatic signing;
 #                   Xcode creates or updates the development profiles.
 #   --device UDID   install only on this device (repeatable); default:
-#                   every paired iPhone or iPad connected by USB.
+#                   every paired iPhone or iPad, by USB or Wi-Fi.
 #   --configuration Debug|Release (default Release)
 #
 # Devices must be paired with this Mac, unlocked and in Developer Mode.
+# Wi-Fi needs the device on the same network with "Connect via network"
+# enabled for it in Xcode's Devices and Simulators window.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -35,7 +38,7 @@ while [ $# -gt 0 ]; do
         --configuration) configuration=$2 ;;
       esac
       shift 2 ;;
-    -h | --help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install-ios.sh: unknown option $1" >&2; exit 64 ;;
   esac
 done
@@ -51,35 +54,42 @@ for tool in xcodegen xcodebuild xcrun python3; do
   command -v "$tool" >/dev/null || { echo "install-ios.sh: requires $tool" >&2; exit 1; }
 done
 
-# Paired, USB-connected physical iPhones and iPads (UDID and name).
+# Paired physical iPhones and iPads (UDID, transport and name), USB ones
+# first: a device on both is listed once, as wired.
 work=$(mktemp -d "${TMPDIR:-/tmp}/swiftty-ios.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 xcrun devicectl list devices --quiet --json-output "$work/devices.json" >/dev/null
 connected=$(/usr/bin/python3 -I - "$work/devices.json" <<'PY'
 import json, sys
+transports = {"wired": "usb", "localNetwork": "wifi"}
+found = []
 for d in json.load(open(sys.argv[1]))["result"]["devices"]:
     hw, conn = d.get("hardwareProperties", {}), d.get("connectionProperties", {})
+    transport = transports.get(conn.get("transportType"))
     if (hw.get("reality") == "physical" and hw.get("platform") == "iOS"
-            and conn.get("transportType") == "wired"
+            and transport is not None
             and conn.get("pairingState") == "paired"
             # devicectl opens the tunnel on demand, so an idle device
             # reports "disconnected"; only "unavailable" is unusable.
             and conn.get("tunnelState") != "unavailable"):
-        print(hw["udid"], d.get("deviceProperties", {}).get("name", hw["udid"]))
+        name = d.get("deviceProperties", {}).get("name", hw["udid"])
+        found.append((transport != "usb", hw["udid"], transport, name))
+for _, udid, transport, name in sorted(found, key=lambda f: f[0]):
+    print(udid, transport, name)
 PY
 )
 if [ -n "$devices" ]; then
   wanted=""
   for udid in $devices; do
     line=$(printf '%s\n' "$connected" | awk -v u="$udid" '$1 == u')
-    [ -n "$line" ] || { echo "install-ios.sh: device $udid is not connected by USB" >&2; exit 1; }
+    [ -n "$line" ] || { echo "install-ios.sh: device $udid is not connected by USB or Wi-Fi" >&2; exit 1; }
     wanted="$wanted$line
 "
   done
   connected=$wanted
 fi
 if [ -z "$(printf '%s' "$connected" | tr -d '[:space:]')" ]; then
-  echo "no iPhone or iPad connected by USB; skipping the iOS app"
+  echo "no iPhone or iPad connected by USB or Wi-Fi; skipping the iOS app"
   exit 0
 fi
 
@@ -103,13 +113,15 @@ app="$derived/Build/Products/$configuration-iphoneos/MobileClient.app"
 [ -d "$app" ] || { echo "install-ios.sh: built app not found at $app" >&2; exit 1; }
 
 status=0
-printf '%s\n' "$connected" | while read -r udid name; do
+printf '%s\n' "$connected" | while read -r udid transport name; do
   [ -n "$udid" ] || continue
+  label="$name ($([ "$transport" = usb ] && echo USB || echo Wi-Fi))"
+  echo "installing on $label..."
   if xcrun devicectl device install app --quiet --device "$udid" "$app" \
     >"$work/install-$udid.log" 2>&1; then
-    echo "installed Swiftty on $name"
+    echo "installed Swiftty on $label"
   else
-    echo "install-ios.sh: install on $name failed:" >&2
+    echo "install-ios.sh: install on $label failed:" >&2
     tail -3 "$work/install-$udid.log" >&2
     exit 1
   fi

@@ -61,6 +61,9 @@ extension Configuration {
     }
     copyOnSelect = jsonc.copyOnSelect
     mouseHideWhileTyping = jsonc.mouseHideWhileTyping
+    if let multiplier = jsonc.mouseScrollMultiplier {
+      mouseScrollMultiplier = multiplier
+    }
     for binding in jsonc.keybindings {
       if let problem = keybindings.apply("\(binding.trigger)=\(binding.action)")
       {

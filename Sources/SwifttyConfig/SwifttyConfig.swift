@@ -11,6 +11,8 @@ public struct SwifttyConfig: Codable, Equatable, Sendable {
   public var theme: String?
   public var copyOnSelect: Bool
   public var mouseHideWhileTyping: Bool
+  /// Lines per mouse-wheel notch; nil uses the default (3).
+  public var mouseScrollMultiplier: Double?
   public var cursorStyle: String?
   public var cursorStyleBlink: Bool?
   public static let `default` = Self()
@@ -23,6 +25,7 @@ public struct SwifttyConfig: Codable, Equatable, Sendable {
     theme: String? = nil,
     copyOnSelect: Bool = false,
     mouseHideWhileTyping: Bool = false,
+    mouseScrollMultiplier: Double? = nil,
     cursorStyle: String? = nil,
     cursorStyleBlink: Bool? = nil
   ) {
@@ -34,6 +37,7 @@ public struct SwifttyConfig: Codable, Equatable, Sendable {
     self.theme = theme
     self.copyOnSelect = copyOnSelect
     self.mouseHideWhileTyping = mouseHideWhileTyping
+    self.mouseScrollMultiplier = mouseScrollMultiplier
     self.cursorStyle = cursorStyle
     self.cursorStyleBlink = cursorStyleBlink
   }
@@ -46,6 +50,7 @@ public struct SwifttyConfig: Codable, Equatable, Sendable {
     case theme
     case copyOnSelect = "copy_on_select"
     case mouseHideWhileTyping = "mouse_hide_while_typing"
+    case mouseScrollMultiplier = "mouse_scroll_multiplier"
     case cursorStyle = "cursor_style"
     case cursorStyleBlink = "cursor_style_blink"
   }
@@ -74,6 +79,10 @@ public struct SwifttyConfig: Codable, Equatable, Sendable {
     mouseHideWhileTyping =
       values.contains(.mouseHideWhileTyping)
       ? try values.decode(Bool.self, forKey: .mouseHideWhileTyping) : false
+    mouseScrollMultiplier = try values.decodeIfPresent(
+      Double.self,
+      forKey: .mouseScrollMultiplier
+    )
     cursorStyle = try values.decodeIfPresent(String.self, forKey: .cursorStyle)
     cursorStyleBlink = try values.decodeIfPresent(
       Bool.self,

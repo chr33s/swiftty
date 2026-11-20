@@ -79,13 +79,17 @@ package final class TerminalPointer {
     in view: NSView,
     renderer: MetalRenderer,
     mode: ScrollMode,
+    multiplier: Double = Configuration.defaultMouseScrollMultiplier,
     send: (ScrollInput) -> Void
   ) {
     let scale = view.window?.backingScaleFactor ?? 2
+    // Trackpads report pixels and already track the finger; only discrete
+    // wheel notches (about one line each) are scaled.
+    let wheel = CGFloat(multiplier)
     let lines = vertical.add(
       event.hasPreciseScrollingDeltas
         ? event.scrollingDeltaY / (renderer.cellSize.height / scale)
-        : event.scrollingDeltaY
+        : event.scrollingDeltaY * wheel
     )
     // One event must not monopolize the UI with an unbounded report loop.
     // History remains a single request, regardless of its distance.
@@ -94,7 +98,7 @@ package final class TerminalPointer {
       let columns = horizontal.add(
         event.hasPreciseScrollingDeltas
           ? event.scrollingDeltaX / (renderer.cellSize.width / scale)
-          : event.scrollingDeltaX
+          : event.scrollingDeltaX * wheel
       )
       for _ in 0 ..< min(reportLimit, abs(lines)) {
         send(.wheel(lines > 0 ? .wheelUp : .wheelDown))

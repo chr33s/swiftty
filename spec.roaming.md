@@ -404,6 +404,7 @@ Compression is independent per snapshot, without a cross-snapshot dictionary. Bo
 | `Terminate` / `Terminated` | Explicitly destroy the owned session |
 | `SessionExited` | Report shell exit status and final screen revision |
 | `Viewport` | With `historyViewport`: move this attachment's own history window |
+| `Layout` / `LayoutAction` / `LayoutResult` | With `layoutControl`: report the workspace's tabs and panes, and change them (§7.6) |
 | `Error` | Bounded typed failure; never a stack trace or secret-bearing diagnostic |
 
 `Attached` includes `attachmentEpoch`, `writerID`, `lastFullyAppliedInputSequence`, any admitted partial-operation identifier, and current resize revision. Every subsequent control record is scoped to that epoch. It may also carry `features`, a list of additive behaviours the host accepts; peers ignore names they do not know, and an absent list means none. `keypadKeys` admits numeric keypad key names (`kp:one`, `kp:enter`, `kp:pageUp`, …, matching the client's keypad keys). Without it, clients send the main-keyboard key a keypad key types and drop Keypad Begin, which has none. `historyViewport` admits `Viewport` (`attachmentEpoch`, signed `lines`, at most ±1,000,000; positive reveals older output). The host moves that attachment's own window through the primary screen's history, clamped to the retained rows and anchored to an absolute row so it stays put while output arrives, and exports it in place of the live screen with the cursor hidden. The host's own view never moves; the alternate screen has no window; input returns the window to live output, as does moving past the newest line. Clients send `Viewport` only to hosts that advertise the feature, so older hosts never see it.
@@ -415,6 +416,8 @@ Retain at most **two in-flight snapshot streams and one latest unsent snapshot r
 - One in-flight snapshot is protected from cancellation merely because output changes. This guarantees a frame can finish during continuous output.
 - The second is replaceable. Newer state may supersede it, with cancellations rate-limited to ten per second.
 - Acknowledgment of revision R retires all streams older than R. Promote a surviving newer stream to protected status, or create one from current state.
+
+Captures follow output at most 30 times per second. A `Viewport` move answers the viewer's own scroll, so its capture uses a 120-per-second cadence instead; the two-stream bound and the cancellation budget still apply.
 
 The client displays only the newest complete revision. Partial snapshots are never visible. If transport credit is exhausted, replace the unsent reference rather than adding a queue entry.
 
@@ -485,6 +488,18 @@ Rules specific to RST/1:
 - A new attachment epoch cancels an unfinished copy. The client discards any partial text and never writes it to the pasteboard.
 - Copied text is terminal content. It follows §5.3's rule: never logged, put in analytics or kept in unprotected state.
 - Copy is read-only and needs no writer lease. Clients without a selection UI (tvOS, the watch companion) do not list the feature.
+
+### 7.6 Workspace layout
+
+With `layoutControl` listed by both sides, a client can see and change the attached workspace's tabs and panes, as the Mac's own window does. RST/1 otherwise shows only the workspace's active pane.
+
+- **`Layout`** (host to client): `attachmentEpoch` and a layout. The layout holds the workspace name, its layout revision, the active tab, and each tab's ID, name, panes in display order and active pane. Each pane has an ID, a title and whether it has exited. The host sends it after `Attached` and whenever any of these change. It carries names and titles only: no geometry, processes or working directories. At most 64 tabs, 64 panes per tab, and 256 bytes per name or title; the host cuts longer names at a character boundary, and a client rejects a layout over the limits as malformed.
+- **`LayoutAction`** (client to host): `attachmentEpoch`, a client-chosen `requestID` and one action. The actions are split the shown pane (`leftRight` or `topBottom`), focus a pane, close a pane, new tab, select a tab, rename a tab, close a tab, and rename the workspace. Names are nonempty and within the 256-byte limit.
+- **`LayoutResult`** (host to client): the `requestID` and no error, or the reason: `writerBusy`, `limitExceeded`, `inputInvalid` (the tab or pane is gone, or the name is refused), `notAttached` or `internalError`.
+
+The host applies an action with the SwiftMux lease it already holds for the attachment, exactly as the native frontend would. The screen then follows the workspace's active pane through the resulting layout change, so a split or new tab shows its new pane and a later `Layout` reports it. A new epoch cancels unanswered actions on the client; the host may still apply them. A client keeps at most eight unanswered.
+
+`LayoutAction` from a client that did not list the feature is malformed. Clients offer closing a pane or tab only while another remains; ending the last is `Terminate`.
 
 
 ## 8. Reliable input across reattachment

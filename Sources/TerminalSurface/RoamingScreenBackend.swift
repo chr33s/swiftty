@@ -229,6 +229,11 @@ public final class RoamingScreenBackend: TerminalSurfaceBackend {
     await client.scrollViewport(by: lines)
   }
 
+  /// Changes the workspace layout on the host (`layoutControl`).
+  public func layout(_ action: LayoutAction) async throws {
+    try await client.layout(action)
+  }
+
   /// The newest screen in the shared frame model, whose row identities a
   /// live selection records (spec.roaming.md §7.5). Nil from a host
   /// without `paneFrames`.

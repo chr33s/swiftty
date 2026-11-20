@@ -75,6 +75,13 @@ public enum ControlMessage: Hashable, Sendable {
     totalBytes: UInt64?,
     error: RSTErrorCode?
   )
+  /// Host to client, with `layoutControl`: the workspace's tabs and panes,
+  /// on attaching and whenever they change (§7.6).
+  case layout(epoch: UInt64, RemoteLayout)
+  /// Client to host, with `layoutControl`: change the layout (§7.6).
+  case layoutAction(epoch: UInt64, requestID: UInt64, LayoutAction)
+  /// Host to client: a `LayoutAction` was applied, or why not.
+  case layoutResult(epoch: UInt64, requestID: UInt64, error: RSTErrorCode?)
   case error(RSTError)
 
   /// Bytes of text in one `CopyChunk`, under the control-record limit.
@@ -232,6 +239,9 @@ public enum ControlMessage: Hashable, Sendable {
     case .copySelection: "CopySelection"
     case .copyChunk: "CopyChunk"
     case .copyResult: "CopyResult"
+    case .layout: "Layout"
+    case .layoutAction: "LayoutAction"
+    case .layoutResult: "LayoutResult"
     case .error: "Error"
     }
   }
@@ -246,7 +256,8 @@ public enum ControlMessage: Hashable, Sendable {
       let .pong(e, _), let .detach(e), let .detached(e), let .terminate(e),
       let .terminated(e), let .sessionExited(e, _, _), let .viewport(e, _),
       let .requestFullScreen(e, _), let .copyChunk(e, _, _, _),
-      let .copyResult(e, _, _, _):
+      let .copyResult(e, _, _, _), let .layout(e, _),
+      let .layoutAction(e, _, _), let .layoutResult(e, _, _):
       e
     case let .copySelection(c): c.attachmentEpoch
     }
@@ -260,7 +271,7 @@ extension ControlMessage: Codable {
       resizeRevision, sequence, operation, screenRevision, nonce, status,
       finalScreenRevision, code, message, features, lines, requestID,
       generation, alternateScreen, startRow, startColumn, endRow, endColumn,
-      unit, screenRowVersions, index, text, totalBytes, error
+      unit, screenRowVersions, index, text, totalBytes, error, layout, action
   }
 
   public init(from decoder: any Decoder) throws {
@@ -402,6 +413,36 @@ extension ControlMessage: Codable {
           .value,
         error: try c.decodeIfPresent(RSTErrorCode.self, forKey: .error)
       )
+    case "Layout":
+      let layout = try c.decode(RemoteLayout.self, forKey: .layout)
+      guard layout.isValid else {
+        throw DecodingError.dataCorruptedError(
+          forKey: .layout,
+          in: c,
+          debugDescription: "layout exceeds its limits"
+        )
+      }
+      self = .layout(epoch: try u64(.attachmentEpoch), layout)
+    case "LayoutAction":
+      let action = try c.decode(LayoutAction.self, forKey: .action)
+      guard action.isValid else {
+        throw DecodingError.dataCorruptedError(
+          forKey: .action,
+          in: c,
+          debugDescription: "invalid layout action"
+        )
+      }
+      self = .layoutAction(
+        epoch: try u64(.attachmentEpoch),
+        requestID: try u64(.requestID),
+        action
+      )
+    case "LayoutResult":
+      self = .layoutResult(
+        epoch: try u64(.attachmentEpoch),
+        requestID: try u64(.requestID),
+        error: try c.decodeIfPresent(RSTErrorCode.self, forKey: .error)
+      )
     case "Error":
       let message = try c.decodeIfPresent(String.self, forKey: .message)
       guard (message?.utf8.count ?? 0) <= 1024 else {
@@ -503,6 +544,17 @@ extension ControlMessage: Codable {
       try u64(request, .requestID)
       if let total { try u64(total, .totalBytes) }
       try c.encodeIfPresent(error, forKey: .error)
+    case let .layout(e, layout):
+      try u64(e, .attachmentEpoch)
+      try c.encode(layout, forKey: .layout)
+    case let .layoutAction(e, request, action):
+      try u64(e, .attachmentEpoch)
+      try u64(request, .requestID)
+      try c.encode(action, forKey: .action)
+    case let .layoutResult(e, request, error):
+      try u64(e, .attachmentEpoch)
+      try u64(request, .requestID)
+      try c.encodeIfPresent(error, forKey: .error)
     case let .error(error):
       try c.encode(error.code, forKey: .code)
       if let s = error.sequence { try u64(s, .sequence) }
@@ -528,15 +580,18 @@ public struct RSTFeatures: OptionSet, Hashable, Sendable {
   public static let screenDeltas = RSTFeatures(rawValue: 1 << 3)
   /// `CopySelection`; needs `paneFrames` and `historyViewport` (§7.5).
   public static let copySelection = RSTFeatures(rawValue: 1 << 4)
+  /// `Layout`, `LayoutAction` and `LayoutResult` (§7.6).
+  public static let layoutControl = RSTFeatures(rawValue: 1 << 5)
 
   public static let supported: RSTFeatures = [
     .keypadKeys, .historyViewport, .paneFrames, .screenDeltas, .copySelection,
+    .layoutControl,
   ]
 
   private static let wireNames: [(String, RSTFeatures)] = [
     ("keypadKeys", .keypadKeys), ("historyViewport", .historyViewport),
     ("paneFrames", .paneFrames), ("screenDeltas", .screenDeltas),
-    ("copySelection", .copySelection),
+    ("copySelection", .copySelection), ("layoutControl", .layoutControl),
   ]
 
   /// What both peers listed, with dependent features dropped when the

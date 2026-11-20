@@ -127,7 +127,7 @@ final class RoamingAppUITests: XCTestCase {
     typeLine("echo again-$UI_MARK")
     waitForScreen(containing: "again-kept-7")
 
-    press(element("terminal.close"))
+    closeTerminal()
     XCTAssertTrue(element("hosts.add").waitForExistence(timeout: 10))
   }
 
@@ -179,7 +179,7 @@ final class RoamingAppUITests: XCTestCase {
     waitForConnected()
     typeLine("echo root-$((6*7))")
     waitForScreen(containing: "root-42")
-    press(element("terminal.close"))
+    closeTerminal(ordinarySSH: true)
     XCTAssertTrue(element("hosts.add").waitForExistence(timeout: 10))
   }
 
@@ -211,7 +211,7 @@ final class RoamingAppUITests: XCTestCase {
     waitForConnected()
     typeLine("echo password-$((6*7))")
     waitForScreen(containing: "password-42")
-    press(element("terminal.close"))
+    closeTerminal(ordinarySSH: true)
     XCTAssertTrue(element("hosts.add").waitForExistence(timeout: 10))
   }
 
@@ -331,6 +331,20 @@ final class RoamingAppUITests: XCTestCase {
     }
   }
 
+  /// Leaves the terminal: Close on the Mac, the menu's Detach (or, for an
+  /// ordinary SSH shell, Disconnect) on iPhone and iPad.
+  private func closeTerminal(ordinarySSH: Bool = false) {
+    #if os(macOS) || targetEnvironment(macCatalyst)
+    press(element("terminal.close"))
+    #else
+    if ordinarySSH {
+      openSessionMenuItem(id: "session.disconnect", title: "Disconnect")
+    } else {
+      openSessionMenuItem(id: "session.detach", title: "Detach")
+    }
+    #endif
+  }
+
   private func openSessionMenuItem(id: String, title: String) {
     let menu = element("session.menu")
     XCTAssertTrue(menu.waitForExistence(timeout: 10))
@@ -410,7 +424,7 @@ final class RoamingAppUITests: XCTestCase {
       "hosts.add": ["Add Host"], "host.save": ["Save"],
       "terminal.close": ["Close"],
       // Catalyst shows a toolbar menu as "More".
-      "session.menu": ["Workspace", "More"], "sftp.done": ["Done"],
+      "session.menu": ["Workspace", "Session", "More"], "sftp.done": ["Done"],
     ]
     if let names = labels[id] {
       return app.descendants(matching: .any)

@@ -161,6 +161,36 @@ struct RoamingEndToEndTests {
   }
 
   @Test
+  func `the client reports and changes the workspace layout`() async throws {
+    let harness = try await Harness()
+    let display = TerminalSession(presentationColumns: 80, rows: 24)
+    let client = harness.makeClient(display: display)
+    try await client.start(.create(GridSize(columns: 80, rows: 24)))
+    try await waitFor("active") { await client.state == .active }
+    #expect(await client.supportsLayoutControl)
+    try await waitFor("layout") { await client.status.layout != nil }
+    let initial = try #require(await client.status.layout)
+    #expect(initial.activeTabLayout?.panes.count == 1)
+
+    try await client.layout(.split(axis: .topBottom))
+    try await waitFor("two panes") {
+      await client.status.layout?.activeTabLayout?.panes.count == 2
+    }
+    try await client.layout(.newTab)
+    try await waitFor("two tabs") {
+      await client.status.layout?.tabs.count == 2
+    }
+    // A refusal surfaces as the host's code; the attachment stays.
+    await #expect(throws: RoamingClient.LayoutError(.inputInvalid)) {
+      try await client.layout(.selectTab(tab: TabID()))
+    }
+    #expect(await client.state == .active)
+
+    await client.close(.terminate)
+    await harness.shutdown()
+  }
+
+  @Test
   func `shared frames arrive as deltas and copy spans unfetched history`()
     async throws
   {

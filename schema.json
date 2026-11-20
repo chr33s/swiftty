@@ -338,6 +338,13 @@
       "type": "boolean",
       "default": false
     },
+    "mouse_scroll_multiplier": {
+      "type": "number",
+      "minimum": 0.01,
+      "maximum": 10000,
+      "default": 3,
+      "description": "Lines scrolled per mouse-wheel notch. Trackpad scrolling is unaffected."
+    },
     "cursor_style": {
       "enum": [
         null,

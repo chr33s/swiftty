@@ -36,11 +36,14 @@ final class HostAttachment: @unchecked Sendable {
   var isCurrent = true
   var scheduler = SnapshotScheduler(
     capturesPerSecond: RSTLimits.maxCapturesPerSecond,
+    interactiveCapturesPerSecond: RSTLimits.maxInteractiveCapturesPerSecond,
     cancellationsPerSecond: RSTLimits.maxCancellationsPerSecond
   )
   var nextStreamID: UInt64 = 0
   var highestSubmittedScreenRevision: UInt64 = 0
-  var timerArmed = false
+  /// When the armed cadence timer fires; an earlier deadline (an
+  /// interactive change) arms another.
+  var timerDeadline: ContinuousClock.Instant?
   var exitNoticeSent = false
   /// Absolute top row of this attachment's history window (`Viewport`),
   /// or nil to follow live output. Never moves the host's own view.

@@ -192,6 +192,23 @@ struct ReviewRegressionTests {
   }
 
   @Test
+  func `mouse scroll multiplier parses, bounds and resets`() {
+    var config = Configuration.configured([("mouse-scroll-multiplier", "1.5")])
+    #expect(config.mouseScrollMultiplier == 1.5)
+    #expect(config.diagnostics.isEmpty)
+    config.configure([("mouse-scroll-multiplier", "")])
+    #expect(
+      config.mouseScrollMultiplier == Configuration.defaultMouseScrollMultiplier
+    )
+    for bad in ["0", "-1", "nan", "20000", "x"] {
+      var rejected = Configuration.configured([("mouse-scroll-multiplier", "2")]
+      )
+      rejected.configure([("mouse-scroll-multiplier", bad)])
+      #expect(rejected.mouseScrollMultiplier == 2, "\(bad)")
+    }
+  }
+
+  @Test
   func `dumps preserve underlines`() {
     var vt = VT(20, 2)
     vt.feed(

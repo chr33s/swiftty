@@ -4,6 +4,32 @@ import Testing
 
 struct JSONCConfigurationTests {
   @Test
+  func loadsAndBoundsTheMouseScrollMultiplier() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(
+      at: directory,
+      withIntermediateDirectories: true
+    )
+    let url = directory.appendingPathComponent("config.jsonc")
+    try #"{ "mouse_scroll_multiplier": 1 }"#
+      .write(to: url, atomically: true, encoding: .utf8)
+    let config = Configuration.load(from: url)
+    #expect(config.diagnostics.isEmpty)
+    #expect(config.mouseScrollMultiplier == 1)
+
+    try #"{ "mouse_scroll_multiplier": 0 }"#
+      .write(to: url, atomically: true, encoding: .utf8)
+    let rejected = Configuration.load(from: url)
+    #expect(!rejected.diagnostics.isEmpty)
+    #expect(
+      rejected.mouseScrollMultiplier
+        == Configuration.defaultMouseScrollMultiplier
+    )
+  }
+
+  @Test
   func loadsAndEditsJSONCWithoutLosingOtherSettings() throws {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent(UUID().uuidString)

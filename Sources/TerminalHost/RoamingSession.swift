@@ -169,6 +169,8 @@ public final class RoamingSession: @unchecked Sendable {
   private var screenRevision: UInt64 = 0
   private var geometryGeneration: UInt64 = 0
   private var layoutRevision: UInt64 = 0
+  /// The workspace's tabs and panes as `layoutControl` clients see them.
+  private var remoteLayout: RemoteLayout?
   private var activePane: PaneID?
   private var exitStatus: Int32?
   private var terminated = false
@@ -586,6 +588,7 @@ public final class RoamingSession: @unchecked Sendable {
       )
     )
     completion(.success(epoch))
+    sendLayout()
     pumpInput()
     a.scheduler.markDirty()
     pumpSnapshots(a)
@@ -701,6 +704,11 @@ public final class RoamingSession: @unchecked Sendable {
       return
     }
     layoutRevision = ws.layoutRevision
+    let layout = RemoteLayout(ws)
+    if layout != remoteLayout {
+      remoteLayout = layout
+      sendLayout()
+    }
     let allExited =
       !ws.panes.isEmpty && ws.panes.allSatisfy { $0.exitStatus != nil }
     statusBox.withLock { $0.allPanesExited = allExited }
@@ -734,6 +742,62 @@ public final class RoamingSession: @unchecked Sendable {
     }
   }
 
+  /// The current layout, to an attachment that agreed `layoutControl`.
+  private func sendLayout() {
+    guard let a = attachment, a.isCurrent, a.features.contains(.layoutControl),
+      let remoteLayout
+    else { return }
+    a.send(.layout(epoch: a.epoch, remoteLayout))
+  }
+
+  /// Applies a client's layout change with the lease held for it
+  /// (spec.roaming.md §7.6). The screen follows the active pane through
+  /// the layout event that results, as for a change made on the Mac.
+  private func performLayout(
+    _ action: LayoutAction,
+    request id: UInt64,
+    for a: HostAttachment
+  ) {
+    func finish(_ error: RSTErrorCode?) {
+      guard a === attachment, a.isCurrent else { return }
+      a.send(.layoutResult(epoch: a.epoch, requestID: id, error: error))
+    }
+    guard let session = mux, session.isOpen, muxAttachment != nil else {
+      return finish(.notAttached)
+    }
+    let command: MuxCommand
+    switch action {
+    case let .split(axis):
+      guard let pane = activePane else { return finish(.notAttached) }
+      command = .split(pane: pane, axis: axis, launch: nil)
+    case let .focusPane(pane): command = .focusPane(pane)
+    case let .closePane(pane): command = .endPane(pane)
+    case .newTab: command = .newTab(name: nil, launch: nil)
+    case let .selectTab(tab): command = .selectTab(tab)
+    case let .renameTab(tab, name): command = .renameTab(tab, name: name)
+    case let .closeTab(tab): command = .endTab(tab)
+    case let .renameWorkspace(name):
+      command = .renameWorkspace(.id(workspace), name: name)
+    }
+    session.request(command) { [weak self, weak session] result in
+      guard let self, let session, self.mux === session else { return }
+      switch result {
+      case .success: finish(nil)
+      case let .failure(error): finish(Self.layoutCode(error))
+      }
+    }
+  }
+
+  private static func layoutCode(_ error: MuxError) -> RSTErrorCode {
+    switch error.code {
+    case .leaseHeld, .alreadyAttached, .staleAttachment: .writerBusy
+    case .resourceLimit, .quiescing: .limitExceeded
+    case .notFound, .invalidRequest, .staleLayout, .paneExited: .inputInvalid
+    case .unauthorized: .unauthorized
+    default: .internalError
+    }
+  }
+
   private func exited(_ status: Int32) {
     guard exitStatus == nil else { return }
     exitStatus = status
@@ -753,9 +817,9 @@ public final class RoamingSession: @unchecked Sendable {
     contentChanged()
   }
 
-  private func contentChanged() {
+  private func contentChanged(interactive: Bool = false) {
     guard let a = attachment, a.isCurrent else { return }
-    a.scheduler.markDirty()
+    a.scheduler.markDirty(interactive: interactive)
     pumpSnapshots(a)
   }
 
@@ -818,6 +882,13 @@ public final class RoamingSession: @unchecked Sendable {
         return
       }
       copySelection(request, for: a)
+    case let .layoutAction(_, id, action):
+      guard a.features.contains(.layoutControl) else {
+        a.fail(.malformed)
+        detachOnQueue(a)
+        return
+      }
+      performLayout(action, request: id, for: a)
     case let .ping(_, nonce): a.send(.pong(epoch: a.epoch, nonce: nonce))
     case .detach:
       a.send(.detached(epoch: a.epoch))
@@ -1111,7 +1182,7 @@ public final class RoamingSession: @unchecked Sendable {
               a.liveReturns == liveReturns, top != current
             {
               a.historyTop = top
-              self.contentChanged()
+              self.contentChanged(interactive: true)
             }
             self.resolveViewportMove(for: a)
           }
@@ -1391,12 +1462,13 @@ public final class RoamingSession: @unchecked Sendable {
     switch a.scheduler.next(now: now) {
     case .idle: return
     case let .wait(until):
-      guard !a.timerArmed else { return }
-      a.timerArmed = true
+      if let armed = a.timerDeadline, armed <= until { return }
+      a.timerDeadline = until
       let delay = now.duration(to: until)
       queue.asyncAfter(deadline: .now() + delay.dispatchInterval) {
         [weak self, a] in
-        a.timerArmed = false
+        // A superseded later timer may still fire; pumping is idempotent.
+        if a.timerDeadline == until { a.timerDeadline = nil }
         self?.pumpSnapshots(a)
       }
     case let .capture(cancel):

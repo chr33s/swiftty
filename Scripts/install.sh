@@ -23,7 +23,7 @@
 #   --team TEAM        team for the iOS/iPadOS app (default: the Mac build's
 #                      signing team); see Scripts/install-ios.sh
 #   --no-devices       skip installing the iOS/iPadOS app on iPhones and
-#                      iPads connected by USB
+#                      iPads connected by USB or Wi-Fi
 #
 # Safe to run inside Swiftty: the running app is replaced in place, not quit.
 set -eu
@@ -325,7 +325,7 @@ if [ "$roaming" -eq 1 ]; then
   "$helper" status || echo "note: roaming is not serving yet; enable SwiftMux in the app"
 fi
 
-# The iOS/iPadOS app, on iPhones and iPads connected by USB. The Mac
+# The iOS/iPadOS app, on iPhones and iPads connected by USB, then Wi-Fi. The Mac
 # install above is complete whether or not this succeeds.
 if [ "$devices" -eq 1 ]; then
   [ -n "$team" ] || team=$new_team

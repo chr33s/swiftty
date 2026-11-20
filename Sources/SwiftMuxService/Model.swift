@@ -180,6 +180,10 @@ struct FrameSlot {
   /// never queued deeper than one.
   var queued: QueuedFrame?
   var lastSent: UInt64 = 0
+  /// The controller viewport revision of the newest frame sent. A newer
+  /// one (a scroll) is captured without waiting out the frame interval;
+  /// the single frame in flight still paces it to the client.
+  var lastViewport: UInt64 = 0
   var lastCapture: UInt64 = 0
   /// The newest frame the client acknowledged: the base of the next delta.
   /// Nil forces a complete frame.
@@ -188,6 +192,7 @@ struct FrameSlot {
   mutating func sent(_ frame: SentFrame) {
     inflight = frame
     lastSent = DispatchTime.now().uptimeNanoseconds
+    lastViewport = frame.viewport
   }
 }
 

@@ -267,7 +267,13 @@ extension MuxPaneView {
     } else {
       mode = .history
     }
-    pointer.scroll(event, in: self, renderer: renderer, mode: mode) { input in
+    pointer.scroll(
+      event,
+      in: self,
+      renderer: renderer,
+      mode: mode,
+      multiplier: config.mouseScrollMultiplier
+    ) { input in
       switch input {
       case let .wheel(button):
         let mapped: MuxMouse.Button

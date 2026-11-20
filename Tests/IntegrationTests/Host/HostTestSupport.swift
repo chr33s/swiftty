@@ -245,7 +245,8 @@ final class TestClient: @unchecked Sendable {
   func attach(
     _ grant: BootstrapGrant,
     token: ApplicationToken? = nil,
-    instance: SessionCore.ServerInstanceID? = nil
+    instance: SessionCore.ServerInstanceID? = nil,
+    features: RSTFeatures = []
   ) async throws {
     try await send(
       .attach(
@@ -253,15 +254,18 @@ final class TestClient: @unchecked Sendable {
           sessionID: grant.sessionID,
           serverInstanceID: instance ?? grant.serverInstanceID,
           writerID: grant.writerID,
-          applicationToken: token ?? grant.applicationToken
+          applicationToken: token ?? grant.applicationToken,
+          features: features
         )
       )
     )
   }
 
-  func attached(_ grant: BootstrapGrant) async throws -> ControlMessage.Attached
-  {
-    try await attach(grant)
+  func attached(
+    _ grant: BootstrapGrant,
+    features: RSTFeatures = []
+  ) async throws -> ControlMessage.Attached {
+    try await attach(grant, features: features)
     let reply = try await message("Attached or Error") {
       if case .attached = $0 { return true }
       if case .error = $0 { return true }

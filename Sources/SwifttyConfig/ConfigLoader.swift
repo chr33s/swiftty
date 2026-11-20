@@ -92,8 +92,8 @@ public enum ConfigLoader {
     let allowed: [String: Set<String>] = [
       "": [
         "$schema", "font", "window", "terminal", "keybindings", "theme",
-        "copy_on_select", "mouse_hide_while_typing", "cursor_style",
-        "cursor_style_blink",
+        "copy_on_select", "mouse_hide_while_typing", "mouse_scroll_multiplier",
+        "cursor_style", "cursor_style_blink",
       ], "font": ["family", "size", "line_height"],
       "window": ["opacity", "blur", "padding", "width", "height"],
       "terminal": [
@@ -204,6 +204,11 @@ public enum ConfigLoader {
         ["terminal", "shell"],
         config.terminal.shell.map { !$0.isEmpty && !$0.contains("\0") } ?? true,
         "Shell must be a nonempty executable path"
+      ),
+      (
+        ["mouse_scroll_multiplier"],
+        config.mouseScrollMultiplier.map { (0.01 ... 10_000).contains($0) }
+          ?? true, "Mouse scroll multiplier must be between 0.01 and 10000"
       ),
       (
         ["cursor_style"],

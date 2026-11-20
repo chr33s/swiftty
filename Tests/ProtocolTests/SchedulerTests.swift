@@ -41,6 +41,40 @@ struct SchedulerTests {
   }
 
   @Test
+  func `interactive changes use the faster cadence once`() {
+    var s = SnapshotScheduler(
+      capturesPerSecond: 30,
+      interactiveCapturesPerSecond: 120
+    )
+    s.markDirty()
+    #expect(s.next(now: t0) == .capture(cancel: nil))
+    s.started(stream: 1, revision: 1)
+    // Output waits out the 30 Hz cadence.
+    s.markDirty()
+    #expect(s.next(now: t0) == .wait(until: t0 + s.captureInterval))
+    // A history-window move is due at the interactive cadence instead.
+    s.markDirty(interactive: true)
+    #expect(s.next(now: t0) == .wait(until: t0 + s.interactiveInterval))
+    let t1 = t0 + s.interactiveInterval
+    #expect(s.next(now: t1) == .capture(cancel: nil))
+    s.started(stream: 2, revision: 2)
+    #expect(!s.isInteractive)
+    // Later output returns to the ordinary cadence.
+    #expect(s.acknowledged(revision: 2) == [1, 2])
+    s.markDirty()
+    #expect(s.next(now: t1) == .wait(until: t1 + s.captureInterval))
+  }
+
+  @Test
+  func `interactive cadence is never slower than output`() {
+    let s = SnapshotScheduler(
+      capturesPerSecond: 240,
+      interactiveCapturesPerSecond: 10
+    )
+    #expect(s.interactiveInterval == s.captureInterval)
+  }
+
+  @Test
   func `protected snapshot survives continuous output`() {
     var s = SnapshotScheduler()
     var now = t0

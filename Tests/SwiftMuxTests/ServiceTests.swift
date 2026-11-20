@@ -540,6 +540,32 @@ func busyLaunch() -> LaunchSpec {
 
 @Suite(.serialized, .timeLimit(.minutes(1)))
 struct FrameFairnessTests {
+  /// A scroll is shown at once rather than after the frame interval; only
+  /// the frame in flight paces it.
+  @Test
+  func scrollIsNotHeldByTheFrameInterval() async throws {
+    var limits = MuxLimits.standard
+    limits.frameIntervalNanoseconds = 5_000_000_000
+    let h = try Harness(limits: limits)
+    let c = try await h.connect()
+    var launch = shellLaunch()
+    launch.command = ["/bin/sh", "-c", "seq 1 100; exec sleep 60"]
+    guard
+      case let .created(ws) = try await c.execute(
+        .newWorkspace(NewWorkspaceRequest(name: "scroll", launch: launch))
+      )
+    else { throw MuxError(.invalidRequest, "unexpected reply") }
+    try await c.attachAndShow(.id(ws.id))
+    let pane = ws.tabs[0].activePane
+    _ = try await c.frame(of: pane, timeout: .seconds(15), label: "output") {
+      $0.lines.contains("100") && $0.history.scrollbackRows > 0
+    }
+    try await c.execute(.scroll(pane: pane, .lines(10)))
+    _ = try await c.frame(of: pane, timeout: .seconds(2), label: "scrolled") {
+      $0.history.viewportOffset == 10
+    }
+  }
+
   /// Two leases share a frame budget smaller than one frame; rotation
   /// keeps either from starving the other.
   @Test

@@ -27,28 +27,47 @@ public struct SnapshotScheduler: Sendable {
 
   public private(set) var streams: [Stream] = []
   public private(set) var isDirty = false
+  /// The pending change answers the viewer directly (a history-window
+  /// move), so it uses the interactive cadence.
+  public private(set) var isInteractive = false
   public private(set) var acknowledgedRevision: UInt64 = 0
   private var lastCapture: Instant?
   private var cancellations: [Instant] = []
   public let captureInterval: Duration
+  /// Cadence for interactive changes; never slower than `captureInterval`.
+  public let interactiveInterval: Duration
   public let cancellationLimit: Int
 
   /// Nonpositive capture rates use one capture per second. Nonpositive
   /// cancellation rates disable replacement until a stream retires.
-  public init(capturesPerSecond: Int = 30, cancellationsPerSecond: Int = 10) {
+  public init(
+    capturesPerSecond: Int = 30,
+    interactiveCapturesPerSecond: Int = 120,
+    cancellationsPerSecond: Int = 10
+  ) {
     captureInterval = .seconds(1) / max(1, capturesPerSecond)
+    interactiveInterval = min(
+      captureInterval,
+      .seconds(1) / max(1, interactiveCapturesPerSecond)
+    )
     cancellationLimit = max(0, cancellationsPerSecond)
   }
 
-  /// Terminal state changed since the last capture.
-  public mutating func markDirty() { isDirty = true }
+  /// Terminal state changed since the last capture. An interactive change
+  /// (the viewer scrolled) is captured at `interactiveInterval` instead of
+  /// waiting out output's cadence; the two-stream bound still applies.
+  public mutating func markDirty(interactive: Bool = false) {
+    isDirty = true
+    if interactive { isInteractive = true }
+  }
 
   /// Decides what to do now. A `.capture` result commits the scheduler to
   /// the capture: call `started` with the new stream afterwards.
   public mutating func next(now: Instant) -> Action {
     guard isDirty else { return .idle }
-    if let last = lastCapture, now < last + captureInterval {
-      return .wait(until: last + captureInterval)
+    let interval = isInteractive ? interactiveInterval : captureInterval
+    if let last = lastCapture, now < last + interval {
+      return .wait(until: last + interval)
     }
     switch streams.count {
     case 0, 1: return commitCapture(now: now, cancel: nil)
@@ -70,6 +89,7 @@ public struct SnapshotScheduler: Sendable {
 
   private mutating func commitCapture(now: Instant, cancel: UInt64?) -> Action {
     isDirty = false
+    isInteractive = false
     lastCapture = now
     return .capture(cancel: cancel)
   }

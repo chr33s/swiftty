@@ -9,7 +9,8 @@ import UIKit
 ///   click when the application tracks the mouse;
 /// - long press, then drag: select words; the edit menu follows;
 /// - one-finger pan, trackpad or wheel: scroll with momentum (wheel
-///   events or arrow keys when the application asks for them);
+///   events or arrow keys when the application asks for them); a mostly
+///   sideways drag pages between panes instead when `onPaneDrag` is set;
 /// - pointer drag: select cells, or report a drag;
 /// - pointer hover: motion reports (mode 1003), link underline, the
 ///   OSC 22 pointer shape; secondary click: menu;
@@ -551,18 +552,39 @@ extension TerminalUIView {
       stopMomentum()
       scrollAccumulator.reset()
       horizontalScrollAccumulator.reset()
+      panTravel = .zero
+      // Trackpad and wheel scrolls arrive with no touches: they never page.
+      panPages = onPaneDrag != nil && pan.numberOfTouches > 0 ? nil : false
       editMenu.dismissMenu()
     case .changed, .ended: break
     case .cancelled, .failed:
       stopMomentum()
       scrollAccumulator.reset()
       horizontalScrollAccumulator.reset()
+      if panPages == true { onPaneDrag?(.cancelled) }
+      panPages = false
       return
     default: return
     }
     // Translation can change on the first and final callbacks too.
-    let distance = pan.translation(in: self)
+    var distance = pan.translation(in: self)
     pan.setTranslation(.zero, in: self)
+    panTravel.x += distance.x
+    panTravel.y += distance.y
+    if panPages == nil {
+      panPages = PaneDrag.pages(panTravel)
+      if panPages == nil, pan.state != .ended { return }
+      // Decided (or lifted undecided): scroll by the travel held back.
+      if panPages != true { distance = panTravel }
+    }
+    if panPages == true {
+      onPaneDrag?(
+        pan.state == .ended
+          ? .ended(panTravel.x, velocity: pan.velocity(in: self).x)
+          : .changed(panTravel.x)
+      )
+      return
+    }
     scroll(
       lines: distance.y / geometry.lineHeight,
       columns: distance.x / (geometry.cellSize.width / geometry.scale),
@@ -590,8 +612,19 @@ extension TerminalUIView {
     at point: CGPoint,
     modifiers: KeyModifiers = []
   ) {
+    let routing = ScrollRouting(modes: lastModes)
+    var lines = lines
+    if routing == .viewport, liveKeyboardLift > 0, geometry.lineHeight > 0 {
+      let rest = keyboardReveal.consume(
+        lines * geometry.lineHeight,
+        lift: liveKeyboardLift,
+        atLive: lastViewportOffset == 0
+      )
+      lines = rest / geometry.lineHeight
+      updateKeyboardLift()
+    }
     let n = scrollAccumulator.add(lines)
-    switch ScrollRouting(modes: lastModes) {
+    switch routing {
     case .wheel:
       let horizontal = horizontalScrollAccumulator.add(columns)
       for _ in 0 ..< abs(n) {

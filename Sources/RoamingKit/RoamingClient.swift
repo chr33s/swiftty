@@ -45,6 +45,12 @@ public actor RoamingClient {
     public init(_ code: RSTErrorCode) { self.code = code }
   }
 
+  /// Layout action failures (spec.roaming.md §7.6).
+  public struct LayoutError: Error, Equatable, Sendable {
+    public var code: RSTErrorCode
+    public init(_ code: RSTErrorCode) { self.code = code }
+  }
+
   enum AttachOutcome: Sendable {
     case active
     /// The connect failed; carries the transport's reason.
@@ -100,6 +106,14 @@ public actor RoamingClient {
       waiter: CheckedContinuation<String, any Error>
     )?
   private var nextCopyID: UInt64 = 1
+  /// The attached workspace's tabs and panes (`layoutControl`).
+  private var layout: RemoteLayout?
+  /// Layout actions awaiting their `LayoutResult`, by request.
+  private var layoutWaiters: [UInt64: CheckedContinuation<Void, any Error>] =
+    [:]
+  private var nextLayoutID: UInt64 = 1
+  /// Unanswered layout actions one attachment may have.
+  static let maxPendingLayoutActions = 8
   private var earlySnapshot: DecodedScreen?
   private var outbox: [[UInt8]] = []
   private var pumpGeneration: UInt64?
@@ -789,6 +803,7 @@ public actor RoamingClient {
     }
     frameBases = []
     failCopy(CopyError(.staleEpoch))
+    failLayoutActions(LayoutError(.staleEpoch))
     connection = nil
     outbox = []
     pumpGeneration = nil
@@ -968,8 +983,27 @@ public actor RoamingClient {
       } else {
         current.waiter.resume(throwing: CopyError(.malformed))
       }
+    case let .layout(e, next):
+      guard e == epoch else { return }
+      heard()
+      guard agreedFeatures.contains(.layoutControl) else {
+        connectionFailed(.protocolViolation)
+        return
+      }
+      guard next != layout else { return }
+      layout = next
+      publish()
+    case let .layoutResult(e, id, error):
+      guard e == epoch else { return }
+      heard()
+      guard let waiter = layoutWaiters.removeValue(forKey: id) else { return }
+      if let error {
+        waiter.resume(throwing: LayoutError(error))
+      } else {
+        waiter.resume()
+      }
     case .attach, .input, .screenAck, .detach, .terminate, .viewport,
-      .requestFullScreen, .copySelection:
+      .requestFullScreen, .copySelection, .layoutAction:
       // Client-to-server messages are never valid from the host.
       connectionFailed(.protocolViolation)
     }
@@ -991,6 +1025,14 @@ public actor RoamingClient {
     hostFeatures = attached.features
     frameBases = []
     failCopy(CopyError(.staleEpoch))
+    failLayoutActions(LayoutError(.staleEpoch))
+    // A host without `layoutControl` sends none; an older layout would
+    // offer stale tabs and panes.
+    if !hostFeatures.agreed(with: RSTFeatures.supported)
+      .contains(.layoutControl)
+    {
+      layout = nil
+    }
     heard()
     store.fence(epoch: attached.attachmentEpoch)
     self.store = store
@@ -1279,6 +1321,38 @@ public actor RoamingClient {
     try await copySelection(CopySelectionRequest(selection))
   }
 
+  /// Whether the attached host takes `LayoutAction` (§7.6).
+  public var supportsLayoutControl: Bool {
+    epoch != nil && agreedFeatures.contains(.layoutControl)
+  }
+
+  /// Asks the host to change the workspace layout; returns once applied.
+  /// The new layout and screen follow as for a change made on the Mac.
+  /// Throws `LayoutError`: `unsupported` without `layoutControl` or while
+  /// not attached, `busy` with too many unanswered, `staleEpoch` when a
+  /// reattachment cancels it, or the host's refusal.
+  public func layout(_ action: LayoutAction) async throws {
+    guard action.isValid else { throw LayoutError(.inputInvalid) }
+    guard let epoch, agreedFeatures.contains(.layoutControl) else {
+      throw LayoutError(.unsupported)
+    }
+    guard layoutWaiters.count < Self.maxPendingLayoutActions else {
+      throw LayoutError(.busy)
+    }
+    let id = nextLayoutID
+    nextLayoutID &+= 1
+    try await withCheckedThrowingContinuation { waiter in
+      layoutWaiters[id] = waiter
+      send(.layoutAction(epoch: epoch, requestID: id, action))
+    }
+  }
+
+  private func failLayoutActions(_ error: LayoutError) {
+    let waiters = layoutWaiters
+    layoutWaiters = [:]
+    for waiter in waiters.values { waiter.resume(throwing: error) }
+  }
+
   private func failCopy(_ error: CopyError) {
     guard let current = copy else { return }
     copy = nil
@@ -1511,7 +1585,8 @@ public actor RoamingClient {
       lastFailure: lastFailure,
       lastFailureDetail: lastFailureDetail,
       reconnectAttempt: backoff.attempt,
-      roamingEndpoint: grant?.endpoint
+      roamingEndpoint: grant?.endpoint,
+      layout: layout
     )
     guard next != currentStatus else { return }
     currentStatus = next

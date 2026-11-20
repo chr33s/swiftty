@@ -233,6 +233,11 @@ public struct Configuration: Sendable, Equatable {
   public var rectangleChecksumReport = false
   public var copyOnSelect = false
   public var mouseHideWhileTyping = false
+  /// Lines per discrete mouse-wheel notch (`mouse-scroll-multiplier`);
+  /// precise trackpad scrolling is unaffected.
+  public var mouseScrollMultiplier = Self.defaultMouseScrollMultiplier
+  public static let defaultMouseScrollMultiplier = 3.0
+  public static let mouseScrollMultiplierRange = 0.01 ... 10_000.0
   public var linkURL = true
 
   /// History cell budget in bytes (`scrollback-limit`, canonically
@@ -392,6 +397,13 @@ public struct Configuration: Sendable, Equatable {
         return invalid()
       };
       mouseHideWhileTyping = b
+    case "mouse-scroll-multiplier":
+      guard
+        let v = value.isEmpty
+          ? defaults.mouseScrollMultiplier
+          : double(Self.mouseScrollMultiplierRange)
+      else { return invalid() }
+      mouseScrollMultiplier = v
     case "link-url":
       guard let b = bool(defaults.linkURL) else { return invalid() };
       linkURL = b

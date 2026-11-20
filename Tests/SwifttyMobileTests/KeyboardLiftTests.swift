@@ -71,3 +71,45 @@ struct KeyboardLiftTests {
   }
 }
 #endif
+
+#if canImport(UIKit)
+/// Scrolling back with the keyboard up reveals the lifted top first.
+struct KeyboardRevealTests {
+  @Test
+  func `scrolling back lowers the view before history`() {
+    var r = KeyboardReveal()
+    // 100 pt lift: the first 60 pt only lower the view.
+    #expect(r.consume(60, lift: 100, atLive: true) == 0)
+    #expect(r.revealed == 60)
+    // The rest of the lift, then 30 pt into history.
+    #expect(r.consume(70, lift: 100, atLive: true) == 30)
+    #expect(r.revealed == 100)
+    #expect(r.consume(50, lift: 100, atLive: false) == 50)
+  }
+
+  @Test
+  func `scrolling forward restores the lift only at live output`() {
+    var r = KeyboardReveal()
+    _ = r.consume(100, lift: 100, atLive: true)
+    // Still in history: the viewport moves, the view stays lowered.
+    #expect(r.consume(-40, lift: 100, atLive: false) == -40)
+    #expect(r.revealed == 100)
+    // Live again: the lift comes back before anything else.
+    #expect(r.consume(-40, lift: 100, atLive: true) == 0)
+    #expect(r.revealed == 60)
+    #expect(r.consume(-80, lift: 100, atLive: true) == -20)
+    #expect(r.revealed == 0)
+  }
+
+  @Test
+  func `a smaller lift clamps what was revealed`() {
+    var r = KeyboardReveal()
+    _ = r.consume(100, lift: 100, atLive: true)
+    #expect(r.consume(10, lift: 40, atLive: true) == 10)
+    #expect(r.revealed == 40)
+    #expect(r.consume(.nan, lift: 40, atLive: true).isNaN)
+    r.reset()
+    #expect(r.revealed == 0)
+  }
+}
+#endif

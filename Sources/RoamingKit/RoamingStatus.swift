@@ -135,6 +135,8 @@ public struct RoamingStatus: Hashable, Sendable {
   /// The QUIC endpoint the current grant names, once SSH has authorized
   /// one. Display only; never replaced by the SSH or discovered host.
   public var roamingEndpoint: BootstrapEndpoint?
+  /// The workspace's tabs and panes, from a host with `layoutControl`.
+  public var layout: RemoteLayout?
 
   public init(
     state: ClientConnectionState = .idle,
@@ -148,7 +150,8 @@ public struct RoamingStatus: Hashable, Sendable {
     lastFailure: RoamingFailure? = nil,
     lastFailureDetail: String? = nil,
     reconnectAttempt: Int = 0,
-    roamingEndpoint: BootstrapEndpoint? = nil
+    roamingEndpoint: BootstrapEndpoint? = nil,
+    layout: RemoteLayout? = nil
   ) {
     self.state = state
     self.sessionID = sessionID
@@ -162,6 +165,7 @@ public struct RoamingStatus: Hashable, Sendable {
     self.lastFailureDetail = lastFailureDetail
     self.reconnectAttempt = reconnectAttempt
     self.roamingEndpoint = roamingEndpoint
+    self.layout = layout
   }
 }
 

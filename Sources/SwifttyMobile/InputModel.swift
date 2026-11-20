@@ -382,6 +382,87 @@ public struct ScrollMomentum: Sendable {
   public mutating func stop() { velocity = 0 }
 }
 
+/// A one-finger drag between panes: the terminal and its neighbour move
+/// with the finger, as pages do.
+public enum PaneDrag: Equatable, Sendable {
+  /// Sideways travel so far; negative moves toward the next pane.
+  case changed(CGFloat)
+  /// Lifted, with the sideways velocity in points per second.
+  case ended(CGFloat, velocity: CGFloat)
+  case cancelled
+
+  /// Travel before a pan's axis is decided.
+  public static let decisionDistance: CGFloat = 12
+  /// Sideways travel per point of vertical travel for a pan to page.
+  public static let minimumRatio: CGFloat = 1.5
+  /// Sideways speed that turns the page however short the drag.
+  public static let flickVelocity: CGFloat = 300
+
+  /// Whether a pan pages (`true`) or scrolls (`false`); nil until it has
+  /// travelled `decisionDistance`.
+  public static func pages(_ travel: CGPoint) -> Bool? {
+    guard travel.x.isFinite, travel.y.isFinite else { return false }
+    guard max(abs(travel.x), abs(travel.y)) >= decisionDistance else {
+      return nil
+    }
+    return abs(travel.x) >= minimumRatio * abs(travel.y)
+  }
+
+  /// Whether a released drag turns the page: past a third of the width,
+  /// or flicked onward. Returns `true` for the next pane (moving left),
+  /// `false` for the previous, nil to settle back.
+  public static func commit(
+    travel dx: CGFloat,
+    velocity vx: CGFloat,
+    width: CGFloat
+  ) -> Bool? {
+    guard dx.isFinite, vx.isFinite, width > 0, dx != 0 else { return nil }
+    let fast = abs(vx) >= flickVelocity
+    // Flicked back toward where it started: settle.
+    if fast, (vx < 0) != (dx < 0) { return nil }
+    guard fast || abs(dx) >= width / 3 else { return nil }
+    return dx < 0
+  }
+}
+
+/// How far the user has lowered a terminal lifted above the keyboard.
+///
+/// The lift scrolls the top of the grid out of view, and moving the
+/// viewport cannot bring it back, so the oldest history stayed hidden
+/// while the keyboard was up. Like a scroll view's content inset, a
+/// scroll toward history first lowers the view; one back toward live
+/// output restores the lift only once the viewport is live again.
+public struct KeyboardReveal: Equatable, Sendable {
+  /// Points of the lift undone, from zero to the lift.
+  public private(set) var revealed: CGFloat = 0
+
+  public init() {}
+
+  /// Takes what `points` of scrolling (positive toward history) spends
+  /// on the lift and returns the rest, for the viewport.
+  public mutating func consume(
+    _ points: CGFloat,
+    lift: CGFloat,
+    atLive: Bool
+  ) -> CGFloat {
+    guard points.isFinite, lift.isFinite else { return points }
+    revealed = min(revealed, max(0, lift))
+    if points > 0 {
+      let take = min(points, max(0, lift) - revealed)
+      revealed += take
+      return points - take
+    }
+    if points < 0, atLive {
+      let give = min(-points, revealed)
+      revealed -= give
+      return points + give
+    }
+    return points
+  }
+
+  public mutating func reset() { revealed = 0 }
+}
+
 /// How a scroll of whole lines reaches the terminal.
 public enum ScrollRouting: Equatable, Sendable {
   /// The application tracks the mouse: wheel events.

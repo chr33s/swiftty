@@ -25,6 +25,8 @@ public enum RSTLimits {
 
   /// Snapshot capture cadence and cancellation budget (§7.3).
   public static let maxCapturesPerSecond = 30
+  /// Cadence for history-window moves, which answer the viewer's scroll.
+  public static let maxInteractiveCapturesPerSecond = 120
   public static let maxCancellationsPerSecond = 10
 
   /// Session lifetimes (§4, §5.2).

@@ -229,15 +229,15 @@ swift build
 .build/debug/swmux new -s work     # inside Swiftty
 mise run package-swiftmux [identity]     # Swiftty.app with the bundled agent (SMAppService)
 mise run install [--roaming]             # package, install to /Applications, register the agent (+ swifttyd)
-Scripts/install-ios.sh --team TEAM       # iOS/iPadOS app on iPhones and iPads connected by USB
+Scripts/install-ios.sh --team TEAM       # iOS/iPadOS app on iPhones and iPads by USB, then Wi-Fi
 mise run uninstall [--purge] [-y]        # remove the app, agent and swifttyd
 ```
 
 `Scripts/install.sh` documents its signing identity, agent re-registration
 (`--restart-agent`) and device options in its header. It also installs the
 iOS/iPadOS app (`MobileClient`) on every paired, unlocked iPhone and iPad in
-Developer Mode connected by USB (`--no-devices` skips this). The bundled agent
-can be managed directly with
+Developer Mode, connected by USB first and then over Wi-Fi (`--no-devices`
+skips this). The bundled agent can be managed directly with
 `Swiftty.app/Contents/MacOS/swiftty --swiftmux-agent register|unregister|status`.
 
 Installation uses Python 3 to copy and verify the new app before an atomic

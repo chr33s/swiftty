@@ -28,7 +28,8 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     @objc
     func tracking(_ notification: Notification) {
       guard let menu = notification.object as? NSMenu else { return }
-      item = menu.items.first { $0.title.contains("Files") }
+      // A section header ("Files") has no action; the item does.
+      item = menu.items.first { $0.title.contains("Files") && $0.action != nil }
       DispatchQueue.main.async { menu.cancelTracking() }
     }
   }
