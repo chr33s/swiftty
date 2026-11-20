@@ -144,7 +144,8 @@ extension MainActorIntegrationTests {
       overflow.cancel()
       #expect(await !(overflow.value))
       requests.last?.cancel()
-      #expect(try await !(#require(requests.last?.value)))
+      let last = try #require(requests.last)
+      #expect(await !last.value)
       var replacementStarted = false
       let replacement = Task {
         replacementStarted = true

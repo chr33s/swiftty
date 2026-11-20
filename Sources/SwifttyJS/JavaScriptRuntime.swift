@@ -111,7 +111,7 @@ public final class JavaScriptRuntime: @unchecked Sendable {
   }
 
   public func setActivePane(_ id: String?) {
-    queue.sync {
+    _ = queue.sync {
       bounded {
         _ = context.objectForKeyedSubscript("__activePane")?
           .call(withArguments: [id as Any? ?? NSNull()])
@@ -120,7 +120,7 @@ public final class JavaScriptRuntime: @unchecked Sendable {
   }
 
   public func refreshStatusItems(at date: Date = Date()) {
-    queue.sync {
+    _ = queue.sync {
       bounded {
         _ = context.objectForKeyedSubscript("__tick")?
           .call(withArguments: [date.timeIntervalSince1970 * 1000])
@@ -172,7 +172,7 @@ public final class JavaScriptRuntime: @unchecked Sendable {
     exitCode: Int,
     pane: String? = nil
   ) {
-    queue.sync {
+    _ = queue.sync {
       bounded {
         _ = context.objectForKeyedSubscript("__emit")?
           .call(withArguments: [
@@ -183,7 +183,7 @@ public final class JavaScriptRuntime: @unchecked Sendable {
   }
 
   public func directoryChanged(_ path: String, pane: String? = nil) {
-    queue.sync {
+    _ = queue.sync {
       bounded {
         _ = context.objectForKeyedSubscript("__emit")?
           .call(withArguments: ["directory", [path], pane as Any? ?? NSNull()])
@@ -195,7 +195,7 @@ public final class JavaScriptRuntime: @unchecked Sendable {
     guard let data = try? JSONEncoder().encode(change),
       let json = String(data: data, encoding: .utf8)
     else { return }
-    queue.sync {
+    _ = queue.sync {
       bounded {
         _ = context.objectForKeyedSubscript("__status")?
           .call(withArguments: [json, change.paneId])

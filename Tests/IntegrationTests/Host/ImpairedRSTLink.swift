@@ -528,7 +528,9 @@ final class ImpairedRSTConnection: RSTConnection, Sendable {
     _ kind: ImpairedLink.Corruption
   ) -> [UInt8]? {
     guard
-      case var .delta(delta, header)? = try? SnapshotFrame.decodeRecord(payload)
+      case .delta(var delta, let header)? = try? SnapshotFrame.decodeRecord(
+        payload
+      )
     else { return nil }
     switch kind {
     case .missingBase: delta.baseRevision = header.screenRevision &+ 1_000_000

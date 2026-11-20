@@ -242,7 +242,15 @@ struct RoamingEndToEndTests {
     try await waitFor("active") { await client.state == .active }
     _ = await client.submit(.text("seq 1 200; echo done-mark"))
     _ = await client.submit(.key(SemanticKey(.enter)))
-    try await waitFor("output") { screen(display).contains("done-mark") }
+    // The echoed command line also contains "done-mark"; wait for the
+    // output line and the prompt after it, so no later output edits the
+    // selected rows and ends the selection.
+    try await waitFor("output") {
+      let lines = display.withState { $0.screenLines }
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+      guard let mark = lines.lastIndex(of: "done-mark") else { return false }
+      return lines[(mark + 1)...].contains { $0.hasPrefix("$") }
+    }
     // Select every shown row, then scroll this client's window back so
     // the selection's end lies below what is shown.
     let shown = display.withState { $0.screenLines }
