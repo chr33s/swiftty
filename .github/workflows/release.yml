@@ -1,4 +1,4 @@
-name: Release Swiftty.app
+name: Release
 
 # Builds Swiftty.app (the unsandboxed native macOS terminal with the
 # SwiftMux agent), signs it with Developer ID, notarizes it and publishes
@@ -23,13 +23,13 @@ name: Release Swiftty.app
 on:
   push:
     # Only the versions package-swiftmux.sh accepts.
-    tags: ['v[0-9]+', 'v[0-9]+.[0-9]+', 'v[0-9]+.[0-9]+.[0-9]+']
+    tags: ["v[0-9]+", "v[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+"]
   workflow_dispatch:
     inputs:
       version:
         description: CFBundleShortVersionString
         required: true
-        default: '0.2'
+        default: "0.2"
 
 permissions:
   contents: write

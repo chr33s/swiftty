@@ -73,6 +73,10 @@ struct InputCancellationTests {
         ($0 as? MuxError)?.code == .notAttached
       }
       #expect(peer.records.withLock { $0.count } == original.count)
+      // The late acknowledgments carry only sequence numbers, which restart
+      // with the new attachment. Drain them with an ordered round trip so a
+      // stale ack cannot complete the next send before the peer records it.
+      #expect(try await connection.execute(.listWorkspaces) == .ok)
       try await connection.send(.text("Z"), to: pane)
       #expect(
         peer.records.withLock { $0.last?.attachment }

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Notarizes, staples and publishes a Developer ID-signed macOS app
 # (Swiftty.app from Scripts/package-swiftmux.sh) as a GitHub release asset
-# (zip plus SHA-256). .github/workflows/release-mac.yml runs it; it also
+# (zip plus SHA-256). .github/workflows/release.yml runs it; it also
 # runs locally.
 #
 # usage: Scripts/release-mac-github.sh <path/to/App.app>
