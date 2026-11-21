@@ -54,6 +54,10 @@ struct MigrationTests {
     }
 
     var old: WorkspaceWorkerHost { lock.withLock { hosts[0] } }
+    /// The most recently admitted candidate host.
+    var latestCandidate: WorkspaceWorkerHost? {
+      lock.withLock { hosts.count > 1 ? hosts.last : nil }
+    }
 
     @discardableResult
     func host(
@@ -1168,6 +1172,24 @@ struct MigrationTests {
     try await Self.expectUsable(rig, started, tag: "upgraded")
     await started.runtime.close()
   }
+
+  // MARK: Model suite access
+
+  static func startForModel(
+    _ rig: Rig,
+    oldFault: Fault?
+  ) async throws -> Started { try await start(rig, oldFault: oldFault) }
+
+  static func expectUsableForModel(
+    _ rig: Rig,
+    _ started: Started,
+    tag: String
+  ) async throws { try await expectUsable(rig, started, tag: tag) }
+
+  static func waitFor(
+    _ what: String,
+    _ condition: @Sendable () async throws -> Bool
+  ) async throws { try await waitUntil(what, condition) }
 
   // MARK: Review regressions
 
