@@ -71,7 +71,22 @@ private struct MuxCommandPayload {
     case let .newWorkspace(request):
       try text(request.name)
       try launch(request.launch)
-    case let .endWorkspace(value), let .switchWorkspace(value),
+    case let .newWorkspaceFromTemplate(template):
+      try text(template.name)
+      try launch(template.launch)
+      for pane in template.panes { try launch(pane) }
+      try add(
+        count: template.tabs.count,
+        stride: MemoryLayout<WorkspaceTemplateTab>.stride,
+      )
+      for tab in template.tabs {
+        try text(tab.name)
+        try add(
+          count: tab.layout.slots.count * 2,
+          stride: MemoryLayout<WorkspaceTemplateNode>.stride,
+        )
+      }
+    case let .endWorkspace(value, _), let .switchWorkspace(value),
       let .takeover(value, _):
       try selector(value)
     case let .attach(request): try selector(request.selector)
@@ -116,10 +131,10 @@ private struct MuxCommandPayload {
       try clipboard(contents)
     case .clipboardReadResult, .clipboardWriteResult: break
     case .status, .listWorkspaces, .detachActive, .endAllWorkspaces, .quiesce,
-      .detach, .observeWorkspaces, .observeWorkspaceGraph, .subscribeInbox,
-      .selectTab, .endTab, .focusPane, .toggleZoom, .endPane, .scroll,
-      .searchStep, .endSearch, .clearScreen, .resetTerminal, .link,
-      .commandOutput:
+      .detach, .observeWorkspaces, .observeWorkspaceGraph, .savedLayoutState,
+      .setOutputOptOut, .subscribeInbox, .selectTab, .endTab, .focusPane,
+      .toggleZoom, .endPane, .scroll, .searchStep, .endSearch, .clearScreen,
+      .resetTerminal, .link, .commandOutput:
       break
     }
   }

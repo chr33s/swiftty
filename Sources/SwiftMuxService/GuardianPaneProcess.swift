@@ -42,6 +42,7 @@ final class GuardianPaneProcess: PaneProcess, @unchecked Sendable {
   private var resizeCompletion: (@Sendable (Result<Void, MuxError>) -> Void)?
   var pid: Int32 { spawnedPID.load(ordering: .acquiring) }
   var childIsExiting: Bool { output.childIsExiting }
+  private(set) var directoryFallback = false
   var hasOpenPaste: Bool { pasteID != nil }
 
   var canConsume: (() -> Bool)?
@@ -104,8 +105,9 @@ final class GuardianPaneProcess: PaneProcess, @unchecked Sendable {
     request(.spawn(pane: id, launch: spec, columns: columns, rows: rows)) {
       [self] result in
       switch result {
-      case let .success(.spawned(pid, process)):
+      case let .success(.spawned(pid, process, fallback)):
         handle = GuardianPaneHandle(pane: id, process: process)
+        directoryFallback = fallback == true
         spawnedPID.store(pid, ordering: .releasing)
         isOpen = !lost
         completion(

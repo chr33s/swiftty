@@ -46,12 +46,14 @@ extension MuxService {
     return min(limits.historyBytesPerPane, remaining - futureReserve)
   }
 
-  private func spawnPane(
+  func spawnPane(
     workspace: WorkspaceID,
     id: PaneID = PaneID(),
     columns: Int,
     rows: Int,
     launch: LaunchSpec,
+    /// A template places its panes only when every launch has settled.
+    defersPlacement: Bool = false,
     completion:
       @escaping @Sendable (isolated MuxService, Result<PaneID, MuxError>) ->
       Void
@@ -136,7 +138,11 @@ extension MuxService {
                 workspace: workspace,
                 columns: columns,
                 rows: rows,
-                workingDirectory: launch.workingDirectory
+                workingDirectory: launch.workingDirectory,
+                launch: SavedPaneLaunch(command: launch.command),
+                localDirectory: runtime.directoryFallback
+                  ? nil : launch.workingDirectory,
+                directoryFallback: runtime.directoryFallback
               )
               // The update barrier (or end-all) arrived while this pane was
               // starting: it never joins the frozen graph.
@@ -157,7 +163,7 @@ extension MuxService {
               // found no pane; take it now, which also re-arms `onChange`.
               service.paneChanged(id, reportActivity: false)
               // Creation generation: the target may have ended meanwhile.
-              if service.locate(pane: id) == nil {
+              if !defersPlacement, service.locate(pane: id) == nil {
                 service.panes[id]?.detachedFromLayout = true
                 runtime.terminate()
               }
@@ -224,6 +230,7 @@ extension MuxService {
           launch: request.launch
         )
         service.workspaces.append(ws)
+        service.savedLayoutCauses.insert(.command)
         service.publishWorkspaces()
         reply(.success(.created(service.snapshot(ws))))
       }
@@ -293,8 +300,7 @@ extension MuxService {
       launch: launch
         ?? LaunchSpec(
           command: ws.launch.command == nil ? nil : nil,
-          workingDirectory: record.workingDirectory
-            ?? ws.launch.workingDirectory,
+          workingDirectory: record.localDirectory ?? ws.launch.workingDirectory,
           environment: ws.launch.environment
         )
     ) { service, result in
@@ -330,14 +336,21 @@ extension MuxService {
     checkIdle()
   }
 
-  func endWorkspace(_ id: WorkspaceID) {
+  /// `disposition` tells the gateway what to do with the saved layout.
+  func endWorkspace(
+    _ id: WorkspaceID,
+    disposition: SavedLayoutDisposition = .ended
+  ) {
     guard let ws = workspaces.first(where: { $0.id == id }) else { return }
+    pendingEndDisposition = disposition
+    defer { pendingEndDisposition = nil }
     // Detach first: the teardown's layout commits are not for anyone.
     releaseLease(id, notify: true, reason: "workspace ended")
     releaseViewers(in: id, reason: "workspace ended")
     for pane in ws.allPanes { endPane(pane) }
     // endPane removes the workspace with its last pane.
     workspaces.removeAll { $0.id == id }
+    recordSavedLayoutEnd(id)
     publishWorkspaces()
   }
 
@@ -363,6 +376,7 @@ extension MuxService {
       workspaces[w].tabs.remove(at: t)
       if workspaces[w].tabs.isEmpty {
         workspaces.remove(at: w)
+        recordSavedLayoutEnd(wsID)
         releaseLease(wsID, notify: true, reason: "workspace ended")
         releaseViewers(in: wsID, reason: "workspace ended")
         publishWorkspaces()

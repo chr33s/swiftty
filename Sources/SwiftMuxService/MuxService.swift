@@ -48,7 +48,16 @@ public actor MuxService {
   var retirementFailures: [PaneID: MuxError] = [:]
   var pendingLaunches = 0
   var workerWorkspaceClaimed = false
-  private var gatewayPeerPID: Int32?
+  /// Saved layouts (spec.durability.md §12.2): causes since the gateway's
+  /// last `savedLayoutState`, the cause of the change in progress (nil is
+  /// a command), why the workspace ended and the End being applied.
+  var savedLayoutCauses: SavedLayoutCauses = []
+  var savedLayoutCause: SavedLayoutCauses?
+  var savedLayoutEnd: SavedLayoutEnd?
+  var pendingEndDisposition: SavedLayoutDisposition?
+  /// Template creations whose launches have not all settled.
+  var templateCreations: [UUID: TemplateCreation] = [:]
+  var gatewayPeerPID: Int32?
   var pendingHistoryBytes = 0
   /// Latest frontend theme, applied to every pane and to new ones.
   var theme: MuxTheme?
@@ -396,7 +405,8 @@ public actor MuxService {
           innerTerm: configuration.innerTerm,
           features: configuration.requiresGatewayBinding
             && configuration.workerWorkspace != nil
-            ? .supported.union(.workspaceGraph) : .supported,
+            ? .supported.union([.workspaceGraph, .savedLayoutMetadata])
+            : .supported,
           forwardedTransport: hello.forwardedTransport,
         ),
       ),
@@ -447,9 +457,16 @@ public actor MuxService {
     case .status: reply(.success(.status(status)))
     case .listWorkspaces: reply(.success(.workspaces(summaries)))
     case let .newWorkspace(request): newWorkspace(request, reply: reply)
-    case let .endWorkspace(selector):
+    case let .newWorkspaceFromTemplate(template):
+      guard gatewayGraphWorkspace(client) != nil else {
+        return fail(
+          MuxError(.unauthorized, "templates require the current local gateway")
+        )
+      }
+      newWorkspace(from: template, reply: reply)
+    case let .endWorkspace(selector, disposition):
       let ws = try workspace(selector)
-      endWorkspace(ws.id)
+      endWorkspace(ws.id, disposition: disposition ?? .ended)
       ok()
     case let .renameWorkspace(selector, name):
       let i = try workspaceIndex(selector)
@@ -506,11 +523,7 @@ public actor MuxService {
     case let .switchWorkspace(selector):
       try switchWorkspace(selector, client: client, reply: reply)
     case let .observeWorkspaceGraph(on):
-      guard configuration.requiresGatewayBinding,
-        let workspace = configuration.workerWorkspace, !client.remote,
-        case let .xpc(channel) = client.transport,
-        gatewayPeerPID == channel.peerPID
-      else {
+      guard let workspace = gatewayGraphWorkspace(client) else {
         return fail(
           MuxError(
             .unauthorized,
@@ -521,6 +534,13 @@ public actor MuxService {
       client.observesWorkspaceGraph = on
       client.workspaceGraphOutstanding = false
       reply(.success(.workspaceGraph(snapshot(workspace))))
+    case .savedLayoutState:
+      guard let workspace = gatewayGraphWorkspace(client) else {
+        return fail(
+          MuxError(.unauthorized, "saved layouts require the current gateway")
+        )
+      }
+      reply(.success(.savedLayoutState(takeSavedLayoutState(workspace))))
     case let .observeWorkspaces(on):
       client.observesWorkspaces = on
       reply(.success(.workspaces(summaries)))
@@ -1011,11 +1031,22 @@ public actor MuxService {
         workspace: leased,
         reply: reply
       )
-    case .status, .listWorkspaces, .newWorkspace, .endWorkspace,
-      .renameWorkspace, .detachActive, .endAllWorkspaces, .attach, .detach,
-      .switchWorkspace, .quiesce, .setTheme, .takeover, .observeWorkspaces,
-      .observeWorkspaceGraph, .subscribeAutomation, .subscribeInbox, .inbox,
-      .locateAttention, .markSeen, .snooze, .markReviewed:
+    case let .setOutputOptOut(on):
+      guard clients[client]?.remote == false,
+        let w = workspaces.firstIndex(where: { $0.id == leased })
+      else { return fail(MuxError(.unauthorized, "local workspaces only")) }
+      if workspaces[w].outputOptOut != on {
+        workspaces[w].outputOptOut = on
+        savedLayoutCauses.insert(.metadata)
+        publishWorkspaces()
+      }
+      ok()
+    case .status, .listWorkspaces, .newWorkspace, .newWorkspaceFromTemplate,
+      .endWorkspace, .renameWorkspace, .detachActive, .endAllWorkspaces,
+      .attach, .detach, .switchWorkspace, .quiesce, .setTheme, .takeover,
+      .observeWorkspaces, .observeWorkspaceGraph, .savedLayoutState,
+      .subscribeAutomation, .subscribeInbox, .inbox, .locateAttention,
+      .markSeen, .snooze, .markReviewed:
       ok()  // handled by `handle`
     }
   }
@@ -1333,6 +1364,7 @@ public actor MuxService {
   /// Commits a validated mutation: new revision, then notify the lease.
   func commitLayout(_ id: WorkspaceID) {
     guard let i = workspaces.firstIndex(where: { $0.id == id }) else { return }
+    savedLayoutCauses.insert(savedLayoutCause ?? .command)
     workspaces[i].layoutRevision &+= 1
     let snap = snapshot(workspaces[i])
     if let lease = leases[id] { send(.event(.layout(snap)), to: lease.client) }
@@ -1388,11 +1420,14 @@ public actor MuxService {
     switch event {
     case let .title(title):
       panes[id]?.title = title
+      savedLayoutCauses.insert(.metadata)
       publishWorkspaces()
       if let client { send(.event(.title(id, title)), to: client) }
     case .bell: if let client { send(.event(.bell(id)), to: client) }
-    case let .workingDirectory(dir):
+    case let .workingDirectory(dir, local):
       panes[id]?.workingDirectory = dir
+      if local { panes[id]?.localDirectory = dir }
+      savedLayoutCauses.insert(.metadata)
       publishWorkspaces()
     case let .status(epoch, changes):
       let tab = locate(pane: id).map { workspaces[$0.0].tabs[$0.1].id }
@@ -1420,6 +1455,9 @@ public actor MuxService {
         )
       }
       let record = panes[id]!
+      // Layout changes from here on were caused by the exit (§12.2.5).
+      savedLayoutCause = .exit
+      defer { savedLayoutCause = nil }
       if record.detachedFromLayout {
         retirePaneRecord(id)
       } else if let ws = workspaces.first(where: { $0.id == record.workspace }),

@@ -13,7 +13,10 @@ extension MuxService {
       service.onExitReady = ready
       service.quiescing = true
       service.endAllEpoch &+= 1
-      for id in service.workspaces.map(\.id) { service.endWorkspace(id) }
+      // Exit is not a user's End: a saved layout stays reopenable.
+      for id in service.workspaces.map(\.id) {
+        service.endWorkspace(id, disposition: .retained)
+      }
       // Panes already removed from the layout still belong to the process
       // barrier until their runtime reports actual termination/reaping.
       for id in Array(service.panes.keys) { service.endPane(id) }

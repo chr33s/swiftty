@@ -159,7 +159,9 @@ struct GuardianTransportTests {
         rows: 24
       )
     )
-    guard case let .spawned(pid, _) = result else { throw Failure.unexpected }
+    guard case let .spawned(pid, _, _) = result else {
+      throw Failure.unexpected
+    }
     let handle = fixture.handle(pane)
     // Commands keep arriving on the connection, but the worker never proves
     // that its pane queues progressed through the requested health barrier.
@@ -315,7 +317,7 @@ struct GuardianTransportTests {
         rows: 24
       )
     )
-    guard case let .spawned(pid, _) = reply else { throw Failure.unexpected }
+    guard case let .spawned(pid, _, _) = reply else { throw Failure.unexpected }
     fixture.peer.channel.cancel()
     try eventually { fixture.server.inventory().first?.available == false }
     #expect(kill(pid, 0) == 0)
@@ -435,7 +437,9 @@ struct GuardianTransportTests {
         rows: 24
       )
     )
-    guard case let .spawned(pid, _) = result else { throw Failure.unexpected }
+    guard case let .spawned(pid, _, _) = result else {
+      throw Failure.unexpected
+    }
     let handle = fixture.handle(pane)
     for sequence in 2 ... UInt64(GuardianWire.commandWindow) {
       #expect(
@@ -494,7 +498,7 @@ struct GuardianTransportTests {
         rows: 24
       )
     )
-    guard case let .spawned(pid, incarnation) = result else {
+    guard case let .spawned(pid, incarnation, _) = result else {
       throw Failure.unexpected
     }
     #expect(incarnation != old.process)

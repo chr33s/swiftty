@@ -208,6 +208,9 @@ public struct ServiceFeatures: OptionSet, Codable, Sendable, Equatable {
   public static let inboxAcknowledgementTokens = ServiceFeatures(
     rawValue: 1 << 12
   )
+  /// `savedLayoutState`, `newWorkspaceFromTemplate` and End dispositions
+  /// on a workspace-scoped worker (spec.durability.md §12.2).
+  public static let savedLayoutMetadata = ServiceFeatures(rawValue: 1 << 13)
 
   public static let supported: ServiceFeatures = [
     .mouseReporting, .historyJumps, .terminalControl, .shellIntegration,
@@ -652,7 +655,14 @@ public enum MuxCommand: Codable, Sendable, Equatable {
   case status
   case listWorkspaces
   case newWorkspace(NewWorkspaceRequest)
-  case endWorkspace(WorkspaceSelector)
+  /// A reopened saved layout with fresh processes (`savedLayoutMetadata`).
+  /// Replies `createdFromTemplate`.
+  case newWorkspaceFromTemplate(WorkspaceTemplate)
+  /// Nil disposition is `ended`. Only the issuer knows why it ends.
+  case endWorkspace(
+    WorkspaceSelector,
+    disposition: SavedLayoutDisposition? = nil
+  )
   case renameWorkspace(WorkspaceSelector, name: String)
   /// Releases the current interactive lease, whoever holds it.
   case detachActive
@@ -682,6 +692,9 @@ public enum MuxCommand: Codable, Sendable, Equatable {
   /// Internal gateway discovery; never acquires an attachment or writer lease.
   /// True returns the current graph and rearms one graph-event credit.
   case observeWorkspaceGraph(Bool)
+  /// Internal gateway saving (`savedLayoutMetadata`): the graph with pane
+  /// launches, local directories and the causes since the last read.
+  case savedLayoutState
   case subscribeInbox(Bool)
   /// Local native automation UI; events only follow an explicit subscription.
   case subscribeAutomation(Bool)
@@ -706,6 +719,8 @@ public enum MuxCommand: Codable, Sendable, Equatable {
   case focusPane(PaneID)
   case toggleZoom(TabID)
   case setSplitRatio(tab: TabID, path: [Bool], ratio: Double)
+  /// Workspace › Don't Save Output (`savedLayoutMetadata`).
+  case setOutputOptOut(Bool)
   case endPane(PaneID)
   case setGeometry(GeometryBatch)
   /// Visible panes whose frames this attachment wants.
@@ -755,10 +770,10 @@ public enum MuxCommand: Codable, Sendable, Equatable {
       .endAllWorkspaces, .quiesce, .endPane, .endTab, .setGeometry,
       .setSubscriptions, .setViewport, .scroll, .searchStep, .endSearch,
       .clearScreen, .resetTerminal, .link, .commandOutput, .setTheme,
-      .observeWorkspaces, .observeWorkspaceGraph, .subscribeAutomation,
-      .subscribeInbox, .inbox, .locateAttention, .markSeen, .snooze,
-      .markReviewed, .clipboardReadResult, .clipboardWriteResult,
-      .copySelection:
+      .observeWorkspaces, .observeWorkspaceGraph, .savedLayoutState,
+      .subscribeAutomation, .subscribeInbox, .inbox, .locateAttention,
+      .markSeen, .snooze, .markReviewed, .clipboardReadResult,
+      .clipboardWriteResult, .copySelection:
       true
     default: false
     }
@@ -781,8 +796,9 @@ public enum MuxCommand: Codable, Sendable, Equatable {
     case .status, .listWorkspaces, .newWorkspace, .endWorkspace,
       .renameWorkspace, .detachActive, .endAllWorkspaces, .quiesce, .attach,
       .setTheme, .takeover, .observeWorkspaces, .observeWorkspaceGraph,
-      .subscribeAutomation, .subscribeInbox, .inbox, .locateAttention,
-      .markSeen, .snooze, .markReviewed:
+      .savedLayoutState, .newWorkspaceFromTemplate, .subscribeAutomation,
+      .subscribeInbox, .inbox, .locateAttention, .markSeen, .snooze,
+      .markReviewed:
       false
     default: true
     }
@@ -864,6 +880,8 @@ public enum MuxReply: Codable, Sendable, Equatable {
   /// Complete scoped graph; nil means no published workspace.
   case workspaceGraph(WorkspaceSnapshot?)
   case created(WorkspaceSnapshot)
+  case createdFromTemplate(WorkspaceSnapshot, WorkspaceTemplateOutcome)
+  case savedLayoutState(SavedLayoutState)
   case attached(attachment: AttachmentID, workspace: WorkspaceSnapshot)
   case layout(WorkspaceSnapshot)
   case pane(PaneID)

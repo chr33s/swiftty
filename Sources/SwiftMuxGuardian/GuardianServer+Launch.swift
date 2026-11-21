@@ -82,7 +82,11 @@ extension GuardianServer {
       runtime.adopt(child)
       if workspace.unavailable { runtime.detachConsumer() }
       if stopping || workspace.ending { runtime.terminate() }
-      reply = .spawned(pid: child.pid, process: pending.pane.process)
+      reply = .spawned(
+        pid: child.pid,
+        process: pending.pane.process,
+        directoryFallback: child.directoryFallback
+      )
     case let .failure(error): reply = .rejected(error)
     }
     recordResult(

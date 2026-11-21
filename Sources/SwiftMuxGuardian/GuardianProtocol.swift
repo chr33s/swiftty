@@ -90,7 +90,7 @@ package enum GuardianRequest: Codable, Sendable {
 package enum GuardianResult: Codable, Equatable, Sendable {
   case ok
   case admitted(bytes: Int)
-  case spawned(pid: Int32, process: UUID)
+  case spawned(pid: Int32, process: UUID, directoryFallback: Bool? = nil)
   /// Apply output through this cut using the old geometry, then commit the
   /// acknowledged geometry before parsing later records or pane mutations.
   case resized(outputThrough: UInt64)

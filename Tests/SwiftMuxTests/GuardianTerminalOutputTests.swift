@@ -415,7 +415,7 @@ struct GuardianTerminalOutputTests {
         ) { [weak self] result in
           guard let self else { return }
           self.busy = false
-          if case let .success(.spawned(_, process)) = result {
+          if case let .success(.spawned(_, process, _)) = result {
             self.handle = GuardianPaneHandle(pane: pane, process: process)
           } else {
             self.errors.append("spawn failed")

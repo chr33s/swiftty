@@ -222,32 +222,38 @@ struct GuardianBuildRegistryTests {
       failed.paused && failed.revision == 3 && failed.selectionPending == false
     )
     #expect(try registry.pinSelected().build == "two")
+    // Only a replacing barrier survives gateway replacement (§5.2).
+    let replacing = try guardian.advanceAdmissionPhase(
+      expectedRevision: 3,
+      gateway: gateway
+    )
+    #expect(replacing.revision == 4 && replacing.phase == .replacing)
     let replacement = UUID()
     guardian.replaceGateway(replacement)
-    #expect(try guardian.admissionStatus(gateway: replacement) == failed)
+    #expect(try guardian.admissionStatus(gateway: replacement) == replacing)
     do {
       _ = try await select("one", revision: 3, gateway: gateway)
       Issue.record("old gateway selected a build")
     } catch let error as MuxError { #expect(error.code == .staleAttachment) }
-    let rolledBack = try await select("one", revision: 3, gateway: replacement)
-    #expect(rolledBack.revision == 4 && rolledBack.paused)
+    let rolledBack = try await select("one", revision: 4, gateway: replacement)
+    #expect(rolledBack.revision == 5 && rolledBack.paused)
     _ = try guardian.setAdmissionPaused(
       false,
-      expectedRevision: 4,
+      expectedRevision: 5,
       gateway: replacement
     )
     let starting = WorkspaceID()
     _ = try guardian.provisionWorker(workspace: starting, pid: getpid())
     _ = try guardian.setAdmissionPaused(
       true,
-      expectedRevision: 5,
+      expectedRevision: 6,
       gateway: replacement
     )
     do {
-      _ = try await select("two", revision: 6, gateway: replacement)
+      _ = try await select("two", revision: 7, gateway: replacement)
       Issue.record("selection crossed starting worker")
     } catch let error as MuxError { #expect(error.code == .quiescing) }
-    #expect(try guardian.admissionStatus(gateway: replacement).revision == 6)
+    #expect(try guardian.admissionStatus(gateway: replacement).revision == 7)
     #expect(try registry.pinSelected().build == "one")
   }
 

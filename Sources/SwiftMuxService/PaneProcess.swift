@@ -19,6 +19,8 @@ protocol PaneProcess: AnyObject, Sendable {
   var exitStatus: Int32? { get }
   var finished: Bool { get }
   var childIsExiting: Bool { get }
+  /// After a successful start: the child began in home instead.
+  var directoryFallback: Bool { get }
   var replyReserve: Int { get }
   var hasOpenPaste: Bool { get }
   var pasteID: UInt64? { get }

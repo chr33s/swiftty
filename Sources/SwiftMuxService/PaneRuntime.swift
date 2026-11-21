@@ -13,7 +13,8 @@ import Synchronization
 enum PaneEvent: Sendable {
   case title(String)
   case bell
-  case workingDirectory(String)
+  /// `local` is false for a directory on another host (OSC 7 over SSH).
+  case workingDirectory(String, local: Bool)
   /// OSC 7501 changes in stream order, under the terminal epoch they
   /// happened in. Always delivered before `finished`.
   case status(TerminalEpochID, [StatusChange])
@@ -104,6 +105,8 @@ final class PaneRuntime: @unchecked Sendable {
   private let observePaneIO: (@Sendable (PaneID, PaneIOObservation) -> Void)?
   private let javaScriptRuntime: JavaScriptRuntime?
   var pid: pid_t { process.pid }
+  /// After launch: the child started in home, not the requested directory.
+  var directoryFallback: Bool { process.directoryFallback }
   /// Every committed state change advances this.
   private(set) var revision: UInt64 = 0
   /// Owned by this pane: the generation of the last applied geometry
@@ -352,7 +355,12 @@ final class PaneRuntime: @unchecked Sendable {
         onEvent?(.title(DisplayText.sanitize(raw)))
       case .bell: onEvent?(.bell)
       case let .workingDirectory(d):
-        onEvent?(.workingDirectory(d))
+        onEvent?(
+          .workingDirectory(
+            d,
+            local: SavedLayoutHost.isLocal(state.workingDirectoryHost)
+          )
+        )
         javaScriptRuntime?.directoryChanged(d, pane: id.description)
       default: break  // OSC 52 clipboard writes are disabled
       }

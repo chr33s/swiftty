@@ -176,7 +176,7 @@ extension GuardianLifecycleProbe {
             )
           ) { [weak self] outcome in
             guard let self else { return }
-            if case let .success(.spawned(pid, process)) = outcome {
+            if case let .success(.spawned(pid, process, _)) = outcome {
               self.handle = GuardianPaneHandle(pane: pane, process: process)
               self.shell = pid
               self.writeEvidence()

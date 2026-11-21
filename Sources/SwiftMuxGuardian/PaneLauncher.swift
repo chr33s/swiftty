@@ -10,6 +10,12 @@ package struct LaunchedProcess: Sendable {
   package var slave: Int32
   package var pid: pid_t
   package var warnings: [String]
+
+  /// The launcher could not enter the requested directory and fell back to
+  /// home (`swmux-launcher` reports `W chdir`).
+  package var directoryFallback: Bool {
+    warnings.contains { $0.hasPrefix("W chdir") }
+  }
 }
 
 /// Starts pane processes through the fresh `swmux-launcher` executable.

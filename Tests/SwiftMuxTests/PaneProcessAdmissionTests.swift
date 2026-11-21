@@ -597,6 +597,7 @@ private final class DelayedProcess: PaneProcess, @unchecked Sendable {
   var exitStatus: Int32? { inner.exitStatus }
   var finished: Bool { inner.finished }
   var childIsExiting: Bool { inner.childIsExiting }
+  var directoryFallback: Bool { inner.directoryFallback }
   var replyReserve: Int { inner.replyReserve }
   var hasOpenPaste: Bool { inner.hasOpenPaste }
   var pasteID: UInt64? { inner.pasteID }

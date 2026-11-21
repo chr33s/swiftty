@@ -435,7 +435,7 @@ Keep this storage independent of the guardian's live I/O and migration release g
 | --- | --- |
 | The gateway owns the store | Only the gateway reads, writes and deletes records. The guardian has no knowledge of the store. Workers supply metadata and exports on request and never touch the disk |
 | Follow the graph, but not exits | Layout writes follow `observeWorkspaceGraph` updates. Changes caused by commands are saved promptly. Changes caused by process exit wait out a hold, so shutdown cannot shrink a saved layout (§12.2.5) |
-| End carries a disposition | End commands state why the workspace ends. The worker reports this through guardian inventory, and the gateway applies it to the record before Forget (§12.2.6) |
+| End carries a disposition | End commands state why the workspace ends. The worker keeps it, with its now-empty graph, until End and Forget retire it; the gateway applies it to the record first (§12.2.6). The guardian learns nothing about saved layouts |
 | Save layout by default; save output only by opt-in | Layout makes reboot recovery useful by default. Output can hold secrets, so it stays off until enabled |
 | Seal every record | Paths, names and arguments are sensitive too. §12.2.4 states what sealing does and does not protect against |
 | Ask before reopening by default | Automatic reopening is a standing user choice and only ever starts login shells |
@@ -541,15 +541,16 @@ Measure CPU, write volume and export pauses for idle, busy and full-history work
 
 #### 12.2.6 Ending and discovery
 
-**Disposition.** End commands carry a disposition, set by whoever issues them. When a workspace ends, its worker reports the disposition to the guardian, and guardian inventory keeps it until Forget:
+**Disposition.** End commands carry a disposition, set by whoever issues them. When a workspace ends, its worker reports the disposition in `savedLayoutState` (`SavedLayoutEnd`) and keeps reporting it until the gateway retires the empty worker with End and Forget:
 
 | Disposition | Issued by | Effect on the record |
 | --- | --- | --- |
 | `ended` | End from a user, CLI or automation command, including `swmux end` and `end-all` | Delete |
 | `retained` | End issued by an update with `endWorkspaces` (`UpdateCoordinator.install`), guardian maintenance, initial adoption, or uninstall without purge | Keep it as Saved |
 | `exited` | Reported by the worker when the last pane exits | Delete after the exit hold; keep it if SIGTERM or guardian loss intervenes |
+| — | Worker lost (unavailable) | Keep: the record stays Unavailable, then Saved under a new incarnation |
 
-The gateway applies the disposition to the record and then issues Forget (§8). A gateway that crashes in between finds the entry still in inventory and applies it again; deletion is idempotent. The guardian's own SIGTERM path (`GuardianServer.shutdown`) fences workers before terminating panes, so it produces no exit-caused graph changes. Records of the workspaces it stops remain Saved under the next incarnation.
+The gateway applies the disposition to the record and only then issues End and Forget for the empty worker (§8). A gateway that crashes in between finds the worker still in inventory, reads the same disposition and applies it again; deletion is idempotent. When the gateway itself ends a live workspace, it writes the `ended` disposition into the record before End, so a crash after End still deletes it. A worker shutting down (`prepareToExit`) reports `retained`. The guardian's own SIGTERM path (`GuardianServer.shutdown`) fences workers before terminating panes, so it produces no exit-caused graph changes. Records of the workspaces it stops remain Saved under the next incarnation.
 
 **Classification.** After initial inventory (§5.1), classify each readable record:
 

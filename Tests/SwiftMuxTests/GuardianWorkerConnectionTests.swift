@@ -187,7 +187,7 @@ struct GuardianWorkerConnectionTests {
     }
     #expect(completed.wait(timeout: .now() + 3) == .success)
     let spawned = try #require(result.withLock { $0 }).get()
-    guard case let .spawned(pid, process) = spawned else {
+    guard case let .spawned(pid, process, _) = spawned else {
       Issue.record("spawn failed: \(spawned)")
       return
     }

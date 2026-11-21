@@ -75,6 +75,8 @@ struct Workspace {
   /// Environment snapshot taken at creation; new panes reuse it.
   var launch: LaunchSpec
   var layoutRevision: UInt64 = 1
+  /// Workspace › Don't Save Output (spec.durability.md §12.2.2).
+  var outputOptOut = false
 
   func tabIndex(containing pane: PaneID) -> Int? {
     tabs.firstIndex { $0.layout.contains(pane) }
@@ -90,6 +92,11 @@ struct PaneRecord {
   var rows: Int
   var title = ""
   var workingDirectory: String?
+  /// How the pane started, for saved layouts.
+  var launch: SavedPaneLaunch = .loginShell
+  /// The last directory on this Mac; splits and saved layouts use only this.
+  var localDirectory: String?
+  var directoryFallback = false
   var exitStatus: Int32?
   /// Removed from the layout; kept only until its process is reaped.
   var detachedFromLayout = false

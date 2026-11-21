@@ -21,6 +21,8 @@ package final class GuardianPTY: @unchecked Sendable {
   private var slave: Int32 = -1
   private let spawnedPID = Atomic<pid_t>(0)
   package var pid: pid_t { spawnedPID.load(ordering: .acquiring) }
+  /// Set at adoption: the child started in home, not the requested directory.
+  package private(set) var directoryFallback = false
   package var isOpen: Bool { master >= 0 }
   package private(set) var exitStatus: Int32?
   package private(set) var finished = false
@@ -121,6 +123,7 @@ package final class GuardianPTY: @unchecked Sendable {
   /// for the launcher handshake off the I/O queue.
   package func adopt(_ p: LaunchedProcess) {
     dispatchPrecondition(condition: .onQueue(queue))
+    directoryFallback = p.directoryFallback
     master = p.master
     slave = p.slave
     let (stored, _) = spawnedPID.compareExchange(

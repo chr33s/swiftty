@@ -246,6 +246,12 @@ public struct TerminalState: ~Copyable {
     directoryBytes.reserveCapacity(256)
   }
 
+  /// Host of the latest OSC 7 URL: nil or empty for none. A remote host
+  /// names a directory on another machine.
+  public var workingDirectoryHost: String? {
+    URL(string: String(decoding: directoryBytes, as: UTF8.self))?.host
+  }
+
   /// Pending events, with title and directory changes coalesced to the
   /// latest value.
   public mutating func takeEvents() -> [TerminalEvent] {

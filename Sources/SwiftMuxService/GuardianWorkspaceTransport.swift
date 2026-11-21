@@ -323,7 +323,7 @@ final class GuardianWorkspaceTransport: @unchecked Sendable {
       let accepted = try commands.submit(command) { [route] result in
         if case .spawn = command {
           route.spawning = false
-          if case let .success(.spawned(_, process)) = result {
+          if case let .success(.spawned(_, process, _)) = result {
             route.handle = GuardianPaneHandle(pane: pane, process: process)
           }
         }
