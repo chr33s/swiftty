@@ -1,0 +1,67 @@
+{
+  "scope": "exact signed swiftmux-guardian, restricted gateway identity and worker lifetime",
+  "production_gateway": false,
+  "root": "/private/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-daemon-qualification-022o6qo9",
+  "revision": "1ee84b9d0b8c2353bd0605cf1ec638c7884db40f",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2.1\nBuildVersion:\t\t26B131",
+  "checks": [
+    "same-team wrong gateway identifier rejected without revoking authorized access",
+    "exact guardian, pinned worker, shell, job and prior terminal output survive gateway crash and replacement",
+    "aggregate discovery establishes graph subscriptions with preserved revision, tab and pane identities",
+    "worker loss retains shell/job until gateway-issued End",
+    "shared gateway supervisor completes End/Forget and verifies inventory retirement"
+  ],
+  "passed": true,
+  "guardian_signature": "Executable=/private/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-daemon-qualification-022o6qo9/Guardian.app/Contents/MacOS/probe\nIdentifier=com.chr33s.swiftty.durability-probe.f088a6caee6946c9aaeb74425bc44827.guardian.app\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20500 size=45053 flags=0x10000(runtime) hashes=1399+3 location=embedded\nVersionPlatform=1\nVersionMin=1769472\nVersionSDK=1769472\nHash type=sha256 size=32\nCandidateCDHash sha256=bd993346c0bd0ddb8f626a86547509ea941c8513\nCandidateCDHashFull sha256=bd993346c0bd0ddb8f626a86547509ea941c8513bd3d873f50fbce5c038c3d4f\nHash choices=sha256\nCMSDigest=bd993346c0bd0ddb8f626a86547509ea941c8513bd3d873f50fbce5c038c3d4f\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=10813440\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=bd993346c0bd0ddb8f626a86547509ea941c8513\nSignature size=9044\nAuthority=Developer ID Application: Dot Media CC (72KB9YQR7B)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=Nov 21, 2026 at 12:27:50\u202fPM\nInfo.plist entries=11\nTeamIdentifier=72KB9YQR7B\nRuntime Version=27.0.0\nSealed Resources version=2 rules=13 files=3\nInternal requirements count=1 size=244\nTotal signatures=1\nChosen signature=1\n",
+  "before": {
+    "graphRevision": "1",
+    "graphTab": "86E8ED30-35D3-4A60-B5DB-A6C8252CE7FE",
+    "server": "613B5289-C6DA-4842-AA8A-E9B12A15965A",
+    "graphPane": "3550F52D-120C-495B-A388-5BE2DE48AB6A",
+    "build": "1",
+    "proof": "proof_D0F5BB8E45D84BB5A0ABE696768E074B=durable:12806:12807:himB:ok",
+    "workspace": "34CFBB77-5E6C-42B8-AF02-48DC9563A3B0",
+    "gateway": "12801",
+    "workerBuild": "one",
+    "worker": "12803",
+    "shell": 12806,
+    "job": 12807,
+    "guardian": 12798
+  },
+  "wrong_role": {
+    "exit": 1,
+    "stderr": "probe: connectionLost: guardian connection lost"
+  },
+  "restarted": {
+    "proof": "proof_A3ED1DE3A5E04BE1B9FFEF7236C8F6C2=durable:12806:12807:himB:ok",
+    "graphTab": "86E8ED30-35D3-4A60-B5DB-A6C8252CE7FE",
+    "graphRevision": "1",
+    "workerBuild": "one",
+    "build": "1",
+    "server": "613B5289-C6DA-4842-AA8A-E9B12A15965A",
+    "worker": "12803",
+    "graphPane": "3550F52D-120C-495B-A388-5BE2DE48AB6A",
+    "gateway": "12936",
+    "workspace": "34CFBB77-5E6C-42B8-AF02-48DC9563A3B0",
+    "shell": 12806,
+    "job": 12807,
+    "guardian": 12798
+  },
+  "replaced": {
+    "workerBuild": "one",
+    "graphPane": "3550F52D-120C-495B-A388-5BE2DE48AB6A",
+    "graphRevision": "1",
+    "graphTab": "86E8ED30-35D3-4A60-B5DB-A6C8252CE7FE",
+    "worker": "12803",
+    "proof": "proof_9BF5DAA87DDE48F9A82D177373FA8B12=durable:12806:12807:himB:ok",
+    "gateway": "12957",
+    "workspace": "34CFBB77-5E6C-42B8-AF02-48DC9563A3B0",
+    "server": "613B5289-C6DA-4842-AA8A-E9B12A15965A",
+    "build": "2",
+    "shell": 12806,
+    "job": 12807,
+    "guardian": 12798
+  },
+  "processes_gone": true,
+  "cleanup_errors": []
+}

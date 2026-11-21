@@ -1,0 +1,117 @@
+{
+  "scope": "exact signed guardian and gateway with independent native frontend",
+  "root": "/private/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-gateway-qualification-2z2c7sng",
+  "revision": "1ee84b9d0b8c2353bd0605cf1ec638c7884db40f",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2.1\nBuildVersion:\t\t26B131",
+  "passed": true,
+  "checks": [
+    "signed candidate is copied, revalidated and atomically staged without replacing existing versions; lifecycle replacement uses that published copy",
+    "independent signed frontend validates staged gateway and nested executable identity before accepting the sealed compatibility declaration",
+    "signed swmux lists inventory, reports status, creates once and ends the explicit workspace ID",
+    "same signed swmux process automatically reattaches after SIGTERM, SIGKILL and signed gateway replacement with retained shell variables, shell/job PIDs and output",
+    "signed swmux attaches through gateway, renders real shell output and detaches without End",
+    "separate frontend preserves terminal output, graph, shell variables and job control through graceful exit, SIGKILL and signed bundle replacement",
+    "separate frontend ends unavailable workspace and observes absent inventory"
+  ],
+  "staged_candidate": "/private/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-gateway-qualification-2z2c7sng/GatewayVersions/2/Gateway.app",
+  "candidate_manifest": {
+    "workerProtocols": [
+      2
+    ],
+    "nativeControlProtocol": 1,
+    "guardianProtocol": 1,
+    "build": "2",
+    "schema": 1
+  },
+  "before": {
+    "workspace": "BDC54AE8-EFAD-4342-876A-C0F9363D83BB",
+    "pane": "C797B8A7-CDC9-4356-8A4D-88C4586DCE98",
+    "proof": "proof_D76FFB428ED64DCD8047C534F80B028A=durable:14357:14358:himB",
+    "frontend": "14337",
+    "tab": "33ED1777-6C63-42FC-9BDE-177F22929DE5",
+    "server": "890BAE07-D125-4343-B38B-C7D83B028552",
+    "gateway": 14333,
+    "guardian": 14331,
+    "shell": 14357,
+    "job": 14358,
+    "worker": 14339
+  },
+  "cli_workspace": "3DA144B4-A0BF-4B5E-A7D2-0B7F8DAAA40E",
+  "attached_recovery": [
+    {
+      "event": "graceful",
+      "gateway_before": 14333,
+      "gateway_after": 14538,
+      "frontend": 14404,
+      "proof": "cli-recovered-graceful=durable:14357:14358"
+    },
+    {
+      "event": "crashed",
+      "gateway_before": 14538,
+      "gateway_after": 14673,
+      "frontend": 14404,
+      "proof": "cli-recovered-crashed=durable:14357:14358"
+    },
+    {
+      "event": "replaced",
+      "gateway_before": 14673,
+      "gateway_after": 14685,
+      "frontend": 14404,
+      "proof": "cli-recovered-replaced=durable:14357:14358"
+    }
+  ],
+  "after_attached": {
+    "pane": "C797B8A7-CDC9-4356-8A4D-88C4586DCE98",
+    "proof": "proof_474F7ADF22BD4D489D0A2FAF5945A64E=durable:14357:14358:himB",
+    "workspace": "BDC54AE8-EFAD-4342-876A-C0F9363D83BB",
+    "frontend": "14695",
+    "tab": "33ED1777-6C63-42FC-9BDE-177F22929DE5",
+    "server": "890BAE07-D125-4343-B38B-C7D83B028552",
+    "gateway": 14685,
+    "guardian": 14331,
+    "shell": 14357,
+    "job": 14358,
+    "worker": 14339
+  },
+  "graceful": {
+    "proof": "proof_2B0F5BCB1C6A4299BD80E7D53CAA7318=durable:14357:14358:himB",
+    "server": "890BAE07-D125-4343-B38B-C7D83B028552",
+    "pane": "C797B8A7-CDC9-4356-8A4D-88C4586DCE98",
+    "tab": "33ED1777-6C63-42FC-9BDE-177F22929DE5",
+    "workspace": "BDC54AE8-EFAD-4342-876A-C0F9363D83BB",
+    "frontend": "14821",
+    "gateway": 14816,
+    "guardian": 14331,
+    "shell": 14357,
+    "job": 14358,
+    "worker": 14339
+  },
+  "crashed": {
+    "workspace": "BDC54AE8-EFAD-4342-876A-C0F9363D83BB",
+    "proof": "proof_44A6DEC068CF471C80D39F4593528797=durable:14357:14358:himB",
+    "frontend": "16219",
+    "tab": "33ED1777-6C63-42FC-9BDE-177F22929DE5",
+    "server": "890BAE07-D125-4343-B38B-C7D83B028552",
+    "pane": "C797B8A7-CDC9-4356-8A4D-88C4586DCE98",
+    "gateway": 16215,
+    "guardian": 14331,
+    "shell": 14357,
+    "job": 14358,
+    "worker": 14339
+  },
+  "replaced": {
+    "workspace": "BDC54AE8-EFAD-4342-876A-C0F9363D83BB",
+    "tab": "33ED1777-6C63-42FC-9BDE-177F22929DE5",
+    "server": "890BAE07-D125-4343-B38B-C7D83B028552",
+    "frontend": "16229",
+    "pane": "C797B8A7-CDC9-4356-8A4D-88C4586DCE98",
+    "proof": "proof_E31D0C9A6973483DAD627E2459D669B4=durable:14357:14358:himB",
+    "gateway": 16225,
+    "guardian": 14331,
+    "shell": 14357,
+    "job": 14358,
+    "worker": 14339
+  },
+  "processes_gone": true,
+  "cleanup_errors": []
+}

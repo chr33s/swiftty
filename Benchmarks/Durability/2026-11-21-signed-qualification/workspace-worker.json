@@ -1,0 +1,81 @@
+{
+  "scope": "signed supervised worker, XPC and guardian-owned PTY",
+  "production_workspace_routing": false,
+  "real_workspace_worker": true,
+  "root": "/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-worker-qualification-x4w0ahd_",
+  "revision": "1ee84b9d0b8c2353bd0605cf1ec638c7884db40f",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2.1\nBuildVersion:\t\t26B131",
+  "checks": [
+    "signed worker authenticates from its own PID and receives PTY output",
+    "real worker retains graph, frame state, shell variable and job control across gateway replacement",
+    "gateway kill and replacement preserve guardian, worker and PTY child",
+    "worker SIGKILL is reaped while guardian retains the same PTY child"
+  ],
+  "passed": true,
+  "guardian_signature": "Executable=/private/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-worker-qualification-x4w0ahd_/Guardian.app/Contents/MacOS/probe\nIdentifier=com.chr33s.swiftty.durability-probe.2d6dc1584159482094f6c07446234f6a.guardian.app\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20500 size=45053 flags=0x10000(runtime) hashes=1399+3 location=embedded\nVersionPlatform=1\nVersionMin=1769472\nVersionSDK=1769472\nHash type=sha256 size=32\nCandidateCDHash sha256=fe4d9b003a60a1efa883d5e7ea60cb16831073b1\nCandidateCDHashFull sha256=fe4d9b003a60a1efa883d5e7ea60cb16831073b1b243a4b55cd5805609723a95\nHash choices=sha256\nCMSDigest=fe4d9b003a60a1efa883d5e7ea60cb16831073b1b243a4b55cd5805609723a95\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=10813440\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=fe4d9b003a60a1efa883d5e7ea60cb16831073b1\nSignature size=9044\nAuthority=Developer ID Application: Dot Media CC (72KB9YQR7B)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=Nov 21, 2026 at 12:26:57\u202fPM\nInfo.plist entries=10\nTeamIdentifier=72KB9YQR7B\nRuntime Version=27.0.0\nSealed Resources version=2 rules=13 files=3\nInternal requirements count=1 size=244\nTotal signatures=1\nChosen signature=1\n",
+  "before": {
+    "shellFinished": false,
+    "shell": 11356,
+    "available": true,
+    "guardian": 11241,
+    "worker": 11245,
+    "workerFinished": false
+  },
+  "gateway_before": {
+    "pid": 11354,
+    "gateway": "11354",
+    "workspace": "D7C6C826-5DC7-45DD-BD6F-1083B999CC17",
+    "graphTab": "BD3527FD-AA4D-4C4F-9429-4FF1D3C28608",
+    "workerBuild": "signed-probe-1",
+    "proof": "proof_B9237177C1704E998033910B1EB44FD6=durable:11356:11360:himB:",
+    "graphRevision": "1",
+    "server": "0170EDF4-E484-44CD-9551-18694D7CF441",
+    "worker": "11245",
+    "graphPane": "692112DC-3FF3-4309-9D77-8C6B25D30038",
+    "build": "1"
+  },
+  "gateway_restarted": {
+    "pid": 11537,
+    "graphRevision": "1",
+    "build": "1",
+    "worker": "11245",
+    "graphPane": "692112DC-3FF3-4309-9D77-8C6B25D30038",
+    "proof": "proof_08AFE4879E2C40B49F3AFB6366409E64=durable:11356:11360:himB:",
+    "server": "0170EDF4-E484-44CD-9551-18694D7CF441",
+    "gateway": "11537",
+    "workerBuild": "signed-probe-1",
+    "workspace": "D7C6C826-5DC7-45DD-BD6F-1083B999CC17",
+    "graphTab": "BD3527FD-AA4D-4C4F-9429-4FF1D3C28608"
+  },
+  "gateway_after": {
+    "pid": 11543,
+    "proof": "proof_E9D00AB1C28C4A51AA4F7A3F271F2A9A=durable:11356:11360:himB:",
+    "server": "0170EDF4-E484-44CD-9551-18694D7CF441",
+    "build": "2",
+    "gateway": "11543",
+    "worker": "11245",
+    "workerBuild": "signed-probe-1",
+    "graphRevision": "1",
+    "workspace": "D7C6C826-5DC7-45DD-BD6F-1083B999CC17",
+    "graphPane": "692112DC-3FF3-4309-9D77-8C6B25D30038",
+    "graphTab": "BD3527FD-AA4D-4C4F-9429-4FF1D3C28608"
+  },
+  "after_worker_loss": {
+    "shellFinished": false,
+    "shell": 11356,
+    "available": false,
+    "guardian": 11241,
+    "worker": 11245,
+    "workerFinished": true
+  },
+  "gateway_pids": [
+    11354,
+    11543
+  ],
+  "ended": {
+    "workerFinished": true,
+    "shellFinished": true,
+    "retired": true
+  },
+  "cleanup_errors": []
+}

@@ -3577,3 +3577,32 @@ Not yet exercised: a reopen through a real guardian-created worker (the
 end-to-end test covers saving across a guardian loss and listing as Saved;
 template creation is covered at the worker and with a fake guardian), the
 login keychain on a signed build, and RS3's logout ordering on a real session.
+
+### 13.71 Signed qualification on the rebased tree — 2026-11-21
+
+All six `qualify-guardian-lifecycle.py` modes (default, `--worker-transport`,
+`--workspace-worker`, `--worker-builds`, `--guardian-daemon`,
+`--gateway-daemon`) passed at `1ee84b9d` on macOS 27.2.1 (26B131), Developer ID
+team `72KB9YQR7B`, with no cleanup errors. The evidence files are committed in
+[Benchmarks/Durability/2026-11-21-signed-qualification](Benchmarks/Durability/2026-11-21-signed-qualification).
+
+```sh
+swift build
+python3 Scripts/qualify-guardian-lifecycle.py [MODE] \
+  --identity 'Developer ID Application: Dot Media CC (72KB9YQR7B)' \
+  --bin-dir "$(swift build --show-bin-path)"
+```
+
+| Gate | Signed evidence | Not yet established |
+| --- | --- | --- |
+| UA1 | Guardian, worker, shell and job PIDs, variables, output and job control survive gateway graceful exit, SIGKILL, unregister/replace/register and signed bundle replacement, attached (`swmux` reattach) and detached | The installed app's own updater path |
+| UA2 | `swmux` reattaches with fresh authority after each gateway loss | Remote (roaming) reconnect through the gateway; simultaneous takeover is unit-tested only |
+| UA3 | — | Unit and integration tests only (writer, paste and reply ordering) |
+| UA4 | Two signed builds: new workspaces use the selected build, live builds stay pinned, collection waits for End and retirement | Mixed-version code (both builds share one implementation); production update orchestration, final compatibility under the barrier and rollback publication |
+| UA5 | Worker SIGKILL is reaped while the guardian retains the PTY child; worker loss retains shell and job until gateway-issued End | Worker hang (watchdog) under signing; guardian loss is unit-tested only |
+| UA6 | — | Unit tests only (uncertain launch is neither retried nor ended) |
+| UA7 | A same-team gateway with the wrong identifier is refused without revoking authorized access | Memory pressure and full output buffers under signing |
+| UA8 | — | Initial adoption, guardian maintenance, uninstall and reboot need the installer integration, which is not implemented |
+
+Update durability is therefore still not shippable as a product capability:
+the signed lifecycle proofs pass, but UA4's orchestration and UA8 remain open.

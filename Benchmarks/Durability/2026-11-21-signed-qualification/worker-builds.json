@@ -1,0 +1,158 @@
+{
+  "scope": "signed registry installation, selected builds and live resource pins",
+  "same_worker_implementation": true,
+  "production_gateway": false,
+  "revision": "1ee84b9d0b8c2353bd0605cf1ec638c7884db40f",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2.1\nBuildVersion:\t\t26B131",
+  "root": "/private/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-build-qualification-zdcl2tcr",
+  "passed": true,
+  "checks": [
+    "new workspace uses build two; live build one cannot be collected after rollback retention clears",
+    "gateway replacement preserves old worker, shell, job, prior output and version-specific terminfo",
+    "old build collects only after explicit End and retirement; selected build remains"
+  ],
+  "guardian_signature": "Executable=/private/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-build-qualification-zdcl2tcr/Guardian.app/Contents/MacOS/probe\nIdentifier=com.chr33s.swiftty.durability-probe.05f17ac8967241efb1abe8d401e78f46.guardian.app\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20500 size=45053 flags=0x10000(runtime) hashes=1399+3 location=embedded\nVersionPlatform=1\nVersionMin=1769472\nVersionSDK=1769472\nHash type=sha256 size=32\nCandidateCDHash sha256=d295c24c33ac0b377247690f296a4a2acd1ecea3\nCandidateCDHashFull sha256=d295c24c33ac0b377247690f296a4a2acd1ecea3168f293b7a19b18b5d8c1a35\nHash choices=sha256\nCMSDigest=d295c24c33ac0b377247690f296a4a2acd1ecea3168f293b7a19b18b5d8c1a35\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=10813440\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=d295c24c33ac0b377247690f296a4a2acd1ecea3\nSignature size=9044\nAuthority=Developer ID Application: Dot Media CC (72KB9YQR7B)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=Nov 21, 2026 at 12:27:29\u202fPM\nInfo.plist entries=10\nTeamIdentifier=72KB9YQR7B\nRuntime Version=27.0.0\nSealed Resources version=2 rules=13 files=2\nInternal requirements count=1 size=244\nTotal signatures=1\nChosen signature=1\n",
+  "first": {
+    "workerBuild": "one",
+    "graphPane": "AA6B69E3-06D2-4AD9-B9C0-6070EBB8E35D",
+    "worker": "11601",
+    "workspace": "14442241-0E1F-4584-8D9F-026EF35F321D",
+    "proof": "proof_D7C31E7121134933A1C55F3F83A0E7F9=durable:11602:11603:himB:ok",
+    "server": "5F178998-7162-4F4A-A51D-F1A590CA6B42",
+    "gateway": "11600",
+    "build": "1",
+    "graphTab": "ACDA5F0C-81B6-4BA0-8F74-2E64937A5A07",
+    "graphRevision": "1",
+    "guardian": 11598
+  },
+  "second": {
+    "server": "427A2261-547A-4CA5-8A94-5D2190EB2F5C",
+    "worker": "11609",
+    "graphRevision": "1",
+    "gateway": "11608",
+    "graphPane": "DAE0D695-5ED6-4CDD-A0DA-9E4A1288D6FC",
+    "proof": "proof_EE52352773194540883FD5EEF7B6D394=durable:11610:11611:himB:ok",
+    "graphTab": "49037877-FD30-4404-9618-0358BE8D3677",
+    "build": "1",
+    "workerBuild": "two",
+    "workspace": "72481961-97E5-46BD-A6FD-275100966069",
+    "guardian": 11598
+  },
+  "reattached": {
+    "graphTab": "ACDA5F0C-81B6-4BA0-8F74-2E64937A5A07",
+    "proof": "proof_F2F045B7051241CE9A45830B1A6CEF65=durable:11602:11603:himB:ok",
+    "graphRevision": "1",
+    "server": "5F178998-7162-4F4A-A51D-F1A590CA6B42",
+    "workerBuild": "one",
+    "gateway": "11632",
+    "graphPane": "AA6B69E3-06D2-4AD9-B9C0-6070EBB8E35D",
+    "build": "1",
+    "worker": "11601",
+    "workspace": "14442241-0E1F-4584-8D9F-026EF35F321D",
+    "guardian": 11598
+  },
+  "inventory": [
+    {
+      "worker": {
+        "finished": false,
+        "pid": 11601,
+        "build": "one"
+      },
+      "starting": false,
+      "workerProtocol": 2,
+      "authority": {
+        "workspace": "14442241-0E1F-4584-8D9F-026EF35F321D",
+        "incarnation": "CE084E51-98E9-4B61-880A-6217B7A30541",
+        "generation": 1
+      },
+      "panes": [
+        {
+          "finished": false,
+          "pane": "AA6B69E3-06D2-4AD9-B9C0-6070EBB8E35D",
+          "pid": 11602,
+          "process": "272150F8-F440-49BA-A9FB-1B3FCC669C18"
+        }
+      ],
+      "available": true
+    },
+    {
+      "worker": {
+        "pid": 11609,
+        "finished": false,
+        "build": "two"
+      },
+      "starting": false,
+      "workerProtocol": 2,
+      "authority": {
+        "incarnation": "CE084E51-98E9-4B61-880A-6217B7A30541",
+        "generation": 2,
+        "workspace": "72481961-97E5-46BD-A6FD-275100966069"
+      },
+      "panes": [
+        {
+          "pid": 11610,
+          "process": "0184A593-5DC8-480F-B3C3-C8E08A1A3BEB",
+          "finished": false,
+          "pane": "DAE0D695-5ED6-4CDD-A0DA-9E4A1288D6FC"
+        }
+      ],
+      "available": true
+    }
+  ],
+  "ended": [
+    {
+      "worker": {
+        "finished": true,
+        "pid": 11601,
+        "status": 15,
+        "build": "one"
+      },
+      "starting": false,
+      "workerProtocol": 2,
+      "authority": {
+        "workspace": "14442241-0E1F-4584-8D9F-026EF35F321D",
+        "incarnation": "CE084E51-98E9-4B61-880A-6217B7A30541",
+        "generation": 1
+      },
+      "panes": [
+        {
+          "finished": true,
+          "pane": "AA6B69E3-06D2-4AD9-B9C0-6070EBB8E35D",
+          "pid": 11602,
+          "process": "272150F8-F440-49BA-A9FB-1B3FCC669C18"
+        }
+      ],
+      "available": false
+    },
+    {
+      "worker": {
+        "pid": 11609,
+        "status": 15,
+        "finished": true,
+        "build": "two"
+      },
+      "starting": false,
+      "workerProtocol": 2,
+      "authority": {
+        "incarnation": "CE084E51-98E9-4B61-880A-6217B7A30541",
+        "generation": 2,
+        "workspace": "72481961-97E5-46BD-A6FD-275100966069"
+      },
+      "panes": [
+        {
+          "pid": 11610,
+          "process": "0184A593-5DC8-480F-B3C3-C8E08A1A3BEB",
+          "finished": true,
+          "pane": "DAE0D695-5ED6-4CDD-A0DA-9E4A1288D6FC"
+        }
+      ],
+      "available": false
+    }
+  ],
+  "selection": {
+    "schema": 1,
+    "selected": "two"
+  },
+  "processes_gone": true,
+  "cleanup_errors": []
+}

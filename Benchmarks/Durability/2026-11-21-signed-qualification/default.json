@@ -1,0 +1,68 @@
+{
+  "scope": "A0 independent signed registration and real PTY lifetime",
+  "production_worker_isolation": false,
+  "root": "/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-guardian-qualification-uqt_8_lo",
+  "revision": "1ee84b9d0b8c2353bd0605cf1ec638c7884db40f",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2.1\nBuildVersion:\t\t26B131",
+  "checks": [
+    "gateway SIGKILL preserves shell and variables",
+    "gateway unregister/replace/register preserves guardian, shell, job and job control"
+  ],
+  "passed": true,
+  "guardian_signature": "Executable=/private/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-guardian-qualification-uqt_8_lo/Guardian.app/Contents/MacOS/probe\nIdentifier=com.chr33s.swiftty.durability-probe.d5e8dd4ba7c84d1ca9840cc4e61a9ee5.guardian.app\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20500 size=45053 flags=0x10000(runtime) hashes=1399+3 location=embedded\nVersionPlatform=1\nVersionMin=1769472\nVersionSDK=1769472\nHash type=sha256 size=32\nCandidateCDHash sha256=469250fe2d3308f68dd67467d077962c4d018e04\nCandidateCDHashFull sha256=469250fe2d3308f68dd67467d077962c4d018e0478779399f7fc471a560d3c40\nHash choices=sha256\nCMSDigest=469250fe2d3308f68dd67467d077962c4d018e0478779399f7fc471a560d3c40\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=10813440\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=469250fe2d3308f68dd67467d077962c4d018e04\nSignature size=9044\nAuthority=Developer ID Application: Dot Media CC (72KB9YQR7B)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=Nov 21, 2026 at 12:26:21\u202fPM\nInfo.plist entries=9\nTeamIdentifier=72KB9YQR7B\nRuntime Version=27.0.0\nSealed Resources version=2 rules=13 files=2\nInternal requirements count=1 size=244\nTotal signatures=1\nChosen signature=1\n",
+  "before": {
+    "guardian": {
+      "build": "swiftmux-0.2",
+      "attached": false,
+      "panes": 0,
+      "server": "038E671A-BE0E-46B5-AB14-1232FF0AD274",
+      "startedAt": 816931586.155645,
+      "innerTerm": "xterm-256color",
+      "quiescing": false,
+      "pid": 11089,
+      "workspaces": 0
+    },
+    "gateway": {
+      "workspaces": 0,
+      "build": "swiftmux-0.2",
+      "attached": false,
+      "panes": 0,
+      "server": "03FA560E-FA7E-45BC-8747-23EFA8DECF2A",
+      "pid": 11091,
+      "innerTerm": "xterm-256color",
+      "quiescing": false,
+      "startedAt": 816931586.668578
+    },
+    "shell_pid": 11095,
+    "job_pid": 11098,
+    "text": "11095\nd5e8dd4ba7c84d1ca9840cc4e61a9ee5\n11098\njob-alive\nallexport      \toff\nbraceexpand    \ton\nemacs          \ton\nerrexit        \toff\nerrtrace       \toff\nfunctrace      \toff\nhashall        \ton\nhistexpand     \toff\nhistory        \ton\nignoreeof      \toff\ninteractive-comments\ton\nkeyword        \toff\nmonitor        \ton\nnoclobber      \toff\nnoexec         \toff\nnoglob         \toff\nnolog          \toff\nnotify         \toff\nnounset        \toff\nonecmd         \toff\nphysical       \toff\npipefail       \toff\nposix          \ton\nprivileged     \toff\nverbose        \toff\nvi             \toff\nxtrace         \toff\n[1]+ 11098 Running                 sleep 300 &\nPROBE-DONE\n"
+  },
+  "after": {
+    "guardian": {
+      "startedAt": 816931586.155645,
+      "build": "swiftmux-0.2",
+      "innerTerm": "xterm-256color",
+      "workspaces": 1,
+      "server": "038E671A-BE0E-46B5-AB14-1232FF0AD274",
+      "pid": 11089,
+      "panes": 1,
+      "attached": false,
+      "quiescing": false
+    },
+    "gateway": {
+      "attached": false,
+      "build": "swiftmux-0.2",
+      "innerTerm": "xterm-256color",
+      "panes": 0,
+      "server": "01C80DFE-0F61-4A1D-93CC-4616DF7720C6",
+      "quiescing": false,
+      "pid": 11112,
+      "workspaces": 0,
+      "startedAt": 816931597.35916
+    },
+    "shell_pid": 11095,
+    "job_pid": 11098,
+    "text": "11095\nd5e8dd4ba7c84d1ca9840cc4e61a9ee5\n11098\njob-alive\nallexport      \toff\nbraceexpand    \ton\nemacs          \ton\nerrexit        \toff\nerrtrace       \toff\nfunctrace      \toff\nhashall        \ton\nhistexpand     \toff\nhistory        \ton\nignoreeof      \toff\ninteractive-comments\ton\nkeyword        \toff\nmonitor        \ton\nnoclobber      \toff\nnoexec         \toff\nnoglob         \toff\nnolog          \toff\nnotify         \toff\nnounset        \toff\nonecmd         \toff\nphysical       \toff\npipefail       \toff\nposix          \ton\nprivileged     \toff\nverbose        \toff\nvi             \toff\nxtrace         \toff\n[1]+ 11098 Running                 sleep 300 &\nPROBE-DONE\n"
+  },
+  "cleanup_errors": []
+}

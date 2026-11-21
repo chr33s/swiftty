@@ -1,0 +1,77 @@
+{
+  "scope": "signed supervised worker, XPC and guardian-owned PTY",
+  "production_workspace_routing": false,
+  "real_workspace_worker": false,
+  "root": "/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-worker-qualification-b7jv1d0g",
+  "revision": "1ee84b9d0b8c2353bd0605cf1ec638c7884db40f",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2.1\nBuildVersion:\t\t26B131",
+  "checks": [
+    "signed worker authenticates from its own PID and receives PTY output",
+    "gateway kill and replacement preserve guardian, worker and PTY child",
+    "worker SIGKILL is reaped while guardian retains the same PTY child"
+  ],
+  "passed": true,
+  "guardian_signature": "Executable=/private/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-worker-qualification-b7jv1d0g/Guardian.app/Contents/MacOS/probe\nIdentifier=com.chr33s.swiftty.durability-probe.f5cee27ff2ea4667ad1426d785de31e1.guardian.app\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20500 size=45053 flags=0x10000(runtime) hashes=1399+3 location=embedded\nVersionPlatform=1\nVersionMin=1769472\nVersionSDK=1769472\nHash type=sha256 size=32\nCandidateCDHash sha256=b67880fa33a1b9d22c82692e5a9dc6b8e8e67722\nCandidateCDHashFull sha256=b67880fa33a1b9d22c82692e5a9dc6b8e8e67722ad9b7722a9d58910fc459a8a\nHash choices=sha256\nCMSDigest=b67880fa33a1b9d22c82692e5a9dc6b8e8e67722ad9b7722a9d58910fc459a8a\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=10813440\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=b67880fa33a1b9d22c82692e5a9dc6b8e8e67722\nSignature size=9044\nAuthority=Developer ID Application: Dot Media CC (72KB9YQR7B)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=Nov 21, 2026 at 12:26:39\u202fPM\nInfo.plist entries=10\nTeamIdentifier=72KB9YQR7B\nRuntime Version=27.0.0\nSealed Resources version=2 rules=13 files=2\nInternal requirements count=1 size=244\nTotal signatures=1\nChosen signature=1\n",
+  "before": {
+    "available": true,
+    "workerFinished": false,
+    "shellFinished": false,
+    "worker": 11144,
+    "guardian": 11142,
+    "shell": 11145
+  },
+  "gateway_before": {
+    "attached": false,
+    "build": "swiftmux-0.2",
+    "workspaces": 0,
+    "panes": 0,
+    "innerTerm": "xterm-256color",
+    "pid": 11146,
+    "quiescing": false,
+    "server": "79FD647B-3366-4DFF-BC79-157AFDE28B3E",
+    "startedAt": 816931605.014363
+  },
+  "gateway_restarted": {
+    "startedAt": 816931615.081512,
+    "attached": false,
+    "build": "swiftmux-0.2",
+    "server": "EBD71ED3-7D3D-4D57-9061-955C7AF328C5",
+    "workspaces": 0,
+    "quiescing": false,
+    "innerTerm": "xterm-256color",
+    "panes": 0,
+    "pid": 11187
+  },
+  "gateway_after": {
+    "server": "F8212AC5-74D1-4C2B-A20B-F054AC13A752",
+    "quiescing": false,
+    "innerTerm": "xterm-256color",
+    "startedAt": 816931615.568038,
+    "pid": 11191,
+    "build": "swiftmux-0.2",
+    "attached": false,
+    "workspaces": 0,
+    "panes": 0
+  },
+  "after_worker_loss": {
+    "available": false,
+    "workerFinished": true,
+    "shellFinished": false,
+    "worker": 11144,
+    "guardian": 11142,
+    "shell": 11145
+  },
+  "gateway_pids": [
+    11146,
+    11191
+  ],
+  "ended": {
+    "available": false,
+    "workerFinished": true,
+    "shellFinished": true,
+    "worker": 11144,
+    "guardian": 11142,
+    "shell": 11145
+  },
+  "cleanup_errors": []
+}
