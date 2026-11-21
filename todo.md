@@ -88,14 +88,6 @@ None of these recurs on demand: on 2026-10-27 each was repeated 25–40 times wi
   replacement attachment's scheduler held more than one stream) and passed 15
   of 15 alone. Capture the stream list on recurrence.
 
-- [ ] **Impaired delta history under load:** `ImpairedScreenDeltaTests`
-  ("every installed screen is the host's screen at that revision", seed
-  169869315) failed once in a full `Scripts/test-native.sh` run on 2026-11-21
-  with "timed out waiting for older history"
-  (`ImpairedScreenDeltaTests.swift:117`), which left IntegrationTests
-  incomplete. It passed all four seeds in two isolated reruns. Capture the
-  viewport request and history window on recurrence.
-
 ## Source review and harness follow-ups
 
 - [ ] Continue review of current source/app files. Geometry and physical-history

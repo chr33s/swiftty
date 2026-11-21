@@ -36,6 +36,39 @@ struct ImpairedScreenDeltaTests {
     throw HostTestTimeout(what: what)
   }
 
+  /// Scrolls toward older history until an installed screen satisfies
+  /// `predicate`. Each step is shorter than the window and waits for the
+  /// screen it caused, so every history row is shown at least once even
+  /// when a reattachment resets the window to the tail (a history window
+  /// belongs to its attachment) and shifts the alignment of later steps.
+  static func scrollHistory(
+    _ rig: some RoamingTestRig,
+    _ what: String,
+    step: Int,
+    attempts: Int = 60,
+    where predicate: @escaping (PresentationFrame) -> Bool
+  ) async throws {
+    func lines(_ frame: PresentationFrame?) -> [String] {
+      frame.map { frame in (0 ..< frame.rows).map { frame.line($0) } } ?? []
+    }
+    let start = rig.installs.all.count
+    for _ in 0 ..< attempts {
+      try await rig.active()
+      let before = lines(rig.installs.last)
+      await rig.client.scrollViewport(by: step)
+      // True: shown. False: this step's screen arrived without it.
+      let shown = try? await hostEventually(what, timeout: .seconds(4)) {
+        if rig.installs.all.dropFirst(start).contains(where: predicate) {
+          return true
+        }
+        return lines(rig.installs.last) != before ? false : nil
+      }
+      if shown == true { return }
+    }
+    Issue.record("\(rig.label): never showed \(what)")
+    throw HostTestTimeout(what: what)
+  }
+
   /// Typing, scrolling, a progress bar, history moves, an alternate screen
   /// and resizes, with two forced kills at acknowledgement boundaries.
   static func workload(_ rig: some RoamingTestRig) async throws {
@@ -73,9 +106,7 @@ struct ImpairedScreenDeltaTests {
     } where: {
       showsHistory($0)
     }
-    try await until(rig, "older history") {
-      await rig.client.scrollViewport(by: 25)
-    } where: { frame in
+    try await scrollHistory(rig, "older history", step: 8) { frame in
       showsHistory(frame)
         && (0 ..< frame.rows).contains { frame.line($0) == "line-1" }
     }
