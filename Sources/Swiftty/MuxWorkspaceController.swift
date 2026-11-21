@@ -94,6 +94,19 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   var gateway: MuxGatewayConnection?
   /// Shared app control is refreshed only for a new explicit attachment attempt.
   var reconnectGateway: (@MainActor () async throws -> MuxGatewayConnection)?
+  /// Shown until the first input (spec.durability.md §12.2.7).
+  static let reopenedNotice =
+    "Reopened from saved layout — earlier processes ended"
+  /// Set when this window shows a reopened saved layout.
+  var showsReopenedNotice = false {
+    didSet {
+      if showsReopenedNotice {
+        window?.subtitle = Self.reopenedNotice
+      } else if window?.subtitle == Self.reopenedNotice {
+        window?.subtitle = ""
+      }
+    }
+  }
   var gatewayRecovery: Task<Void, Never>?
   /// Connects a legacy replacement (tests use an in-process service).
   var connectService: @MainActor () async throws -> MuxConnection = {
@@ -973,11 +986,13 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
 
   func send(_ input: MuxInput, to pane: PaneID) {
     guard !detached else { return }
+    if showsReopenedNotice { showsReopenedNotice = false }
     inputs?.send(input, to: pane)
   }
 
   func paste(_ text: String, to pane: PaneID) {
     guard !detached else { return }
+    if showsReopenedNotice { showsReopenedNotice = false }
     inputs?.paste(text, to: pane)
   }
 

@@ -11,6 +11,15 @@ struct WorkspaceListing: Sendable {
   /// Gateway inventory retains entries even without usable worker metadata.
   /// There is no single worker server identity for an aggregate listing.
   var gatewayRecords: [GatewayWorkspaceRecord]? = nil
+  /// Saved layouts (spec.durability.md §12.2); nil outside gateway mode or
+  /// when the gateway cannot list them.
+  var saved: SavedWorkspaceList? = nil
+
+  /// Saved records that can open as new workspaces.
+  var reopenable: [SavedWorkspaceListing] {
+    saved?.workspaces.filter { $0.state == .saved || $0.state == .unavailable }
+      ?? []
+  }
 }
 
 extension MuxWorkspaceController {
@@ -204,10 +213,13 @@ extension MuxWorkspaceController {
     gateway: MuxGatewayConnection
   ) async throws -> WorkspaceListing {
     let records = try await gateway.listWorkspaces()
+    // Saved layouts never block the live listing.
+    let saved = try? await gateway.savedWorkspaces()
     return WorkspaceListing(
       server: nil,
       workspaces: records.compactMap(\.summary),
-      gatewayRecords: records
+      gatewayRecords: records,
+      saved: saved
     )
   }
 

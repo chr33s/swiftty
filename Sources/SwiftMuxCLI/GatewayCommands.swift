@@ -16,6 +16,11 @@ func gatewayCommand(service: String) async -> Never {
   case "", "list", "ls", "status":
     validateArguments();
     options = [:]
+  case "restore":
+    options =
+      parseArguments(values: ["-t"], flags: ["-d", "--run-saved-commands"])
+      .options
+  case "saved": await savedCommand(service: service)
   default:
     fail(
       "\(command) is not supported by the gateway control protocol",
@@ -23,7 +28,7 @@ func gatewayCommand(service: String) async -> Never {
     )
   }
   if ["attach", "a", ""].contains(command)
-    || (command == "new" && options["-d"] == nil)
+    || (["new", "restore"].contains(command) && options["-d"] == nil)
   {
     checkHost()
   }
@@ -61,6 +66,17 @@ func gatewayCommand(service: String) async -> Never {
           )
         }
       case "end", "kill": try await control.endWorkspace(selector)
+      case "restore":
+        let id = try await gatewayRestore(
+          control,
+          target: target,
+          runSavedCommands: options["--run-saved-commands"] != nil
+        )
+        if options["-d"] != nil {
+          print("reopened \(id)")
+        } else {
+          await gatewayAttach(control, selector: .id(id), service: service)
+        }
       case "new":
         let name = options["-s"].map { nameArgument($0, flag: "-s") }
         let id = try await gatewayCreate(

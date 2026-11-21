@@ -143,6 +143,68 @@ final class MuxGatewayApplication {
     return window
   }
 
+  // MARK: Saved layouts (spec.durability.md §12.2)
+
+  /// A new workspace with the saved layout and fresh shells, launched with
+  /// this app's settings as New Workspace would be.
+  func reopen(
+    _ record: WorkspaceID,
+    runSavedCommands commands: [Int],
+    configuration: Configuration
+  ) async throws -> MuxWorkspaceController {
+    let gateway = try await connection()
+    let request = WorkspaceLaunch.request(configuration)
+    var launch = request.launch
+    launch.workingDirectory = nil
+    let (id, _) = try await gateway.reopenSaved(
+      SavedReopenRequest(
+        record: record,
+        launch: launch,
+        columns: request.columns,
+        rows: request.rows,
+        remainOnExit: request.remainOnExit,
+        runCommandSlots: commands
+      )
+    )
+    let deadline = ContinuousClock.now + .seconds(5)
+    while true {
+      try Task.checkCancellation()
+      if let found = try await gateway.listWorkspaces()
+        .first(where: { $0.workspace == id })
+      {
+        if case .available = found.state { break }
+        if case let .unavailable(error) = found.state { throw error }
+      }
+      guard ContinuousClock.now < deadline else {
+        throw MuxError(.quiescing, "reopened workspace discovery is pending")
+      }
+      try await Task.sleep(for: .milliseconds(25))
+    }
+    let window = try await open(
+      .id(id),
+      configuration: configuration,
+      takeover: nil
+    )
+    window.showsReopenedNotice = true
+    return window
+  }
+
+  func savedWorkspaces() async throws -> SavedWorkspaceList {
+    try await connection().savedWorkspaces()
+  }
+
+  func setSavedPolicy(
+    _ policy: SavedLayoutPolicy,
+    expectedRevision: UInt64
+  ) async throws -> SavedLayoutPolicy {
+    try await connection()
+      .setSavedPolicy(policy, expectedRevision: expectedRevision)
+  }
+
+  func deleteSaved(_ id: WorkspaceID?) async throws {
+    try await connection().deleteSaved(id)
+  }
+
   func close() async {
     isClosed = true
     let attempt = opening

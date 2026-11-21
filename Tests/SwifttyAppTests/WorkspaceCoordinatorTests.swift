@@ -133,6 +133,69 @@ struct WorkspaceLaunchActionTests {
     #expect(WorkspaceCoordinator.launchAction(mixed, last: b) == .open(b))
   }
 
+  @Test(arguments: [SavedReopenAtLaunch.ask, .automatic, .never])
+  func savedLayoutsAreOfferedOnlyWithoutLiveWorkspaces(
+    policy reopen: SavedReopenAtLaunch
+  ) {
+    var policy = SavedLayoutPolicy.defaults
+    policy.reopenAtLaunch = reopen
+    let saved = SavedWorkspaceListing(
+      id: a,
+      state: .saved,
+      name: "kept",
+      savedAt: Date(),
+      build: nil,
+      tabCount: 1,
+      paneCount: 2,
+      commands: [.init(slot: 1, command: ["top"])],
+      hasOutput: false
+    )
+    let newer = SavedWorkspaceListing(
+      id: b,
+      state: .newer,
+      name: "newer",
+      savedAt: nil,
+      build: nil,
+      tabCount: 0,
+      paneCount: 0,
+      commands: [],
+      hasOutput: false
+    )
+    let list = SavedWorkspaceList(
+      store: .available,
+      policy: policy,
+      workspaces: [saved, newer]
+    )
+    let empty = WorkspaceListing(
+      server: nil,
+      workspaces: [],
+      gatewayRecords: [],
+      saved: list
+    )
+    let expected: WorkspaceCoordinator.LaunchAction =
+      switch reopen {
+      case .ask: .choose
+      case .automatic: .reopen([a])
+      case .never: .create
+      }
+    #expect(WorkspaceCoordinator.launchAction(empty, last: nil) == expected)
+    #expect(empty.reopenable.map(\.id) == [a])
+    // A live workspace keeps the usual launch behaviour.
+    let live = WorkspaceListing(
+      server: nil,
+      workspaces: [summary(b)],
+      gatewayRecords: [
+        GatewayWorkspaceRecord(
+          workspace: b,
+          state: .available,
+          summary: summary(b)
+        )
+      ],
+      saved: list
+    )
+    #expect(WorkspaceCoordinator.launchAction(live, last: b) == .open(b))
+  }
+
   @Test
   func gatewayStartupCreatesOnlyForAnEmptyInventory() {
     let empty = WorkspaceListing(

@@ -19,13 +19,20 @@ let usage = """
     end -t NAME                  end a workspace and its processes
     end-all                      end every workspace
     status                       show service status
+    restore [-t NAME|ID] [-d] [--run-saved-commands]
+                                 reopen a saved layout with fresh shells
+    saved [list]                 list saved layouts
+    saved policy [--layout on|off] [--output on|off]
+                 [--reopen ask|automatic|never] [--retention DAYS]
+    saved delete -t ID | --all   delete saved layouts
     agent install|uninstall|status
                                  manage a development LaunchAgent (the app
                                  bundle registers its own with SMAppService)
 
   options: --allow-host  run outside the supported Swiftty host profile
            --gateway-service NAME  use an explicitly installed durable gateway
-             (before command; supports new, attach, list, status and targeted end)
+             (before command; supports new, attach, list, status, targeted end,
+             restore and saved)
 
   """
 
@@ -370,6 +377,11 @@ case "end", "kill":
   do { _ = try await c.execute(.endWorkspace(.name(name))) } catch {
     fail("\(error)")
   }
+case "restore", "saved":
+  fail(
+    "\(command) requires --gateway-service NAME: saved layouts belong to the durable gateway",
+    code: 64
+  )
 case "end-all":
   validateArguments()
   let c = await connect(.control)

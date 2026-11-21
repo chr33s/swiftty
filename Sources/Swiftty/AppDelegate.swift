@@ -14,7 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var config: Configuration
   let workspaces: WorkspaceCoordinator
   private let muxUpdate = MuxUpdateController()
-  private let gatewayApplication: MuxGatewayApplication?
+  let gatewayApplication: MuxGatewayApplication?
   /// Connect a Device… (one panel; it owns the Bonjour registration).
   private var connectPanel: ConnectDevicePanelController?
   /// swiftty › Settings… (one window).
@@ -51,9 +51,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     self.gatewayApplication = gatewayApplication
     let list: @MainActor () async throws -> WorkspaceListing
     let open: WorkspaceCoordinator.Open
+    var reopen: WorkspaceCoordinator.Reopen?
     if let owner = gatewayApplication {
       list = { try await owner.listing() }
       open = { try await owner.open($0, configuration: $1, takeover: $2) }
+      reopen = {
+        try await owner.reopen($0, runSavedCommands: $1, configuration: $2)
+      }
     } else {
       list = listMuxWorkspaces
       open = openMuxWorkspace
@@ -62,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       configuration: config.accommodating(.current),
       listWorkspaces: list,
       openWorkspace: open,
+      reopenSaved: reopen,
       reportListError: reportMuxAttachError,
       reportOpenError: reportMuxOpenError,
       defaults: workspaceDefaults,
@@ -434,6 +439,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     service.submenu = NSMenu(title: "Terminal Service")
     service.submenu?
       .addItem(item("Connect a Device…", #selector(connectDevice(_:))))
+    if gatewayApplication != nil {
+      service.submenu?
+        .addItem(item("Saved Workspaces…", #selector(savedWorkspaces(_:))))
+    }
     service.submenu?.addItem(.separator())
     for update in [
       item("Stage Update…", #selector(muxStageUpdate(_:))),
