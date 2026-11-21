@@ -116,10 +116,9 @@ None of these recurs on demand: on 2026-10-27 each was repeated 25–40 times wi
   device (SE-02).
 - [ ] **Planned replacement follow-ups** ([spec.durability.md §13.72](spec.durability.md)):
   transfer live attachments to the candidate instead of re-attaching (a paste
-  still unwritten at release is cancelled today); add peak-memory admission at
-  preparation and an insufficient-memory test (MR7); add reply-pressure-stall
-  (MR3) and clipboard-completion and automation-timer race tests (MR6); give
-  update orchestration (UA4) a caller of `GatewayRuntime.migrateWorkspace`.
+  still unwritten at release is cancelled today, because a new controller's
+  attach discards the previous lease's unwritten input); give update
+  orchestration (UA4) a caller of `GatewayRuntime.migrateWorkspace`.
 
 ## Platform and release validation
 

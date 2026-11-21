@@ -3652,11 +3652,11 @@ outcomes. A guardian workspace now reports why its worker stopped
 | --- | --- |
 | MR1 | `replacementUnderInteractiveLoad`: 100 output lines stream through the cut once, in order, while a typist sends lines. Every acknowledged line appears once, in order; refused lines never appear. Same shell PID |
 | MR2 | `CheckpointTests`: 12 differential seeds, 200 seeds with reflow, every cut of a short stream, compressed history plus an active search anchor with a cut inside UTF-8 and an SGR sequence, corrupt-input fuzz |
-| MR3 | `pendingWritesCrossTheCutOnce` (guardian backlog > 0 at the cut; the exact byte count arrives once; no-migration control) and `anOpenPasteAtTheCutIsNeverResubmitted` (contiguous, never duplicated; the control receives every line) |
+| MR3 | `pendingWritesCrossTheCutOnce` (guardian backlog > 0 at the cut; the exact byte count arrives once; no-migration control), `anOpenPasteAtTheCutIsNeverResubmitted` (contiguous, never duplicated; the control receives every line) and `aReplyPressureStallAtTheCutAbortsByTheDeadline` (unread device-attribute replies stall the parser; no cut forms, the transaction aborts within the frozen deadline and the old worker keeps serving) |
 | MR4 | Candidate lost at admission, hung before import (one 2-second deadline, not extended), crashed after assignment before release, never connected (preparation timeout; old authority unchanged), and lost after release (unavailable; shell retained) |
 | MR5 | Gateway lost mid-cut: the guardian aborts alone, a replacement gateway reads the retained outcome, replayed freeze and cancel return it unchanged, and acknowledgement retires it once. Gateway lost after release: the candidate is rediscovered. Expired deadline refuses release. Duplicate begin is refused |
-| MR6 | End before release: outcome `ended`, the shell is terminated and nothing reopens. A child that exits while frozen reaches the candidate exactly once (`exiting`, `exited`) and never the old worker. An old worker that does not acknowledge resumption leaves the workspace unavailable |
-| MR7 | A corrupt checkpoint, an unsupported format and an oversized total are each refused, and the old worker resumes and accepts input |
+| MR6 | End before release: outcome `ended`, the shell is terminated and nothing reopens. A child that exits while frozen reaches the candidate exactly once (`exiting`, `exited`) and never the old worker. An old worker that does not acknowledge resumption leaves the workspace unavailable. A kitty clipboard read the app still holds is answered `EBUSY` once at the cut, and a late app answer is ignored. Automation actions raised while frozen are deferred with script polling paused, then run once after an abort (`MigrationServiceTests`) |
+| MR7 | A corrupt checkpoint, an unsupported format and an oversized total are each refused, and the old worker resumes and accepts input. Preparation requires available memory of at least twice the old worker's physical footprint (64 MiB minimum, `MigrationMemory`); `insufficientMemoryRefusesBeforeAnythingStarts` shows a refusal starts no candidate and leaves the authority unchanged |
 | MR8 | Old-worker death while frozen: `unavailable`, shell retained, nothing promoted. Signed: [worker-builds-migration.json](Benchmarks/Durability/2026-11-21-planned-replacement/worker-builds-migration.json) |
 
 The signed run (`qualify-guardian-lifecycle.py --worker-builds`, Developer ID
@@ -3681,10 +3681,9 @@ Deviations and open items:
   which is a fresh service instance with full frames. Paste bytes still
   unwritten at release are therefore cancelled, as on any detach. They are
   never resubmitted, and acknowledged ordinary input is preserved.
-- Not exercised: peak-memory admission at preparation (bounded only by the
-  256 MiB checkpoint limit) and insufficient memory (MR7); reply-pressure
-  stalls at the cut (MR3), which are covered only by the deadline abort;
-  clipboard-completion and automation-timer races (MR6).
+- Automation actions deferred during a cut that ends in release are retired
+  with the old worker; the candidate starts its own script runtime, the same
+  volatile-state reset a gateway restart discloses (§5.1).
 - Both signed builds share one implementation, so cross-implementation schema
   compatibility is enforced only by the checkpoint format number.
 - No user-facing command starts a planned replacement. Update orchestration

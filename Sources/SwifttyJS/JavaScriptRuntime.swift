@@ -24,6 +24,7 @@ public final class JavaScriptRuntime: @unchecked Sendable {
   private let onAction: @Sendable (JavaScriptAction) -> Void
   private let queueKey = DispatchSpecificKey<Bool>()
   private var timer: DispatchSourceTimer?
+  private var pollingPaused = false
 
   public struct ScriptError: Error, Sendable, CustomStringConvertible {
     public let description: String
@@ -80,6 +81,7 @@ public final class JavaScriptRuntime: @unchecked Sendable {
   }
 
   deinit {
+    if pollingPaused { timer?.resume() }
     timer?.cancel()
     if DispatchQueue.getSpecific(key: queueKey) == true {
       context = nil
@@ -106,6 +108,16 @@ public final class JavaScriptRuntime: @unchecked Sendable {
       }
       timer = source
       source.resume()
+    }
+  }
+
+  /// Planned replacement freezes timer-driven script work (and resumes it
+  /// after an abort). A paused source is resumed before it is released.
+  public func setPollingPaused(_ paused: Bool) {
+    queue.sync {
+      guard let timer, paused != pollingPaused else { return }
+      pollingPaused = paused
+      if paused { timer.suspend() } else { timer.resume() }
     }
   }
 

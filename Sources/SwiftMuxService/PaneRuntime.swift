@@ -319,6 +319,16 @@ final class PaneRuntime: @unchecked Sendable {
     var epoch: TerminalEpochID
   }
 
+  /// Before the cut: answer clipboard requests the app still holds, and
+  /// hand their replies to the writer.
+  func settleClipboardForMigration() {
+    queue.async { [self] in
+      guard !process.finished else { return }
+      state.settleKittyClipboardForCut()
+      _ = enqueueReplies()
+    }
+  }
+
   /// Refused while effects are unsettled (replies, events, clipboard).
   func migrationCheckpoint() throws -> MigrationCheckpoint {
     try queue.sync { () throws -> MigrationCheckpoint in

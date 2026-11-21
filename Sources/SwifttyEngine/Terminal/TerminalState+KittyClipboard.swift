@@ -232,6 +232,20 @@ extension TerminalState {
     answerKittyClipboardWrite(pending, result)
   }
 
+  /// A planned replacement's cut (spec.durability.md §6): every request the
+  /// app has not answered is answered busy, the existing overflow answer,
+  /// so nothing waits across the cut. A late app answer is then ignored.
+  public mutating func settleKittyClipboardForCut() {
+    for read in pendingKittyClipboardReads {
+      answerKittyClipboardRead(read, .busy)
+    }
+    pendingKittyClipboardReads.removeAll()
+    for write in pendingKittyClipboardWrites {
+      answerKittyClipboardWrite(write, .busy)
+    }
+    pendingKittyClipboardWrites.removeAll()
+  }
+
   /// Answers a write the writer deferred. Unknown or already answered
   /// tokens are ignored.
   public mutating func completeKittyClipboardWrite(

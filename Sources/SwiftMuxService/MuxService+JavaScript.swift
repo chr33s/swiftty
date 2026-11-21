@@ -10,6 +10,9 @@ struct ServiceAutomation {
   var notifications: [Data] = []
   var starting: Set<PaneID> = []
   var pending: [PaneID: [JavaScriptAction]] = [:]
+  /// Actions raised while a planned replacement is frozen: replayed after
+  /// an abort, retired with the old worker after a release.
+  var frozen: [JavaScriptAction] = []
 }
 
 extension MuxService {
@@ -63,6 +66,10 @@ extension MuxService {
   }
 
   func handleAutomation(_ action: JavaScriptAction) {
+    if migrationFrozen, action.kind != .error {
+      if automation.frozen.count < 64 { automation.frozen.append(action) }
+      return
+    }
     switch action.kind {
     case .write, .split, .close, .tabIcon:
       guard let raw = action.pane, let pane = PaneID(raw) else { return }

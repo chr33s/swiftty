@@ -104,6 +104,14 @@ extension GuardianServer {
     }
   }
 
+  /// Replies the guardian holds for the workspace's terminals (tests).
+  package func pendingReplyBytesForTesting(_ id: WorkspaceID) -> Int {
+    queue.sync {
+      workspaces[id]?.panes.values
+        .reduce(0) { $0 + $1.runtime.pendingReplyBytes } ?? 0
+    }
+  }
+
   /// Test-only convenience: begin without launching a process.
   package func beginMigrationForTesting(
     authority: GuardianAuthority,
@@ -131,6 +139,15 @@ extension GuardianServer {
     else { throw MuxError(.staleAttachment, "workspace is not migratable") }
     guard finishedMigrations.count < 64 else {
       throw MuxError(.resourceLimit, "acknowledge finished migrations first")
+    }
+    // Peak-memory admission before anything starts (§7.2 step 1, MR7).
+    let required = migrationMemory.required(for: workspace.expectedPID)
+    let available = migrationMemory.available()
+    guard available >= required else {
+      throw MuxError(
+        .resourceLimit,
+        "insufficient memory for planned replacement: need \(required >> 20) MiB, \(available >> 20) MiB available"
+      )
     }
     let candidate = try allocateAuthority(authority.workspace)
     let value = Migration(

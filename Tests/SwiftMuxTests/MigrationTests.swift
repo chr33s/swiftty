@@ -34,13 +34,19 @@ struct MigrationTests {
 
     init(
       frozenTimeout: TimeInterval = 2,
-      preparationTimeout: TimeInterval = 30
+      preparationTimeout: TimeInterval = 30,
+      // Ample by default so admission never depends on the test host.
+      memory: MigrationMemory = MigrationMemory(
+        available: { .max },
+        footprint: { _ in 0 }
+      )
     ) throws {
       guardian = try GuardianServer(
         launcherPath: launcherPath(),
         peerRequirement: nil,
         migrationPreparationTimeout: preparationTimeout,
-        migrationFrozenTimeout: frozenTimeout
+        migrationFrozenTimeout: frozenTimeout,
+        migrationMemory: memory
       )
       endpoint = guardian.listenAnonymously()
       control = GuardianGatewayServer(guardian: guardian, peerRequirement: nil)
@@ -229,7 +235,8 @@ struct MigrationTests {
 
   private static func attach(
     _ runtime: GatewayRuntime,
-    _ workspace: WorkspaceID
+    _ workspace: WorkspaceID,
+    capabilities: ClientCapabilities = .supported
   ) async throws -> MuxConnection {
     do {
       try await waitUntil("available workspace") {
@@ -245,7 +252,11 @@ struct MigrationTests {
       for: .id(workspace),
       role: .controller
     )
-    return try await MuxConnection.connect(endpoint: route, frontend: .native)
+    return try await MuxConnection.connect(
+      endpoint: route,
+      frontend: .native,
+      capabilities: capabilities
+    )
   }
 
   /// After any outcome that leaves a worker, input and state still work.
@@ -905,6 +916,165 @@ struct MigrationTests {
     #expect(!rig.retired.withLock { $0 })
     await started.client.close()
     try await Self.expectUsable(rig, started, tag: kind)
+    await started.runtime.close()
+  }
+
+  /// MR7: preparation admits the transaction only with room for a second
+  /// worker and the checkpoint; refusal starts nothing.
+  @Test
+  func insufficientMemoryRefusesBeforeAnythingStarts() async throws {
+    let rig = try Rig(
+      memory: MigrationMemory(
+        available: { 32 << 20 },
+        footprint: { _ in 200 << 20 }
+      )
+    )
+    defer { rig.close() }
+    let started = try await Self.start(rig)
+    let before = try #require(rig.guardian.inventory().first?.authority)
+    let launched = Mutex(false)
+    do {
+      _ = try await started.runtime.migrateWorkspace(
+        .id(rig.workspace),
+        started: { _ in launched.withLock { $0 = true } }
+      )
+      Issue.record("migration began without memory")
+    } catch let error as MuxError {
+      #expect(error.code == .resourceLimit)
+      #expect(error.message.contains("memory"), "\(error)")
+    }
+    #expect(!launched.withLock { $0 })
+    #expect(rig.guardian.inventory().first?.authority == before)
+    try await started.client.send(.text("echo roomy-$MARK\r"), to: started.pane)
+    _ = try await started.client.frame(of: started.pane) {
+      $0.lines.contains("roomy-kept-42")
+    }
+    #expect(
+      MigrationMemory.system.available() > 0
+        && MigrationMemory.system.footprint(getpid()) > 0
+    )
+    await started.client.close()
+    await started.runtime.close()
+  }
+
+  /// MR3: replies the program does not read fill the writer and stall the
+  /// parser, so no cut can form: the transaction aborts by its deadline
+  /// rather than deadlocking, and the old worker carries on.
+  @Test
+  func aReplyPressureStallAtTheCutAbortsByTheDeadline() async throws {
+    let rig = try Rig(frozenTimeout: 0.5)
+    defer { rig.close() }
+    let started = try await Self.start(rig)
+    let pane = started.pane
+    try await started.client.send(
+      .text(
+        "sh -c 'echo flooder-$$-up; stty raw -echo; i=0; "
+          + "while [ $i -lt 20000 ]; do printf \"\\033[c\"; i=$((i+1)); done'\r"
+      ),
+      to: pane
+    )
+    let frame = try await started.client.frame(of: pane) {
+      $0.lines.contains { $0.hasPrefix("flooder-") && $0.hasSuffix("-up") }
+    }
+    let line = try #require(
+      frame.lines.first { $0.hasPrefix("flooder-") && $0.hasSuffix("-up") }
+    )
+    let flooder = try #require(Int32(line.split(separator: "-")[1]))
+    // Let the reply backlog build.
+    try await Self.waitUntil("reply pressure") {
+      rig.guardian.pendingReplyBytesForTesting(rig.workspace) > 0
+    }
+    let begun = ContinuousClock.now
+    let status = try await started.runtime.migrateWorkspace(
+      .id(rig.workspace),
+      started: rig.candidate()
+    )
+    #expect(ContinuousClock.now - begun < .seconds(3))
+    #expect(status.outcome == .resumed, "\(String(describing: status.failure))")
+    // The old worker still owns and serves the workspace under backpressure.
+    #expect(rig.available)
+    #expect(!rig.retired.withLock { $0 })
+    await started.client.close()
+    let next = try await Self.attach(started.runtime, rig.workspace)
+    #expect(try await Self.show(next, rig.workspace) == pane)
+    kill(flooder, SIGKILL)
+    await next.close()
+    await started.runtime.close()
+  }
+
+  /// MR6: a clipboard read the app never answers is settled at the cut by
+  /// the existing busy answer, written once, and never answered again.
+  @Test
+  func pendingClipboardRequestsAreAnsweredOnceAtTheCut() async throws {
+    let rig = try Rig()
+    defer { rig.close() }
+    let started = try await Self.start(rig)
+    await started.client.close()
+    let pane = started.pane
+    let app = try await Self.attach(
+      started.runtime,
+      rig.workspace,
+      capabilities: ClientCapabilities.supported.union(.clipboardRequests)
+    )
+    _ = try await Self.show(app, rig.workspace)
+    try await app.send(
+      .text(
+        "stty raw -echo; printf '\\033]5522;type=read:id=r1;dGV4dC9wbGFpbg==\\007'; exec cat -v\r"
+      ),
+      to: pane
+    )
+    let deadline = ContinuousClock.now + .seconds(10)
+    var asked: MuxClipboardRead?
+    while asked == nil, ContinuousClock.now < deadline {
+      if case let .clipboardRead(request) = try await app.nextEvent(
+        timeout: .seconds(1)
+      ) {
+        asked = request
+      }
+    }
+    let request = try #require(asked, "the app was never asked")
+    // The app holds the request; the workspace moves anyway.
+    let status = try await started.runtime.migrateWorkspace(
+      .id(rig.workspace),
+      started: rig.candidate()
+    )
+    #expect(
+      status.outcome == .released,
+      "\(String(describing: status.failure))"
+    )
+    await app.close()
+    let next = try await Self.attach(
+      started.runtime,
+      rig.workspace,
+      capabilities: ClientCapabilities.supported.union(.clipboardRequests)
+    )
+    _ = try await Self.show(next, rig.workspace)
+    _ = try await next.frame(of: pane) {
+      $0.lines.joined().contains("type=read:status=EBUSY:id=r1")
+    }
+    // A late answer for the settled token has no effect.
+    _ = try? await next.execute(
+      .clipboardReadResult(
+        pane: pane,
+        token: request.token,
+        .success(
+          available: ["text/plain"],
+          contents: [
+            MuxClipboardContent(mime: "text/plain", data: Data("x".utf8))
+          ],
+          remember: false
+        )
+      )
+    )
+    try await next.send(.text("after"), to: pane)
+    let later = try await next.frame(of: pane) {
+      $0.lines.joined().contains("after")
+    }
+    let text = later.lines.joined()
+    // One answer; the request itself also appears in the echoed command.
+    #expect(text.components(separatedBy: "status=").count == 2, "\(text)")
+    #expect(!text.contains("status=DATA"), "\(text)")
+    await next.close()
     await started.runtime.close()
   }
 

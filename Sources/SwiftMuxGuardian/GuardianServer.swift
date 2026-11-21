@@ -46,6 +46,7 @@ package final class GuardianServer: @unchecked Sendable {
   let migrationPreparationTimeout: TimeInterval
   let migrationFrozenTimeout: TimeInterval
   let migrationResumeTimeout: TimeInterval
+  let migrationMemory: MigrationMemory
   private var lastGeneration: UInt64 = 0
 
   /// Never reuse authority, even when a retired workspace ID is submitted again.
@@ -146,6 +147,7 @@ package final class GuardianServer: @unchecked Sendable {
     migrationPreparationTimeout: TimeInterval = 30,
     migrationFrozenTimeout: TimeInterval = 2,
     migrationResumeTimeout: TimeInterval = 0.5,
+    migrationMemory: MigrationMemory = .system,
     buildSelectionQueue: DispatchQueue = .global(qos: .utility)
   ) throws(MuxError) {
     try limits.validateForService()
@@ -171,6 +173,7 @@ package final class GuardianServer: @unchecked Sendable {
     self.migrationPreparationTimeout = migrationPreparationTimeout
     self.migrationFrozenTimeout = migrationFrozenTimeout
     self.migrationResumeTimeout = migrationResumeTimeout
+    self.migrationMemory = migrationMemory
     self.buildSelectionQueue = buildSelectionQueue
     launcher = PaneLauncher(
       launcherPath: launcherPath,

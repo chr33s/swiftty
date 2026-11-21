@@ -345,6 +345,10 @@ package final class GuardianPTY: @unchecked Sendable {
   // state or restore partial-write offsets during worker replacement.
   package var replyReserve: Int { writer.replyReserve }
   package var pendingInputBytes: Int { writer.pendingInputBytes }
+  /// Replies accepted or deferred but not yet written.
+  package var pendingReplyBytes: Int {
+    writer.pendingReplyBytes + writer.deferredReplyBytes
+  }
   package var hasOpenPaste: Bool { writer.hasOpenPaste }
   package var pasteID: UInt64? { writer.paste?.id }
   package func appendInput(_ bytes: [UInt8]) { writer.appendInput(bytes) }

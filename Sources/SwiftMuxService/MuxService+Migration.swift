@@ -89,8 +89,11 @@ extension MuxService {
       // snooze timer, so nothing changes the exported state afterwards.
       if service.attention.inbox.hasPendingUpdate { service.flushInbox() }
       service.snoozeTimer = nil
+      service.automation.runtime?.setPollingPaused(true)
       let barrier = DispatchGroup()
       for record in service.panes.values {
+        // Settle clipboard requests first; the barrier then follows them.
+        record.runtime.settleClipboardForMigration()
         barrier.enter()
         record.runtime.queue.async { barrier.leave() }
       }
@@ -141,6 +144,10 @@ extension MuxService {
     onQueue { service in
       service.migrationFrozen = false
       service.attentionChanged()
+      service.automation.runtime?.setPollingPaused(false)
+      let deferred = service.automation.frozen
+      service.automation.frozen.removeAll()
+      for action in deferred { service.handleAutomation(action) }
       completion()
     }
   }
