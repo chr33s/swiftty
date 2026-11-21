@@ -282,49 +282,27 @@ extension GuardianLifecycleProbe {
             to: root.appendingPathComponent("migration-inventory.json"),
             options: .atomic
           )
-        await client.close()
-        try stage("reattaching after replacement")
-        let reattachDeadline = ContinuousClock.now + .seconds(10)
-        var reopened: MuxConnection?
-        while reopened == nil {
-          do {
-            reopened =
-              try await frontendControl.openWorkspace(
-                .id(authority.workspace),
-                role: .controller
-              )
-              .connection
-          } catch {
-            guard ContinuousClock.now < reattachDeadline else { throw error }
-            try await Task.sleep(for: .milliseconds(50))
-          }
-        }
-        client = reopened!
-        guard
-          case let .attached(_, moved) = try await client.execute(
-            .attach(AttachRequest(.id(authority.workspace)))
-          ), let movedTab = moved.activeTabSnapshot
-        else { throw MuxError(.invalidRequest, "missing migrated workspace") }
-        _ = try await client.execute(
-          .setGeometry(
-            GeometryBatch(
-              layoutRevision: moved.layoutRevision,
-              generation: 1,
-              entries: [
-                .init(pane: movedTab.activePane, columns: 120, rows: 24)
-              ]
-            )
-          )
-        )
-        _ = try await client.execute(.setSubscriptions([movedTab.activePane]))
+        // The same frontend connection continues: the gateway relay moves
+        // it to the candidate while the retired worker keeps answering
+        // (spec.durability.md §6). Input refused while it moves is resent.
+        try stage("continuing on the candidate")
+        let movedPane = pane
         let after =
           "moved_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
-        try await client.send(
-          .text(
-            "kill -0 $SWMUX_JOB && printf '\(after)=%s:%s:%s:%s:%s\\n' \"$SWMUX_PROBE\" \"$$\" \"$SWMUX_JOB\" \"$-\" \"$SWMUX_RESOURCES\"\r"
-          ),
-          to: movedTab.activePane
-        )
+        let sendDeadline = ContinuousClock.now + .seconds(15)
+        while true {
+          do {
+            try await client.send(
+              .text(
+                "kill -0 $SWMUX_JOB && printf '\(after)=%s:%s:%s:%s:%s\\n' \"$SWMUX_PROBE\" \"$$\" \"$SWMUX_JOB\" \"$-\" \"$SWMUX_RESOURCES\"\r"
+              ),
+              to: movedPane
+            )
+            break
+          } catch let error as MuxError
+            where error.code == .quiescing && ContinuousClock.now < sendDeadline
+          { try await Task.sleep(for: .milliseconds(50)) }
+        }
         let afterDeadline = ContinuousClock.now + .seconds(10)
         var afterProof: String?
         var retainedScreen = false

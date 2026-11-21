@@ -3825,3 +3825,25 @@ Evidence:
 Not established, as agreed: the real transition of this Mac's installed
 agent, a machine reboot, and a Developer ID-signed, notarized production
 package. Those qualify the same code paths on the real installation.
+
+### 13.75 Review fixes — 2026-11-21
+
+A full review of the durability changes found 15 problems. All are fixed, and
+each fix has a regression test. Every fix except the atomic-write consolidation
+was mutation-checked: reverting it fails its test.
+
+| Finding | Fix | Evidence |
+| --- | --- | --- |
+| A retired worker exited at once, closing relays before they could move | The guardian ignores a retired worker's records instead of rejecting them, which would close its connection. The worker keeps answering its frozen frontends for 15 s; the guardian's grace is 30 s | Signed worker-builds run: the probe's frontend keeps its connection across release and types on the candidate |
+| A second probe loop survived release | Probe loops carry an owner epoch | `theCandidateKeepsOneProgressLoopAfterRelease` counts probes |
+| Cleanup of an exited pane, or a withdrawn paste end, killed the worker | The guardian treats cleanup commands on an exited pane as no-ops; the worker treats withdrawn, stale-writer and exited-pane rejections of cleanup as benign | `GuardianPaneControlTests`, `cleanupOfAnExitedPaneKeepsTheWorker` |
+| A released route stayed `migrating` when inventory could not be read; an abort's fresh authority pruned live relays | The route follows a release, is re-pinned on abort (relays keep their connection), and otherwise returns to ordinary pruning | `aFrontendStaysConnectedThroughAnAbort` |
+| A child that exited while frozen lost its final output | The exit drain waits for a paused consumer, up to 60 s | `finalOutputOfAChildThatExitsWhileFrozenIsKept` |
+| Saved-layout key rotation could lose every record | Rotation stages the new key beside the old, publishes the policy, reseals records (which open under either key), then promotes the key in one item update. An interrupted rotation finishes at the next start | `anInterruptedKeyRotationFinishesAtTheNextStart` |
+| Post-update upgrades ran before discovery | Upgrades rescan until discovery settles, trying each workspace once | `anUpgradeStartedBeforeDiscoveryStillMovesWorkspaces` |
+| Failures after the update pause left admission paused | Any failure before `replacing` defers and resumes; registry-busy reads retry | `aFailureAfterThePauseDefersAndResumes` |
+| An unreadable plan stopped the gateway | Unreadable plans are set aside, and completion failures are logged, never fatal | `anUnreadablePlanNeverStopsAGateway` |
+| The installer's empty-state check could race a creation | The gateway's installer maintenance mode refuses new and reopened workspaces from the check until the agents are down | `maintenanceRefusesCreation`; step order in `DurableInstallationTests` |
+| Maintenance or a gateway swap that failed left no service | Agents are re-registered after a failure; swaps leave the previous bundle in place when they fail | `aFailedMaintenanceBringsTheAgentsBack`, `aFailedGatewaySwapReregistersTheRetainedGateway` |
+| An invalid selected or rollback build stopped the guardian | Unusable builds and unreadable selection metadata are set aside and reported (`unusable`, `selectionProblem`). Neither restores a selection | `invalidSelectionCannotRestoreAuthority` (new contract) |
+| Four atomic-write helpers each made different durability guarantees | `AtomicFile.write`: write every byte, order with a barrier, rename, flush the directory | `atomicFilesReplaceWholeAndLeaveNoTemporaries` |

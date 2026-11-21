@@ -357,6 +357,12 @@ package final class WorkspaceWorkerHost: @unchecked Sendable {
 
   private func fail(_ error: MuxError) {
     guard failure == nil else { return }
+    // A retired worker owns nothing; its frozen service keeps answering its
+    // frontends until their relays move, so losing the guardian is moot.
+    if retired {
+      failure = error
+      return
+    }
     failure = error
     ready = false
     binding = nil

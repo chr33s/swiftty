@@ -72,6 +72,9 @@ package final class GuardianServer: @unchecked Sendable {
     var workspace: WorkspaceID?
     /// A migration candidate before release (spec.durability.md §7).
     var migration: UUID?
+    /// A worker a planned replacement retired. It still answers its own
+    /// frozen frontends until their relays move; its records are ignored.
+    var retired = false
     init(_ channel: SMXChannel) { self.channel = channel }
   }
 
@@ -102,6 +105,11 @@ package final class GuardianServer: @unchecked Sendable {
     var progressProbe: UUID?
     var progressDeadline: DispatchTime = .now()
     var progressTimer: DispatchSourceTimer?
+    /// One probe loop per owner: a loop started for an earlier owner (before
+    /// a planned replacement's release) stops at its next turn.
+    var progressEpoch: UInt64 = 0
+    /// Probes issued to this workspace's owner (tests).
+    var probesIssued = 0
     var worker: GuardianWorkerProcess?
     var buildPin: GuardianBuildPin?
     var lossReason: MuxError?

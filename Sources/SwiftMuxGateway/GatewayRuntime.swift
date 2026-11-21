@@ -220,7 +220,20 @@ package actor GatewayRuntime {
     timeout: Duration = .seconds(15)
   ) async throws -> GuardianAuthority {
     try checkOpen()
+    try checkCreationOpen()
     return try await creator.create(id, request: request, timeout: timeout)
+  }
+
+  /// Installer maintenance: no new or reopened workspace may appear between
+  /// its empty-state check and taking the agents down.
+  package private(set) var maintenance = false
+
+  package func setMaintenance(_ on: Bool) { maintenance = on }
+
+  private func checkCreationOpen() throws {
+    guard !maintenance else {
+      throw MuxError(.quiescing, "SwiftMux maintenance is in progress")
+    }
   }
 
   /// `disposition` tells the saved-layout store why (§12.2.6). The record
@@ -263,18 +276,30 @@ package actor GatewayRuntime {
       await routes.endMigration(workspace)
       throw error
     }
-    if status.outcome != .released { await routes.endMigration(workspace) }
-    if status.outcome == .released,
-      let next = try? await supervisor.inventory()
-        .first(where: { $0.authority.workspace == status.workspace })?
-        .authority
-    {
+    // The owner generation changes on release and on an abort from frozen.
+    let next = try? await supervisor.inventory()
+      .first(where: { $0.authority.workspace == status.workspace })?
+      .authority
+    switch (status.outcome, next) {
+    case let (.released?, next?):
       // Live frontends continue on the candidate instead of reconnecting.
       await routes.migrated(
-        status.workspace,
+        workspace,
         from: record.inventory.authority,
         to: next
       )
+    case let (.resumed?, next?) where next != record.inventory.authority:
+      // The same worker carries on under a fresh authority: re-pin the
+      // route; its relays keep their connections.
+      await routes.reauthorized(
+        workspace,
+        from: record.inventory.authority,
+        to: next
+      )
+    default:
+      // No owner to follow (unavailable, ended, or inventory unreadable):
+      // ordinary pruning decides.
+      await routes.endMigration(workspace)
     }
     // Release or abort changed the owner generation: refresh discovery so
     // routes ask for the current authority, not the fenced one.
@@ -330,26 +355,46 @@ package actor GatewayRuntime {
   /// move live workspaces still on older builds, one at a time. A refusal
   /// or rollback is a deferred upgrade for that workspace, never a failed
   /// update; the rest continue.
+  /// How long a post-update upgrade waits for discovery to finish.
+  package var upgradeDiscoveryLimit: Duration = .seconds(120)
+
   package func upgradeWorkspaces(
     to build: String,
     started: (@Sendable (GuardianMigrationStatus) async throws -> Void)? = nil
   ) async -> [WorkspaceID: Result<GuardianMigrationOutcome, MuxError>] {
     var results: [WorkspaceID: Result<GuardianMigrationOutcome, MuxError>] = [:]
-    let candidates = await directory.records.filter { record in
-      guard case .available = record.state else { return false }
-      return record.inventory.worker?.build != build
-    }
-    for record in candidates {
-      let id = record.inventory.authority.workspace
-      guard failure == nil else { break }
-      do {
-        let status = try await migrateWorkspace(.id(id), started: started)
-        results[id] = .success(status.outcome ?? .unavailable)
-      } catch {
-        results[id] = .failure(
-          error as? MuxError ?? MuxError(.invalidRequest, "\(error)")
-        )
+    // Discovery may still be opening workspaces at startup: keep scanning
+    // until none is starting or discovering, each workspace tried once.
+    let deadline = ContinuousClock.now + upgradeDiscoveryLimit
+    while failure == nil {
+      let records = await directory.records
+      let candidates = records.filter { record in
+        guard case .available = record.state,
+          results[record.inventory.authority.workspace] == nil
+        else { return false }
+        return record.inventory.worker?.build != build
       }
+      for record in candidates {
+        let id = record.inventory.authority.workspace
+        guard failure == nil else { break }
+        do {
+          let status = try await migrateWorkspace(.id(id), started: started)
+          results[id] = .success(status.outcome ?? .unavailable)
+        } catch {
+          results[id] = .failure(
+            error as? MuxError ?? MuxError(.invalidRequest, "\(error)")
+          )
+        }
+      }
+      let settling = records.contains { record in
+        switch record.state {
+        case .starting, .discovering: true
+        default: false
+        }
+      }
+      guard settling || !candidates.isEmpty, ContinuousClock.now < deadline
+      else { break }
+      try? await Task.sleep(for: .milliseconds(200))
     }
     return results
   }
@@ -398,6 +443,7 @@ package actor GatewayRuntime {
     _ request: SavedReopenRequest
   ) async throws -> (WorkspaceID, WorkspaceTemplateOutcome) {
     try checkOpen()
+    try checkCreationOpen()
     let saved = try savedService()
     let creator = creator
     return try await saved.reopen(request, inventory: await savedInventory()) {

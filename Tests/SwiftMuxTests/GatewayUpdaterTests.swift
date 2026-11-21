@@ -273,6 +273,76 @@ struct GatewayUpdaterTests {
     await other.close()
   }
 
+  /// Any failure after the pause (here: the plan cannot be written)
+  /// resumes the barrier and defers; it never leaves admission paused.
+  @Test
+  func aFailureAfterThePauseDefersAndResumes() async throws {
+    let rig = try Rig()
+    defer { rig.close() }
+    let (gateway, _) = try await rig.gateway()
+    try await rig.liveWorkspace(gateway)
+    let blocked = GatewayUpdatePlanStore(
+      root: URL(fileURLWithPath: "/dev/null/no-such-directory")
+    )
+    let updater = GatewayUpdater(
+      supervisor: gateway,
+      plans: blocked,
+      replacement: rig.installer,
+      settlement: .seconds(5)
+    )
+    let outcome = try await updater.install(
+      candidate: rig.artifact.validate(),
+      currentBuild: "current-1",
+      currentProtocols: Self.protocols,
+      worker: nil
+    )
+    guard case .deferred = outcome else {
+      Issue.record("unwritable plan did not defer: \(outcome)")
+      return
+    }
+    #expect(!(try await gateway.admissionStatus().paused))
+    #expect(rig.installer.installed.withLock { $0 }.isEmpty)
+    await gateway.close()
+  }
+
+  /// An unreadable plan is set aside rather than stopping the gateway.
+  @Test
+  func anUnreadablePlanNeverStopsAGateway() async throws {
+    let rig = try Rig()
+    defer { rig.close() }
+    let (old, updater) = try await rig.gateway()
+    try await rig.liveWorkspace(old)
+    let directory = rig.plans.file.deletingLastPathComponent()
+    try FileManager.default.createDirectory(
+      at: directory,
+      withIntermediateDirectories: true
+    )
+    try Data(#"{"schema": 99}"#.utf8).write(to: rig.plans.file)
+    chmod(rig.plans.file.path, 0o600)
+    // No barrier: idle, and the bad plan is moved aside.
+    #expect(
+      try await updater.complete(ownBuild: "x", ownProtocols: Self.protocols)
+        == .idle
+    )
+    #expect(!FileManager.default.fileExists(atPath: rig.plans.file.path))
+    // A replacing barrier with an unreadable plan: a compatible gateway
+    // resumes with unchanged selections.
+    let status = try await old.admissionStatus()
+    let paused = try await old.setAdmissionPaused(
+      true,
+      expectedRevision: status.revision
+    )
+    _ = try await old.beginGatewayReplacement(expectedRevision: paused.revision)
+    try Data("not json".utf8).write(to: rig.plans.file)
+    chmod(rig.plans.file.path, 0o600)
+    #expect(
+      try await updater.complete(ownBuild: "x", ownProtocols: Self.protocols)
+        == .resumedWithoutPlan
+    )
+    #expect(!(try await old.admissionStatus().paused))
+    await old.close()
+  }
+
   @Test
   func aSettlingPauseResumesWhenItsUpdaterIsLost() async throws {
     let rig = try Rig(settlement: 0.3)

@@ -109,6 +109,21 @@ package actor GatewayNativeRoutes {
     route.listener.rebind(to: next)
   }
 
+  /// An aborted replacement resumed the same worker under `next`.
+  package func reauthorized(
+    _ workspace: WorkspaceID,
+    from old: GuardianAuthority,
+    to next: GuardianAuthority
+  ) {
+    guard !closed, var route = routes[workspace], route.authority == old else {
+      return
+    }
+    route.authority = next
+    route.migrating = false
+    routes[workspace] = route
+    route.listener.reauthorize(to: next)
+  }
+
   /// Call after inventory changes, or before selection (done automatically).
   /// Retirement disconnects frontend transports, never guardian-owned processes.
   package func reconcile() async throws {

@@ -35,6 +35,8 @@ package final class GuardianPTY: @unchecked Sendable {
   private var terminationDeadline: DispatchTime?
   private var groupKillSent = false
   private var drainTimer: DispatchWorkItem?
+  /// The latest a paused consumer may hold up the final drain.
+  private var drainLimit: DispatchTime?
   private var readSource: DispatchSourceRead?
   private var readSourceActive = false
   private var processingRead = false
@@ -535,10 +537,32 @@ package final class GuardianPTY: @unchecked Sendable {
       return
     }
     // Descendants may retain the slave; bound the wait.
-    let timer = DispatchWorkItem { [weak self] in self?.finish() }
+    drainLimit = .now() + Self.pausedDrainLimit
+    armDrain()
+  }
+
+  private func armDrain() {
+    let timer = DispatchWorkItem { [weak self] in self?.drainExpired() }
     drainTimer = timer
     queue.asyncAfter(deadline: .now() + Self.drainBound, execute: timer)
   }
+
+  /// Final output waiting on a paused consumer (backpressure, or a planned
+  /// replacement's freeze) is kept, not cut off; only a consumer that is
+  /// reading and still sees no EOF ends the drain at its usual bound.
+  private func drainExpired() {
+    drainTimer = nil
+    if !consumerUnavailable, canConsume?() == false, let drainLimit,
+      DispatchTime.now() < drainLimit
+    {
+      armDrain()
+      return
+    }
+    finish()
+  }
+
+  /// How long a paused consumer may delay the final drain.
+  static let pausedDrainLimit: DispatchTimeInterval = .seconds(60)
 
   private func finish() {
     guard !finished else { return }

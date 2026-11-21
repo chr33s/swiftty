@@ -120,6 +120,9 @@ extension GuardianServer {
       startProgressWatchdog(workspace)
       return
     }
+    // A retired worker has no authority; dropping its late records keeps
+    // its connection, so it can finish draining its frontends.
+    if peer.retired { return }
     guard let workspaceID = peer.workspace,
       let workspace = workspaces[workspaceID], workspace.connection == id,
       !workspace.unavailable, !stopping

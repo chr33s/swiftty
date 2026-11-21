@@ -170,6 +170,13 @@ public actor MuxGatewayConnection {
   // MARK: Saved layouts (spec.durability.md §12.2)
 
   /// Listing marks Saved records as offered, which starts their retention.
+  /// Installer maintenance: refuse new and reopened workspaces while on.
+  public func setMaintenance(_ on: Bool) async throws {
+    guard case .maintenance = try await request(.setMaintenance(on)) else {
+      throw MuxError(.invalidRequest, "unexpected maintenance response")
+    }
+  }
+
   /// Asks the running gateway to pause, settle and hand over for `request`.
   public func prepareUpdate(
     _ request: GatewayUpdateRequest
@@ -304,7 +311,7 @@ public actor MuxGatewayConnection {
       ) + request.runCommandSlots.count * 8
     case .listWorkspaces, .savedWorkspaces, .setSavedPolicy, .deleteSaved,
       .previousOutput, .discardPreviousOutput, .installationStatus,
-      .prepareUpdate:
+      .prepareUpdate, .setMaintenance:
       return 256
     }
   }

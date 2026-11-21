@@ -67,11 +67,19 @@ do {
           plans: GatewayUpdatePlanStore(root: support),
           replacement: InstallerRequiredReplacement()
         )
-        let outcome = try await updater.complete(
-          ownBuild: own.build,
-          ownProtocols: Set(own.workerProtocols)
-        )
-        if case let .completed(plan) = outcome { upgrade = plan.workerBuild }
+        // A failure here leaves the barrier as it was (the next start or the
+        // installer retries); it never keeps this gateway from serving.
+        do {
+          let outcome = try await updater.complete(
+            ownBuild: own.build,
+            ownProtocols: Set(own.workerProtocols)
+          )
+          if case let .completed(plan) = outcome { upgrade = plan.workerBuild }
+        } catch {
+          FileHandle.standardError.write(
+            Data("swiftmux-gateway: update not finished: \(error)\n".utf8)
+          )
+        }
       }
       let started = try await GatewayRuntime.start(
         supervisor: supervisor,

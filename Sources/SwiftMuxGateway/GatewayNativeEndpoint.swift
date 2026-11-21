@@ -105,6 +105,17 @@ package final class GatewayNativeEndpoint: @unchecked Sendable {
     for live in liveRelays { live.relay.close() }
   }
 
+  /// The same worker continues under `next` (an aborted replacement): new
+  /// frontends resolve it; live relays are unaffected.
+  package func reauthorize(to next: GuardianAuthority) {
+    queue.async { [self] in
+      guard !closed, next.workspace == authority.workspace,
+        next.generation > authority.generation
+      else { return }
+      authority = next
+    }
+  }
+
   /// A planned replacement released this listener's workspace to `next`.
   /// New frontends resolve the candidate; live relays continue on it.
   package func rebind(to next: GuardianAuthority) {

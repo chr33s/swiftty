@@ -230,7 +230,12 @@ enum DurableSessions {
       ),
       install: {
         try FileManager.default.moveItem(at: current, to: previous)
-        try FileManager.default.moveItem(at: candidate, to: current)
+        do {
+          try FileManager.default.moveItem(at: candidate, to: current)
+        } catch {
+          try? FileManager.default.moveItem(at: previous, to: current)
+          throw error
+        }
         return {
           try FileManager.default.removeItem(at: current)
           try FileManager.default.moveItem(at: previous, to: current)

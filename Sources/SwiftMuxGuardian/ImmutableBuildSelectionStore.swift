@@ -56,41 +56,11 @@ package struct ImmutableBuildSelectionStore {
   package func save(_ value: Selection) throws {
     _ = try load()
     let bytes = try JSONEncoder().encode(value)
-    let temporary = root.appendingPathComponent(
-      ".selection-" + UUID().uuidString
-    )
-    let fd = open(
-      temporary.path,
-      O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
-      0o600
-    )
-    guard fd >= 0 else {
-      throw MuxError(.launchFailed, "cannot stage build selection")
-    }
-    defer {
-      Darwin.close(fd);
-      try? FileManager.default.removeItem(at: temporary)
-    }
-    try bytes.withUnsafeBytes { buffer in
-      var offset = 0
-      while offset < buffer.count {
-        let count = Darwin.write(
-          fd,
-          buffer.baseAddress!.advanced(by: offset),
-          buffer.count - offset
-        )
-        if count < 0, errno == EINTR { continue }
-        guard count > 0 else {
-          throw MuxError(.launchFailed, "cannot write build selection")
-        }
-        offset += count
-      }
-    }
-    guard fsync(fd) == 0 else {
-      throw MuxError(.launchFailed, "cannot flush build selection")
-    }
-    guard rename(temporary.path, destination.path) == 0 else {
-      throw MuxError(.launchFailed, "cannot publish build selection")
+    do { try AtomicFile.write(bytes, to: destination) } catch {
+      throw MuxError(
+        .launchFailed,
+        "cannot publish build selection: \(error.message)"
+      )
     }
   }
 }

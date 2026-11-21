@@ -104,6 +104,11 @@ extension GuardianServer {
     }
   }
 
+  /// Progress probes issued to the workspace's owner so far (tests).
+  package func probesIssuedForTesting(_ id: WorkspaceID) -> Int {
+    queue.sync { workspaces[id]?.probesIssued ?? 0 }
+  }
+
   /// Replies the guardian holds for the workspace's terminals (tests).
   package func pendingReplyBytesForTesting(_ id: WorkspaceID) -> Int {
     queue.sync {
@@ -531,6 +536,7 @@ extension GuardianServer {
         peer.channel.send(bytes)
       }
       peer.workspace = nil
+      peer.retired = true
     }
     workspace.progressTimer?.cancel()
     workspace.progressTimer = nil
@@ -577,9 +583,15 @@ extension GuardianServer {
     // Retained for the grace period: dropping the last reference would kill
     // it at once instead of letting it exit on retire and be reaped.
     if let oldWorker {
-      queue.asyncAfter(deadline: .now() + 5) { oldWorker.terminate() }
+      queue.asyncAfter(deadline: .now() + Self.retiredWorkerGrace) {
+        oldWorker.terminate()
+      }
     }
   }
+
+  /// How long a retired worker may keep serving its frozen frontends while
+  /// gateway relays move to the candidate (it exits on its own sooner).
+  static let retiredWorkerGrace: TimeInterval = 30
 
   /// Before release: fence the candidate and resume the old worker under a
   /// fresh generation. An old worker that is gone leaves the workspace

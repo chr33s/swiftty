@@ -29,6 +29,7 @@ package final class GatewayControlConnection: @unchecked Sendable {
     case previousOutput(SavedOutputPage)
     case installation(GatewayInstallationStatus)
     case update(GatewayUpdateResult)
+    case maintenance(Bool)
   }
 
   private struct Pending {
@@ -120,7 +121,7 @@ package final class GatewayControlConnection: @unchecked Sendable {
         )
       case .listWorkspaces, .savedWorkspaces, .setSavedPolicy, .deleteSaved,
         .previousOutput, .discardPreviousOutput, .installationStatus,
-        .prepareUpdate:
+        .prepareUpdate, .setMaintenance:
         break
       }
       let request = GatewayControlRequest.command(
@@ -275,6 +276,8 @@ package final class GatewayControlConnection: @unchecked Sendable {
     case let (.installationStatus, .installation(status))
     where status.workspaces >= 0: return .installation(status)
     case let (.prepareUpdate, .update(result)): return .update(result)
+    case let (.setMaintenance(expected), .maintenance(on)) where expected == on:
+      return .maintenance(on)
     default: return nil
     }
   }

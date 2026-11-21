@@ -79,13 +79,34 @@ package final class GuardianBuildRegistry: @unchecked Sendable {
       root: root.standardizedFileURL
     )
     try validateRoot()
-    if let choice = try selectionStore.load() {
-      _ = try pin(choice.selected)
-      if let rollback = choice.rollback { _ = try pin(rollback) }
-      selected = choice.selected
-      rollback = choice.rollback
+    // A damaged build must not keep the guardian (or the installer that
+    // would repair it) from starting: an unusable selected or rollback
+    // build is set aside and reported, and a later selection replaces it.
+    let stored: ImmutableBuildSelectionStore.Selection?
+    do { stored = try selectionStore.load() } catch {
+      // Unsafe or unreadable metadata is never trusted; the installer
+      // selects again.
+      selectionProblem = String(describing: error)
+      stored = nil
+    }
+    if let choice = stored {
+      do {
+        _ = try pin(choice.selected)
+        selected = choice.selected
+      } catch { unusable.append(choice.selected) }
+      if let previous = choice.rollback {
+        do {
+          _ = try pin(previous)
+          rollback = previous
+        } catch { unusable.append(previous) }
+      }
     }
   }
+
+  /// Builds named by the stored selection that failed validation at start.
+  package private(set) var unusable: [String] = []
+  /// Why the stored selection was not read, when it was not.
+  package private(set) var selectionProblem: String?
 
   package func selection() throws -> GuardianWorkerSelection {
     guard lock.try() else {

@@ -74,27 +74,22 @@ package struct GatewayUpdatePlanStore: Sendable {
       withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700]
     )
-    let temporary = directory.appendingPathComponent(
-      ".gateway-update-\(UUID().uuidString)"
-    )
-    let data = try JSONEncoder().encode(plan)
-    let fd = open(
-      temporary.path,
-      O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
-      0o600
-    )
-    guard fd >= 0 else { throw MuxError(.invalidRequest, "cannot write plan") }
-    let written = data.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
-    let synced = fcntl(fd, F_FULLFSYNC) == 0 || fsync(fd) == 0
-    close(fd)
-    guard written == data.count, synced, rename(temporary.path, file.path) == 0
-    else {
-      unlink(temporary.path)
-      throw MuxError(.invalidRequest, "cannot publish update plan")
-    }
+    try AtomicFile.write(try JSONEncoder().encode(plan), to: file)
   }
 
   package func remove() { unlink(file.path) }
+
+  /// The plan, or nil when there is none or it cannot be read; an
+  /// unreadable plan is renamed aside for diagnosis.
+  package func loadOrSetAside() -> GatewayUpdatePlan? {
+    do { return try load() } catch {
+      let aside = file.deletingLastPathComponent()
+        .appendingPathComponent("gateway-update.unreadable.json")
+      unlink(aside.path)
+      rename(file.path, aside.path)
+      return nil
+    }
+  }
 }
 
 /// The build this gateway runs, from its sealed declaration
@@ -189,7 +184,34 @@ package actor GatewayUpdater {
       true,
       expectedRevision: before.revision
     )
-    let priorWorker = try await supervisor.workerSelection().selected
+    // From here every failure resumes the barrier this updater owns.
+    do {
+      return try await installPaused(
+        candidate: candidate,
+        currentBuild: currentBuild,
+        currentProtocols: currentProtocols,
+        worker: worker,
+        paused: paused
+      )
+    } catch {
+      let failure =
+        error as? MuxError
+        ?? MuxError(.invalidRequest, "update failed: \(error)")
+      return try await deferUpdate(failure, revision: paused.revision)
+    }
+  }
+
+  private func installPaused(
+    candidate: GatewayUpdateArtifact,
+    currentBuild: String,
+    currentProtocols: Set<Int>,
+    worker: (build: String, protocol: Int)?,
+    paused: GuardianAdmissionStatus
+  ) async throws -> Outcome {
+    let priorWorker = try await retrying {
+      try await supervisor.workerSelection()
+    }
+    .selected
     // Step 2–3: settle, then the final compatibility check under the
     // barrier, against fresh inventory including unavailable workers.
     let inventory: [GuardianWorkspaceInventory]
@@ -230,12 +252,27 @@ package actor GatewayUpdater {
       _ = try await supervisor.beginGatewayReplacement(
         expectedRevision: paused.revision
       )
-    } catch let error as MuxError {
+    } catch {
       plans.remove()
-      return try await deferUpdate(error, revision: paused.revision)
+      throw error
     }
+    // `replacing` now: the successor or the rollback gateway finishes, so a
+    // failed hand-over leaves the barrier for them rather than resuming.
     try await replacement.install(plan.gatewayBuild)
     return .handedOver(plan)
+  }
+
+  /// The registry answers `quiescing` while it validates a build; retry
+  /// such reads briefly instead of failing the update.
+  private func retrying<T: Sendable>(
+    _ body: () async throws -> T
+  ) async throws -> T {
+    for _ in 0 ..< 20 {
+      do { return try await body() } catch let error as MuxError
+        where error.code == .quiescing
+      { try await Task.sleep(for: .milliseconds(100)) }
+    }
+    return try await body()
   }
 
   private func deferUpdate(
@@ -262,14 +299,17 @@ package actor GatewayUpdater {
     ownProtocols: Set<Int>
   ) async throws -> Outcome {
     let status = try await supervisor.admissionStatus()
+    // An unreadable plan (damaged, or from a newer release) is set aside:
+    // it must never keep a gateway from serving.
+    let stored = plans.loadOrSetAside()
     guard status.paused, status.phase == .replacing else {
       // A plan without a replacing barrier is stale: the update was
       // deferred or the guardian restarted.
-      if try plans.load() != nil { plans.remove() }
+      if stored != nil { plans.remove() }
       return .idle
     }
     let inventory = try await supervisor.inventory()
-    guard var plan = try plans.load() else {
+    guard var plan = stored else {
       try GatewayUpdateCompatibility.validate(
         guardianProtocol: GuardianWire.version,
         workerProtocols: ownProtocols,
@@ -316,7 +356,10 @@ package actor GatewayUpdater {
       // The candidate never verified (or never started): restore the prior
       // worker selection, then resume.
       var revision = status.revision
-      let current = try await supervisor.workerSelection().selected
+      let current = try await retrying {
+        try await supervisor.workerSelection()
+      }
+      .selected
       if let prior = plan.priorWorkerBuild, current != prior {
         revision =
           try await supervisor.selectWorkerBuild(

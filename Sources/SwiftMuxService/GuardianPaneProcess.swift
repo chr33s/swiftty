@@ -483,9 +483,14 @@ final class GuardianPaneProcess: PaneProcess, @unchecked Sendable {
     }
   }
 
+  /// Cleanup commands (paste end, input cancellation) are best effort: a
+  /// locally withdrawn command, a superseded writer or a pane that already
+  /// exited leaves nothing to clean up and is not a transport failure.
   private func checkControl(_ result: Result<GuardianResult, MuxError>) {
     switch result {
     case .success(.ok): break
+    case let .success(.rejected(error))
+    where [.staleAttachment, .notFound, .paneExited].contains(error.code): break
     case let .success(.rejected(error)), let .failure(error): unavailable(error)
     default:
       unavailable(MuxError(.invalidRequest, "invalid guardian control result"))

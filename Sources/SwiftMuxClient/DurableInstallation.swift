@@ -27,6 +27,13 @@ public protocol DurableStatus: Sendable {
   func installation() async throws -> GatewayInstallationStatus?
   /// Explicit End of every retained workspace, running or unavailable.
   func endAll() async throws
+  /// While on, the gateway refuses new and reopened workspaces, so the
+  /// empty-state check cannot race a creation.
+  func setMaintenance(_ on: Bool) async throws
+}
+
+extension DurableStatus {
+  public func setMaintenance(_ on: Bool) async throws {}
 }
 
 /// What the installer last established. Owner-only installation metadata,
@@ -156,16 +163,36 @@ public actor DurableInstallation {
     guard let before = try await barrier(confirm: confirm) else {
       return .declined(workspaces: try await liveCount())
     }
-    try save(.init(phase: .maintaining, guardianIncarnation: before))
-    try await gateway.unregister()
-    try await guardian.unregister()
-    try await replace()
-    let incarnation = try await start()
-    guard incarnation != before else {
-      throw MuxError(.serverInstanceChanged, "guardian did not restart")
+    do {
+      try save(.init(phase: .maintaining, guardianIncarnation: before))
+      try await gateway.unregister()
+      try await guardian.unregister()
+    } catch {
+      try? await status.setMaintenance(false)
+      throw error
     }
-    try save(.init(phase: .installed, guardianIncarnation: incarnation))
-    return .maintained(guardian: incarnation)
+    do {
+      try await replace()
+      let incarnation = try await start()
+      guard incarnation != before else {
+        throw MuxError(.serverInstanceChanged, "guardian did not restart")
+      }
+      try save(.init(phase: .installed, guardianIncarnation: incarnation))
+      return .maintained(guardian: incarnation)
+    } catch {
+      // Never leave the user without a terminal service: bring back
+      // whatever helpers are installed, then report the failure.
+      try? await guardian.register()
+      try? await gateway.register()
+      let recovered = try? await status.installation()?.guardianIncarnation
+      try? save(
+        .init(
+          phase: recovered == nil ? .maintaining : .installed,
+          guardianIncarnation: recovered ?? before
+        )
+      )
+      throw error
+    }
   }
 
   /// Removes the durable agents behind the same barrier. The monolithic
@@ -174,8 +201,13 @@ public actor DurableInstallation {
     guard let current = try await barrier(confirm: confirm) else {
       return .declined(workspaces: try await liveCount())
     }
-    try save(.init(phase: .maintaining, guardianIncarnation: current))
-    try await gateway.unregister()
+    do {
+      try save(.init(phase: .maintaining, guardianIncarnation: current))
+      try await gateway.unregister()
+    } catch {
+      try? await status.setMaintenance(false)
+      throw error
+    }
     try await guardian.unregister()
     remove()
     return .uninstalled
@@ -225,18 +257,29 @@ public actor DurableInstallation {
 
   /// Empty-state barrier: nil when the user declines. Ends confirmed
   /// workspaces through the gateway and waits for an empty guardian.
+  /// Creation is closed first, so the empty state cannot be undone by a
+  /// workspace created between this check and taking the agents down.
   private func barrier(confirm: Confirm) async throws -> UUID? {
-    guard let current = try await status.installation() else {
-      throw MuxError(.notAttached, "the gateway is unreachable")
-    }
-    if current.workspaces > 0 {
-      guard await confirm(current.workspaces) else { return nil }
-      try await status.endAll()
-      try await waitUntil("durable sessions to end") {
-        try await status.installation()?.workspaces == 0
+    try await status.setMaintenance(true)
+    do {
+      guard let current = try await status.installation() else {
+        throw MuxError(.notAttached, "the gateway is unreachable")
       }
+      if current.workspaces > 0 {
+        guard await confirm(current.workspaces) else {
+          try? await status.setMaintenance(false)
+          return nil
+        }
+        try await status.endAll()
+        try await waitUntil("durable sessions to end") {
+          try await status.installation()?.workspaces == 0
+        }
+      }
+      return current.guardianIncarnation
+    } catch {
+      try? await status.setMaintenance(false)
+      throw error
     }
-    return current.guardianIncarnation
   }
 
   private func liveCount() async throws -> Int {
@@ -279,27 +322,7 @@ public actor DurableInstallation {
       withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700]
     )
-    let temporary = directory.appendingPathComponent(
-      ".install-\(UUID().uuidString)"
-    )
-    let data = try JSONEncoder().encode(value)
-    let fd = open(
-      temporary.path,
-      O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
-      0o600
-    )
-    guard fd >= 0 else {
-      throw MuxError(.invalidRequest, "cannot write record")
-    }
-    let written = data.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
-    let synced = fcntl(fd, F_FULLFSYNC) == 0 || fsync(fd) == 0
-    close(fd)
-    guard written == data.count, synced,
-      rename(temporary.path, record.path) == 0
-    else {
-      unlink(temporary.path)
-      throw MuxError(.invalidRequest, "cannot publish installation record")
-    }
+    try AtomicFile.write(try JSONEncoder().encode(value), to: record)
   }
 
   private func remove() { unlink(record.path) }
@@ -388,6 +411,19 @@ public protocol GatewayUpdating: Sendable {
   ) async throws -> GatewayUpdateResult
 }
 
+extension GatewayControlStatus {
+  public func setMaintenance(_ on: Bool) async throws {
+    let connection = try await connect()
+    do {
+      try await connection.setMaintenance(on)
+      await connection.close()
+    } catch {
+      await connection.close()
+      throw error
+    }
+  }
+}
+
 extension GatewayControlStatus: GatewayUpdating {
   public func prepareUpdate(
     _ request: GatewayUpdateRequest
@@ -414,7 +450,8 @@ extension DurableInstallation {
   }
 
   /// `install(candidate)` makes the candidate the registered bundle and
-  /// returns a closure that restores the previous one.
+  /// returns a closure that restores the previous one; when it throws, the
+  /// previous bundle must still be in place.
   public func updateGateway(
     _ request: GatewayUpdateRequest,
     through gateway: any GatewayUpdating,
@@ -426,8 +463,21 @@ extension DurableInstallation {
     case let .deferred(error): return .deferred(error)
     case let .handedOver(build):
       try await agent.unregister()
-      let restore = try await install()
-      try await agent.register()
+      let restore: @Sendable () async throws -> Void
+      do { restore = try await install() } catch {
+        // The bundle was not swapped (install must leave the current one
+        // in place on failure): bring the retained gateway back; it
+        // finishes the plan as a rollback.
+        try await agent.register()
+        _ = try await finished(within: settle)
+        throw error
+      }
+      do { try await agent.register() } catch {
+        try await restore()
+        try await agent.register()
+        _ = try await finished(within: settle)
+        throw error
+      }
       if try await finished(within: settle) { return .updated(build: build) }
       // The successor left admission paused: restore the retained gateway,
       // which finishes the update as a rollback.

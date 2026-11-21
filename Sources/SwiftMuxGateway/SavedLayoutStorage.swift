@@ -183,6 +183,12 @@ package protocol SavedLayoutKeyStore: Sendable {
   func delete() throws
   /// Rotation: the old key is gone once this returns.
   func replace(with key: SymmetricKey) throws
+  // Crash-safe rotation: the next key is stored beside the current one,
+  // records are resealed under it, then it is promoted.
+  func lookupNext() -> SavedLayoutKeyLookup
+  func stageNext(_ key: SymmetricKey) throws
+  /// The next key becomes current and the old one is gone.
+  func promoteNext() throws
 }
 
 /// The user's login keychain. An item the signed gateway creates is
@@ -193,14 +199,46 @@ package struct LoginKeychainKeyStore: SavedLayoutKeyStore {
 
   package init(service: String) { self.service = service }
 
-  private var query: [String: Any] {
+  private var query: [String: Any] { query(account) }
+  private var nextQuery: [String: Any] { query(account + ".next") }
+
+  private func query(_ account: String) -> [String: Any] {
     [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service, kSecAttrAccount as String: account,
     ]
   }
 
-  package func lookup() -> SavedLayoutKeyLookup {
+  package func lookup() -> SavedLayoutKeyLookup { lookup(query) }
+  package func lookupNext() -> SavedLayoutKeyLookup { lookup(nextQuery) }
+
+  package func stageNext(_ key: SymmetricKey) throws {
+    try delete(nextQuery)
+    try store(key, in: nextQuery)
+  }
+
+  package func promoteNext() throws {
+    guard case let .found(next) = lookupNext() else {
+      throw MuxError(.notFound, "no staged saved layout key")
+    }
+    // One item update: the current key is never absent.
+    let data = next.withUnsafeBytes { Data($0) }
+    let status = SecItemUpdate(
+      query as CFDictionary,
+      [kSecValueData as String: data] as CFDictionary
+    )
+    if status == errSecItemNotFound {
+      try store(next, in: query)
+    } else if status != errSecSuccess {
+      throw MuxError(
+        .unauthorized,
+        "cannot promote saved layout key (\(status))"
+      )
+    }
+    try delete(nextQuery)
+  }
+
+  private func lookup(_ query: [String: Any]) -> SavedLayoutKeyLookup {
     var request = query
     request[kSecReturnData as String] = true
     request[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -225,11 +263,13 @@ package struct LoginKeychainKeyStore: SavedLayoutKeyStore {
   }
 
   package func replace(with key: SymmetricKey) throws {
-    try delete()
-    try store(key)
+    try stageNext(key)
+    try promoteNext()
   }
 
-  private func store(_ key: SymmetricKey) throws {
+  private func store(_ key: SymmetricKey) throws { try store(key, in: query) }
+
+  private func store(_ key: SymmetricKey, in query: [String: Any]) throws {
     var item = query
     item[kSecValueData as String] = key.withUnsafeBytes { Data($0) }
     item[kSecAttrLabel as String] = "Swiftty saved workspaces"
@@ -241,6 +281,11 @@ package struct LoginKeychainKeyStore: SavedLayoutKeyStore {
   }
 
   package func delete() throws {
+    try delete(query)
+    try delete(nextQuery)
+  }
+
+  private func delete(_ query: [String: Any]) throws {
     let status = SecItemDelete(query as CFDictionary)
     guard status == errSecSuccess || status == errSecItemNotFound else {
       throw MuxError(
@@ -253,9 +298,9 @@ package struct LoginKeychainKeyStore: SavedLayoutKeyStore {
 
 /// Test key store; `unavailable` simulates a locked keychain.
 package final class MemoryKeyStore: SavedLayoutKeyStore {
-  private let state = Mutex<(key: SymmetricKey?, unavailable: String?)>(
-    (nil, nil)
-  )
+  private let state = Mutex<
+    (key: SymmetricKey?, unavailable: String?, next: SymmetricKey?)
+  >((nil, nil, nil))
 
   package init() {}
 
@@ -287,6 +332,7 @@ package final class MemoryKeyStore: SavedLayoutKeyStore {
         throw MuxError(.unauthorized, reason)
       }
       value.key = nil
+      value.next = nil
     }
   }
   package func replace(with key: SymmetricKey) throws {
@@ -298,6 +344,42 @@ package final class MemoryKeyStore: SavedLayoutKeyStore {
     }
   }
   package var currentKey: SymmetricKey? { state.withLock { $0.key } }
+  package var stagedKey: SymmetricKey? { state.withLock { $0.next } }
+  /// Fault injection: the next promotion fails, as a crash before it would.
+  package func failNextPromotion() { promotionFails.withLock { $0 = true } }
+  private let promotionFails = Mutex(false)
+
+  package func lookupNext() -> SavedLayoutKeyLookup {
+    state.withLock { value in
+      if let reason = value.unavailable { return .unavailable(reason) }
+      return value.next.map(SavedLayoutKeyLookup.found) ?? .notFound
+    }
+  }
+  package func stageNext(_ key: SymmetricKey) throws {
+    try state.withLock { value in
+      if let reason = value.unavailable {
+        throw MuxError(.unauthorized, reason)
+      }
+      value.next = key
+    }
+  }
+  package func promoteNext() throws {
+    let interrupted = promotionFails.withLock { value in
+      defer { value = false }
+      return value
+    }
+    if interrupted { throw MuxError(.unauthorized, "promotion interrupted") }
+    try state.withLock { value in
+      if let reason = value.unavailable {
+        throw MuxError(.unauthorized, reason)
+      }
+      guard let next = value.next else {
+        throw MuxError(.notFound, "no staged saved layout key")
+      }
+      value.key = next
+      value.next = nil
+    }
+  }
 }
 
 // MARK: Files
@@ -376,47 +458,7 @@ package final class SavedLayoutFiles: @unchecked Sendable {
   /// Temporary file, `F_BARRIERFSYNC`, rename, directory flush. A torn write
   /// leaves the previous generation intact.
   package func write(_ data: Data, _ id: WorkspaceID, generation: UInt64) throws
-  {
-    let temporary = workspaces.appendingPathComponent(
-      ".tmp-\(UUID().uuidString)"
-    )
-    let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
-    guard fd >= 0 else { throw posix("create") }
-    var written = 0
-    let failure: MuxError? = data.withUnsafeBytes { raw in
-      while written < raw.count {
-        let n = Darwin.write(
-          fd,
-          raw.baseAddress! + written,
-          raw.count - written
-        )
-        if n < 0 {
-          if errno == EINTR { continue }
-          return posix("write")
-        }
-        written += n
-      }
-      if fcntl(fd, F_BARRIERFSYNC) != 0 && fsync(fd) != 0 {
-        return posix("flush")
-      }
-      return nil
-    }
-    close(fd)
-    if let failure {
-      unlink(temporary.path)
-      throw failure
-    }
-    guard rename(temporary.path, url(id, generation).path) == 0 else {
-      let error = posix("rename")
-      unlink(temporary.path)
-      throw error
-    }
-    let directory = open(workspaces.path, O_RDONLY)
-    if directory >= 0 {
-      _ = fsync(directory)
-      close(directory)
-    }
-  }
+  { try AtomicFile.write(data, to: url(id, generation)) }
 
   package func remove(_ id: WorkspaceID, generation: UInt64) {
     try? fileManager.removeItem(at: url(id, generation))
@@ -503,19 +545,7 @@ package final class SavedLayoutFiles: @unchecked Sendable {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
     let data = try encoder.encode(value)
-    let temporary = root.appendingPathComponent(".saved-policy-\(UUID())")
-    guard
-      fileManager.createFile(
-        atPath: temporary.path,
-        contents: data,
-        attributes: [.posixPermissions: 0o600]
-      )
-    else { throw posix("create policy") }
-    guard rename(temporary.path, policy.path) == 0 else {
-      let error = posix("rename policy")
-      unlink(temporary.path)
-      throw error
-    }
+    try AtomicFile.write(data, to: policy)
   }
 
   private func posix(_ operation: String) -> MuxError {

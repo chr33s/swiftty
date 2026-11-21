@@ -1,7 +1,7 @@
 {
   "scope": "durable installer with isolated fixture agents",
-  "root": "/private/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-installer-qualification-gevfeqe_",
-  "revision": "8340847c6642a2a1b09eddc0b513231a86f6c1a2",
+  "root": "/private/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-installer-qualification-p26si769",
+  "revision": "c6a370fd1ca4cd038d488ed2eba20738d1c5f916",
   "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2.1\nBuildVersion:\t\t26B131",
   "passed": true,
   "checks": [
@@ -12,6 +12,6 @@
     "after a guardian restart the installer reports ended sessions with the old and new incarnations, never restoration, and then reports the new guardian as running",
     "uninstall ends confirmed sessions, removes both durable agents and the record, and does not reinstate the legacy agent"
   ],
-  "adopted": "E181A237-30B8-4CF0-B9CC-03F537EAFD66",
+  "adopted": "44547FC7-F9FD-4FD2-960F-CC79D99174C9",
   "cleanup_errors": []
 }

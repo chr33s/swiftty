@@ -15,7 +15,7 @@ struct DurableInstallationTests {
       (
         legacyWorkspaces: 0, guardianUp: false, gatewayUp: false,
         incarnation: UUID(), durableWorkspaces: 0, failGateway: false,
-        updatePending: false
+        updatePending: false, maintenance: false, failGuardian: false
       )
     )
     func note(_ entry: String) { log.withLock { $0.append(entry) } }
@@ -42,6 +42,10 @@ struct DurableInstallationTests {
       world.note("\(name).register")
       try world.state.withLock { state in
         if name == "guardian" {
+          if state.failGuardian {
+            state.failGuardian = false
+            throw MuxError(.launchFailed, "guardian registration failed")
+          }
           state.guardianUp = true
           state.incarnation = UUID()  // A fresh guardian process.
         } else {
@@ -80,6 +84,10 @@ struct DurableInstallationTests {
     func endAll() async throws {
       world.note("durable.endAll")
       world.state.withLock { $0.durableWorkspaces = 0 }
+    }
+    func setMaintenance(_ on: Bool) async throws {
+      world.note("maintenance(\(on))")
+      world.state.withLock { $0.maintenance = on }
     }
   }
 
@@ -287,7 +295,13 @@ struct DurableInstallationTests {
         replace: { world.note("replace") }
       ) == .declined(workspaces: 2)
     )
-    #expect(world.entries == ["confirm(2)"])
+    // Creation closed first; reopened when declined.
+    #expect(
+      world.entries == [
+        "maintenance(true)", "confirm(2)", "maintenance(false)",
+      ]
+    )
+    #expect(world.state.withLock { !$0.maintenance })
     world.log.withLock { $0.removeAll() }
     let outcome = try await install.maintainGuardian(
       confirm: confirming(world, true),
@@ -300,9 +314,9 @@ struct DurableInstallationTests {
     #expect(second != first)
     #expect(
       world.entries == [
-        "confirm(2)", "durable.endAll", "gateway.unregister",
-        "guardian.unregister", "replace", "guardian.register",
-        "gateway.register",
+        "maintenance(true)", "confirm(2)", "durable.endAll",
+        "gateway.unregister", "guardian.unregister", "replace",
+        "guardian.register", "gateway.register",
       ]
     )
     #expect(try await install.startup() == .running(guardian: second))
@@ -326,12 +340,83 @@ struct DurableInstallationTests {
     )
     #expect(
       world.entries == [
-        "confirm(1)", "durable.endAll", "gateway.unregister",
-        "guardian.unregister",
+        "maintenance(true)", "confirm(1)", "durable.endAll",
+        "gateway.unregister", "guardian.unregister",
       ]
     )
     #expect(!world.entries.contains("legacy.register"))
     #expect(try await install.startup() == .notInstalled)
+  }
+
+  /// Maintenance that fails after the agents came down restores them.
+  @Test
+  func aFailedMaintenanceBringsTheAgentsBack() async throws {
+    let world = World()
+    let dir = root()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let install = installer(world, dir)
+    _ = try await install.adopt(
+      from: Legacy(world: world),
+      confirm: confirming(world, true)
+    )
+    world.log.withLock { $0.removeAll() }
+    world.state.withLock { $0.failGuardian = true }
+    await #expect(throws: MuxError.self) {
+      _ = try await install.maintainGuardian(
+        confirm: confirming(world, true),
+        replace: { world.note("replace") }
+      )
+    }
+    #expect(
+      world.entries == [
+        "maintenance(true)", "gateway.unregister", "guardian.unregister",
+        "replace", "guardian.register", "guardian.register", "gateway.register",
+      ]
+    )
+    #expect(world.state.withLock { $0.guardianUp && $0.gatewayUp })
+    guard case .running = try await install.startup() else {
+      Issue.record("agents were not restored")
+      return
+    }
+  }
+
+  /// A swap that fails leaves the retained gateway registered; it finishes
+  /// the plan as a rollback.
+  @Test
+  func aFailedGatewaySwapReregistersTheRetainedGateway() async throws {
+    let world = World()
+    let dir = root()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let install = installer(world, dir)
+    _ = try await install.adopt(
+      from: Legacy(world: world),
+      confirm: confirming(world, true)
+    )
+    world.log.withLock { $0.removeAll() }
+    await #expect(throws: MuxError.self) {
+      _ = try await install.updateGateway(
+        GatewayUpdateRequest(
+          candidate: "/c",
+          workerBuild: nil,
+          workerProtocol: nil
+        ),
+        through: Updating(world: world, defers: false),
+        agent: Agent(world: world, name: "gateway"),
+        install: {
+          world.note("swap failed")
+          // The retained gateway finishes the plan once registered again.
+          world.state.withLock { $0.updatePending = false }
+          throw MuxError(.invalidRequest, "rename failed")
+        },
+        settle: .milliseconds(300)
+      )
+    }
+    #expect(
+      world.entries == [
+        "prepare", "gateway.unregister", "swap failed", "gateway.register",
+      ]
+    )
+    #expect(world.state.withLock { $0.gatewayUp })
   }
 
   @Test

@@ -107,6 +107,8 @@ package actor SavedLayoutService {
   private var policy = SavedLayoutPolicy.defaults
   private var policyReadable = true
   private var key: SymmetricKey?
+  /// A rotation's next key, present only while one is unfinished.
+  private var stagedKey: SymmetricKey?
   private var store: SavedWorkspaceList.StoreState = .available
   private var records: [WorkspaceID: Loaded] = [:]
   private var newer: Set<WorkspaceID> = []
@@ -177,13 +179,23 @@ package actor SavedLayoutService {
       return
     }
     loadKey()
-    if key != nil { loadRecords() }
+    if key != nil {
+      loadRecords()
+      // An interrupted rotation finishes now; failing, it is retried at the
+      // next start with both keys still readable.
+      do { try finishRotation() } catch {
+        log.error(
+          "saved layout key rotation unfinished: \(String(describing: error))"
+        )
+      }
+    }
   }
 
   private func loadKey() {
     switch keys.lookup() {
     case let .found(value):
       key = value
+      if case let .found(next) = keys.lookupNext() { stagedKey = next }
       if case .unavailable = store { store = .available }
     case .notFound:
       let existing = (try? files.generations()) ?? [:]
@@ -223,7 +235,14 @@ package actor SavedLayoutService {
       var readable: [UInt64] = []
       for generation in list.reversed() {
         do {
-          let record = try open(id, generation: generation, key: key)
+          // Mid-rotation, a record is sealed under either key.
+          let record: Loaded
+          do {
+            record = try open(id, generation: generation, key: key)
+          } catch let error where !(error is SavedLayoutNewerSchema) {
+            guard let stagedKey else { throw error }
+            record = try open(id, generation: generation, key: stagedKey)
+          }
           if loaded == nil { loaded = record }
           readable.append(generation)
         } catch is SavedLayoutNewerSchema {
@@ -744,13 +763,31 @@ package actor SavedLayoutService {
 
   /// Save output turned off: every record is rewritten without output under
   /// a new key, and the old generations and key go (§12.2.2).
-  private func dropOutputAndRotateKey() throws {
+  ///
+  /// Crash-safe: the new key is staged beside the old one and the policy is
+  /// published first, so a restart reads every record (under either key)
+  /// and finishes the rewrite; only then does the new key replace the old.
+  private func dropOutputAndRotateKey(publishing next: SavedLayoutPolicy) throws
+  {
     // Refuse before rewriting anything if the keychain cannot take a key.
     guard case .found = keys.lookup() else {
       throw MuxError(.unauthorized, "the saved layout key is unavailable")
     }
     let newKey = SymmetricKey(size: .bits256)
-    key = newKey
+    try keys.stageNext(newKey)
+    stagedKey = newKey
+    try files.writePolicy(next)
+    policy = next
+    policyReadable = true
+    try finishRotation()
+  }
+
+  /// Reseals every record under the staged key without output, removes the
+  /// older generations, then promotes the key. Idempotent; resumes after a
+  /// crash at any point.
+  private func finishRotation() throws {
+    guard let next = stagedKey else { return }
+    key = next
     for id in Array(live.keys) {
       live[id]?.outputs = [:]
       live[id]?.previous = [:]
@@ -758,13 +795,17 @@ package actor SavedLayoutService {
     carry = [:]
     for id in Array(records.keys) {
       let old = records[id]?.generations ?? []
-      guard persist(id, outputs: [:], previous: [:], { _ in }) else { continue }
+      guard persist(id, outputs: [:], previous: [:], { _ in }) else {
+        // Unwritten: keep the old key until a later pass succeeds.
+        throw MuxError(.unauthorized, "saved layout could not be resealed")
+      }
       for generation in old { files.remove(id, generation: generation) }
       if let latest = records[id]?.generations.last {
         records[id]?.generations = [latest]
       }
     }
-    try keys.replace(with: newKey)
+    try keys.promoteNext()
+    stagedKey = nil
   }
 
   // MARK: Gateway-issued End
@@ -990,9 +1031,7 @@ package actor SavedLayoutService {
     next.revision = max(policy.revision, expectedRevision) + 1
     let wasSaving = policy.saveLayout
     if policy.saveOutput, !next.saveOutput, next.saveLayout, key != nil {
-      // Allow the rewrite, then publish the new policy.
-      policy.saveOutput = false
-      try dropOutputAndRotateKey()
+      try dropOutputAndRotateKey(publishing: next)
     }
     if !next.saveLayout {
       // Records and key go before the change is acknowledged.

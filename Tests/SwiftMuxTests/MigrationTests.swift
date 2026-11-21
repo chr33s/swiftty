@@ -165,7 +165,8 @@ struct MigrationTests {
   /// A running workspace with one shell, attached as controller.
   private static func start(
     _ rig: Rig,
-    oldFault: Fault? = nil
+    oldFault: Fault? = nil,
+    remainOnExit: Bool = false
   ) async throws -> Started {
     let token = try rig.guardian.provisionWorker(
       workspace: rig.workspace,
@@ -198,7 +199,8 @@ struct MigrationTests {
           name: "moving",
           columns: columns,
           rows: rows,
-          launch: shellLaunch()
+          launch: shellLaunch(),
+          remainOnExit: remainOnExit
         )
       )
     )
@@ -1164,6 +1166,181 @@ struct MigrationTests {
     }
     await started.client.close()
     try await Self.expectUsable(rig, started, tag: "upgraded")
+    await started.runtime.close()
+  }
+
+  // MARK: Review regressions
+
+  /// Input refused while a relay moves is never written; send again.
+  private static func type(
+    _ client: MuxConnection,
+    _ text: String,
+    to pane: PaneID
+  ) async throws {
+    let deadline = ContinuousClock.now + .seconds(10)
+    while true {
+      do {
+        try await client.send(.text(text), to: pane)
+        return
+      } catch let error as MuxError
+        where error.code == .quiescing && ContinuousClock.now < deadline
+      { try await Task.sleep(for: .milliseconds(20)) }
+    }
+  }
+
+  /// One progress loop per owner: the old worker's pending probe must not
+  /// start a second loop on the candidate (which would end it).
+  @Test
+  func theCandidateKeepsOneProgressLoopAfterRelease() async throws {
+    let rig = try Rig()
+    defer { rig.close() }
+    let started = try await Self.start(rig)
+    let status = try await started.runtime.migrateWorkspace(
+      .id(rig.workspace),
+      started: rig.candidate()
+    )
+    #expect(status.outcome == .released)
+    // One loop probes about once a second; two would roughly double it.
+    let before = rig.guardian.probesIssuedForTesting(rig.workspace)
+    try await Task.sleep(for: .seconds(4))
+    let issued = rig.guardian.probesIssuedForTesting(rig.workspace) - before
+    #expect(issued <= 5, "\(issued) probes in 4 s")
+    #expect(
+      rig.available,
+      "\(String(describing: rig.guardian.inventory().first?.lossReason))"
+    )
+    try await Self.type(started.client, "echo probed-$MARK\r", to: started.pane)
+    _ = try await started.client.frame(of: started.pane) {
+      $0.lines.contains("probed-kept-42")
+    }
+    await started.client.close()
+    await started.runtime.close()
+  }
+
+  /// An aborted replacement re-pins the route under the fresh authority; a
+  /// connected frontend keeps its connection to the same worker.
+  @Test
+  func aFrontendStaysConnectedThroughAnAbort() async throws {
+    let rig = try Rig(frozenTimeout: 0.4)
+    defer { rig.close() }
+    let started = try await Self.start(rig)
+    let status = try await started.runtime.migrateWorkspace(
+      .id(rig.workspace),
+      started: rig.candidate { event, forward in
+        if case .importChunk = event { return }
+        forward(event)
+      }
+    )
+    #expect(status.outcome == .resumed)
+    // Discovery reconciles routes; the relay must survive it.
+    try await Task.sleep(for: .milliseconds(500))
+    try await Self.type(
+      started.client,
+      "echo through-$MARK\r",
+      to: started.pane
+    )
+    _ = try await started.client.frame(of: started.pane) {
+      $0.lines.contains("through-kept-42")
+    }
+    await started.client.close()
+    await started.runtime.close()
+  }
+
+  /// A child that exits while frozen keeps its final output: the drain
+  /// waits for the paused consumer instead of closing the PTY.
+  @Test
+  func finalOutputOfAChildThatExitsWhileFrozenIsKept() async throws {
+    let rig = try Rig(frozenTimeout: 3)
+    defer { rig.close() }
+    let started = try await Self.start(rig, remainOnExit: true)
+    let delay = DispatchQueue(label: "migration.test.final-output")
+    try await started.client.send(
+      .text("exec sh -c 'sleep 0.4; echo final-$((40+3)); exit 3'\r"),
+      to: started.pane
+    )
+    let status = try await started.runtime.migrateWorkspace(
+      .id(rig.workspace),
+      started: rig.candidate { event, forward in
+        // Hold the cut past the child's exit and the 1 s drain bound.
+        if case .importChunk = event {
+          delay.asyncAfter(deadline: .now() + 1.8) { forward(event) }
+          return
+        }
+        delay.async { forward(event) }
+      }
+    )
+    #expect(
+      status.outcome == .released,
+      "\(String(describing: status.failure))"
+    )
+    await started.client.close()
+    let next = try await Self.attach(started.runtime, rig.workspace)
+    _ = try await Self.show(next, rig.workspace)
+    _ = try await next.frame(of: started.pane) { $0.lines.contains("final-43") }
+    await next.close()
+    await started.runtime.close()
+  }
+
+  /// Cleanup of an exited, retained pane (lease release cancels its input)
+  /// is not a transport failure.
+  @Test
+  func cleanupOfAnExitedPaneKeepsTheWorker() async throws {
+    let rig = try Rig()
+    defer { rig.close() }
+    let started = try await Self.start(rig, remainOnExit: true)
+    try await started.client.send(.text("exit 7\r"), to: started.pane)
+    try await Self.waitUntil("pane exit") {
+      rig.guardian.inventory().first?.panes.first?.finished == true
+    }
+    // Releasing the lease cancels the pane's input.
+    await started.client.close()
+    try await Task.sleep(for: .milliseconds(500))
+    #expect(
+      rig.available,
+      "\(String(describing: rig.guardian.inventory().first?.lossReason))"
+    )
+    let next = try await Self.attach(started.runtime, rig.workspace)
+    _ = try await Self.show(next, rig.workspace)
+    await next.close()
+    #expect(rig.available)
+    await started.runtime.close()
+  }
+
+  /// A post-update upgrade started before discovery finishes still moves
+  /// the workspace.
+  @Test
+  func anUpgradeStartedBeforeDiscoveryStillMovesWorkspaces() async throws {
+    let rig = try Rig()
+    defer { rig.close() }
+    let started = try await Self.start(rig)
+    await started.client.close()
+    await started.runtime.close()
+    await started.supervisor.close()
+    let (_, runtime) = try await Self.replacementGateway(rig)
+    // Immediately: discovery is still opening the workspace.
+    let results = await runtime.upgradeWorkspaces(
+      to: "two",
+      started: rig.candidate()
+    )
+    #expect((try? results[rig.workspace]?.get()) == .released)
+    await runtime.close()
+  }
+
+  /// Installer maintenance refuses new workspaces at the gateway.
+  @Test
+  func maintenanceRefusesCreation() async throws {
+    let rig = try Rig()
+    defer { rig.close() }
+    let started = try await Self.start(rig)
+    await started.runtime.setMaintenance(true)
+    await #expect(throws: MuxError.self) {
+      _ = try await started.runtime.createWorkspace(
+        WorkspaceID(),
+        request: NewWorkspaceRequest(launch: shellLaunch())
+      )
+    }
+    await started.runtime.setMaintenance(false)
+    await started.client.close()
     await started.runtime.close()
   }
 

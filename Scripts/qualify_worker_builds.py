@@ -172,7 +172,9 @@ def qualify_worker_builds(args, binary, launcher, *, run, bundle, wait_for):
                 return True
             raise RuntimeError("old worker still running")
 
-        wait_for(old_worker_retired, "old worker retired", timeout=15)
+        # The retired worker keeps answering moving relays for up to 15 s; the
+        # guardian ends it at 30 s if it has not left by then.
+        wait_for(old_worker_retired, "old worker retired", timeout=40)
         # The shell started under build one still references its resources.
         (root / "collection").unlink()
         (root / "collect-one").touch()

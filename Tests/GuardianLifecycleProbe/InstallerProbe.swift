@@ -122,7 +122,10 @@ extension GuardianLifecycleProbe {
         install: {
           let manager = FileManager.default
           try manager.moveItem(at: current, to: previous)
-          try manager.moveItem(at: candidate, to: current)
+          do { try manager.moveItem(at: candidate, to: current) } catch {
+            try? manager.moveItem(at: previous, to: current)
+            throw error
+          }
           return {
             let failed = current.deletingLastPathComponent()
               .appendingPathComponent("Gateway-failed.app")

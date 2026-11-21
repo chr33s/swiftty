@@ -23,7 +23,11 @@ do {
     unavailable: { _ in exit(75) },
     candidate: bootstrap.migration,
     // Retired after a planned replacement: the guardian keeps every process.
-    retired: { exit(0) }
+    // Keep answering frozen frontends while gateway relays move to the
+    // candidate, then leave (the guardian's grace is longer).
+    retired: {
+      DispatchQueue.global().asyncAfter(deadline: .now() + 15) { exit(0) }
+    }
   )
   withExtendedLifetime(host) { dispatchMain() }
 } catch {

@@ -56,14 +56,15 @@ extension GuardianServer {
       return .admitted(bytes: admitted)
     case let .endPaste(id, writer, paste):
       try requireWriter(writer, workspace)
-      let pane = try livePane(id, workspace)
+      // Cleanup of a pane that has exited has nothing left to do.
+      guard let pane = try cleanupPane(id, workspace) else { break }
       guard pane.runtime.pasteID == paste else {
         throw MuxError(.invalidRequest, "unknown paste")
       }
       pane.runtime.endPaste(id: paste)
       pane.runtime.flush()
     case let .cancelInput(id):
-      let pane = try livePane(id, workspace)
+      guard let pane = try cleanupPane(id, workspace) else { break }
       let count = pane.runtime.discardUnwrittenInput()
       if count > 0 {
         send(.inputReleased(pane: id, bytes: count), to: workspace)
@@ -84,7 +85,9 @@ extension GuardianServer {
       pane.runtime.terminate()
     case let .cancelPaste(id, writer, paste, discardDeferredInput):
       try requireWriter(writer, workspace)
-      let pane = try livePane(id, workspace)
+      guard let pane = try cleanupPane(id, workspace) else {
+        return .pasteCancelled(wrote: false)
+      }
       guard pane.runtime.pasteID == paste else {
         throw MuxError(.invalidRequest, "unknown paste")
       }
@@ -112,6 +115,18 @@ extension GuardianServer {
     guard workspace.writer == token else {
       throw MuxError(.staleAttachment, "writer capability revoked")
     }
+  }
+
+  /// A cleanup command's pane: nil when it has already exited (nothing to
+  /// cancel), an error only for a pane this workspace never had.
+  private func cleanupPane(
+    _ id: GuardianPaneHandle,
+    _ workspace: Workspace
+  ) throws -> Pane? {
+    guard let pane = workspace.panes[id.pane], pane.process == id.process else {
+      throw MuxError(.notFound, "unknown pane")
+    }
+    return pane.runtime.isOpen && !pane.runtime.finished ? pane : nil
   }
 
   private func livePane(

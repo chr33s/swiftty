@@ -2,9 +2,9 @@
   "scope": "signed registry installation, selected builds, live resource pins and planned replacement",
   "same_worker_implementation": true,
   "production_gateway": false,
-  "revision": "5528026ff68c4f61d4cf3b606c0631c6d82f983e",
+  "revision": "c6a370fd1ca4cd038d488ed2eba20738d1c5f916",
   "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2.1\nBuildVersion:\t\t26B131",
-  "root": "/private/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-build-qualification-wfn0m63d",
+  "root": "/private/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-build-qualification-e7cl0r5m",
   "passed": true,
   "checks": [
     "new workspace uses build two; live build one cannot be collected after rollback retention clears",
@@ -12,183 +12,183 @@
     "planned replacement onto signed build two keeps shell, job, variables, screen and service instance; old worker retired; build one stays pinned by the shell",
     "old build collects only after explicit End and retirement; selected build remains"
   ],
-  "guardian_signature": "Executable=/private/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-build-qualification-wfn0m63d/Guardian.app/Contents/MacOS/probe\nIdentifier=com.chr33s.swiftty.durability-probe.8c68b0967a8147a18b4e5c9f879781c7.guardian.app\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20500 size=48861 flags=0x10000(runtime) hashes=1518+3 location=embedded\nVersionPlatform=1\nVersionMin=1769472\nVersionSDK=1769472\nHash type=sha256 size=32\nCandidateCDHash sha256=f93d00eed0d8dcc05eba757eb010cbcfcffe02b9\nCandidateCDHashFull sha256=f93d00eed0d8dcc05eba757eb010cbcfcffe02b90dd029e67b3e3b80009fb67e\nHash choices=sha256\nCMSDigest=f93d00eed0d8dcc05eba757eb010cbcfcffe02b90dd029e67b3e3b80009fb67e\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=11878400\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=f93d00eed0d8dcc05eba757eb010cbcfcffe02b9\nSignature size=9044\nAuthority=Developer ID Application: Dot Media CC (72KB9YQR7B)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=Nov 21, 2026 at 4:13:29\u202fPM\nInfo.plist entries=10\nTeamIdentifier=72KB9YQR7B\nRuntime Version=27.0.0\nSealed Resources version=2 rules=13 files=2\nInternal requirements count=1 size=244\nTotal signatures=1\nChosen signature=1\n",
+  "guardian_signature": "Executable=/private/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-build-qualification-e7cl0r5m/Guardian.app/Contents/MacOS/probe\nIdentifier=com.chr33s.swiftty.durability-probe.03777a5af1984939bde7d10b4ec46745.guardian.app\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20500 size=50173 flags=0x10000(runtime) hashes=1559+3 location=embedded\nVersionPlatform=1\nVersionMin=1769472\nVersionSDK=1769472\nHash type=sha256 size=32\nCandidateCDHash sha256=df506a20cc9e7dc48549fd985abf367e8c5bb9c8\nCandidateCDHashFull sha256=df506a20cc9e7dc48549fd985abf367e8c5bb9c89fbf3195d7ef0581d6005738\nHash choices=sha256\nCMSDigest=df506a20cc9e7dc48549fd985abf367e8c5bb9c89fbf3195d7ef0581d6005738\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=12156928\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=df506a20cc9e7dc48549fd985abf367e8c5bb9c8\nSignature size=9044\nAuthority=Developer ID Application: Dot Media CC (72KB9YQR7B)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=Nov 21, 2026 at 6:05:33\u202fPM\nInfo.plist entries=10\nTeamIdentifier=72KB9YQR7B\nRuntime Version=27.0.0\nSealed Resources version=2 rules=13 files=2\nInternal requirements count=1 size=244\nTotal signatures=1\nChosen signature=1\n",
   "first": {
+    "graphPane": "7C1A7615-028E-4B73-90ED-FE4C0FDDAFC0",
+    "graphTab": "2AF28C84-AA0A-4BEB-8A38-F156DA6348AA",
     "workerBuild": "one",
-    "worker": "64189",
-    "build": "1",
+    "proof": "proof_E7ECDE87BD28446F8C6EBD9396F8EE16=durable:34477:34480:himB:ok",
     "graphRevision": "1",
-    "server": "3847939B-5B3D-4634-BA49-F6AFBBFDAF8A",
-    "gateway": "64187",
-    "graphTab": "AE4A6550-0100-4924-A3D9-4EBAE5814D92",
-    "workspace": "5A373571-7650-41CA-B45C-B4713FEC59D0",
-    "graphPane": "BD53A5BF-2218-4FC3-A1DF-27460DBA7B24",
-    "proof": "proof_1B960F14A6B84F48BED673CB95E4554B=durable:64193:64194:himB:ok",
-    "guardian": 64183
+    "gateway": "34454",
+    "server": "504C0C19-100B-48E2-8AE1-2689C6085F42",
+    "worker": "34474",
+    "build": "1",
+    "workspace": "D7D4FB71-06F4-4355-93DB-8CE6B992241A",
+    "guardian": 34425
   },
   "second": {
+    "proof": "proof_883E93094BCF42C4BC2445675CF9E4B8=durable:34516:34519:himB:ok",
+    "gateway": "34499",
     "workerBuild": "two",
-    "gateway": "64203",
-    "proof": "proof_8CBA2F3DCC44458DBF0F345C35CC5DF4=durable:64213:64215:himB:ok",
-    "graphTab": "FC1AE259-63B6-4D3C-9982-65ACCC01E676",
-    "server": "404408C2-8BFE-4D47-9EBE-782B388E2C53",
-    "graphPane": "A818BD5C-020E-4BF4-8089-99F07A777D0C",
-    "workspace": "C87430CA-7B74-4F1D-BF9E-7750F786591E",
-    "worker": "64205",
+    "server": "857D1FA4-7179-4B56-9AB0-7143E0B38A73",
     "build": "1",
+    "graphPane": "907618BC-A8D2-427C-9D31-FB1F1BA5BB80",
     "graphRevision": "1",
-    "guardian": 64183
+    "graphTab": "56777141-DDEA-4214-A8E9-1853EBBBD41C",
+    "workspace": "D402F970-7A29-4159-ABF3-5FC0FAAD3350",
+    "worker": "34501",
+    "guardian": 34425
   },
   "reattached": {
-    "worker": "64189",
     "build": "1",
-    "workerBuild": "one",
-    "server": "3847939B-5B3D-4634-BA49-F6AFBBFDAF8A",
-    "graphTab": "AE4A6550-0100-4924-A3D9-4EBAE5814D92",
-    "proof": "proof_5B26BC72686E4C33AACAE3229CEE11DA=durable:64193:64194:himB:ok",
+    "graphTab": "2AF28C84-AA0A-4BEB-8A38-F156DA6348AA",
     "graphRevision": "1",
-    "workspace": "5A373571-7650-41CA-B45C-B4713FEC59D0",
-    "graphPane": "BD53A5BF-2218-4FC3-A1DF-27460DBA7B24",
-    "gateway": "64607",
-    "guardian": 64183
+    "proof": "proof_BAC93052A42D46C6990D9864BB7AF122=durable:34477:34480:himB:ok",
+    "server": "504C0C19-100B-48E2-8AE1-2689C6085F42",
+    "workspace": "D7D4FB71-06F4-4355-93DB-8CE6B992241A",
+    "worker": "34474",
+    "gateway": "34608",
+    "graphPane": "7C1A7615-028E-4B73-90ED-FE4C0FDDAFC0",
+    "workerBuild": "one",
+    "guardian": 34425
   },
   "inventory": [
     {
+      "available": true,
+      "starting": false,
+      "workerProtocol": 2,
+      "worker": {
+        "pid": 34501,
+        "finished": false,
+        "build": "two"
+      },
       "panes": [
         {
-          "pid": 64193,
-          "pane": "BD53A5BF-2218-4FC3-A1DF-27460DBA7B24",
-          "finished": false,
-          "process": "6FBE1A97-0219-4E15-A203-2DDD5C6C57A8"
+          "pid": 34516,
+          "process": "F5232BBB-726D-4552-8E74-315B4B43454B",
+          "pane": "907618BC-A8D2-427C-9D31-FB1F1BA5BB80",
+          "finished": false
         }
       ],
       "authority": {
-        "generation": 1,
-        "incarnation": "7AE256BD-62D2-48F0-856D-E2A1198E2F5F",
-        "workspace": "5A373571-7650-41CA-B45C-B4713FEC59D0"
-      },
-      "worker": {
-        "build": "one",
-        "pid": 64189,
-        "finished": false
-      },
-      "starting": false,
-      "workerProtocol": 2,
-      "available": true
+        "workspace": "D402F970-7A29-4159-ABF3-5FC0FAAD3350",
+        "generation": 2,
+        "incarnation": "D90F11BD-E0CB-4271-A487-7D1A9D781FE6"
+      }
     },
     {
+      "available": true,
+      "starting": false,
+      "workerProtocol": 2,
+      "worker": {
+        "pid": 34474,
+        "finished": false,
+        "build": "one"
+      },
       "panes": [
         {
-          "process": "8B323A39-E297-4F54-BA77-5C9AAC6B2AC7",
-          "pid": 64213,
-          "finished": false,
-          "pane": "A818BD5C-020E-4BF4-8089-99F07A777D0C"
+          "pid": 34477,
+          "process": "F78126DC-566A-48FF-9B60-4026D2985942",
+          "pane": "7C1A7615-028E-4B73-90ED-FE4C0FDDAFC0",
+          "finished": false
         }
       ],
       "authority": {
-        "generation": 2,
-        "incarnation": "7AE256BD-62D2-48F0-856D-E2A1198E2F5F",
-        "workspace": "C87430CA-7B74-4F1D-BF9E-7750F786591E"
-      },
-      "worker": {
-        "pid": 64205,
-        "build": "two",
-        "finished": false
-      },
-      "starting": false,
-      "workerProtocol": 2,
-      "available": true
+        "workspace": "D7D4FB71-06F4-4355-93DB-8CE6B992241A",
+        "generation": 1,
+        "incarnation": "D90F11BD-E0CB-4271-A487-7D1A9D781FE6"
+      }
     }
   ],
   "migration": {
+    "server": "504C0C19-100B-48E2-8AE1-2689C6085F42",
+    "proof": "moved_817B9C0B0FF84C249818FAC424E62E79=durable:34477:34480:himB:ok",
     "retainedScreen": "true",
     "outcome": "released",
-    "worker": "64622",
-    "frozenMilliseconds": "32",
-    "server": "3847939B-5B3D-4634-BA49-F6AFBBFDAF8A",
-    "workerBuild": "two",
+    "frozenMilliseconds": "30",
     "failure": "",
-    "proof": "moved_AB95E0302D744633A6154E7BF737B9EC=durable:64193:64194:himB:ok"
+    "workerBuild": "two",
+    "worker": "34614"
   },
   "migrated": {
+    "available": true,
+    "starting": false,
+    "workerProtocol": 2,
+    "worker": {
+      "pid": 34614,
+      "finished": false,
+      "build": "two"
+    },
     "panes": [
       {
-        "pid": 64193,
-        "pane": "BD53A5BF-2218-4FC3-A1DF-27460DBA7B24",
-        "finished": false,
-        "process": "6FBE1A97-0219-4E15-A203-2DDD5C6C57A8"
+        "pid": 34477,
+        "process": "F78126DC-566A-48FF-9B60-4026D2985942",
+        "pane": "7C1A7615-028E-4B73-90ED-FE4C0FDDAFC0",
+        "finished": false
       }
     ],
     "authority": {
+      "workspace": "D7D4FB71-06F4-4355-93DB-8CE6B992241A",
       "generation": 3,
-      "incarnation": "7AE256BD-62D2-48F0-856D-E2A1198E2F5F",
-      "workspace": "5A373571-7650-41CA-B45C-B4713FEC59D0"
-    },
-    "worker": {
-      "build": "two",
-      "pid": 64622,
-      "finished": false
-    },
-    "starting": false,
-    "workerProtocol": 2,
-    "available": true
+      "incarnation": "D90F11BD-E0CB-4271-A487-7D1A9D781FE6"
+    }
   },
   "ended": [
     {
-      "available": false,
-      "starting": false,
       "lossReason": {
         "message": "workspace ended",
         "code": "notAttached"
       },
+      "worker": {
+        "pid": 34501,
+        "finished": true,
+        "build": "two",
+        "status": 15
+      },
+      "workerProtocol": 2,
       "panes": [
         {
-          "pid": 64193,
-          "pane": "BD53A5BF-2218-4FC3-A1DF-27460DBA7B24",
-          "finished": true,
-          "process": "6FBE1A97-0219-4E15-A203-2DDD5C6C57A8"
+          "pid": 34516,
+          "process": "F5232BBB-726D-4552-8E74-315B4B43454B",
+          "pane": "907618BC-A8D2-427C-9D31-FB1F1BA5BB80",
+          "finished": true
         }
       ],
-      "workerProtocol": 2,
+      "starting": false,
       "authority": {
-        "generation": 3,
-        "incarnation": "7AE256BD-62D2-48F0-856D-E2A1198E2F5F",
-        "workspace": "5A373571-7650-41CA-B45C-B4713FEC59D0"
+        "workspace": "D402F970-7A29-4159-ABF3-5FC0FAAD3350",
+        "generation": 2,
+        "incarnation": "D90F11BD-E0CB-4271-A487-7D1A9D781FE6"
       },
-      "worker": {
-        "build": "two",
-        "pid": 64622,
-        "finished": true,
-        "status": 15
-      }
+      "available": false
     },
     {
-      "available": false,
-      "starting": false,
       "lossReason": {
         "message": "workspace ended",
         "code": "notAttached"
       },
+      "worker": {
+        "pid": 34614,
+        "finished": true,
+        "build": "two",
+        "status": 15
+      },
+      "workerProtocol": 2,
       "panes": [
         {
-          "pid": 64213,
-          "pane": "A818BD5C-020E-4BF4-8089-99F07A777D0C",
-          "finished": true,
-          "process": "8B323A39-E297-4F54-BA77-5C9AAC6B2AC7"
+          "pid": 34477,
+          "process": "F78126DC-566A-48FF-9B60-4026D2985942",
+          "pane": "7C1A7615-028E-4B73-90ED-FE4C0FDDAFC0",
+          "finished": true
         }
       ],
-      "workerProtocol": 2,
+      "starting": false,
       "authority": {
-        "generation": 2,
-        "incarnation": "7AE256BD-62D2-48F0-856D-E2A1198E2F5F",
-        "workspace": "C87430CA-7B74-4F1D-BF9E-7750F786591E"
+        "workspace": "D7D4FB71-06F4-4355-93DB-8CE6B992241A",
+        "generation": 3,
+        "incarnation": "D90F11BD-E0CB-4271-A487-7D1A9D781FE6"
       },
-      "worker": {
-        "build": "two",
-        "pid": 64205,
-        "finished": true,
-        "status": 15
-      }
+      "available": false
     }
   ],
   "selection": {

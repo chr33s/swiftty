@@ -615,6 +615,73 @@ struct SavedLayoutStoreTests {
     #expect(await reloaded.record(id) != nil)
   }
 
+  /// A crash between resealing records and promoting the new key leaves
+  /// both keys; the next start reads every record and finishes the
+  /// rotation, with the "no output" choice kept.
+  @Test
+  func anInterruptedKeyRotationFinishesAtTheNextStart() async throws {
+    let fixture = try Fixture()
+    let service = await fixture.service()
+    try await enableOutput(service)
+    let id = WorkspaceID()
+    let encoded = try SavedOutputTests.sample().encoded()
+    await service.observe(fixture.authority(id), state: Self.state(id))
+    await service.setOutputSource(fixture.authority(id)) { _, _ in (7, encoded)
+    }
+    await service.exportOutputs()
+    try await waitFor {
+      (await service.list(fixture.inventory(), markOffered: false).workspaces
+        .first?
+        .hasOutput) == true
+    }
+    let oldKey = try #require(fixture.keys.currentKey)
+    fixture.keys.failNextPromotion()
+    var off = await service.currentPolicy
+    off.saveOutput = false
+    await #expect(throws: MuxError.self) {
+      _ = try await service.setPolicy(off, expectedRevision: off.revision)
+    }
+    // Interrupted: both keys exist and the policy already says no output.
+    #expect(fixture.keys.currentKey == oldKey)
+    #expect(fixture.keys.stagedKey != nil)
+    let restarted = await fixture.service()
+    #expect(await restarted.record(id) != nil)
+    #expect(await restarted.currentPolicy.saveOutput == false)
+    #expect(
+      (await restarted.list(fixture.inventory(), markOffered: false).workspaces
+        .first?
+        .hasOutput) == false
+    )
+    #expect(fixture.keys.stagedKey == nil)
+    #expect(fixture.keys.currentKey != oldKey)
+    // Only the promoted key is needed from now on.
+    #expect(await fixture.service().record(id) != nil)
+  }
+
+  @Test
+  func atomicFilesReplaceWholeAndLeaveNoTemporaries() throws {
+    let fixture = try Fixture()
+    let file = fixture.root.appendingPathComponent("state.json")
+    try AtomicFile.write(Data("one".utf8), to: file)
+    try AtomicFile.write(Data(repeating: 0x61, count: 300_000), to: file)
+    #expect(try Data(contentsOf: file).count == 300_000)
+    let mode =
+      try
+      FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions]
+      as? Int
+    #expect(mode == 0o600)
+    let names = try FileManager.default.contentsOfDirectory(
+      atPath: fixture.root.path
+    )
+    #expect(!names.contains { $0.hasPrefix(".state.json.") })
+    #expect(throws: MuxError.self) {
+      try AtomicFile.write(
+        Data(),
+        to: fixture.root.appendingPathComponent("missing/dir/x")
+      )
+    }
+  }
+
   @Test
   func previousOutputFollowsTheReopenedPanesUntilDiscarded() async throws {
     let fixture = try Fixture()

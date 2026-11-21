@@ -43,6 +43,9 @@ public enum GatewayControlCommand: Codable, Sendable, Equatable {
   /// The ordinary update (§5.2): this gateway pauses, settles, checks the
   /// staged candidate under the barrier and hands over to the installer.
   case prepareUpdate(GatewayUpdateRequest)
+  /// Installer maintenance (spec.durability.md §9): while on, this gateway
+  /// refuses new and reopened workspaces, so an empty-state check holds.
+  case setMaintenance(Bool)
 }
 
 public struct GatewayUpdateRequest: Codable, Sendable, Equatable {
@@ -109,6 +112,7 @@ public enum GatewayControlReply: Codable, Sendable {
   case previousOutput(SavedOutputPage)
   case installation(GatewayInstallationStatus)
   case update(GatewayUpdateResult)
+  case maintenance(Bool)
 }
 
 public struct GatewayRouteDescriptor: Codable, Sendable, Equatable {

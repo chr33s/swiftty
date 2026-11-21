@@ -383,7 +383,15 @@ struct GuardianBuildRegistryTests {
         at: fixture.root.appendingPathComponent("one")
       )
     }
-    #expect(throws: (any Error).self) { try fixture.registry() }
+    // Neither tampered metadata nor a missing build restores a selection,
+    // and neither keeps the registry (and the guardian) from starting.
+    let registry = try fixture.registry()
+    #expect(try registry.selection().selected == nil)
+    if kind == "missingBuild" {
+      #expect(registry.unusable == ["one"])
+    } else {
+      #expect(registry.selectionProblem != nil)
+    }
   }
 
   @Test
