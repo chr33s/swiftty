@@ -1078,6 +1078,27 @@ struct MigrationTests {
     await started.runtime.close()
   }
 
+  /// After an update selects a new worker build, live workspaces still on
+  /// older builds move one at a time (§5.2, UA4 with Capability B).
+  @Test
+  func anUpdateUpgradesLiveWorkspacesThroughPlannedReplacement() async throws {
+    let rig = try Rig()
+    defer { rig.close() }
+    let started = try await Self.start(rig)
+    let results = await started.runtime.upgradeWorkspaces(
+      to: "two",
+      started: rig.candidate()
+    )
+    #expect(results.count == 1)
+    #expect((try? results[rig.workspace]?.get()) == .released)
+    try await Self.waitUntil("old worker retired") {
+      rig.retired.withLock { $0 }
+    }
+    await started.client.close()
+    try await Self.expectUsable(rig, started, tag: "upgraded")
+    await started.runtime.close()
+  }
+
   // MARK: Old-worker death (MR8)
 
   @Test

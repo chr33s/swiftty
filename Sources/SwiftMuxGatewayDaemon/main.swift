@@ -46,12 +46,32 @@ do {
         build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion")
           as? String ?? "unknown"
       )
+      // Finish an update this gateway was installed by (§5.2 steps 5–6)
+      // before serving frontends. An unverifiable successor leaves the
+      // barrier paused for the installer.
+      var upgrade: String?
+      if let own = runningGatewayBuild() {
+        let updater = GatewayUpdater(
+          supervisor: supervisor,
+          plans: GatewayUpdatePlanStore(root: support),
+          replacement: InstallerRequiredReplacement()
+        )
+        let outcome = try await updater.complete(
+          ownBuild: own.build,
+          ownProtocols: Set(own.workerProtocols)
+        )
+        if case let .completed(plan) = outcome { upgrade = plan.workerBuild }
+      }
       let started = try await GatewayRuntime.start(
         supervisor: supervisor,
         peerRequirement: requirement,
         saved: saved
       )
       runtime = started
+      if let upgrade {
+        // Capability B after the update: deferred per workspace on refusal.
+        Task.detached { _ = await started.upgradeWorkspaces(to: upgrade) }
+      }
       try Task.checkCancellation()
       let control = GatewayControlServer(
         runtime: started,

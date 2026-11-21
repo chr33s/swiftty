@@ -3688,3 +3688,47 @@ Deviations and open items:
   compatibility is enforced only by the checkpoint format number.
 - No user-facing command starts a planned replacement. Update orchestration
   (UA4) is the intended caller of `migrateWorkspace`.
+
+### 13.73 Update orchestration (UA4) — 2026-11-21
+
+`GatewayUpdater` (`Sources/SwiftMuxGateway/GatewayUpdater.swift`) runs the
+§5.2 sequence over the guardian's single admission barrier, spanning two
+gateway processes.
+
+- **Running gateway.** It refuses a second update. It then pauses admission
+  (`settling`), waits for admitted launches to settle, reads fresh inventory
+  that includes unavailable workers, and runs the final compatibility check
+  under the barrier. The candidate must serve every live worker protocol, and
+  both the candidate and the retained rollback gateway must serve the protocol
+  of the worker build it will select. Incompatibility defers the update:
+  selections are unchanged and the barrier this updater owns is resumed. When
+  the check passes, it persists an owner-only plan, enters `replacing` and hands
+  the named build to the installer.
+- **Successor.** Every gateway runs `complete` at startup, before it serves
+  frontends. It finishes only a `replacing` barrier; a `settling` barrier is the
+  guardian's. The planned candidate verifies itself against fresh inventory,
+  selects the planned worker build and resumes. If it fails verification it
+  marks the plan `rollingBack` and asks the installer to restore the retained
+  gateway, leaving admission paused. The rollback gateway restores the prior
+  worker selection and resumes. Any other gateway leaves the barrier alone. A
+  `replacing` barrier with no plan is resumed only by a gateway compatible with
+  every live worker.
+- **Live upgrades.** After an update that selects a new worker build, the
+  daemon moves live workspaces still on older builds one at a time with
+  planned replacement (`GatewayRuntime.upgradeWorkspaces`). A refusal or
+  rollback is a deferred upgrade for that workspace, not a failed update.
+
+Tests: `GatewayUpdaterTests` and `MigrationTests.anUpdateUpgradesLiveWorkspacesThroughPlannedReplacement`
+use a real guardian, its build registry and a signed candidate artifact. They
+cover handover and successor completion, with the `replacing` pause surviving
+gateway loss; the new selection with build one still pinned by the live
+workspace; a stale resume rejected; an incompatible worker protocol and an
+unservable live workspace each deferred with selections unchanged; failed
+verification leading to rollback-gateway completion; an unrelated gateway
+leaving the barrier paused; and a `settling` pause resumed after updater loss.
+
+Open: the daemon cannot yet re-register a gateway agent itself. Rollback uses
+`InstallerRequiredReplacement`, which leaves admission paused until the
+installer acts. The trigger and the signed end-to-end run (stage, prepare,
+re-register and complete) therefore wait on installer integration (UA8).
+Both signed builds still share one implementation.

@@ -268,6 +268,34 @@ package actor GatewayRuntime {
     return status
   }
 
+  /// After an update selects a new worker build (spec.durability.md §5.2):
+  /// move live workspaces still on older builds, one at a time. A refusal
+  /// or rollback is a deferred upgrade for that workspace, never a failed
+  /// update; the rest continue.
+  package func upgradeWorkspaces(
+    to build: String,
+    started: (@Sendable (GuardianMigrationStatus) async throws -> Void)? = nil
+  ) async -> [WorkspaceID: Result<GuardianMigrationOutcome, MuxError>] {
+    var results: [WorkspaceID: Result<GuardianMigrationOutcome, MuxError>] = [:]
+    let candidates = await directory.records.filter { record in
+      guard case .available = record.state else { return false }
+      return record.inventory.worker?.build != build
+    }
+    for record in candidates {
+      let id = record.inventory.authority.workspace
+      guard failure == nil else { break }
+      do {
+        let status = try await migrateWorkspace(.id(id), started: started)
+        results[id] = .success(status.outcome ?? .unavailable)
+      } catch {
+        results[id] = .failure(
+          error as? MuxError ?? MuxError(.invalidRequest, "\(error)")
+        )
+      }
+    }
+    return results
+  }
+
   // MARK: Saved layouts
 
   private func savedService() throws -> SavedLayoutService {

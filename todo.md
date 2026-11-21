@@ -117,8 +117,13 @@ None of these recurs on demand: on 2026-10-27 each was repeated 25–40 times wi
 - [ ] **Planned replacement follow-ups** ([spec.durability.md §13.72](spec.durability.md)):
   transfer live attachments to the candidate instead of re-attaching (a paste
   still unwritten at release is cancelled today, because a new controller's
-  attach discards the previous lease's unwritten input); give update
-  orchestration (UA4) a caller of `GatewayRuntime.migrateWorkspace`.
+  attach discards the previous lease's unwritten input).
+- [ ] **Installer integration (UA8, signed UA4):** register the guardian and
+  gateway agents from the app, transition from the monolithic agent behind the
+  empty-state barrier with End confirmation, add an installer-side
+  `GatewayReplacement` and a native-control trigger for `GatewayUpdater.install`,
+  then qualify update, rollback, uninstall and reboot signed
+  ([spec.durability.md §13.73](spec.durability.md)).
 
 ## Platform and release validation
 
