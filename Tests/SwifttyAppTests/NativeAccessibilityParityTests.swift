@@ -84,8 +84,12 @@ struct NativeAccessibilityParityTests {
   @Test(.enabled(if: MTLCreateSystemDefaultDevice() != nil))
   func invalidScrollDeltasPreserveFractionalInputInBothAdapters() throws {
     _ = NSApplication.shared
-    let direct = try TerminalView(configuration: .init())
-    let mux = try MuxPaneView(pane: .init(), configuration: .init())
+    // One line per wheel unit (the default multiplier is 3).
+    let configuration = Configuration.configured([
+      ("mouse-scroll-multiplier", "1")
+    ])
+    let direct = try TerminalView(configuration: configuration)
+    let mux = try MuxPaneView(pane: .init(), configuration: configuration)
     let event = SurfaceScrollEvent()
     for view in [direct as NSView, mux] {
       event.delta = 0.4
@@ -147,7 +151,7 @@ struct NativeAccessibilityParityTests {
         )
       )
       mux.receive(
-        try #require(MuxPaneView.importFrame(frame, limits: .init())),
+        MuxPaneView.importFrame(frame, limits: .init()),
         server: server
       )
       mux.draw(in: mux)

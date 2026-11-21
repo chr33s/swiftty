@@ -103,6 +103,10 @@ final class ImpairedLink: Sendable {
     var delta: Bool
     var base: UInt64?
     var fate: Fate
+    /// Wire size of the record (zlib applied by the host when it helps).
+    var bytes = 0
+    /// The record, kept only while `capturePayloads` is set.
+    var payload: [UInt8]?
   }
 
   enum Corruption: Sendable, Equatable {
@@ -132,6 +136,11 @@ final class ImpairedLink: Sendable {
     var killed: [KillPoint] = []
     /// Fixed host-to-client control pacing, replacing the random delay.
     var pace: Duration?
+    var capturePayloads = false
+    /// Extra delay for the next client `ScreenAck` (it stalls the ordered
+    /// control stream behind it, as a slow return path would).
+    var screenAckHold: Duration?
+    var heldScreenAcks = 0
   }
 
   let seed: UInt64
@@ -160,6 +169,22 @@ final class ImpairedLink: Sendable {
   /// Paces host-to-client control records at `interval` each (a slow
   /// return path), or restores the profile's delays.
   func pace(_ interval: Duration?) { state.withLock { $0.pace = interval } }
+
+  /// Holds the next client `ScreenAck` back by `duration`.
+  func holdNextScreenAck(for duration: Duration) {
+    state.withLock { $0.screenAckHold = duration }
+  }
+
+  var heldScreenAcks: Int { state.withLock { $0.heldScreenAcks } }
+
+  func takeScreenAckHold(_ message: ControlMessage) -> Duration? {
+    guard case .screenAck = message else { return nil }
+    return state.withLock { s in
+      defer { s.screenAckHold = nil }
+      if s.screenAckHold != nil { s.heldScreenAcks += 1 }
+      return s.screenAckHold
+    }
+  }
 
   // MARK: Observations
 
@@ -288,6 +313,11 @@ final class ImpairedLink: Sendable {
   func log(_ event: SnapshotEvent) {
     state.withLock { $0.snapshots.append(event) }
   }
+
+  /// Keeps each logged record's bytes, for replaying the client's work.
+  func capturePayloads() { state.withLock { $0.capturePayloads = true } }
+
+  var isCapturingPayloads: Bool { state.withLock { $0.capturePayloads } }
 }
 
 extension ControlMessage {
@@ -357,6 +387,9 @@ final class ImpairedRSTConnection: RSTConnection, Sendable {
     }
     let delay = link.controlDelay(direction)
     if delay > .zero { try? await Task.sleep(for: delay) }
+    if direction == .toHost, let hold = link.takeScreenAckHold(sent) {
+      try? await Task.sleep(for: hold)
+    }
     let kill = link.planKill(sent)
     if kill == false {
       sever()
@@ -439,7 +472,9 @@ final class ImpairedRSTConnection: RSTConnection, Sendable {
           epoch: info.epoch,
           delta: info.delta,
           base: info.base,
-          fate: fate
+          fate: fate,
+          bytes: payload.count,
+          payload: link.isCapturingPayloads ? payload : nil
         )
       )
     }

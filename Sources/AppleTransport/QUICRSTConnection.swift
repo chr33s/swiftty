@@ -154,6 +154,13 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     /// Last retirement wait recorded, so the 100 ms recheck logs only changes.
     var lastRetireWait: (released: Int?, opened: Int)?
     var beforeInboundStartForTesting: (@Sendable () -> Void)?
+    var inboundActionForTesting: (@Sendable () -> InboundTestAction)?
+    /// Client: inbound streams whose stream credit is still to be returned,
+    /// each exactly once however it ends.
+    var owedCredit: Set<ObjectIdentifier> = []
+    /// Client: owed streams whose snapshot awaits delivery; delivery returns
+    /// their credit, so undelivered snapshots stay bounded by the limit.
+    var deliveringSnapshots: Set<ObjectIdentifier> = []
     var beforeSnapshotReadForTesting: SnapshotReadGate?
     /// Server snapshot streams released so far (client side).
     var releasedSnapshotStreams = 0
@@ -312,19 +319,28 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     }
   }
 
+  enum InboundTestAction: Sendable { case admit, refuse, cancelBeforeReady }
+
   private func adopt(inbound stream: NWConnection) {
     traceStream(stream, event: "adopt")
+    let id = ObjectIdentifier(stream)
     stream.stateUpdateHandler = { [weak self, weak stream] newState in
-      guard let self, let stream else { return }
-      self.traceStream(stream, event: "state \(newState)")
+      guard let self else { return }
+      if let stream { self.traceStream(stream, event: "state \(newState)") }
       switch newState {
-      case .ready: self.classify(inbound: stream)
-      case .failed, .cancelled: self.forget(inbound: stream)
+      case .ready: if let stream { self.classify(inbound: stream) }
+      case .failed, .cancelled:
+        if let stream { self.forget(inbound: stream) }
+        // A stream that ends unread (failed before `.ready`, rejected by
+        // `classify`, or reset mid-read) still used one of the peer's streams.
+        self.settleCredit(id, unlessDelivering: true)
       default: break
       }
     }
+    let action = state.withLock { $0.inboundActionForTesting }?() ?? .admit
     let accepted = state.withLock { s -> Bool in
-      guard !s.closed, s.inbound.count < 16 else {
+      if role == .client { s.owedCredit.insert(id) }
+      guard !s.closed, s.inbound.count < 16, action != .refuse else {
         s.lifecycle.append(
           "inbound refused,closed=\(s.closed),inbound=\(s.inbound.count)"
         )
@@ -334,12 +350,36 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
       return true
     }
     guard accepted else {
+      // Never started, so no state change will return its credit.
       reject(stream)
+      settleCredit(id, unlessDelivering: false)
       return
     }
     let beforeStart = state.withLock { $0.beforeInboundStartForTesting }
     beforeStart?()
     stream.start(queue: queue)
+    if action == .cancelBeforeReady { stream.cancel() }
+  }
+
+  /// Returns an owed inbound stream's credit once.
+  private func settleCredit(_ id: ObjectIdentifier, unlessDelivering: Bool) {
+    let owed = state.withLock { s -> Bool in
+      if unlessDelivering, s.deliveringSnapshots.contains(id) { return false }
+      s.deliveringSnapshots.remove(id)
+      return s.owedCredit.remove(id) != nil
+    }
+    if owed { releaseSnapshotCredit() }
+  }
+
+  func setInboundActionForTesting(
+    _ body: (@Sendable () -> InboundTestAction)?
+  ) {
+    let previous = state.withLock { s in
+      let previous = s.inboundActionForTesting
+      s.inboundActionForTesting = body
+      return previous
+    }
+    withExtendedLifetime(previous) {}
   }
 
   func setBeforeInboundStartForTesting(_ body: (@Sendable () -> Void)?) {
@@ -411,6 +451,13 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
       return
     }
     let kind = metadata.streamIdentifier & 0x3
+    if role == .client {
+      let id = ObjectIdentifier(stream)
+      if kind & 0x2 == 0 {
+        // Bidirectional: not a unidirectional stream's credit.
+        _ = state.withLock { $0.owedCredit.remove(id) }
+      }
+    }
     switch role {
     case .server where kind == 0:
       // First client bidirectional stream becomes the control stream.
@@ -1335,6 +1382,9 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
       }
       // Keep the stream (and its stream credit) until delivered, so
       // undelivered snapshots stay bounded by the QUIC stream limit.
+      _ = self.state.withLock {
+        $0.deliveringSnapshots.insert(ObjectIdentifier(stream))
+      }
       self.mailbox.post(
         .snapshot(
           payload,
@@ -1389,7 +1439,7 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
         self.forget(inbound: stream)
         stream.cancel()
       }
-      self.releaseSnapshotCredit()
+      self.settleCredit(ObjectIdentifier(stream), unlessDelivering: false)
     }
   }
 

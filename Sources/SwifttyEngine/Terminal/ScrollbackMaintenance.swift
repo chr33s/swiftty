@@ -431,7 +431,8 @@ public protocol ScrollbackMaintenanceClock: AnyObject, Sendable {
   /// Monotonic nanoseconds.
   var now: UInt64 { get }
   /// Calls `handler` once at or after `deadline`, replacing any deadline
-  /// armed earlier.
+  /// armed earlier; never synchronously (the coordinator arms and disarms
+  /// under its lock, which the handler takes).
   func arm(_ deadline: UInt64, _ handler: @escaping @Sendable () -> Void)
   func disarm()
 }
@@ -620,15 +621,14 @@ public final class ScrollbackMaintenanceCoordinator: Sendable {
   }
 
   func unregister(_ id: UInt64) {
-    let disarm = state.withLock { s -> Bool in
+    state.withLock { s in
       s.entries[id] = nil
       s.order.removeAll { $0 == id }
       guard s.armedAt != nil, !s.entries.values.contains(where: \.pending)
-      else { return false }
+      else { return }
       s.armedAt = nil
-      return true
+      clock.disarm()
     }
-    if disarm { clock.disarm() }
   }
 
   func noteActivity(_ id: UInt64, generation: UInt64, postpone: Bool) {
@@ -663,9 +663,10 @@ public final class ScrollbackMaintenanceCoordinator: Sendable {
     enum Action {
       case none
       case run(any ScrollbackMaintenanceOwner, UInt64, UInt64)
-      case arm(UInt64)
-      case disarm
     }
+    // The timer is armed or disarmed under the lock that decided it: done
+    // after releasing it, a disarm decided first could cancel a deadline
+    // another thread armed since, leaving `armedAt` set with no timer.
     let action = state.withLock { s -> Action in
       guard s.inFlight == nil else { return .none }
       // Drop owners that were torn down without cancelling.
@@ -689,18 +690,17 @@ public final class ScrollbackMaintenanceCoordinator: Sendable {
       guard let earliest else {
         if s.armedAt != nil {
           s.armedAt = nil
-          return .disarm
+          clock.disarm()
         }
         return .none
       }
       if let armed = s.armedAt, armed <= earliest { return .none }
       s.armedAt = earliest
-      return .arm(earliest)
+      clock.arm(earliest) { [weak self] in self?.fire() }
+      return .none
     }
     switch action {
     case .none: break
-    case .disarm: clock.disarm()
-    case let .arm(deadline): clock.arm(deadline) { [weak self] in self?.fire() }
     case let .run(owner, id, generation):
       owner.performScrollbackMaintenance(generation: generation) {
         [weak self] report in self?.complete(id, report)

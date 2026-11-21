@@ -771,6 +771,36 @@ The codec target (512×256 encode+decode under 4 ms p95) is met at about 1.2 ms.
 
 Roaming Apple clients select on a presentation session. The engine now carries a presentation selection in host addresses across installed frames (`PresentationSelection`, using the row keys `RoamingClient` attaches to each frame). It follows the rows as the host window moves, ends on an in-place edit or a new generation, and survives being scrolled wholly out of view. When it reaches beyond the shown rows, `TerminalSession.copySelectedText` copies it through `remoteCopyHandler`; the macOS and iOS views use that for Copy, and the roaming app connects it to `RoamingClient.copySelection`. Evidence: `PresentationSelectionTests` and the QUIC end-to-end test "a display selection scrolled out of view is copied from the host". In the full native run, two `AgentStartupTests` cases and one `ClipboardDropTests` case failed under load; each passes three of three runs alone.
 
+### Follow-up review and measurements — 2026-11-20
+
+**Renderer import without a second validation.** `MuxConnection` now validates JSON frames on arrival, as it already did for `SMXB/1` frames and applied deltas. It acknowledges an invalid frame and does not deliver it. Every frame it delivers is valid, so the native app imports with `FrameImporter.snapshot(fromValidated:)`, which skips the second pass and asserts validity in debug builds. The public `FrameImporter.snapshot(from:)` still validates. Per-stage p95 at 512×256 (`--frame-stages`, five runs): checked import 2.06–2.33 ms, validated import 1.18–1.34 ms; the validation pass alone was 0.81–0.98 ms. Evidence: `FrameDeltaTests.invalidJSONFramesAreAcknowledgedNotDelivered` (an invalid JSON frame for the attachment is acknowledged and the next valid frame is the first delivered); removing the arrival check traps the suite.
+
+**`screenDeltas` cost (spec.roaming.md §13).** `ScreenDeltaCostReport` (`SWIFTTY_DELTA_REPORT=1`, release build) runs a real host and `RoamingClient` over the in-process A3 path (stream delay 0–100 ms, 10% resets, late completion, control delay and duplication; no kills), with deltas on and with `screenDeltas` stripped from `Attach`. Bytes are wire records as delivered, zlib applied by the host when it helps. Client CPU is the thread CPU time of the client's per-record work (decode, validate, apply a delta to its base, map to a presentation), the median of 15 replays of the delivered records.
+
+| Workload | Deltas | Screens | Bytes/screen | Client CPU/screen |
+|---|---|---:|---:|---:|
+| 80×24 typing | off | 14 | 771 | 102 µs |
+| 80×24 typing | on | 17 (15 deltas) | 318 | 118 µs |
+| 200×80 scrolling | off | 73 | 1,564 | 455 µs |
+| 200×80 scrolling | on | 74 (72 deltas) | 465 | 552 µs |
+
+Deltas cut bytes per screen by 59% (typing) and 70% (scrolling). They cost 16–21% more client CPU, because applying a delta copies the base. This is the in-process impaired path, not packet-level loss over real QUIC.
+
+**A20/A22 follow-ups.**
+- A base refused by the client's own retention, without injection: one `ScreenAck` reaches the host after the client's 2 s base lifetime while output continues. The client refuses the host's next delta once, full screens answer until the replacement is acknowledged, and deltas resume (`ImpairedScreenDeltaTests` "a base aged out of the client's retention recovers through a full screen").
+- Apple clients do not re-derive a selection after reconnecting. Row versions come from a process-wide sequence, so a reattached exporter gives every row a new version. A selection then ends on the first frame that shows one of its rows, even when the text is unchanged; a selection off the frame ends when it comes back into view (`PresentationSelectionTests` "a reattachment's new row versions end the selection"). The client never shows or copies a selection against rows it cannot verify.
+
+**Defects fixed in this review** (each with a regression test that fails without the fix):
+- *QUIC stream credit.* An inbound stream that failed before `.ready`, or that `adopt`/`classify` refused, never returned its stream credit, so the server's retirement wait (`released >= opened`) stalled and its usable snapshot streams shrank by one. Each inbound stream now returns its credit exactly once, however it ends; delivery still holds the credit of a snapshot awaiting delivery.
+- *`swroam` and an external `SIGTSTP`.* The outer terminal stayed raw while stopped; it is now restored before the process stops and re-entered on `SIGCONT`. `run` also no longer enters raw mode or installs sources after a status handler has already finished it.
+- *`FrameValidator` and `search.selected`.* A selection index outside `0 ..< matchCount` (including a negative one, which `SMXB/1` cannot encode) is rejected.
+- *Roaming history window.* A window is pinned to the addressing generation it was resolved in, so a scrollback clear, reset or resize shows live output instead of pinning the old row number in renumbered rows. Switching the active pane returns the window to live output and drops a move still resolving on the old pane.
+- *Scrollback maintenance timer.* The coordinator arms and disarms its timer under the lock that decides it. Previously a disarm decided on one thread could cancel a deadline another thread armed after it, stopping idle compression process-wide.
+- *Presentation selection.* A new word or line selection no longer inherits an end that the previous live selection had clamped to the frame (`TerminalState.beginSelection`). A rectangle with an end clamped to the frame keeps its own columns instead of being drawn from column 0.
+- *`swsh` launcher payload.* The payload file is moved above the standard descriptors. In a shell started with stdin or stdout closed, a pipeline stage's wiring could overwrite it before the launcher read it.
+- *JSONC configuration.* The source index records positions only to depth 8 (every configuration key lies within depth 5), and unknown keys are checked in stored-offset order. A deeply nested 1 MiB file had taken about 30 s and 1.5 GB before it was rejected.
+- *`bindKey`.* A shortcut's key is named by its unshifted character, so `cmd+shift+1` matches ⌘⇧1, and the `+` key is named `plus`.
+
 ## 12. Primary sources and evidence boundary
 
 Swiftty source below is pinned to `32a57d8945db68a397a58ae3cbe75e63372ea242`. Existing API/lifetime statements are source observations; the service, frame importer, presenter and shipping behavior are proposed changes. Apple documentation establishes intended API models; actual macOS 27 runtime behavior remains an acceptance gate.

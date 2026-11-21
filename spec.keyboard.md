@@ -45,8 +45,8 @@ Use this order:
 | 3 | Ctrl | Existing sticky Control modifier |
 | 4 | Alt | Existing sticky Alt/Option modifier |
 | 5 | Paste | Existing user-initiated paste flow |
-| 6 | Keys | Additional terminal-key panel |
-| 7 | Directional pad | Slide for Left, Down, Up or Right |
+| 6 | Directional pad | Slide for Left, Down, Up or Right |
+| 7 | Keys | Additional terminal-key panel |
 
 Use compact native glyphs for Paste and other controls where localized text cannot fit. Accessibility labels remain descriptive and localized. Keys provides Navigate, Symbols, F1–F12, Paste when collapsed, and Hide Keyboard. Hide Keyboard remains an explicit, discoverable action.
 
@@ -61,18 +61,18 @@ All measurements are in points and describe the default content size.
 | Pad layout slot and initial hit region | 44 × 44 | Fixed and untransformed |
 | Active pad artwork | 56 × 56 | Presentation only |
 | Accessory paint height | 56 | Fixed for the entire gesture |
-| Normal inter-key gap | 4 | Five gaps in the seven-control phone row |
-| Gap immediately before pad | 8 | Allows its 6 pt visual expansion on that side |
+| Normal inter-key gap | 4 | Four gaps in the seven-control phone row |
+| Gap on each side of the pad | 8 | Allows its 6 pt visual expansion on either side; the pad sits between Paste and Keys |
 | Leading/trailing inset | 8 each | Applied inside available safe-area width |
 | Resting navigation glyph | Approximately 20 | Center hub, four arrowheads and ring |
 
-The full row needs **352 pt** of available width:
+The full row (Esc, Tab, Ctrl, Alt, Paste, pad, Keys) needs **356 pt** of available width:
 
-**7 × 44 + 5 × 4 + 8 + 2 × 8 = 352.**
+**7 × 44 + 4 × 4 + 2 × 8 + 2 × 8 = 356.**
 
-Below that width, move Paste into Keys. The remaining six-control row needs **304 pt**:
+Below that width, move Paste into Keys. The remaining six-control row needs **308 pt**:
 
-**6 × 44 + 4 × 4 + 8 + 2 × 8 = 304.**
+**6 × 44 + 3 × 4 + 2 × 8 + 2 × 8 = 308.**
 
 These are lower bounds for the default glyph layout. Measure actual localized content and accessibility metrics before selecting a layout.
 
@@ -82,7 +82,7 @@ Apple's button guidance recommends at least a 44 × 44 pt hit region and a visib
 
 ### iPad and hardware keyboards
 
-On wide iPad layouts, expose slash, pipe, tilde, Symbols and Fn between the core modifiers and trailing pad. Collapse promoted controls according to measured width, converging on the phone layout.
+On wide iPad layouts, expose slash, pipe, tilde, Symbols and Fn between the core modifiers and the trailing Paste, pad and Keys. Collapse promoted controls according to measured width, converging on the phone layout.
 
 Keep the pad outside a horizontally scrolling key container so its directional slide cannot become a toolbar-scroll gesture. Its expanded artwork must fit within the accessory's own reserved paint area.
 
@@ -103,6 +103,8 @@ At rest, show the small circular navigation glyph. On touch-down, provide a subt
 | Neutral center or outside pause | 1.0 | None |
 | Lift or cancellation | Returns to 1.0 | Cleared |
 | VoiceOver focus or discrete accessible arrow action | 1.0 | No drag expansion |
+
+Play a light selection haptic each time a slide engages a direction or turns to a new one, as the terminal admits it. Repeats, pauses, lift and cancellation play none, and a refused activation plays none. Prepare the generator on touch-down so the first tick is not late. (iPhone and iPad; other platforms have no haptics.)
 
 Animate expansion over **120 ms**, collapse over **100 ms**, using an ease-out curve without bounce or overshoot. Begin key delivery when the gesture activates; input must not wait for animation completion. Direction highlighting follows the logical direction immediately.
 
@@ -315,7 +317,7 @@ Use a fake clock/scheduler for timing tests and assert ordered semantic events. 
 | P15 | Composition | Disabled pad sends nothing, consumes no modifier and preserves marked text |
 | P16 | Pointer/accessibility | Hover/focus never scales or sends input; custom actions and Navigate buttons work without dragging |
 | P17 | Neighbor interaction | Expanded artwork cannot receive a new touch intended for another key |
-| P18 | Adaptation | Full row at ≥352 pt; Paste collapses below; 304 pt compact row; larger content reflows |
+| P18 | Adaptation | Full row at ≥356 pt; Paste collapses below; 308 pt compact row; larger content reflows |
 | P19 | Native keyboard arrangements | Docked/floating keyboard, hardware keyboard and iPad window resizing preserve layout/focus |
 | P20 | Motion/appearance | Reduce Motion has immediate scale changes; high contrast/transparency preferences remain legible |
 | P21 | Encoding | Normal/application cursor modes and already-supported negotiated keyboard modes retain correct encoding |

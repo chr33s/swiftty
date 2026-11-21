@@ -313,6 +313,36 @@ struct RoamingTerminalClientTests {
     #expect(try await h.outcome(of: run) == .exited(3))
   }
 
+  /// An external SIGTSTP (not Ctrl-Z, which goes to the remote session)
+  /// restores the outer terminal before the process stops, and SIGCONT
+  /// re-enters raw mode.
+  @Test
+  func externalStopRestoresTheTerminal() async throws {
+    let h = try await Harness()
+    let stops = Mutex<[Bool]>([])
+    let replica = h.pty.replica
+    func isRaw() -> Bool {
+      var t = termios()
+      return tcgetattr(replica, &t) == 0 && t.c_lflag & tcflag_t(ICANON) == 0
+    }
+    await MainActor.run {
+      h.terminal.stopProcess = { stops.withLock { $0.append(isRaw()) } }
+    }
+    let run = h.run()
+    try #require(await h.active())
+    #expect(isRaw())
+    // Not kill(2): a process-wide SIGTSTP would also reach any other live
+    // client, whose real stopProcess would SIGSTOP the test process.
+    await MainActor.run { h.terminal.handleSignal(SIGTSTP) }
+    #expect(await eventually { stops.withLock { $0 } == [false] })
+    #expect(await eventually { h.pty.screen.contains("\u{1B}[?1049l") })
+    await MainActor.run { h.terminal.handleSignal(SIGCONT) }
+    #expect(await eventually { isRaw() })
+    h.pty.type([0x1E, UInt8(ascii: ".")])
+    _ = try await h.outcome(of: run)
+    #expect(!isRaw())
+  }
+
   @Test
   func bannerShowsWhileReconnecting() async throws {
     let h = try await Harness()

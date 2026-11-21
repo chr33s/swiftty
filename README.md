@@ -29,7 +29,11 @@ blocking dispatch handoffs. Each manifest test bundle must exist and report a
 complete run. A missing or failing bundle fails the command; later bundles still
 run so their diagnostics are available. Allocation budgets run only with
 optimized code; `Scripts/test-native.sh -c release` checks them alongside the
-rest of the suite.
+rest of the suite. Run a subset with `Scripts/test-native.sh --filter PATTERN`
+(repeatable; the same regular expressions as `swift test --filter`); a filter
+that matches no test fails. Use it rather than plain `swift test` for AppKit
+tests: SwiftPM's runner can end those bundles early with a zero exit, which
+`Scripts/test.sh` reports as incomplete.
 
 Use Xcode's Swift 6.4 toolchain, as CI does; `mise.toml` pins the other
 tools but not Swift, because swift.org toolchains bundle a Swift Testing runtime
@@ -320,7 +324,7 @@ remote echo. Appendix B of the spec records the design sources.
 | `SessionCore` | IDs, limits, input ledger (client queue, host admission), lifecycle, backoff, transfer manifests |
 | `ScreenProtocol` | RST/1 messages, framing, RFC 1950 snapshots, validation, snapshot scheduler, bootstrap envelope and attention metadata, `RSTConnection` |
 | `SSHClient` | SwiftNIO SSH: host trust, password/Ed25519, exec, shell, SFTP v3 subset, resumable verified transfers |
-| `SSHIdentity` | SSH identities (spec.ssh-identity.md): UUID metadata, Keychain storage policies, read-only resolution, bounded OpenSSH Ed25519 import, including passphrase-protected keys; client-only |
+| `SSHIdentity` | SSH identities (spec.ssh-identity.md): UUID metadata, Keychain storage policies including Secure Enclave, read-only resolution, bounded OpenSSH Ed25519/ECDSA and PEM ECDSA import, including passphrase-protected keys, and saved host passwords; client-only |
 | `AppleTransport` | Network framework QUIC (ALPN `rst/1`, TLS 1.3, no 0-RTT), SPKI and exact-certificate pinning, host identity |
 | `TerminalHost` | RST/1 host over the SwiftMux service (owns no PTYs): `RoamingHost` QUIC listener and grants, in-process SMX client, screen exporter, session registry, bootstrap/attention service, control socket, roaming configuration |
 | `RoamingKit` | Headless client core: `RoamingClient`, semantic input, presentation frames and the bootstrap/connector/sink seams; links the engine only |
@@ -471,10 +475,21 @@ shell with each command applied once.
 ### SSH keys and iCloud sync
 
 [spec.ssh-identity.md](spec.ssh-identity.md) defines SSH keys as reusable
-identities: generation and OpenSSH Ed25519 import in **Settings › SSH Keys**,
-Keychain storage policies, fail-closed sign-in, CloudKit metadata sync and
-account changes. Add the shown public key to `~/.ssh/authorized_keys` on the
-Mac yourself. **Settings › iCloud Sync** appears only when the clients are
+identities: Ed25519 or ECDSA (P-256, P-384, P-521) generation and import in
+**Settings › SSH Keys**, device-bound P-256 keys in the Secure Enclave
+(optionally requiring Face ID, Touch ID or the passcode), Keychain storage
+policies, fail-closed sign-in, CloudKit metadata sync and account changes. Add
+the shown public key to `~/.ssh/authorized_keys` on the Mac yourself. A
+password can be saved in the device's Keychain from the sign-in prompt; it is
+offered only to the same host, port and username, and removed if rejected. RSA
+and keyboard-interactive authentication are unsupported because SwiftNIO SSH
+lacks them (spec.ssh-identity.md §13.4).
+
+**Settings › Connection** controls ordinary SSH recovery
+([spec.roaming.md §9.1](spec.roaming.md#91-ordinary-ssh-recovery-and-transport-options)):
+a dropped connection opens a new shell in the same screen, in bounded bursts
+then once a minute, and says the previous shell was not resumed. Health checks,
+TCP keepalive and an IPv4-only option apply to every SSH connection. **Settings › iCloud Sync** appears only when the clients are
 generated with `SWIFTTY_CLOUDKIT_CONTAINER` set to a provisioned container
 (`Scripts/configure-links.sh`). Interrupted iCloud key operations are listed
 under **Key Removals Needing Review** and **Keys Needing Account Review**, and

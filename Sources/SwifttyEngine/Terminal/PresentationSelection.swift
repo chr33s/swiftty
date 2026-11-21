@@ -121,13 +121,20 @@ public struct PresentationSelection: Sendable, Equatable {
     let start = anchorFirst ? anchor : head
     let end = anchorFirst ? head : anchor
     guard start.row - top < count, end.row - top >= 0 else { return .hidden }
+    // A clamped end moves to the frame's edge row. A linear selection then
+    // spans that row from its start or to its end; a rectangle keeps its
+    // columns.
+    let lastColumn = max(columns - 1, 0)
     let first =
       start.row < top
-      ? Cell(row: 0, column: 0)
+      ? Cell(row: 0, column: rectangle ? min(start.column, lastColumn) : 0)
       : Cell(row: start.row - top, column: start.column)
     let last =
       end.row - top >= count
-      ? Cell(row: count - 1, column: max(columns - 1, 0))
+      ? Cell(
+        row: count - 1,
+        column: rectangle ? min(end.column, lastColumn) : lastColumn
+      )
       : Cell(row: end.row - top, column: end.column)
     return .shown(
       anchor: anchorFirst ? first : last,

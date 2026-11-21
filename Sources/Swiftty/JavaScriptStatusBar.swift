@@ -24,10 +24,16 @@ final class JavaScriptStatusBar: NSView {
       left.centerYAnchor.constraint(equalTo: centerYAnchor),
       right.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
       right.centerYAnchor.constraint(equalTo: centerYAnchor),
-      left.trailingAnchor.constraint(
-        lessThanOrEqualTo: right.leadingAnchor,
-        constant: -12
-      ),
+      // Yields while the bar has no width yet; AppKit throws on a
+      // required constraint it cannot satisfy.
+      {
+        let gap = left.trailingAnchor.constraint(
+          lessThanOrEqualTo: right.leadingAnchor,
+          constant: -12
+        )
+        gap.priority = .required - 1
+        return gap
+      }(),
     ])
   }
 

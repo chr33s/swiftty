@@ -264,11 +264,25 @@ struct AccessoryRowLayout: Equatable, Sendable {
     max(padGap, expansion(keySize: keySize) + gap / 2)
   }
 
-  /// Width of one row of `count` controls ending with the pad.
+  /// Paste, the pad and Keys, aligned to the trailing inset: the pad sits
+  /// between Paste and Keys.
+  static let trailing: [AccessoryItem] = [.paste, .pad, .keys]
+
+  /// Space between neighbouring controls: wider on either side of the pad,
+  /// for its expansion.
+  static func spacing(
+    _ a: AccessoryItem,
+    _ b: AccessoryItem,
+    keySize: CGFloat
+  ) -> CGFloat { a == .pad || b == .pad ? padGap(keySize: keySize) : gap }
+
+  /// Width of one row of `count` controls, the last two being the pad and
+  /// Keys (the pad's wider gap on both sides).
   static func requiredWidth(count: Int, keySize: CGFloat = 44) -> CGFloat {
     guard count > 0 else { return 2 * inset }
-    return CGFloat(count) * keySize + CGFloat(max(0, count - 2)) * gap
-      + (count > 1 ? padGap(keySize: keySize) : 0) + 2 * inset
+    let padGaps = min(2, count - 1)
+    return CGFloat(count) * keySize + CGFloat(max(0, count - 1 - padGaps)) * gap
+      + CGFloat(padGaps) * padGap(keySize: keySize) + 2 * inset
   }
 
   /// - Parameters:
@@ -277,7 +291,7 @@ struct AccessoryRowLayout: Equatable, Sendable {
   ///   - promotesKeys: Whether wide layouts promote iPad keys.
   init(width: CGFloat, keySize: CGFloat = 44, promotesKeys: Bool = false) {
     self.keySize = keySize
-    let trailing: [AccessoryItem] = [.paste, .keys, .pad]
+    let trailing = Self.trailing
     var candidates: [[AccessoryItem]] = []
     if promotesKeys {
       for count in stride(from: Self.promoted.count, to: 0, by: -1) {
@@ -285,13 +299,13 @@ struct AccessoryRowLayout: Equatable, Sendable {
       }
     }
     candidates.append(Self.core + trailing)
-    candidates.append(Self.core + [.keys, .pad])
+    candidates.append(Self.core + [.pad, .keys])
     if let row = candidates.first(where: {
       Self.requiredWidth(count: $0.count, keySize: keySize) <= width
     }) {
       rows = [row]
     } else {
-      rows = Self.wrap(Self.core + [.keys, .pad], width: width, size: keySize)
+      rows = Self.wrap(Self.core + [.pad, .keys], width: width, size: keySize)
     }
     let margin = Self.expansion(keySize: keySize)
     let rowGap = max(Self.gap, margin + Self.gap / 2)
@@ -309,7 +323,7 @@ struct AccessoryRowLayout: Equatable, Sendable {
     }
   }
 
-  /// Leading controls flow from the leading inset; Paste, Keys and the pad
+  /// Leading controls flow from the leading inset; Paste, the pad and Keys
   /// align to the trailing inset.
   private static func frames(
     _ row: [AccessoryItem],
@@ -325,16 +339,18 @@ struct AccessoryRowLayout: Equatable, Sendable {
       x += size + gap
     }
     var right = width - inset
+    var placed: AccessoryItem?
     for item in row.reversed() where trailingItems.contains(item) {
+      if let placed { right -= spacing(item, placed, keySize: size) }
       right -= size
       frames[item] = CGRect(x: right, y: y, width: size, height: size)
-      right -= item == .pad ? padGap(keySize: size) : gap
+      placed = item
     }
     return frames
   }
 
   /// Greedy rows for widths below the compact single row; the pad keeps
-  /// its wider leading gap in whichever row it lands.
+  /// its wider gaps in whichever row it lands.
   private static func wrap(
     _ items: [AccessoryItem],
     width: CGFloat,
@@ -344,8 +360,8 @@ struct AccessoryRowLayout: Equatable, Sendable {
     var used = 2 * inset
     for item in items {
       let spacing =
-        rows[rows.count - 1].isEmpty
-        ? 0 : item == .pad ? padGap(keySize: size) : gap
+        rows[rows.count - 1].last.map { Self.spacing($0, item, keySize: size) }
+        ?? 0
       if !rows[rows.count - 1].isEmpty, used + spacing + size > width {
         rows.append([item])
         used = 2 * inset + size

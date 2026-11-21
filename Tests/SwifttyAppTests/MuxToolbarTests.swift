@@ -298,6 +298,191 @@ extension MuxNativeTests {
   }
 
   @Test(.enabled(if: hasMetal))
+  func `tabs move between the toolbar and a left sidebar`() async throws {
+    let f = try await open()
+    defer { f.controller.close() }
+    let c = f.controller
+    let window = try #require(c.window)
+    let toolbar = c.workspaceToolbar
+    c.newTab()
+    try #require(await until { c.workspace?.tabs.count == 2 })
+    var configuration = Configuration()
+    configuration.tabPosition = .left
+    c.apply(configuration)
+    window.contentView?.superview?.layoutSubtreeIfNeeded()
+    #expect(c.tabPosition == .left)
+    #expect(c.showsTabStrip)
+    #expect(c.tabStrip.isVertical)
+    #expect(c.tabStrip.superview === c.tabSidebar)
+    #expect(toolbar.tabs.view == nil)
+    #expect(
+      toolbar.toolbar.items.map(\.itemIdentifier) == [
+        MuxWorkspaceToolbar.sidebarItem, .flexibleSpace,
+      ]
+    )
+    #expect(window.titleVisibility == .hidden)
+    // The sidebar sits beside the panes, which show in a rounded card;
+    // rows stack top down, full width.
+    let sidebar = c.tabSidebar.convert(c.tabSidebar.bounds, to: nil)
+    let panes = c.layoutView.convert(c.layoutView.bounds, to: nil)
+    #expect(abs(sidebar.maxX - panes.minX) < 1)
+    #expect(c.panesInCard)
+    #expect(c.layoutView.layer?.cornerRadius == MuxPaneContainer.cornerRadius)
+    let content = c.workspaceContent.convert(c.workspaceContent.bounds, to: nil)
+    let margin = MuxWorkspaceController.cardMargin
+    #expect(abs(content.maxX - panes.maxX - margin) < 1)
+    #expect(abs(sidebar.width - MuxTabSidebar.width) < 1)
+    #expect(c.tabStrip.buttons.count == 2)
+    let rows = c.tabStrip.buttons.map { $0.convert($0.bounds, to: nil) }
+    #expect(rows[0].minY > rows[1].maxY)
+    #expect(rows.allSatisfy { $0.height == MuxTabButton.columnHeight })
+    #expect(rows.allSatisfy { $0.width > MuxTabSidebar.width - 30 })
+    // Selecting and renaming work the same from the sidebar.
+    let first = try #require(c.tabStrip.buttons.first?.item?.id)
+    c.tabStrip.onSelect?(first)
+    #expect(await until { c.activeTab?.id == first })
+    c.tabStrip.onRename?(first, "Named")
+    #expect(await until { c.tabStrip.buttons.first?.item?.name == "Named" })
+    let named = try #require(c.tabStrip.buttons.first)
+    #expect(!named.detailText.isEmpty)
+    // The active row's glass holds its title (glass draws over siblings);
+    // other rows show no glass, their title directly.
+    #expect(named.showsGlass && named.titleIsInGlass)
+    let other = try #require(c.tabStrip.buttons.last)
+    #expect(!other.showsGlass && other.label.window === window)
+    #expect(other.label.isDescendant(of: other))
+    // Back to the toolbar.
+    c.apply(Configuration())
+    window.contentView?.superview?.layoutSubtreeIfNeeded()
+    #expect(c.tabPosition == .top)
+    #expect(!c.tabStrip.isVertical)
+    #expect(toolbar.tabs.view === c.tabStrip)
+    #expect(c.tabSidebar.isHidden)
+    #expect(
+      toolbar.toolbar.items.map(\.itemIdentifier) == [
+        MuxWorkspaceToolbar.tabsItem, .flexibleSpace,
+        MuxWorkspaceToolbar.newTabItem, MuxWorkspaceToolbar.inboxItem,
+      ]
+    )
+    #expect(c.showsTabStrip)
+    #expect(window.titleVisibility == .hidden)
+    #expect(
+      c.tabStrip.buttons.allSatisfy { $0.showsGlass && $0.titleIsInGlass }
+    )
+    let panesAfter = c.layoutView.convert(c.layoutView.bounds, to: nil)
+    #expect(abs(panesAfter.minX) < 1)
+    #expect(!c.panesInCard)
+  }
+
+  @Test(.enabled(if: hasMetal))
+  func `the sidebar toggle hides and shows the left tabs`() async throws {
+    let f = try await open()
+    defer { f.controller.close() }
+    let c = f.controller
+    let window = try #require(c.window)
+    let controls = c.workspaceToolbar.sidebarControls
+    c.newTab()
+    try #require(await until { c.workspace?.tabs.count == 2 })
+    var configuration = Configuration()
+    configuration.tabPosition = .left
+    c.apply(configuration)
+    try await settle(window)
+    // Expanded: the inbox, New Tab and the toggle end at the sidebar's
+    // trailing edge, and clicks there reach them (the toolbar measured the
+    // controls at their final width).
+    #expect(!controls.newTabButton.isHidden)
+    let toggle = controls.toggleButton.convert(
+      controls.toggleButton.bounds,
+      to: nil
+    )
+    #expect(
+      abs(
+        toggle.maxX - (MuxTabSidebar.width - MuxSidebarControls.trailingInset)
+      ) < 2
+    )
+    for b in [
+      controls.inboxButton, controls.newTabButton, controls.toggleButton,
+    ] { #expect(receivesClicks(b, in: window)) }
+    // The inbox opens from its button over the sidebar.
+    controls.inboxButton.performClick(nil)
+    #expect(c.inboxView?.view.window != nil)
+    c.toggleInbox()
+    let newTab = try #require(controls.newTabButton.action)
+    #expect(
+      NSApp.sendAction(newTab, to: controls.newTabButton.target, from: nil)
+    )
+    #expect(await until { c.workspace?.tabs.count == 3 })
+    // Collapsed: the sidebar and New Tab hide; the inbox and the toggle
+    // sit beside the window controls and the card takes the sidebar's
+    // place.
+    let action = try #require(controls.toggleButton.action)
+    #expect(
+      NSApp.sendAction(action, to: controls.toggleButton.target, from: nil)
+    )
+    window.contentView?.superview?.layoutSubtreeIfNeeded()
+    controls.layoutSubtreeIfNeeded()
+    #expect(c.sidebarCollapsed)
+    #expect(c.tabSidebar.isHidden && !c.showsTabStrip)
+    try await settle(window)
+    // The inbox (nothing else opens it) and the toggle show, beside the
+    // window controls.
+    #expect(controls.newTabButton.isHidden)
+    #expect(!controls.inboxButton.isHidden && !controls.toggleButton.isHidden)
+    let collapsed = controls.inboxButton.convert(
+      controls.inboxButton.bounds,
+      to: nil
+    )
+    let zoom = try #require(window.standardWindowButton(.zoomButton))
+    #expect(collapsed.minX > zoom.convert(zoom.bounds, to: nil).maxX)
+    #expect(
+      controls.bounds.width
+        == 2 * MuxSidebarControls.buttonSize + MuxSidebarControls.spacing
+    )
+    for b in [controls.inboxButton, controls.toggleButton] {
+      #expect(receivesClicks(b, in: window))
+    }
+    // Its count stays in view.
+    c.workspaceToolbar.update(InboxCounts(needsYou: 2, results: 0))
+    #expect(controls.badgeIsShown)
+    controls.inboxButton.performClick(nil)
+    #expect(c.inboxView?.view.window != nil)
+    c.toggleInbox()
+    let panes = c.layoutView.convert(c.layoutView.bounds, to: nil)
+    #expect(abs(panes.minX - MuxWorkspaceController.cardMargin) < 1)
+    #expect(c.panesInCard)
+    // Clicking it again reopens the drawer.
+    #expect(
+      NSApp.sendAction(action, to: controls.toggleButton.target, from: nil)
+    )
+    window.contentView?.superview?.layoutSubtreeIfNeeded()
+    #expect(!c.sidebarCollapsed && c.showsTabStrip)
+    #expect(!controls.newTabButton.isHidden && !controls.inboxButton.isHidden)
+    let reopened = c.layoutView.convert(c.layoutView.bounds, to: nil)
+    #expect(abs(reopened.minX - MuxTabSidebar.width) < 1)
+    try await settle(window)
+    #expect(receivesClicks(controls.newTabButton, in: window))
+  }
+
+  /// Lets the toolbar place and measure its items again.
+  private func settle(_ window: NSWindow) async throws {
+    for _ in 0 ..< 3 {
+      window.contentView?.superview?.layoutSubtreeIfNeeded()
+      try await Task.sleep(for: .milliseconds(50))
+    }
+  }
+
+  /// A click at the middle of `button` reaches it.
+  private func receivesClicks(_ button: NSButton, in window: NSWindow) -> Bool {
+    guard let frameView = window.contentView?.superview else { return false }
+    let rect = button.convert(button.bounds, to: nil)
+    let point = frameView.convert(
+      NSPoint(x: rect.midX, y: rect.midY),
+      from: nil
+    )
+    return frameView.hitTest(point)?.isDescendant(of: button) == true
+  }
+
+  @Test(.enabled(if: hasMetal))
   func `narrow workspace toolbars retain actions and scroll to the active tab`()
     async throws
   {

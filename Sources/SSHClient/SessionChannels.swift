@@ -86,3 +86,37 @@ extension SSHConnection {
     { throw SSHClientError.connectionClosed }
   }
 }
+
+/// The outcome of one bounded connection health check
+/// (spec.roaming.md §9.1).
+public enum SSHHealth: Sendable, Equatable {
+  /// The server answered within the deadline.
+  case responsive
+  /// No answer within the deadline; the connection may be half-open.
+  case unresponsive
+  /// The connection is already closed.
+  case closed
+}
+
+extension SSHConnection {
+  /// Asks the server to open, then immediately closes, a session channel.
+  /// Any answer, including a refusal, proves the server is still reading
+  /// this connection. Sends nothing to a running shell and has no effect
+  /// on it.
+  public func probe(timeout: Duration = .seconds(10)) async -> SSHHealth {
+    guard isActive else { return .closed }
+    do {
+      try await withSessionChannel(
+        timeout: timeout,
+        timeoutError: SSHClientError.channelSetupTimeout,
+        initialize: { _ in },
+        operation: { child, _ in child.close(promise: nil) }
+      )
+      return .responsive
+    } catch SSHClientError.channelRequestRejected {
+      return .responsive
+    } catch {
+      return isActive ? .unresponsive : .closed
+    }
+  }
+}

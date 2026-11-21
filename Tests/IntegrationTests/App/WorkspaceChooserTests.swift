@@ -1,3 +1,4 @@
+import Crypto
 import Foundation
 import MuxNavigation
 import ScreenProtocol
@@ -416,7 +417,7 @@ extension MainActorIntegrationTests {
         ),
         secrets: InMemoryIdentitySecretStore(),
         legacyKeys: InMemoryLegacyKeySource(keys: [
-          "phone": IdentitySecret(.init()).privateKey
+          "phone": Curve25519.Signing.PrivateKey()
         ])
       )
       let host = HostProfile(

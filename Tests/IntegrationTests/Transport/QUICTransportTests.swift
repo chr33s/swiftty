@@ -1311,6 +1311,56 @@ struct QUICTransportTests {
     #expect(!server.isClosed)
   }
 
+  /// A stream refused at adoption or ended before it is read still used
+  /// one of the server's unidirectional streams; without its credit the
+  /// server's retirement wait (`released >= opened`) never completes.
+  @Test(arguments: ["refuse", "cancelBeforeReady"])
+  func `streams ended before they are read return their credit`(
+    action: String
+  ) async throws {
+    let (listener, accepted) = try await startListener()
+    defer { listener.stop() }
+    let client = try await connector()
+      .connectQUIC(
+        host: "127.0.0.1",
+        port: listener.port,
+        pin: loopbackIdentity.pin,
+      )
+    defer { client.close() }
+    let inbox = Inbox()
+    client.start(inbox.handler)
+    try await client.sendControl(
+      ControlRecord.encode(.ping(epoch: 1, nonce: 1)),
+    )
+    try #require(await eventually { accepted.count == 1 })
+    let (server, _) = try #require(accepted.all.first)
+
+    let once = Mutex(true)
+    let first: QUICRSTConnection.InboundTestAction =
+      action == "refuse" ? .refuse : .cancelBeforeReady
+    client.setInboundActionForTesting {
+      once.withLock { pending in
+        defer { pending = false }
+        return pending ? first : .admit
+      }
+    }
+    defer { client.setInboundActionForTesting(nil) }
+    _ = try await server.sendRawStreamForTesting([0x01], finish: true)
+    try await transportEventually {
+      client.snapshotDiagnosticsForTesting.contains("released=1,")
+    }
+    let good = snapshotPayload(bodyLength: 32, fill: 0x66)
+    try await server.sendSnapshot(good, stream: 1)
+    try await transportEventually { inbox.snapshots == [good] }
+    try await transportEventually {
+      client.snapshotDiagnosticsForTesting.contains("released=2,")
+    }
+    // Exactly once: the refused stream's later state change adds nothing.
+    #expect(!client.snapshotDiagnosticsForTesting.contains("released=3,"))
+    #expect(!client.isClosed)
+    #expect(!server.isClosed)
+  }
+
   @Test
   func `superseded snapshot streams retire once the client releases them`()
     async throws

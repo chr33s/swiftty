@@ -139,18 +139,16 @@ func credential(_ options: Options) -> SSHCredential {
     fail("\(path): cannot read")
   }
   do {
-    return .ed25519(try OpenSSHKeyImporter.decode(data).secret.privateKey)
+    return try OpenSSHKeyImporter.decode(data).secret.credential
   } catch .passphraseRequired {
     guard let passphrase = readSecret("Enter passphrase for \(path): ") else {
       fail("no passphrase")
     }
     do {
-      return .ed25519(
-        try OpenSSHKeyImporter.decode(data, passphrase: passphrase).secret
-          .privateKey
-      )
+      return try OpenSSHKeyImporter.decode(data, passphrase: passphrase)
+        .secret.credential
     } catch { fail("\(path): \(error)") }
-  } catch { fail("\(path): \(error) (only Ed25519 keys are supported)") }
+  } catch { fail("\(path): \(error) (Ed25519 and ECDSA keys are supported)") }
 }
 
 /// Asks about an unknown host key only before raw mode; reconnects never

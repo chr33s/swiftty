@@ -130,19 +130,24 @@ public struct WindowConfig: Codable, Equatable, Sendable {
   public var padding: Double
   public var width: Double?
   public var height: Double?
+  /// Where workspace tabs show: `top` (the toolbar, the default) or
+  /// `left` (a sidebar). nil is `top`.
+  public var tabs: String?
   public static let `default` = Self()
   public init(
     opacity: Double = 0.95,
     blur: Bool = true,
     padding: Double = 8,
     width: Double? = nil,
-    height: Double? = nil
+    height: Double? = nil,
+    tabs: String? = nil
   ) {
     self.opacity = opacity
     self.blur = blur
     self.padding = padding
     self.width = width
     self.height = height
+    self.tabs = tabs
   }
   enum CodingKeys: String, CodingKey {
     case opacity
@@ -150,6 +155,7 @@ public struct WindowConfig: Codable, Equatable, Sendable {
     case padding
     case width
     case height
+    case tabs
   }
   public init(from decoder: any Decoder) throws {
     let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -161,6 +167,7 @@ public struct WindowConfig: Codable, Equatable, Sendable {
       ? try values.decode(Bool.self, forKey: .blur) : true
     width = try values.decodeIfPresent(Double.self, forKey: .width)
     height = try values.decodeIfPresent(Double.self, forKey: .height)
+    tabs = try values.decodeIfPresent(String.self, forKey: .tabs)
     padding =
       values.contains(.padding)
       ? try values.decode(Double.self, forKey: .padding) : 8

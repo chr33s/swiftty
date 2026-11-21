@@ -146,6 +146,13 @@ extension MuxWorkspaceController {
     popover.contentViewController = view
     inboxPopover = popover
     view.update(inbox)
+    // Tabs on the left keep the inbox over the sidebar; on top, in the
+    // toolbar's trailing corner.
+    let button = workspaceToolbar.sidebarControls.inboxButton
+    if tabPosition == .left, button.window != nil {
+      popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+      return
+    }
     let content = workspaceContent
     popover.show(
       relativeTo: NSRect(
@@ -338,7 +345,7 @@ extension MuxWorkspaceController {
         return
       }
       guard let self, !isClosed else { return }
-      let name = DisplayText.sanitize(summary.name)
+      let name = DisplayText.workspaceName(summary.name)
       confirmThen(
         true,
         moved

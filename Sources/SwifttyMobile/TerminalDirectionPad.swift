@@ -14,6 +14,16 @@ final class TerminalDirectionPad: UIControl {
   var onArrow: ((PadDirection) -> Void)?
   /// Primary accessibility activation: show Keys → Navigate.
   var onShowNavigate: (() -> Void)?
+  /// A light tick each time a slide engages a direction or turns to a new
+  /// one (not on repeat or release). Replaceable for tests.
+  lazy var playFeedback: () -> Void = { [weak self] in
+    #if os(iOS)
+    self?.selectionFeedback.selectionChanged()
+    #endif
+  }
+  #if os(iOS)
+  private lazy var selectionFeedback = UISelectionFeedbackGenerator(view: self)
+  #endif
 
   private(set) var model = DirectionPadModel()
   private weak var trackedTouch: UITouch?
@@ -113,6 +123,10 @@ final class TerminalDirectionPad: UIControl {
     guard isEnabled else { return false }
     // One initiating touch: UIControl tracks a single touch at a time.
     trackedTouch = touch
+    #if os(iOS)
+    // Ready for the first direction, a few frames away.
+    selectionFeedback.prepare()
+    #endif
     model.begin(at: offset(of: touch))
     present(animated: true)
     return true
@@ -167,7 +181,13 @@ final class TerminalDirectionPad: UIControl {
 
   private func deliver(_ intent: PadIntent) {
     let admitted = onIntent?(intent) ?? false
-    if case .activate = intent, !admitted, model.isTracking { model.suppress() }
+    if case .activate = intent {
+      if admitted {
+        playFeedback()
+      } else if model.isTracking {
+        model.suppress()
+      }
+    }
     present(animated: true)
   }
 

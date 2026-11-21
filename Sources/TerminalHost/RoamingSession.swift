@@ -705,10 +705,9 @@ public final class RoamingSession: @unchecked Sendable {
     }
     layoutRevision = ws.layoutRevision
     let layout = RemoteLayout(ws)
-    if layout != remoteLayout {
-      remoteLayout = layout
-      sendLayout()
-    }
+    let changed = Self.layoutChanged(from: remoteLayout, to: layout)
+    remoteLayout = layout
+    if changed { sendLayout() }
     let allExited =
       !ws.panes.isEmpty && ws.panes.allSatisfy { $0.exitStatus != nil }
     statusBox.withLock { $0.allPanesExited = allExited }
@@ -725,6 +724,13 @@ public final class RoamingSession: @unchecked Sendable {
     if pane != activePane {
       activePane = pane
       exitStatus = nil
+      // A history window belongs to the pane it was opened on; a move
+      // still resolving there must not land on the new one.
+      if let a = attachment {
+        a.historyTop = nil
+        a.pendingViewportLines = 0
+        a.liveReturns &+= 1
+      }
       if let status = summary?.exitStatus {
         exited(status)
       } else {
@@ -740,6 +746,18 @@ public final class RoamingSession: @unchecked Sendable {
     } else if let status = summary?.exitStatus, exitStatus == nil {
       exited(status)
     }
+  }
+
+  /// Whether a client shown `previous` must be sent `layout`. Revisions
+  /// also advance for split ratios and zoom, which a layout does not
+  /// carry: a change in revision alone sends nothing.
+  static func layoutChanged(
+    from previous: RemoteLayout?,
+    to layout: RemoteLayout
+  ) -> Bool {
+    guard var previous else { return true }
+    previous.revision = layout.revision
+    return previous != layout
   }
 
   /// The current layout, to an attachment that agreed `layoutControl`.
@@ -1166,22 +1184,31 @@ public final class RoamingSession: @unchecked Sendable {
     a.pendingViewportLines = 0
     a.viewportMoveInFlight = true
     let current = a.historyTop
+    let generation = a.historyGeneration
     // Comparing `historyTop` alone misses input that arrives while a move
     // from live output resolves: live stays nil, so the move would apply.
     let liveReturns = a.liveReturns
     service.inspect(
       pane: pane,
-      { ScreenExporter.historyTop($0, from: current, moving: lines) },
+      { state -> (top: Int?, generation: UInt64) in
+        let from = generation == state.addressingGeneration ? current : nil
+        return (
+          ScreenExporter.historyTop(state, from: from, moving: lines),
+          state.addressingGeneration
+        )
+      },
       completion: { [weak self] resolved in
         self?.queue
           .async { [weak self] in
             a.viewportMoveInFlight = false
             guard let self, a === self.attachment, a.isCurrent else { return }
             // Nil `resolved`: the pane is gone. Nil top: live output.
-            if let top = resolved, a.historyTop == current,
-              a.liveReturns == liveReturns, top != current
+            if let resolved, a.historyTop == current,
+              a.liveReturns == liveReturns,
+              resolved.top != current || resolved.generation != generation
             {
-              a.historyTop = top
+              a.historyTop = resolved.top
+              a.historyGeneration = resolved.generation
               self.contentChanged(interactive: true)
             }
             self.resolveViewportMove(for: a)
@@ -1475,7 +1502,7 @@ public final class RoamingSession: @unchecked Sendable {
       if let cancel { a.connection.cancelSnapshot(stream: cancel) }
       screenRevision += 1
       let stamp = stamp(epoch: a.epoch)
-      let historyTop = a.historyTop
+      let window = a.historyTop.map { (top: $0, generation: a.historyGeneration) }
       a.nextStreamID += 1
       let stream = a.nextStreamID
       a.scheduler.started(stream: stream, revision: stamp.screenRevision)
@@ -1488,6 +1515,10 @@ public final class RoamingSession: @unchecked Sendable {
       service.inspect(
         pane: pane,
         { state -> CapturedScreen? in
+          // Rows renumbered since the window opened: show live output.
+          let historyTop = window.flatMap {
+            $0.generation == state.addressingGeneration ? $0.top : nil
+          }
           guard frames else {
             return .snapshot(
               ScreenExporter.export(state, stamp: stamp, historyTop: historyTop)

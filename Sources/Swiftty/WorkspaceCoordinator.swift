@@ -229,7 +229,7 @@ final class WorkspaceCoordinator {
         shownHere ? " (open)" : ws.isAttached ? " (in use elsewhere)" : ""
       let panes = ws.paneCount == 1 ? "1 pane" : "\(ws.paneCount) panes"
       popup.addItem(
-        withTitle: "\(DisplayText.sanitize(ws.name)) — \(panes)\(state)"
+        withTitle: "\(DisplayText.workspaceName(ws.name)) — \(panes)\(state)"
       )
     }
     if let last = lastWorkspace,
@@ -256,7 +256,7 @@ final class WorkspaceCoordinator {
     }
     let alert = NSAlert()
     alert.messageText =
-      "Take control of workspace “\(DisplayText.sanitize(ws.name))”?"
+      "Take control of workspace “\(DisplayText.workspaceName(ws.name))”?"
     alert.informativeText =
       "Another window or device controls it. Taking over disconnects it there; its programs keep running."
     alert.alertStyle = .warning

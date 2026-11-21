@@ -41,6 +41,38 @@ extension ViewLifecycleTests {
     func end() { pad.endTracking(touch, with: nil) }
   }
 
+  @Test
+  func `the pad ticks when a direction engages or turns, not on repeat`() {
+    let pad = TerminalDirectionPad(
+      frame: CGRect(x: 0, y: 0, width: 44, height: 44)
+    )
+    var ticks = 0
+    var admitted = true
+    pad.playFeedback = { ticks += 1 }
+    pad.onIntent = { intent in
+      if case .activate = intent { return admitted }
+      return true
+    }
+    let drive = PadDriver(pad: pad)
+    drive.begin()
+    #expect(ticks == 0)
+    drive.move(30, 0)
+    #expect(ticks == 1)
+    // Further along the same direction: no new tick.
+    drive.move(36, 0)
+    #expect(ticks == 1)
+    drive.move(0, -30)
+    #expect(ticks == 2)
+    drive.end()
+    #expect(ticks == 2)
+    // A refused activation plays nothing.
+    admitted = false
+    drive.begin()
+    drive.move(-30, 0)
+    #expect(ticks == 2)
+    drive.end()
+  }
+
   private func makeBar(width: CGFloat = 393) -> (TerminalAccessoryBar, UIWindow)
   {
     let bar = TerminalAccessoryBar()

@@ -751,7 +751,7 @@ extension MainActorIntegrationTests {
       }
       // No private material in any cloud field.
       let secret = try await a.identityStore.resolve(key.id)
-      let raw = secret.privateKey.rawRepresentation
+      let raw = secret.ed25519PrivateKey!.rawRepresentation
       for record in await cloud.records("acct-a") {
         for value in record.fields.values {
           if case .bytes(let data) = value {

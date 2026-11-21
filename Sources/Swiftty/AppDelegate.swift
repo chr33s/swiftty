@@ -339,11 +339,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
           "Reset Terminal",
           #selector(TerminalView.resetTerminal(_:)),
           action: .reset
-        ),
+        ), .separator(), tabPositionMenuItem(),
       ]
     )
     NSApp.windowsMenu = submenu("Window", windowMenuItems())
     return main
+  }
+
+  /// View › Tabs: Top (the toolbar) or Left (a sidebar), saved to
+  /// `window.tabs` like the Settings picker.
+  private func tabPositionMenuItem() -> NSMenuItem {
+    let tabs = NSMenuItem(title: "Tabs", action: nil, keyEquivalent: "")
+    tabs.submenu = NSMenu(title: "Tabs")
+    for (title, position) in [
+      ("Top", TabPosition.top), ("Left", TabPosition.left),
+    ] {
+      let choice = item(title, #selector(setTabPosition(_:)))
+      choice.target = self
+      choice.representedObject = position.rawValue
+      choice.state = config.tabPosition == position ? .on : .off
+      tabs.submenu?.addItem(choice)
+    }
+    return tabs
+  }
+
+  @objc
+  func setTabPosition(_ sender: NSMenuItem) {
+    guard let value = sender.representedObject as? String,
+      let position = TabPosition(rawValue: value),
+      position != config.tabPosition
+    else { return }
+    do {
+      try ConfigurationEditor.apply(
+        [("tab-position", value)],
+        to: Configuration.activeURL
+      )
+    } catch {
+      let alert = NSAlert()
+      alert.messageText = "Tabs not moved"
+      alert.informativeText = "\(error)"
+      if let window = NSApp.keyWindow {
+        alert.beginSheetModal(for: window)
+      } else {
+        alert.runModal()
+      }
+      return
+    }
+    reload()
   }
 
   /// Helper management, apart from the terminal commands.

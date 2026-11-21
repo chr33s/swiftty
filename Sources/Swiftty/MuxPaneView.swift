@@ -244,11 +244,35 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
     applyScale()
   }
 
+  /// The pane sits in a card that paints the terminal's background: the
+  /// default background clears to transparent so a translucent one is not
+  /// laid twice. Coloured cells still draw.
+  var inCard = false {
+    didSet {
+      guard inCard != oldValue else { return }
+      applyScale()
+      needsDisplay = true
+    }
+  }
+
+  /// The default background the last drawn frame cleared to: the
+  /// program's (OSC 11) or the theme's, the foreground under reverse
+  /// video. A card paints it around and beneath its transparent terminal.
+  private(set) var drawnBackground: UInt32? {
+    didSet { if drawnBackground != oldValue { onBackgroundChange?() } }
+  }
+  var onBackgroundChange: (() -> Void)?
+
   private func applyScale() {
     let scale = window?.backingScaleFactor ?? 2
     let font = config.fontDescriptor(scale: scale)
     if renderer.font.descriptor != font { renderer.setFont(font) }
     display.apply(configuration: config, scale: scale)
+    if inCard {
+      renderer.options.backgroundOpacity = 0
+      // Transparent pixels on an opaque layer composite black.
+      layer?.isOpaque = false
+    }
     updateFrameDriving()
     controller?.geometryChanged()
   }
@@ -318,20 +342,20 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
 
   // MARK: Presentation
 
-  /// Imports off the main actor; returns nil for frames that fail
-  /// validation (they never partially update a presentation).
+  /// Imports off the main actor. `frame` came from `MuxConnection`, which
+  /// delivers only frames that passed `FrameValidator` under `limits`.
   nonisolated static func importFrame(
     _ frame: PaneFrame,
     limits: MuxLimits
-  ) -> MuxPresentation? {
-    guard
-      let snapshot = try? FrameImporter.snapshot(
-        from: frame,
+  ) -> MuxPresentation {
+    MuxPresentation(
+      frame: frame,
+      snapshot: FrameImporter.snapshot(
+        fromValidated: frame,
         sequence: 1,
         limits: limits
       )
-    else { return nil }
-    return MuxPresentation(frame: frame, snapshot: snapshot)
+    )
   }
 
   /// Stores the newest frame for this binding; drawing admits it later.
@@ -436,6 +460,9 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
     )
     switch result {
     case .submitted:
+      drawnBackground =
+        drawn.modes.contains(.reverseVideo)
+        ? drawn.palette.foreground : drawn.palette.background
       if isLive, frozen != nil, let placed {
         // The selection's coordinates now refer to what was drawn.
         let output = outputSelection

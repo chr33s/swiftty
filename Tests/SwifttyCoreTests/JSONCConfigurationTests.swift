@@ -103,6 +103,31 @@ struct JSONCConfigurationTests {
   }
 
   @Test
+  func tabPositionLoadsSavesAndRejectsUnknownValues() throws {
+    #expect(Configuration.parse("{}").tabPosition == .top)
+    let left = Configuration.parse(#"{"window":{"tabs":"left"}}"#)
+    #expect(left.diagnostics.isEmpty)
+    #expect(left.tabPosition == .left)
+    let bad = Configuration.parse(#"{"window":{"tabs":"right"}}"#)
+    #expect(!bad.diagnostics.isEmpty)
+    #expect(bad.tabPosition == .top)
+    var config = Configuration()
+    #expect(config.set("tab-position", "bottom") != nil)
+    #expect(config.set("tab-position", "left") == nil)
+    #expect(config.tabPosition == .left)
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString + ".jsonc"
+    )
+    defer { try? FileManager.default.removeItem(at: url) }
+    try ConfigurationEditor.apply([("tab-position", "left")], to: url)
+    #expect(Configuration.load(from: url).tabPosition == .left)
+    try ConfigurationEditor.apply([("tab-position", "top")], to: url)
+    #expect(Configuration.load(from: url).tabPosition == .top)
+    // The default is left out of the file.
+    #expect(!(try String(contentsOf: url, encoding: .utf8)).contains("tabs"))
+  }
+
+  @Test
   func invalidFileReportsOriginalPositionAndIsNotOverwritten() throws {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(
       UUID().uuidString + ".jsonc"

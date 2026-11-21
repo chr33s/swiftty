@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import SSHClient
 
 #if canImport(Security)
 import Security
@@ -12,33 +13,103 @@ import Security
 public struct IdentitySecret: Sendable, CustomStringConvertible,
   CustomDebugStringConvertible, CustomReflectable
 {
-  public let privateKey: Curve25519.Signing.PrivateKey
+  public let key: SSHSigningKey
 
   public init(_ privateKey: Curve25519.Signing.PrivateKey) {
-    self.privateKey = privateKey
+    self.key = .ed25519(privateKey)
   }
 
-  public var publicKey: Curve25519.Signing.PublicKey { privateKey.publicKey }
+  public init(key: SSHSigningKey) { self.key = key }
+
+  /// The Ed25519 key, or `nil` for another algorithm.
+  public var ed25519PrivateKey: Curve25519.Signing.PrivateKey? {
+    if case let .ed25519(key) = key { return key }
+    return nil
+  }
+
+  /// Canonical `"<type> <base64>"` public-key line, without a comment.
+  public var publicKeyLine: String { key.publicKeyLine }
+  public var fingerprint: String { key.fingerprint }
+  public var credential: SSHCredential { .publicKey(key) }
+
   public var description: String { "IdentitySecret(<redacted>)" }
   public var debugDescription: String { description }
   public var customMirror: Mirror { Mirror(self, children: []) }
 
-  /// Keychain payload: format byte 1, then the 32-byte Ed25519 seed.
+  /// Keychain payload, by leading format byte:
+  ///
+  /// | Byte | Contents |
+  /// |---|---|
+  /// | 1 | 32-byte Ed25519 seed |
+  /// | 2 | curve tag (2 P-256, 3 P-384, 4 P-521), raw ECDSA scalar |
+  /// | 3 | Secure Enclave key handle, usable only on this device |
   static let payloadVersion: UInt8 = 1
+  static let ecdsaPayloadVersion: UInt8 = 2
+  static let secureEnclavePayloadVersion: UInt8 = 3
 
   var payload: Data {
-    var data = Data([Self.payloadVersion])
-    data.append(privateKey.rawRepresentation)
-    return data
+    switch key {
+    case let .ed25519(key):
+      var data = Data([Self.payloadVersion])
+      data.append(key.rawRepresentation)
+      return data
+    case let .p256(key):
+      return Data([Self.ecdsaPayloadVersion, 2]) + key.rawRepresentation
+    case let .p384(key):
+      return Data([Self.ecdsaPayloadVersion, 3]) + key.rawRepresentation
+    case let .p521(key):
+      return Data([Self.ecdsaPayloadVersion, 4]) + key.rawRepresentation
+    #if canImport(Darwin)
+    case let .secureEnclaveP256(key):
+      return Data([Self.secureEnclavePayloadVersion]) + key.dataRepresentation
+    #endif
+    }
   }
 
   init?(payload: Data) {
-    guard payload.count == 33, payload.first == Self.payloadVersion,
-      let key = try? Curve25519.Signing.PrivateKey(
-        rawRepresentation: payload.dropFirst()
-      )
-    else { return nil }
-    self.privateKey = key
+    guard let version = payload.first else { return nil }
+    let body = payload.dropFirst()
+    switch version {
+    case Self.payloadVersion:
+      guard body.count == 32,
+        let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: body)
+      else { return nil }
+      self.key = .ed25519(key)
+    case Self.ecdsaPayloadVersion:
+      guard let curve = body.first else { return nil }
+      let raw = body.dropFirst()
+      switch curve {
+      case 2:
+        guard let key = try? P256.Signing.PrivateKey(rawRepresentation: raw)
+        else { return nil }
+        self.key = .p256(key)
+      case 3:
+        guard let key = try? P384.Signing.PrivateKey(rawRepresentation: raw)
+        else { return nil }
+        self.key = .p384(key)
+      case 4:
+        guard let key = try? P521.Signing.PrivateKey(rawRepresentation: raw)
+        else { return nil }
+        self.key = .p521(key)
+      default: return nil
+      }
+    #if canImport(Darwin)
+    case Self.secureEnclavePayloadVersion:
+      // Fails on any other device: the handle is sealed to this one.
+      guard SecureEnclave.isAvailable,
+        let key = try? SecureEnclave.P256.Signing.PrivateKey(
+          dataRepresentation: body
+        )
+      else { return nil }
+      self.key = .secureEnclaveP256(key)
+    #endif
+    default: return nil
+    }
+  }
+
+  /// Whether this payload belongs in `policy`'s namespace.
+  func matches(_ policy: IdentityStoragePolicy) -> Bool {
+    key.isSecureEnclave == (policy == .secureEnclave)
   }
 }
 
@@ -118,6 +189,7 @@ public actor InMemoryIdentitySecretStore: IdentitySecretStore {
     policy: IdentityStoragePolicy
   ) throws(IdentitySecretError) {
     try nextFailure()
+    guard secret.matches(policy) else { throw .malformed }
     guard items[policy]?[id] == nil else { throw .duplicate }
     items[policy, default: [:]][id] = secret.payload
   }
@@ -133,9 +205,8 @@ public actor InMemoryIdentitySecretStore: IdentitySecretStore {
     }
     if locked { throw .protectedDataUnavailable }
     guard let payload = items[policy]?[id] else { throw .notFound }
-    guard let secret = IdentitySecret(payload: payload) else {
-      throw .malformed
-    }
+    guard let secret = IdentitySecret(payload: payload), secret.matches(policy)
+    else { throw .malformed }
     return secret
   }
 
@@ -186,7 +257,7 @@ public actor KeychainIdentitySecretStore: IdentitySecretStore {
   ) -> [String: Any] {
     var query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
-      kSecAttrService as String: service,
+      kSecAttrService as String: service(for: policy),
       kSecAttrSynchronizable as String: policy == .iCloudKeychain,
     ]
     if let account { query[kSecAttrAccount as String] = account }
@@ -195,6 +266,12 @@ public actor KeychainIdentitySecretStore: IdentitySecretStore {
     query[kSecUseDataProtectionKeychain as String] = true
     #endif
     return query
+  }
+
+  /// Secure Enclave handles use their own namespace, so recovery of
+  /// software keys never lists them and vice versa (§13.2).
+  private func service(for policy: IdentityStoragePolicy) -> String {
+    policy == .secureEnclave ? service + ".secure-enclave" : service
   }
 
   private static func account(_ id: UUID) -> String {
@@ -206,12 +283,14 @@ public actor KeychainIdentitySecretStore: IdentitySecretStore {
     id: UUID,
     policy: IdentityStoragePolicy
   ) throws(IdentitySecretError) {
+    guard secret.matches(policy) else { throw .malformed }
     var add = query(policy: policy, account: Self.account(id))
     add[kSecValueData as String] = secret.payload
     add[kSecAttrLabel as String] = "Swiftty SSH identity"
     add[kSecAttrAccessible as String] =
       switch policy {
-      case .deviceOnly: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+      case .deviceOnly, .secureEnclave:
+        kSecAttrAccessibleWhenUnlockedThisDeviceOnly
       case .iCloudKeychain: kSecAttrAccessibleWhenUnlocked
       }
     let status = SecItemAdd(add as CFDictionary, nil)
@@ -228,7 +307,8 @@ public actor KeychainIdentitySecretStore: IdentitySecretStore {
     var result: CFTypeRef?
     let status = SecItemCopyMatching(read as CFDictionary, &result)
     guard status == errSecSuccess else { throw Self.error(status) }
-    guard let data = result as? Data, let secret = IdentitySecret(payload: data)
+    guard let data = result as? Data, let secret = IdentitySecret(payload: data),
+      secret.matches(policy)
     else { throw .malformed }
     return secret
   }

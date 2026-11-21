@@ -46,7 +46,11 @@ public final class RoamingTerminalClient {
   private var signalDispositions: [(Int32, sigaction)] = []
   private var rawMode = false
   private var outcome: Outcome?
+  private var finished = false
   private var continuation: CheckedContinuation<Outcome, Never>?
+
+  /// Stops the process after an external SIGTSTP; replaced in tests.
+  package var stopProcess: () -> Void = { _ = kill(getpid(), SIGSTOP) }
 
   /// Called once the SSH bootstrap succeeded, just before raw mode: the
   /// last moment a prompt on the terminal can be answered.
@@ -86,6 +90,9 @@ public final class RoamingTerminalClient {
       await client.setStatusHandler(nil)
       throw error
     }
+    // A status handler may already have finished the run while `start`
+    // was suspended; never enter raw mode or install sources after that.
+    if outcome != nil { return await settled() }
     pump = OrderedInputPump(
       submit: { await client.submit($0) },
       onResult: { [weak self] _, result in
@@ -102,7 +109,12 @@ public final class RoamingTerminalClient {
       try installSources()
     } catch { return await finish(.lost("\(error)"), close: .detach) }
     redraw()
-    if let outcome { return outcome }
+    return await settled()
+  }
+
+  /// The outcome once teardown has completed.
+  private func settled() async -> Outcome {
+    if finished, let outcome { return outcome }
     return await withCheckedContinuation { continuation = $0 }
   }
 
@@ -306,7 +318,7 @@ public final class RoamingTerminalClient {
     }
     start(read)
     // Signal handlers only notify normal execution code.
-    for sig in [SIGWINCH, SIGTERM, SIGHUP, SIGCONT, SIGINT, SIGQUIT] {
+    for sig in [SIGWINCH, SIGTERM, SIGHUP, SIGCONT, SIGINT, SIGQUIT, SIGTSTP] {
       var ignored = sigaction()
       ignored.__sigaction_u.__sa_handler = SIG_IGN
       sigemptyset(&ignored.sa_mask)
@@ -328,7 +340,9 @@ public final class RoamingTerminalClient {
     sources.append(source)
   }
 
-  private func handleSignal(_ sig: Int32) {
+  /// Delivered by the signal sources; tests call it directly, since a real
+  /// SIGTSTP reaches every client in the process.
+  package func handleSignal(_ sig: Int32) {
     guard outcome == nil else { return }
     switch sig {
     case SIGWINCH:
@@ -338,6 +352,12 @@ public final class RoamingTerminalClient {
       let client = client
       Task { await client.proposeGrid(columns: columns, rows: rows) }
       redraw()
+    case SIGTSTP:
+      // An external stop (Ctrl-Z itself reaches the remote session as a
+      // byte): leave the outer terminal usable while stopped. SIGSTOP,
+      // not SIGTSTP, so the stop cannot re-trigger this source.
+      tty.restore()
+      stopProcess()
     case SIGCONT:
       try? tty.enter()
       renderer.invalidate()
@@ -377,6 +397,7 @@ public final class RoamingTerminalClient {
     signalDispositions = []
     await client.setStatusHandler(nil)
     if !(status.state.isTerminal) { await client.close(mode) }
+    finished = true
     continuation?.resume(returning: result)
     continuation = nil
     return result

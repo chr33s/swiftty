@@ -48,6 +48,9 @@ final class HostAttachment: @unchecked Sendable {
   /// Absolute top row of this attachment's history window (`Viewport`),
   /// or nil to follow live output. Never moves the host's own view.
   var historyTop: Int?
+  /// The pane's addressing generation `historyTop` was resolved in. A
+  /// clear, reset or resize renumbers rows, so an older window is live.
+  var historyGeneration: UInt64 = 0
   /// `Viewport` movement received while a move is resolving on the pane,
   /// applied next rather than dropped (a swipe sends many in a row).
   var pendingViewportLines = 0

@@ -159,9 +159,11 @@ final class ViewCapabilityTests {
     _ allowed: Bool
   ) throws {
     _ = NSApplication.shared
+    // One line per wheel unit (the default multiplier is 3).
     let view = try makeView(
-      configuration: Configuration.configured([("cursor-click-to-move", "true")]
-      )
+      configuration: Configuration.configured([
+        ("cursor-click-to-move", "true"), ("mouse-scroll-multiplier", "1"),
+      ])
     )
     view.setFrameSize(NSSize(width: 400, height: 200))
     let program =

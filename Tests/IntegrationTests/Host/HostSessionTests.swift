@@ -291,6 +291,48 @@ struct HostSessionTests {
     }
   }
 
+  /// Clearing scrollback (`ESC[3J`, as `clear` sends) renumbers the
+  /// pane's rows. A window opened before it must not pin output to the
+  /// old row number once new output passes it: the client sees live.
+  @Test
+  func `a history window does not outlive the row numbering it was opened in`()
+    async throws
+  {
+    try await withRegistry { registry in
+      let grant = try await registry.create(
+        grid: GridSize(columns: 40, rows: 8)
+      )
+      let client = TestClient(registry)
+      _ = try await client.attached(grant)
+      _ = try await client.snapshot("prompt") { screenText($0).contains("$") }
+      try await client.send(
+        input(
+          1,
+          1,
+          .committedText(
+            "i=0; while [ $i -lt 200 ]; do echo old-$i; i=$((i+1)); done; "
+              + "sleep 2; printf '\\033[3J'; i=0; "
+              + "while [ $i -lt 400 ]; do echo new-$i; i=$((i+1)); done"
+          )
+        )
+      )
+      try await client.send(input(1, 2, .key(SemanticKey(.enter))))
+      let output = try await client.snapshot("old output") {
+        $0.textLines.contains("old-199")
+      }
+      // Open a window while the command sleeps; no input follows.
+      try await client.send(.viewport(epoch: 1, lines: 50))
+      _ = try await client.snapshot("window", after: output) {
+        !$0.cursor.visible
+      }
+      let live = try await client.snapshot("live after clear") {
+        $0.textLines.contains("new-399")
+      }
+      #expect(live.cursor.visible)
+      #expect(client.badFrames == 0)
+    }
+  }
+
   @Test
   func `a burst of viewport requests moves by its whole distance`() async throws
   {

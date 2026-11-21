@@ -235,7 +235,8 @@ file URLs.
 ### 4.2 Keyboard shortcuts
 
 `events.bindKey(shortcut, callback)` registers an automation shortcut, such as
-`"cmd+k"` or `"cmd+shift+d"`. The native client dispatches matching shortcuts
+`"cmd+k"` or `"cmd+shift+d"`. A key is named by its unshifted character
+(`"cmd+shift+1"`, not `"cmd+shift+!"`); the `+` key is `plus`. The native client dispatches matching shortcuts
 through the service, with `currentPane` scoped to their source pane.
 
 ### 4.3 Callback failures

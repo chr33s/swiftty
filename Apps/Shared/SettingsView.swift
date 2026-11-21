@@ -38,6 +38,18 @@ struct SettingsView: View {
         }
       }
       .listRowBackground(Color.clear)
+      Section {
+        NavigationLink {
+          ConnectionSettingsView(model: model)
+        } label: {
+          Label(
+            .localized("Connection"),
+            systemImage: "antenna.radiowaves.left.and.right"
+          )
+        }
+        .accessibilityIdentifier("settings.connection")
+      }
+      .listRowBackground(Color.clear)
       if pairs { pairing }
       if model.profile.companionBridge {
         Section(.localized("Apple Watch")) {

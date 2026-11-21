@@ -96,7 +96,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
           let replacement = SSHIdentityMetadata(
             id: original.id,
             name: "Account B",
-            publicKey: IdentitySecret(.init()).publicKey,
+            publicKeyLine: IdentitySecret(.init()).publicKeyLine,
             storage: .deviceOnly,
             revision: LogicalRevision(counter: 100, deviceID: UUID())
           )

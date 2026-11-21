@@ -836,14 +836,20 @@ public final class TerminalSession: @unchecked Sendable {
 
   /// Changes only the selection overlay. Its cells remain a valid interaction
   /// baseline until another state change publishes, even before another draw.
+  /// `begins`: the selection starts a new gesture (`beginSelection`).
   package func selectPresentation<R>(
     matching snapshot: RenderSnapshot,
+    begins: Bool = false,
     _ body: (borrowing TerminalState) -> (Selection?, R)
   ) -> R? {
     queue.sync {
       guard presentationMatches(snapshot) else { return nil }
       let (selection, result) = body(state)
-      state.setSelection(selection)
+      if begins {
+        state.beginSelection(selection)
+      } else {
+        state.setSelection(selection)
+      }
       publish()
       selectionPresentation = (snapshot.source, snapshot.presentationRevision)
       return result

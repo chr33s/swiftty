@@ -178,16 +178,10 @@ public actor MuxConnection {
   /// Deltas applied and full frames requested (tests, diagnostics).
   package private(set) var deltaStatistics = (applied: 0, requestedFull: 0)
 
-  private func retainBase(_ frame: PaneFrame, validated: Bool) {
+  /// `frame` must be valid: a delta copies cells out of its base by index.
+  private func retainBase(_ frame: PaneFrame) {
     guard capabilities.contains(.frameDeltas), frame.rowVersions != nil else {
       return
-    }
-    // A delta copies cells out of its base by index, so only a valid
-    // frame may become one. JSON frames are not validated on arrival.
-    if !validated {
-      do {
-        try FrameValidator.validate(frame, limits: welcome?.limits ?? .standard)
-      } catch { return }
     }
     var list = deltaBases[frame.identity.pane, default: []]
     list.removeAll { $0.identity.revision == frame.identity.revision }
@@ -552,7 +546,22 @@ public actor MuxConnection {
         }
         return
       case let .frame(frame):
-        retainBase(frame, validated: validated)
+        // Every delivered frame is valid, so consumers import it without
+        // a second pass. An invalid JSON frame is acknowledged, not shown.
+        if !validated {
+          do {
+            try FrameValidator.validate(
+              frame,
+              limits: welcome?.limits ?? .standard
+            )
+          } catch {
+            if !suppressesFrameAcknowledgement {
+              acknowledgeFrame(frame.identity)
+            }
+            return
+          }
+        }
+        retainBase(frame)
         guard
           installation.install(
             frame,

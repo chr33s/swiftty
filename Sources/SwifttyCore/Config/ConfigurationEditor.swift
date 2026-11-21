@@ -17,7 +17,7 @@ public enum ConfigurationEditor {
   public static let editableKeys: Set<String> = [
     "font-family", "font-size", "theme", "background-opacity", "cursor-style",
     "cursor-style-blink", "copy-on-select", "mouse-hide-while-typing",
-    "shell-profile",
+    "shell-profile", "tab-position",
   ]
 
   /// Values are literal control values, not quoted configuration expressions.
@@ -50,6 +50,11 @@ public enum ConfigurationEditor {
       config.cursorStyle = value.flatMap { $0.isEmpty ? nil : $0 }
     case "cursor-style-blink":
       config.cursorStyleBlink = value.flatMap(Bool.init)
+    case "tab-position":
+      // The default is left out of the file.
+      config.window.tabs = value.flatMap {
+        $0.isEmpty || $0 == "top" ? nil : $0
+      }
     case "copy-on-select":
       config.copyOnSelect = value.flatMap(Bool.init) ?? false
     case "mouse-hide-while-typing":

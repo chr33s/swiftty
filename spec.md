@@ -322,9 +322,13 @@ Terminal configuration validation applies only when loading terminal settings.
 | Section | Settings and defaults |
 | --- | --- |
 | `font` | `family: "Menlo"`, `size: 13`, `line_height: 1.2` |
-| `window` | `opacity: 0.95`, `blur: true`, `padding: 8`; optional `width` and `height` in content points |
+| `window` | `opacity: 0.95`, `blur: true`, `padding: 8`, `tabs: "top"`; optional `width` and `height` in content points |
 | `terminal` | `shell: null` (default login shell), `scrollback_limit: 10000` history rows |
 | `keybindings` | Empty array; each entry requires `trigger` and `action` strings |
+
+`window.tabs` places workspace tabs in the toolbar (`"top"`, the default) or in
+a sidebar beside the panes (`"left"`), whose toolbar button hides and shows it;
+Settings › Appearance › Tabs and View › Tabs edit it.
 
 A shell setting is an executable path, not a shell command. The existing
 scrollback byte budget also bounds history. Optional `theme`, `copy_on_select`,

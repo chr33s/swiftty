@@ -36,8 +36,8 @@ public enum OpenSSHImportError: Error, Hashable, Sendable {
     case .inputTooLarge: "The file is larger than 64 KB."
     case .unrecognizedFormat: "This is not an OpenSSH private key."
     case .unsupportedFormat(let name):
-      "\(name) keys are not supported. Import an OpenSSH Ed25519 key, or "
-        + "generate one here."
+      "\(name) keys are not supported. Import an OpenSSH Ed25519 or ECDSA "
+        + "key, or generate one here."
     case .passphraseRequired: "Enter the key's passphrase."
     case .wrongPassphrase: "The passphrase is incorrect."
     case .unsupportedCipher(let name):
@@ -56,7 +56,8 @@ public enum OpenSSHImportError: Error, Hashable, Sendable {
     case .unsupportedKeyCount(let count):
       "The file holds \(count) keys; import one key at a time."
     case .unsupportedAlgorithm(let name):
-      "\(name) keys are not supported; only Ed25519 keys can be imported."
+      "\(name) keys are not supported; import an Ed25519 or ECDSA "
+        + "(P-256, P-384, P-521) key."
     case .commentTooLarge: "The key's comment is larger than 1 KB."
     case .invalidPadding: "The key file's padding is invalid."
     case .keyMismatch: "The key's public and private halves do not match."
@@ -82,13 +83,11 @@ public struct ImportedOpenSSHKey: Sendable {
   /// The file's comment, a suggested display name.
   public let comment: String?
 
-  public var fingerprint: String {
-    SSHEd25519Key.fingerprint(of: secret.publicKey)
-  }
+  public var fingerprint: String { secret.fingerprint }
 
   public var inspection: OpenSSHKeyInspection {
     OpenSSHKeyInspection(
-      algorithm: SSHIdentityMetadata.algorithm,
+      algorithm: secret.key.algorithm.rawValue,
       fingerprint: fingerprint,
       comment: comment,
       isEncrypted: false
@@ -186,7 +185,8 @@ public enum OpenSSHKeyImporter {
 
   /// The file's structure, validated, before any decryption.
   struct Envelope {
-    var publicKey: Curve25519.Signing.PublicKey
+    /// Canonical `"<type> <base64>"` line of the file's public key.
+    var publicKey: String
     /// Nil when unencrypted.
     var encryption: (cipher: OpenSSHCipher, salt: [UInt8], rounds: Int)?
     var section: [UInt8]
@@ -203,6 +203,7 @@ public enum OpenSSHKeyImporter {
   public static func inspect(
     _ input: Data
   ) throws(OpenSSHImportError) -> OpenSSHKeyInspection {
+    if let pem = try pemKey(input) { return pem.inspection }
     var envelope = try parse(input)
     defer { envelope.reset() }
     guard envelope.encryption != nil else {
@@ -215,8 +216,10 @@ public enum OpenSSHKeyImporter {
       .inspection
     }
     return OpenSSHKeyInspection(
-      algorithm: SSHIdentityMetadata.algorithm,
-      fingerprint: SSHEd25519Key.fingerprint(of: envelope.publicKey),
+      algorithm: SSHPublicKeyFormat.keyType(openSSHPublicKey: envelope.publicKey),
+      fingerprint: SSHPublicKeyFormat.fingerprint(
+        openSSHPublicKey: envelope.publicKey
+      ) ?? "",
       comment: nil,
       isEncrypted: true
     )
@@ -231,6 +234,7 @@ public enum OpenSSHKeyImporter {
     passphrase: String? = nil,
     isCancelled: () -> Bool = { false }
   ) throws(OpenSSHImportError) -> ImportedOpenSSHKey {
+    if let pem = try pemKey(input) { return pem }
     var envelope = try parse(input)
     defer { envelope.reset() }
     guard let (cipher, salt, rounds) = envelope.encryption else {
@@ -294,7 +298,7 @@ public enum OpenSSHKeyImporter {
     guard let blob = reader.readString(maxLength: 1024) else {
       throw .malformed
     }
-    let publicKey = try ed25519PublicKey(blob: blob)
+    let publicKey = try canonicalPublicKey(blob: blob)
     guard let section = reader.readString(maxLength: maxInputBytes) else {
       throw .malformed
     }
@@ -365,7 +369,6 @@ public enum OpenSSHKeyImporter {
   ) -> OpenSSHImportError {
     switch first {
     case "-----BEGIN RSA PRIVATE KEY-----": return .unsupportedFormat("PEM RSA")
-    case "-----BEGIN EC PRIVATE KEY-----": return .unsupportedFormat("PEM EC")
     case "-----BEGIN DSA PRIVATE KEY-----": return .unsupportedFormat("PEM DSA")
     case "-----BEGIN PRIVATE KEY-----", "-----BEGIN ENCRYPTED PRIVATE KEY-----":
       return .unsupportedFormat("PKCS #8")
@@ -385,18 +388,54 @@ public enum OpenSSHKeyImporter {
     return .unrecognizedFormat
   }
 
-  private static func ed25519PublicKey(
+  /// The canonical line of a supported public-key blob.
+  private static func canonicalPublicKey(
     blob: [UInt8]
-  ) throws(OpenSSHImportError) -> Curve25519.Signing.PublicKey {
+  ) throws(OpenSSHImportError) -> String {
     var reader = SSHWireReader(blob)
     guard let type = reader.readText(maxLength: 128) else { throw .malformed }
-    guard type == SSHIdentityMetadata.algorithm else {
+    guard SSHKeyAlgorithm(rawValue: type) != nil else {
       throw type.contains("-cert-") ? .certificate : .unsupportedAlgorithm(type)
     }
-    guard let key = SSHIdentityMetadata.ed25519Key(blob: blob) else {
+    let line = type + " " + Data(blob).base64EncodedString()
+    guard SSHKeyAlgorithm(canonicalPublicKeyLine: line) != nil else {
       throw .malformed
     }
-    return key
+    return line
+  }
+
+  // MARK: PEM ECDSA
+
+  /// An unencrypted SEC 1 (`EC PRIVATE KEY`) or PKCS #8 (`PRIVATE KEY`)
+  /// ECDSA key on P-256, P-384 or P-521; `nil` for any other armor.
+  static func pemKey(
+    _ input: Data
+  ) throws(OpenSSHImportError) -> ImportedOpenSSHKey? {
+    guard input.count <= maxInputBytes else { throw .inputTooLarge }
+    guard let text = String(data: input, encoding: .utf8) else { return nil }
+    let first = text.split(whereSeparator: \.isNewline)
+      .map { $0.trimmingCharacters(in: .whitespaces) }
+      .first { !$0.isEmpty }
+    let label: String
+    switch first {
+    case "-----BEGIN EC PRIVATE KEY-----": label = "PEM EC"
+    case "-----BEGIN PRIVATE KEY-----": label = "PKCS #8"
+    default: return nil
+    }
+    if text.contains("Proc-Type: 4,ENCRYPTED") {
+      throw .unsupportedFormat("Encrypted \(label)")
+    }
+    let key: SSHSigningKey
+    if let p256 = try? P256.Signing.PrivateKey(pemRepresentation: text) {
+      key = .p256(p256)
+    } else if let p384 = try? P384.Signing.PrivateKey(pemRepresentation: text) {
+      key = .p384(p384)
+    } else if let p521 = try? P521.Signing.PrivateKey(pemRepresentation: text) {
+      key = .p521(p521)
+    } else {
+      throw .unsupportedFormat(label)
+    }
+    return ImportedOpenSSHKey(secret: IdentitySecret(key: key), comment: nil)
   }
 
   // MARK: Private section
@@ -405,7 +444,7 @@ public enum OpenSSHKeyImporter {
   /// mismatched check integers mean the passphrase was wrong.
   static func parsePrivateSection(
     _ plain: [UInt8],
-    publicKey: Curve25519.Signing.PublicKey,
+    publicKey: String,
     padding blockSize: Int,
     encrypted: Bool
   ) throws(OpenSSHImportError) -> ImportedOpenSSHKey {
@@ -417,8 +456,16 @@ public enum OpenSSHKeyImporter {
       throw encrypted ? .wrongPassphrase : .malformed
     }
     guard let type = reader.readText(maxLength: 128) else { throw .malformed }
-    guard type == SSHIdentityMetadata.algorithm else {
+    guard let algorithm = SSHKeyAlgorithm(rawValue: type) else {
       throw .unsupportedAlgorithm(type)
+    }
+    guard algorithm == .ed25519 else {
+      return try parseECDSASection(
+        &reader,
+        algorithm: algorithm,
+        publicKey: publicKey,
+        padding: blockSize
+      )
     }
     guard let publicBytes = reader.readString(maxLength: 32),
       publicBytes.count == 32,
@@ -442,11 +489,77 @@ public enum OpenSSHKeyImporter {
     } catch { throw .malformed }
     let derived = Array(key.publicKey.rawRepresentation)
     guard publicBytes == derived, Array(privateBytes[32...]) == derived,
-      Array(publicKey.rawRepresentation) == derived
+      IdentitySecret(key).publicKeyLine == publicKey
     else { throw .keyMismatch }
     let comment = String(bytes: commentBytes, encoding: .utf8)
     return ImportedOpenSSHKey(
       secret: IdentitySecret(key),
+      comment: comment?.isEmpty == false ? comment : nil
+    )
+  }
+}
+
+extension OpenSSHKeyImporter {
+  /// `string curve, string Q, mpint d, string comment, padding` after the
+  /// key type (PROTOCOL.key; RFC 5656 §3.1).
+  static func parseECDSASection(
+    _ reader: inout SSHWireReader,
+    algorithm: SSHKeyAlgorithm,
+    publicKey: String,
+    padding blockSize: Int
+  ) throws(OpenSSHImportError) -> ImportedOpenSSHKey {
+    guard let curve = reader.readText(maxLength: 16),
+      curve == algorithm.curveName,
+      let point = reader.readString(maxLength: 133),
+      var scalar = reader.readString(maxLength: 67)
+    else { throw .malformed }
+    defer { scalar.resetBytes() }
+    guard let commentLength = reader.peekLength() else { throw .malformed }
+    guard commentLength <= maxCommentBytes else { throw .commentTooLarge }
+    guard let commentBytes = reader.readString(maxLength: maxCommentBytes)
+    else { throw .malformed }
+    let padding = reader.readRest()
+    guard padding.count < blockSize,
+      padding.enumerated().allSatisfy({ $0.element == UInt8($0.offset + 1) })
+    else { throw .invalidPadding }
+    // An mpint is big-endian two's complement: drop a sign byte, then
+    // left-pad to the curve's scalar size.
+    let size =
+      switch algorithm {
+      case .ecdsaP256: 32
+      case .ecdsaP384: 48
+      default: 66
+      }
+    var raw = Array(scalar.drop { $0 == 0 })
+    defer { raw.resetBytes() }
+    guard raw.count <= size else { throw .malformed }
+    raw = [UInt8](repeating: 0, count: size - raw.count) + raw
+    let key: SSHSigningKey
+    let derivedPoint: [UInt8]
+    do {
+      switch algorithm {
+      case .ecdsaP256:
+        let k = try P256.Signing.PrivateKey(rawRepresentation: raw)
+        key = .p256(k)
+        derivedPoint = Array(k.publicKey.x963Representation)
+      case .ecdsaP384:
+        let k = try P384.Signing.PrivateKey(rawRepresentation: raw)
+        key = .p384(k)
+        derivedPoint = Array(k.publicKey.x963Representation)
+      case .ecdsaP521:
+        let k = try P521.Signing.PrivateKey(rawRepresentation: raw)
+        key = .p521(k)
+        derivedPoint = Array(k.publicKey.x963Representation)
+      case .ed25519: throw OpenSSHImportError.malformed
+      }
+    } catch { throw .malformed }
+    let secret = IdentitySecret(key: key)
+    guard derivedPoint == point, secret.publicKeyLine == publicKey else {
+      throw .keyMismatch
+    }
+    let comment = String(bytes: commentBytes, encoding: .utf8)
+    return ImportedOpenSSHKey(
+      secret: secret,
       comment: comment?.isEmpty == false ? comment : nil
     )
   }

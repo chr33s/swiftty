@@ -237,6 +237,15 @@ extension TerminalState {
 
   // MARK: Selection
 
+  /// A selection a new gesture starts (a click, double- or triple-click).
+  /// Unlike `setSelection`, it never continues a presentation selection:
+  /// an end landing where that one was clamped to the frame would
+  /// otherwise keep its old host address beyond the frame.
+  public mutating func beginSelection(_ newValue: Selection?) {
+    setSelection(nil)
+    setSelection(newValue)
+  }
+
   public mutating func setSelection(_ newValue: Selection?) {
     // Clearing also ends a presentation selection kept off the frame.
     if newValue == nil {

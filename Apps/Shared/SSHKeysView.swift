@@ -1,3 +1,4 @@
+import SSHClient
 import SSHIdentity
 import SwiftUI
 import UniformTypeIdentifiers
@@ -164,11 +165,11 @@ struct IdentityRow: View {
       Text(identity.fingerprint).font(.caption.monospaced())
         .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
       HStack(spacing: 6) {
-        Text(verbatim: "Ed25519")
+        Text(verbatim: identity.keyAlgorithm?.displayName ?? identity.algorithm)
         Text(verbatim: "·")
         Label(
           identity.storage.displayName,
-          systemImage: identity.storage == .iCloudKeychain ? "icloud" : "iphone"
+          systemImage: storageSymbol
         )
         if let availability, availability != .available {
           Text(verbatim: "·")
@@ -176,6 +177,14 @@ struct IdentityRow: View {
         }
       }
       .font(.caption).foregroundStyle(.secondary)
+    }
+  }
+
+  private var storageSymbol: String {
+    switch identity.storage {
+    case .iCloudKeychain: "icloud"
+    case .secureEnclave: "lock.shield"
+    case .deviceOnly: "iphone"
     }
   }
 }
@@ -208,9 +217,9 @@ private struct OrphanRow: View {
             } catch { self.error = error.message }
           }
         }
-        // Only a device-only item can be deleted here; an iCloud item may
+        // Only a device-bound item can be deleted here; an iCloud item may
         // be another device's key whose details have not arrived.
-        if orphan.policy == .deviceOnly {
+        if orphan.policy.isDeviceBound {
           Button(.localized("Delete"), role: .destructive) {
             confirmingDelete = true
           }
@@ -603,7 +612,10 @@ private struct KeyDetailsSection: View {
 
   var body: some View {
     Section {
-      LabeledContent(.localized("Algorithm"), value: "Ed25519")
+      LabeledContent(
+        .localized("Algorithm"),
+        value: identity.keyAlgorithm?.displayName ?? identity.algorithm
+      )
       LabeledContent {
         Text(identity.storage.displayName)
       } label: {
@@ -638,6 +650,14 @@ private struct KeyDetailsSection: View {
         """
         Synced by iCloud Keychain, which the system manages. Saving it here does \
         not confirm another device has received it.
+        """
+      )
+    case .secureEnclave:
+      .localized(
+        """
+        Created inside this device's Secure Enclave. The private key cannot be \
+        copied, exported or synced; on other devices this key is shown as \
+        unavailable.
         """
       )
     }
@@ -708,7 +728,9 @@ private struct KeyActionsSection: View {
 
   var body: some View {
     Section {
-      if availability != .available, availability != nil, profile.keyImport {
+      if availability != .available, availability != nil, profile.keyImport,
+        identity.storage != .secureEnclave
+      {
         Button(
           .localized("Repair by Importing This Key…"),
           systemImage: "wrench.and.screwdriver"
@@ -726,6 +748,7 @@ private struct KeyActionsSection: View {
             .localized("Withdraw from iCloud…"),
             systemImage: "icloud.slash"
           ) { confirmingWithdraw = true }
+        case .secureEnclave: EmptyView()
         }
       }
       Button(
@@ -756,6 +779,11 @@ struct KeyCreationView: View {
   private var name = ""
   @State
   private var policy: IdentityStoragePolicy = .deviceOnly
+  /// Generate only: the key type, or `nil` for a Secure Enclave key.
+  @State
+  private var algorithm: SSHKeyAlgorithm? = .ed25519
+  @State
+  private var requireUserPresence = true
   @State
   private var keyData: Data?
   @State
@@ -790,10 +818,11 @@ struct KeyCreationView: View {
               .accessibilityIdentifier("key.new.name")
           }
           .listRowBackground(Color.clear)
-          if model.profile.cloudSync {
+          if mode == .generate { keyTypeSection }
+          if model.profile.cloudSync, algorithm != nil {
             Section {
               Picker(.localized("Storage"), selection: $policy) {
-                ForEach(IdentityStoragePolicy.allCases, id: \.self) {
+                ForEach(IdentityStoragePolicy.softwareCases, id: \.self) {
                   Text($0.displayName).tag($0)
                 }
               }
@@ -853,6 +882,42 @@ struct KeyCreationView: View {
     .privacyShield(when: scenePhase != .active)
   }
 
+  /// Ed25519 is the default; ECDSA serves servers that require NIST
+  /// curves. A Secure Enclave key is P-256 and device-bound (§13).
+  private var keyTypeSection: some View {
+    Section {
+      Picker(.localized("Key Type"), selection: $algorithm) {
+        ForEach(SSHKeyAlgorithm.allCases, id: \.self) {
+          Text(verbatim: $0.displayName).tag(Optional($0))
+        }
+        if SecureEnclaveKeys.isAvailable {
+          Text(verbatim: "P-256 · Secure Enclave")
+            .tag(SSHKeyAlgorithm?.none)
+        }
+      }
+      .accessibilityIdentifier("key.new.type")
+      if algorithm == nil {
+        Toggle(
+          .localized("Require Face ID, Touch ID or Passcode"),
+          isOn: $requireUserPresence
+        )
+        .accessibilityIdentifier("key.new.userPresence")
+      }
+    } footer: {
+      if algorithm == nil {
+        Text(
+          """
+          The private key is created inside this device's Secure Enclave and can \
+          never leave it: it cannot be exported, backed up or synced. If this \
+          device is lost or reset, the key is gone; keep another way to sign in.
+          """,
+          bundle: #bundle
+        )
+      }
+    }
+    .listRowBackground(Color.clear)
+  }
+
   private var importSection: some View {
     Section {
       Button(.localized("Choose Key File…"), systemImage: "doc") {
@@ -866,7 +931,11 @@ struct KeyCreationView: View {
       }
       #endif
       if let inspection {
-        LabeledContent(.localized("Algorithm"), value: "Ed25519")
+        LabeledContent(
+          .localized("Algorithm"),
+          value: SSHKeyAlgorithm(rawValue: inspection.algorithm)?.displayName
+            ?? inspection.algorithm
+        )
         VStack(alignment: .leading, spacing: 4) {
           Text("Fingerprint", bundle: #bundle).font(.caption)
             .foregroundStyle(.secondary)
@@ -898,7 +967,8 @@ struct KeyCreationView: View {
     } footer: {
       Text(
         """
-        OpenSSH Ed25519 keys, with or without a passphrase. A passphrase only \
+        OpenSSH Ed25519 and ECDSA keys, with or without a passphrase, and \
+        unencrypted PEM ECDSA keys. A passphrase only \
         decrypts the key here and is not saved. The key is stored in the \
         Keychain; delete the original file afterwards if you no longer need it.
         """,
@@ -968,7 +1038,9 @@ struct KeyCreationView: View {
         case .generate:
           identity = try await model.identityStore.generate(
             name: name,
-            policy: policy
+            algorithm: algorithm ?? .ecdsaP256,
+            policy: algorithm == nil ? .secureEnclave : policy,
+            requireUserPresence: requireUserPresence
           )
         case .importKey:
           guard let keyData else { return }

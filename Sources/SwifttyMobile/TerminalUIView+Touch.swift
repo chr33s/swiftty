@@ -403,7 +403,7 @@ extension TerminalUIView {
         case .word: state.wordRange(at: p)
         case .line: state.lineRange(at: p)
         }
-      state.setSelection(
+      state.beginSelection(
         unit == .cell
           ? nil
           : Selection(anchor: span.start, head: span.end, rectangle: rectangle)

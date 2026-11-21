@@ -69,6 +69,15 @@
           ],
           "exclusiveMinimum": 0,
           "description": "Initial window content dimension in points."
+        },
+        "tabs": {
+          "type": "string",
+          "enum": [
+            "top",
+            "left"
+          ],
+          "default": "top",
+          "description": "Where workspace tabs show: in the toolbar (top) or a sidebar (left)."
         }
       }
     },
@@ -343,7 +352,7 @@
       "minimum": 0.01,
       "maximum": 10000,
       "default": 3,
-      "description": "Lines scrolled per mouse-wheel notch. Trackpad scrolling is unaffected."
+      "description": "Lines scrolled per mouse-wheel notch. Trackpad scrolling is unaffected, and apps that report the mouse get one wheel event per notch."
     },
     "cursor_style": {
       "enum": [

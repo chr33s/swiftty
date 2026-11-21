@@ -105,9 +105,9 @@ struct ConnectionPrompts: ViewModifier {
 
   func body(content: Content) -> some View {
     content.sheet(item: enabled ? pendingPassword : .constant(nil)) { prompt in
-      PasswordPromptView(prompt: prompt) {
-        model.resolvePassword($0, for: prompt.id)
-      }
+      PasswordPromptView(prompt: prompt, answerSaving: {
+        model.resolvePassword($0, remember: $1, for: prompt.id)
+      })
       .macSheetFrame(width: 420, height: 260).presentationBackground(.clear)
     }
     .background {

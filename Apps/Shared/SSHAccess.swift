@@ -193,11 +193,14 @@ final class SSHAccess {
     for host: HostProfile,
     expectedHostKeys: Set<String>? = nil
   ) -> SSHClient.SSHClientConfiguration {
-    SSHClient.SSHClientConfiguration(
+    let resilience = app?.resilience ?? .default
+    return SSHClient.SSHClientConfiguration(
       host: host.host,
       port: host.port,
       username: host.username,
-      expectedHostKeyFingerprints: expectedHostKeys
+      expectedHostKeyFingerprints: expectedHostKeys,
+      forceIPv4: resilience.forceIPv4,
+      keepalive: resilience.keepalive
     )
   }
 
@@ -244,9 +247,7 @@ final class SSHAccess {
     case .key:
       guard let app, let reference else { throw .cancelled }
       do {
-        return .ed25519(
-          try await app.identityStore.resolve(reference).privateKey
-        )
+        return try await app.identityStore.resolve(reference).credential
       } catch .cancelled { throw .cancelled } catch {
         throw .keyUnavailable(error)
       }
@@ -541,7 +542,7 @@ final class SSHAccess {
     guard let reference, let store = app?.identityStore else { return nil }
     return .resolved { @Sendable in
       do throws(IdentityResolutionError) {
-        return .ed25519(try await store.resolve(reference).privateKey)
+        return try await store.resolve(reference).credential
       } catch { throw SSHAccessError.keyUnavailable(error) }
     }
   }

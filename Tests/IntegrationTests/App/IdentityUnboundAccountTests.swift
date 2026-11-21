@@ -156,7 +156,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
       kind: .deleteSecret,
       policy: .iCloudKeychain,
       name: "Old cleanup",
-      publicKey: SSHEd25519Key.authorizedKeysLine(for: key.publicKey),
+      publicKey: key.publicKeyLine,
       reassign: [],
       stage: .recorded,
       createdAt: .now
@@ -186,7 +186,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
       kind: withdrawal ? .withdraw(source: UUID()) : .generate,
       policy: policy,
       name: "Legacy pending",
-      publicKey: SSHEd25519Key.authorizedKeysLine(for: key.publicKey),
+      publicKey: key.publicKeyLine,
       reassign: [],
       stage: .secretWritten,
       createdAt: .now

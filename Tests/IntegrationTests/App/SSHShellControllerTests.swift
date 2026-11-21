@@ -3,6 +3,8 @@ import NIOSSH
 @testable import RoamingApp
 import SessionCore
 import SSHClient
+import SSHIdentity
+import SwiftUI
 import Testing
 
 extension MainActorIntegrationTests {
@@ -279,6 +281,110 @@ extension MainActorIntegrationTests {
       }
     }
 
+    /// spec.roaming.md §9.1: a dropped connection opens a new shell in the
+    /// same screen and says so; the old shell is not resumed.
+    @Test
+    func droppedConnectionOpensANewShellAndSaysSo() async throws {
+      try await withController { server, app, controller in
+        try await signIn(controller, app: app)
+        #expect(try await eventually { controller.phase == .running })
+        let first = try #require(controller.connection)
+        for channel in server.state.connections.withLock({
+          Array($0.channels.values)
+        }) { channel.close(promise: nil) }
+        #expect(
+          try await eventually(within: .seconds(10)) {
+            controller.replacementShells == 1 && controller.phase == .running
+          }
+        )
+        let second = try #require(controller.connection)
+        #expect(first !== second)
+        #expect(!first.isActive)
+        #expect(controller.recovery == nil)
+        // Reported natively, never as a resumed session.
+        #expect(controller.inputNotice != nil)
+        // The remembered password was reused; nobody was asked again.
+        #expect(app.pendingPassword == nil)
+      }
+    }
+
+    /// Backgrounding cancels the attempt in flight; returning to the
+    /// foreground before it unwinds still leads to a live attempt.
+    @Test
+    func foregroundingDuringACancelledAttemptStillReconnects() async throws {
+      try await withController { server, app, controller in
+        let scene = UUID()
+        controller.scenePhaseChanged(.active, scene: scene)
+        try await signIn(controller, app: app)
+        #expect(try await eventually { controller.phase == .running })
+        defer {
+          let held = server.state.heldSessionOpens.withLock { value in
+            defer { value.removeAll() }
+            return value
+          }
+          for promise in held { promise.succeed() }
+        }
+        // The first recovery attempt stops at opening its shell channel.
+        server.state.faults.withLock { $0.holdSessionChannelOpen = true }
+        for channel in server.state.connections.withLock({
+          Array($0.channels.values)
+        }) { channel.close(promise: nil) }
+        #expect(
+          try await eventually(within: .seconds(10)) {
+            server.state.heldSessionOpens.withLock { !$0.isEmpty }
+          }
+        )
+        server.state.faults.withLock { $0.holdSessionChannelOpen = false }
+        // Away and back before the cancelled attempt unwinds.
+        controller.scenePhaseChanged(.background, scene: scene)
+        controller.scenePhaseChanged(.active, scene: scene)
+        #expect(
+          try await eventually(within: .seconds(10)) {
+            controller.replacementShells == 1 && controller.phase == .running
+          }
+        )
+      }
+    }
+
+    @Test
+    func withoutAutomaticReconnectALostShellStaysLost() async throws {
+      try await withController(
+        resilience: ConnectionResilienceSettings(autoReconnect: false)
+      ) { server, app, controller in
+        try await signIn(controller, app: app)
+        #expect(try await eventually { controller.phase == .running })
+        for channel in server.state.connections.withLock({
+          Array($0.channels.values)
+        }) { channel.close(promise: nil) }
+        #expect(
+          try await eventually {
+            controller.phase == .failed(SSHShellController.connectionLost)
+          }
+        )
+        #expect(controller.recovery == nil)
+        #expect(controller.replacementShells == 0)
+      }
+    }
+
+    /// A rejected credential needs the user: recovery stops rather than
+    /// retrying forever.
+    @Test
+    func recoveryStopsWhenTheUserMustAct() async throws {
+      #expect(SSHShellController.blocksRecovery(SSHAccessError.hostKeyChanged))
+      #expect(
+        SSHShellController.blocksRecovery(
+          SSHAccessError.authenticationFailed(publicKeyLine: nil)
+        )
+      )
+      #expect(SSHShellController.blocksRecovery(CancellationError()))
+      #expect(!SSHShellController.blocksRecovery(SSHAccessError.unreachable))
+      #expect(
+        !SSHShellController.blocksRecovery(
+          SSHClientError.channelRequestRejected("session")
+        )
+      )
+    }
+
     private func signIn(
       _ controller: SSHShellController,
       app: RoamingAppModel,
@@ -289,6 +395,7 @@ extension MainActorIntegrationTests {
     }
 
     private func withController(
+      resilience: ConnectionResilienceSettings = .default,
       _ operation: (TestSSHServer, RoamingAppModel, SSHShellController, )
         async throws -> Void,
     ) async throws {
@@ -308,7 +415,10 @@ extension MainActorIntegrationTests {
             fileURL: directory.appendingPathComponent("hosts.json")
           ),
           resumeStore: SessionResumeStore(defaults: defaults),
+          savedPasswords: InMemorySavedPasswordStore(),
+          settingsDefaults: defaults,
         )
+        app.resilience = resilience
         let host = HostProfile(
           nickname: "Host",
           host: "127.0.0.1",
@@ -337,8 +447,11 @@ extension MainActorIntegrationTests {
       await server.shutdown()
     }
 
-    private func eventually(_ condition: () -> Bool) async throws -> Bool {
-      let deadline = ContinuousClock.now + .seconds(2)
+    private func eventually(
+      within limit: Duration = .seconds(2),
+      _ condition: () -> Bool
+    ) async throws -> Bool {
+      let deadline = ContinuousClock.now + limit
       while !condition() {
         guard ContinuousClock.now < deadline else { return false }
         try await Task.sleep(for: .milliseconds(5))

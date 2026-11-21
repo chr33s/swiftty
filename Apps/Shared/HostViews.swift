@@ -366,7 +366,11 @@ public struct HostEditorView: View {
             .accessibilityIdentifier("host.username")
         }
         .disabled(!editorIsCurrent).listRowBackground(Color.clear)
-        HostAuthenticationSection(model: model, auth: $auth)
+        HostAuthenticationSection(
+          model: model,
+          auth: $auth,
+          savedHost: context.original
+        )
           .disabled(!editorIsCurrent).listRowBackground(Color.clear)
         if candidate != nil, !matchingHosts.isEmpty {
           SaveAsSection(
@@ -477,16 +481,23 @@ private struct HostAuthenticationSection: View {
   let model: RoamingAppModel
   @Binding
   var auth: AuthSelection
+  /// The saved host being edited, whose Keychain password may be removed.
+  var savedHost: HostProfile? = nil
   @State
   private var creatingKey: KeyCreationMode?
+  @State
+  private var hasSavedPassword = false
 
   var body: some View {
     Section {
       Picker(.localized("Sign in with"), selection: $auth) {
         Text("Password", bundle: #bundle).tag(AuthSelection.password)
         ForEach(model.identities) { identity in
-          Text("Key \u{201C}\(identity.name)\u{201D}", bundle: #bundle)
-            .tag(AuthSelection.key(identity.id))
+          Text(
+            "Key \u{201C}\(identity.name)\u{201D} · \(identity.keyTypeLabel)",
+            bundle: #bundle
+          )
+          .tag(AuthSelection.key(identity.id))
         }
         if case .key(let id) = auth,
           !model.identities.contains(where: { $0.id == id })
@@ -506,15 +517,35 @@ private struct HostAuthenticationSection: View {
         }
       }
       .accessibilityIdentifier("host.key.new")
+      if hasSavedPassword, let savedHost {
+        Button(
+          .localized("Forget Saved Password"),
+          systemImage: "key.slash",
+          role: .destructive
+        ) {
+          Task {
+            await model.forgetSavedPassword(for: savedHost)
+            hasSavedPassword = false
+          }
+        }
+        .accessibilityIdentifier("host.password.forget")
+      }
     } header: {
       Text("Authentication", bundle: #bundle)
     } footer: {
       switch auth {
       case .password:
-        Text(
-          "You will be asked for the password when connecting.",
-          bundle: #bundle
-        )
+        if hasSavedPassword {
+          Text(
+            "A password for this host is saved in this device's Keychain.",
+            bundle: #bundle
+          )
+        } else {
+          Text(
+            "You will be asked for the password when connecting.",
+            bundle: #bundle
+          )
+        }
       case .key(let id):
         if let identity = model.identity(id), !identity.isDeleted {
           Text(identity.fingerprint).font(.caption.monospaced())
@@ -542,6 +573,10 @@ private struct HostAuthenticationSection: View {
         creatingKey = nil
       }
       .macSheetFrame(width: 480, height: 460)
+    }
+    .task(id: savedHost) {
+      guard let savedHost else { return }
+      hasSavedPassword = await model.hasSavedPassword(for: savedHost)
     }
   }
 }
@@ -720,15 +755,29 @@ public struct TrustPromptView: View {
   }
 }
 
-/// Password prompt for one connection. The password stays in memory for
-/// this app session only; it is never saved or logged.
+/// Password prompt for one connection. By default the password stays in
+/// memory for this app session only; the user may instead save it in this
+/// device's Keychain for this host (spec.ssh-identity.md §13.3). It is never
+/// logged or synced.
 public struct PasswordPromptView: View {
   let prompt: PasswordPrompt
-  let answer: (String?) -> Void
+  let answer: (String?, Bool) -> Void
   @State
   private var password = ""
+  @State
+  private var remember = false
 
   public init(prompt: PasswordPrompt, answer: @escaping (String?) -> Void) {
+    self.prompt = prompt
+    self.answer = { value, _ in answer(value) }
+  }
+
+  /// `answer` receives the password (or `nil` to cancel) and whether to
+  /// save it in the Keychain.
+  public init(
+    prompt: PasswordPrompt,
+    answerSaving answer: @escaping (String?, Bool) -> Void
+  ) {
     self.prompt = prompt
     self.answer = answer
   }
@@ -740,12 +789,25 @@ public struct PasswordPromptView: View {
           SecureField(.localized("Password"), text: $password)
             .textContentType(.password).onSubmit(submit)
             .accessibilityIdentifier("password.field")
+          // Only a saved host can keep a password.
+          if prompt.canSave {
+            Toggle(.localized("Save in Keychain"), isOn: $remember)
+              .accessibilityIdentifier("password.save")
+          }
         } header: {
           Text(prompt.host.endpointSummary)
         } footer: {
           if prompt.isRetry {
             Text("The password was not accepted. Try again.", bundle: #bundle)
               .foregroundStyle(.red)
+          } else if remember {
+            Text(
+              """
+              Saved in this device's Keychain for this host only; never synced. \
+              It is removed if the Mac rejects it or the host is deleted.
+              """,
+              bundle: #bundle
+            )
           } else {
             Text(
               "Kept in memory until the app quits; never saved.",
@@ -758,7 +820,7 @@ public struct PasswordPromptView: View {
       .glassListBackground().navigationTitle(.localized("Sign In"))
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
-          Button(.localized("Cancel")) { answer(nil) }
+          Button(.localized("Cancel")) { answer(nil, false) }
         }
         ToolbarItem(placement: .confirmationAction) {
           Button(.localized("Sign In"), action: submit)
@@ -773,6 +835,6 @@ public struct PasswordPromptView: View {
     guard !password.isEmpty else { return }
     let value = password
     password = ""
-    answer(value)
+    answer(value, remember)
   }
 }

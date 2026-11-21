@@ -143,6 +143,17 @@ struct ConfigTests {
         String(repeating: "[", count: 129) + String(repeating: "]", count: 129)
       )
     }
+    // Many values under deep nesting, just under the size limit: rejected
+    // as an unknown key promptly, not after indexing every value's path.
+    let depth = 120
+    let open = "{\"x\":" + String(repeating: "[", count: depth)
+    let close = String(repeating: "]", count: depth) + "}"
+    let values = (ConfigLoader.maxFileBytes - open.utf8.count - close.utf8.count) / 2
+    let deep = open + Array(repeating: "0", count: values).joined(separator: ",")
+      + close
+    let started = ContinuousClock.now
+    #expect(throws: ConfigError.self) { try ConfigLoader.decode(deep) }
+    #expect(ContinuousClock.now - started < .seconds(5))
     let file = FileManager.default.temporaryDirectory.appendingPathComponent(
       UUID().uuidString
     )

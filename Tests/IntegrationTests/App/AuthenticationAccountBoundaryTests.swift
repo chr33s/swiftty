@@ -1,3 +1,4 @@
+import Crypto
 import Foundation
 import NIOSSH
 @testable import RoamingApp
@@ -30,7 +31,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     let endpoint =
       bootstrap
       ? try await model.ssh.bootstrapEndpoint(for: host)
-      : model.ssh.endpoint(for: host, credential: .ed25519(original.privateKey))
+      : model.ssh.endpoint(for: host, credential: .ed25519(original.ed25519PrivateKey!))
     await select("account-b", in: model)
     let replacement = IdentitySecret(.init())
     #expect(
@@ -43,7 +44,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
           SSHIdentityMetadata(
             id: identity.id,
             name: "B",
-            publicKey: replacement.publicKey,
+            publicKeyLine: replacement.publicKeyLine,
             storage: .deviceOnly,
             revision: .init(counter: 100, deviceID: UUID())
           )
@@ -69,7 +70,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     defer { try? FileManager.default.removeItem(at: directory) }
     let secrets = SuspendedIdentitySecrets()
     let legacy = InMemoryLegacyKeySource(keys: [
-      "phone": IdentitySecret(.init()).privateKey
+      "phone": Curve25519.Signing.PrivateKey()
     ])
     let model = app(secrets: secrets, legacy: legacy)
     await select("account-a", in: model)
@@ -168,7 +169,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
           $0.identities[index] = SSHIdentityMetadata(
             id: identity.id,
             name: "Replacement",
-            publicKey: secret.publicKey,
+            publicKeyLine: secret.publicKeyLine,
             storage: policy,
             revision: .init(counter: 100, deviceID: UUID())
           )
@@ -183,13 +184,12 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
       return
     }
     if change == "unchanged" || change == "rename" {
-      guard case .ed25519(let key) = try await resolve() else {
+      guard case .publicKey(.ed25519(let key)) = try await resolve() else {
         Issue.record("Unexpected credential");
         return
       }
       #expect(
-        IdentitySecret(key).publicKey.rawRepresentation
-          == identity.ed25519PublicKey?.rawRepresentation
+        IdentitySecret(key).publicKeyLine == identity.publicKey
       )
     } else {
       await #expect(throws: SSHAccessError.self) { _ = try await resolve() }
@@ -224,13 +224,12 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     await secrets.waitForRead()
     await select("account-b", in: model)
     await secrets.resumeRead()
-    guard case .ed25519(let key) = try await reading.value else {
+    guard case .publicKey(.ed25519(let key)) = try await reading.value else {
       Issue.record("Unexpected credential");
       return
     }
     #expect(
-      IdentitySecret(key).publicKey.rawRepresentation
-        == identity.ed25519PublicKey?.rawRepresentation
+      IdentitySecret(key).publicKeyLine == identity.publicKey
     )
     await #expect(throws: SSHAccessError.self) { _ = try await resolve() }
   }
@@ -247,7 +246,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     )
     let replacement = IdentitySecret(.init())
     let server = try await TestSSHServer.start(authorizedKeys: [
-      NIOSSHPrivateKey(ed25519Key: replacement.privateKey).publicKey
+      NIOSSHPrivateKey(ed25519Key: replacement.ed25519PrivateKey!).publicKey
     ])
     do {
       // Unsaved pairing drafts are not invalidated by the saved-host prompt cleanup.
@@ -278,7 +277,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
             SSHIdentityMetadata(
               id: identity.id,
               name: "B",
-              publicKey: replacement.publicKey,
+              publicKeyLine: replacement.publicKeyLine,
               storage: .deviceOnly,
               revision: .init(counter: 100, deviceID: UUID())
             )

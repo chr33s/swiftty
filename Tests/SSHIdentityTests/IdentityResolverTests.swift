@@ -38,7 +38,7 @@ struct IdentityResolverTests {
     try await store.add(IdentitySecret(other), id: UUID(), policy: .deviceOnly)
     let resolved = try await IdentityResolver(secrets: store).resolve(identity)
     #expect(
-      resolved.publicKey.rawRepresentation == key.publicKey.rawRepresentation
+      resolved.publicKeyLine == IdentitySecret(key).publicKeyLine
     )
   }
 
@@ -120,7 +120,7 @@ struct IdentityResolverTests {
     }
     let kept = try await store.read(id: id, policy: .deviceOnly)
     #expect(
-      kept.publicKey.rawRepresentation == first.publicKey.rawRepresentation
+      kept.publicKeyLine == IdentitySecret(first).publicKeyLine
     )
     // Policies are separate namespaces.
     await #expect(throws: IdentitySecretError.notFound) {

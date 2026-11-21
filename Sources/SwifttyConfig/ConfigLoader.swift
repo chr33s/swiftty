@@ -95,7 +95,7 @@ public enum ConfigLoader {
         "copy_on_select", "mouse_hide_while_typing", "mouse_scroll_multiplier",
         "cursor_style", "cursor_style_blink",
       ], "font": ["family", "size", "line_height"],
-      "window": ["opacity", "blur", "padding", "width", "height"],
+      "window": ["opacity", "blur", "padding", "width", "height", "tabs"],
       "terminal": [
         "shell", "scrollback_limit", "preferred_shell", "shell_profiles",
       ], "shell_profiles": Set(ShellKind.allCases.map(\.rawValue)),
@@ -103,9 +103,10 @@ public enum ConfigLoader {
         "executable", "arguments", "environment", "working_directory",
       ], "keybinding": ["trigger", "action"],
     ]
-    for path in index.positions.keys.sorted(by: {
-      index.offset(for: $0) < index.offset(for: $1)
-    }) where !path.isEmpty {
+    // In source order by each path's own stored offset (one lookup per
+    // path, not two per comparison).
+    for path in index.positions.sorted(by: { $0.value < $1.value }).map(\.key)
+    where !path.isEmpty {
       let parent = path.dropLast()
       let group =
         parent.isEmpty
@@ -215,6 +216,11 @@ public enum ConfigLoader {
         config.cursorStyle.map {
           ["block", "bar", "underline", "block_hollow"].contains($0)
         } ?? true, "Invalid cursor style"
+      ),
+      (
+        ["window", "tabs"],
+        config.window.tabs.map { ["top", "left"].contains($0) } ?? true,
+        "Tabs must be \"top\" or \"left\""
       ),
     ]
     for (key, value) in [

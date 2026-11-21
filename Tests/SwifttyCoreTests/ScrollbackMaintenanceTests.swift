@@ -99,6 +99,33 @@ final class SharedLogOwner: ScrollbackMaintenanceOwner, Sendable {
 
 final class SharedLog: Sendable { let entries = Mutex<[String]>([]) }
 
+/// A fake clock whose first `disarm` pauses after it is called, so a
+/// test can run another thread's activity in that window.
+final class PausingDisarmClock: ScrollbackMaintenanceClock, Sendable {
+  let inner = FakeMaintenanceClock()
+  let entered = DispatchSemaphore(value: 0)
+  let proceed = DispatchSemaphore(value: 0)
+  private let paused = Mutex(false)
+
+  var now: UInt64 { inner.now }
+
+  func arm(_ deadline: UInt64, _ handler: @escaping @Sendable () -> Void) {
+    inner.arm(deadline, handler)
+  }
+
+  func disarm() {
+    let first = paused.withLock { p -> Bool in
+      defer { p = true }
+      return !p
+    }
+    if first {
+      entered.signal()
+      _ = proceed.wait(timeout: .now() + 2)
+    }
+    inner.disarm()
+  }
+}
+
 struct ScrollbackMaintenanceTests {
   func coordinator(
     _ clock: FakeMaintenanceClock
@@ -109,6 +136,40 @@ struct ScrollbackMaintenanceTests {
       stepDelay: 1_000_000,
       observesMemoryPressure: false
     )
+  }
+
+  /// A disarm decided on one thread must not cancel a deadline another
+  /// thread armed after it: the timer stays armed while work is pending.
+  @Test
+  func `a concurrent disarm cannot cancel a newer deadline`() {
+    let clock = PausingDisarmClock()
+    let coordinator = ScrollbackMaintenanceCoordinator(
+      clock: clock,
+      idleDelay: 250_000_000,
+      stepDelay: 1_000_000,
+      observesMemoryPressure: false
+    )
+    let first = FakeMaintenanceOwner("a")
+    let second = FakeMaintenanceOwner("b")
+    let leaving = coordinator.register(first)
+    let staying = coordinator.register(second)
+    leaving.noteActivity(generation: 1)
+    #expect(coordinator.isTimerArmed)
+    let group = DispatchGroup()
+    // The only pending owner leaves: its thread disarms (and pauses).
+    DispatchQueue.global().async(group: group) { leaving.cancel() }
+    #expect(clock.entered.wait(timeout: .now() + 2) == .success)
+    // Meanwhile another owner's activity arms a new deadline.
+    DispatchQueue.global().async(group: group) {
+      staying.noteActivity(generation: 2)
+    }
+    usleep(100_000)
+    clock.proceed.signal()
+    #expect(group.wait(timeout: .now() + 2) == .success)
+    #expect(coordinator.isTimerArmed)
+    #expect(clock.inner.deadline != nil)
+    clock.inner.advance(by: 250_000_000)
+    #expect(second.generations.withLock { $0 } == [2])
   }
 
   @Test

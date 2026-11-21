@@ -1,6 +1,8 @@
 #!/bin/bash
 # Run every manifest test bundle in its own synchronous main-loop host.
-# Arguments are swift build options (-c release, -Xswiftc ...), plus --skip-build.
+# Arguments are swift build options (-c release, -Xswiftc ...), plus --skip-build
+# and --filter PATTERN (repeatable; Swift Testing's regular-expression filter,
+# as in `swift test --filter`). Filtered runs fail when no test matches.
 # Prebuilt Release tests need -Xswiftc -enable-testing when using --skip-build.
 set -euo pipefail
 repository_root=$(CDPATH='' cd "$(dirname "$0")/.." && pwd)
@@ -9,9 +11,19 @@ cd "$repository_root"
 build_arguments=()
 skip_build=false
 sdk_path=""
+filters=""
 previous_argument=""
+expects_filter=false
 for argument in "$@"; do
-  if [ "$argument" = --skip-build ]; then
+  if [ "$expects_filter" = true ]; then
+    filters+="$argument"$'\n'
+    expects_filter=false
+    argument=""
+  elif [ "$argument" = --filter ]; then
+    expects_filter=true
+  elif [ "${argument#--filter=}" != "$argument" ]; then
+    filters+="${argument#--filter=}"$'\n'
+  elif [ "$argument" = --skip-build ]; then
     skip_build=true
   else
     build_arguments+=("$argument")
@@ -21,6 +33,10 @@ for argument in "$@"; do
   fi
   previous_argument="$argument"
 done
+if [ "$expects_filter" = true ]; then
+  echo "--filter needs a pattern" >&2
+  exit 2
+fi
 # Standalone swiftc from a swift.org toolchain has no default SDK; use the
 # same SDK as swift build so the host can import AppKit.
 export SDKROOT="${sdk_path:-${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}}"
@@ -90,7 +106,7 @@ run_bundles() {
     # A silent zero exit can bypass the in-process ABI audit. Check each
     # bundle's raw output before another target can contribute completions.
     SWIFTTY_TEST_BUNDLE="$bundle" SWIFTTY_TESTING_LIBRARY="$testing_library" \
-      "$workspace/host" 2>&1 \
+      SWIFTTY_TEST_FILTER="$filters" "$workspace/host" 2>&1 \
       | tee "$workspace/bundle.log" || status=1
     if ! python3 Scripts/check-test-output.py --suite-log "$workspace/bundle.log"; then
       echo "Incomplete test bundle: $target" >&2
@@ -101,3 +117,11 @@ run_bundles() {
 }
 run_bundles 2>&1 | tee "$workspace/suite.log"
 python3 Scripts/check-test-output.py --suite-log "$workspace/suite.log"
+# Bundles without a match run zero tests; a filter must match somewhere.
+# The summary's leading symbol is several bytes outside UTF-8 locales. grep
+# reads to the end (no -q) so sed never dies of SIGPIPE under pipefail.
+if [ -n "$filters" ] && ! sed $'s/\x1b\\[[0-9;]*m//g' "$workspace/suite.log" \
+  | grep -E '^[^[:space:]]+ Test run with [1-9][0-9]* tests? ' >/dev/null; then
+  echo "No test matched the filter" >&2
+  exit 1
+fi

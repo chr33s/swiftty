@@ -343,6 +343,25 @@ struct FrameDeltaTests {
     #expect(throws: MuxError.self) { try FrameValidator.validate(frame) }
   }
 
+  /// `SMXB/1` writes an absent index as -1 and rejects anything lower, so
+  /// a frame that validates must encode to one that decodes unchanged.
+  @Test(arguments: [-2, -1, 3])
+  func searchSelectionsOutsideTheMatchesAreRejected(selected: Int) throws {
+    var e = Exporter()
+    e.feed("a")
+    var frame = try e.frame()
+    frame.search = FrameSearch(
+      matchCount: 3,
+      selected: selected,
+      visible: [],
+      selectedVisible: nil
+    )
+    #expect(throws: MuxError.self) { try FrameValidator.validate(frame) }
+    frame.search?.selected = 2
+    try FrameValidator.validate(frame)
+    #expect(try SMXB.decode(SMXB.encode(frame)).payload == .frame(frame))
+  }
+
   /// Base and delta style tables each within a peer's `maxStyles` (at
   /// most `UInt16.max`) can merge into more styles than a cell's 16-bit
   /// style index holds; the delta is rejected instead of trapping.
@@ -466,9 +485,10 @@ struct FrameDeltaTests {
     }
   }
 
-  /// A JSON frame is not validated on arrival, so an invalid one must not
-  /// become a delta base: a delta naming it is answered with a full-frame
-  /// request instead of indexing the invalid base.
+  /// An invalid JSON frame is dropped on arrival: it never becomes a delta
+  /// base (a delta naming it is answered with a full-frame request instead
+  /// of indexing it), and it is never delivered, because consumers import
+  /// delivered frames without validating them again.
   @Test(.timeLimit(.minutes(1)))
   func invalidJSONFramesAreNotDeltaBases() async throws {
     var e = Exporter()
@@ -495,6 +515,118 @@ struct FrameDeltaTests {
     #expect(stats.applied == 0)
     #expect(stats.requestedFull == 1)
     await connection.close()
+  }
+
+  /// Consumers import delivered frames without validating them again, so
+  /// an invalid JSON frame for the attachment is acknowledged, not shown.
+  @Test(.timeLimit(.minutes(1)))
+  func invalidJSONFramesAreAcknowledgedNotDelivered() async throws {
+    let server = ServerInstanceID()
+    let attachment = AttachmentID()
+    var e = Exporter()
+    e.feed("a")
+    var valid = try e.frame()
+    valid.identity.server = server
+    valid.identity.attachment = attachment
+    valid.identity.revision = 3
+    var invalid = valid
+    invalid.identity.revision = 2
+    invalid.grid.kinds = Data()
+    let peer = AttachingPeer(
+      server: server,
+      attachment: attachment,
+      after: [.frame(invalid), .frame(valid)]
+    )
+    defer { peer.close() }
+    var capabilities = ClientCapabilities.supported
+    capabilities.remove(.binaryFrames)
+    let connection = try await MuxConnection.connect(
+      endpoint: peer.listener.endpoint,
+      frontend: .native,
+      capabilities: capabilities
+    )
+    _ = try await connection.execute(.attach(AttachRequest(.name("peer"))))
+    guard case let .frame(first) = try await connection.nextEvent() else {
+      Issue.record("expected a frame")
+      await connection.close()
+      return
+    }
+    #expect(first == valid)
+    #expect(peer.acknowledged.withLock { $0 }.contains(2))
+    await connection.close()
+  }
+}
+
+/// Answers hello and attach, then sends `after` (frames stamped for that
+/// attachment), recording the revisions the client acknowledges.
+private final class AttachingPeer: Sendable {
+  let queue = DispatchQueue(label: "frame-attach-peer")
+  let listener: SMXListener
+  let acknowledged = Mutex<[UInt64]>([])
+  private let channels = Mutex<[SMXChannel]>([])
+
+  init(server: ServerInstanceID, attachment: AttachmentID, after: [MuxEvent]) {
+    listener = SMXListener(anonymousOn: queue)
+    listener.activate(connectionQueue: queue) { [self] channel in
+      channels.withLock { $0.append(channel) }
+      channel.activate { event in
+        guard case let .message(data) = event,
+          let message = try? SMXCodec.decode(
+            ClientMessage.self,
+            from: data,
+            limit: 1 << 20
+          )
+        else { return }
+        var replies: [ServerMessage] = []
+        switch message {
+        case .hello:
+          replies = [
+            .welcome(
+              Welcome(
+                protocolVersion: SMX.protocolVersion,
+                build: SMX.build,
+                server: server,
+                acceptedProfile: nil,
+                limits: .standard,
+                innerTerm: "xterm-256color"
+              )
+            )
+          ]
+        case let .request(id, .attach):
+          replies = [
+            .reply(
+              id: id,
+              result: .success(
+                .attached(
+                  attachment: attachment,
+                  workspace: WorkspaceSnapshot(
+                    id: WorkspaceID(),
+                    name: "peer",
+                    tabs: [],
+                    activeTab: TabID(),
+                    panes: [],
+                    layoutRevision: 1
+                  )
+                )
+              )
+            )
+          ] + after.map { ServerMessage.event($0) }
+        case let .frameAck(_, revision, _):
+          self.acknowledged.withLock { $0.append(revision) }
+        default: return
+        }
+        for reply in replies {
+          if let encoded = try? SMXCodec.encode(reply, limit: 1 << 24) {
+            channel.send(encoded)
+          }
+        }
+      }
+    }
+  }
+
+  func close() {
+    channels.withLock { $0 }.forEach { $0.cancel() }
+    listener.cancel()
   }
 }
 

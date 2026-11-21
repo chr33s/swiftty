@@ -482,7 +482,7 @@ private struct WorkspaceChooserContent: View {
   private var takeoverTitle: String {
     String(
       localized:
-        "Take control of \u{201C}\(chooser.pendingTakeover?.summary.name ?? "")\u{201D}?",
+        "Take control of \u{201C}\(chooser.pendingTakeover.map { DisplayText.workspaceName($0.summary.name) } ?? "")\u{201D}?",
       bundle: #bundle
     )
   }
@@ -500,7 +500,8 @@ struct WorkspaceRowLabel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 2) {
       (row.summary.name.isEmpty
-        ? Text("Untitled Workspace", bundle: #bundle) : Text(row.summary.name))
+        ? Text("Untitled Workspace", bundle: #bundle)
+        : Text(verbatim: DisplayText.workspaceName(row.summary.name)))
         .font(.headline)
       counts.font(.caption).foregroundStyle(.secondary)
       Label(control, systemImage: controlImage).font(.caption)

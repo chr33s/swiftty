@@ -1,5 +1,7 @@
 #if os(macOS)
 @testable import RoamingApp
+import SwiftMuxProtocol
+import SwifttyCore
 import Testing
 
 /// Swiping between panes walks the shown tab's panes in order, wrapping.
@@ -30,6 +32,39 @@ struct PaneSwitchTests {
       RoamingTerminalController.neighbor(of: "z", in: ["a", "b"], next: true)
         == nil
     )
+  }
+
+  /// The host sends a Layout before the newly active pane's screen, so the
+  /// newest frame is filed under the pane it shows, not the Layout's.
+  @Test
+  func `a frame is kept for the pane it shows`() throws {
+    let tap = FrameTap(
+      forward: TerminalSession(presentationColumns: 2, rows: 1)
+    )
+    let first = PaneID()
+    let second = PaneID()
+    func frame(_ text: String) -> PresentationFrame {
+      PresentationFrame(
+        columns: 2,
+        rows: 1,
+        cells: [.init(text: text), .init()],
+        wrapped: [false],
+        styles: [.init()],
+        cursorX: 0,
+        cursorY: 0,
+        cursorStyle: .bar
+      )
+    }
+    #expect(tap.install(frame("x")))
+    #expect(tap.latestPaneFrame == nil)
+    tap.show(first)
+    #expect(tap.install(frame("a")))
+    tap.show(second)
+    let kept = try #require(tap.latestPaneFrame)
+    #expect(kept.0 == first && kept.1 == frame("a"))
+    #expect(tap.install(frame("b")))
+    let next = try #require(tap.latestPaneFrame)
+    #expect(next.0 == second && next.1 == frame("b"))
   }
 }
 #endif

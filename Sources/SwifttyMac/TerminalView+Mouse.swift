@@ -96,6 +96,7 @@ extension TerminalView {
     guard let snapshot = lastSnapshot,
       let origin = session.selectPresentation(
         matching: snapshot,
+        begins: true,
         { state in
           let p = state.viewportPoint(row: c.row, column: c.column)
           let span =

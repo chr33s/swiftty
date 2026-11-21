@@ -444,7 +444,7 @@ extension MainActorIntegrationTests {
         kind: .generate,
         policy: .deviceOnly,
         name: "Interrupted",
-        publicKey: SSHEd25519Key.authorizedKeysLine(for: key.publicKey),
+        publicKey: IdentitySecret(key).publicKeyLine,
         reassign: [],
         stage: .secretWritten,
         createdAt: .now
@@ -508,7 +508,7 @@ extension MainActorIntegrationTests {
       let secret = try await model.identityStore.resolve(identity.id)
       #expect(
         !text.contains(
-          secret.privateKey.rawRepresentation.base64EncodedString()
+          secret.ed25519PrivateKey!.rawRepresentation.base64EncodedString()
         )
       )
       #expect(text.contains(identity.fingerprint))
@@ -565,6 +565,21 @@ extension MainActorIntegrationTests.SSHIdentityAppTests {
       try await model.identityStore.deleteOrphan(id, policy: .iCloudKeychain)
     }
     #expect(try await secrets.storedIdentities(policy: .iCloudKeychain) == [id])
+  }
+
+  /// A Secure Enclave item never syncs, so an unrecognized one is this
+  /// device's alone and can be deleted like a device-only item.
+  @Test
+  func unrecognizedSecureEnclaveItemsCanBeDeleted() async throws {
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let secrets = InMemoryIdentitySecretStore()
+    let model = app(secrets: secrets)
+    model.load()
+    let id = UUID()
+    await secrets.overwrite(Data([3]), id: id, policy: .secureEnclave)
+    #expect(await model.identityStore.orphans().map(\.id) == [id])
+    try await model.identityStore.deleteOrphan(id, policy: .secureEnclave)
+    #expect(try await secrets.storedIdentities(policy: .secureEnclave).isEmpty)
   }
 
   @Test

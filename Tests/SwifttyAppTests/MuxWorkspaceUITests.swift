@@ -1,6 +1,7 @@
 import AppKit
 import SwiftMuxProtocol
 @testable import Swiftty
+import SwifttyCore
 import Testing
 
 /// The screenshot-style workspace: native tab strip, pane headers,
@@ -193,6 +194,9 @@ extension MuxNativeTests {
     #expect(item.title == "snake game")
     #expect(item.symbol == "gamecontroller")
     #expect(c.tabStrip.buttons.first?.accessibilityLabel() == "snake game")
+    // The window names the workspace, then what its active pane shows.
+    let workspace = DisplayText.workspaceName(try #require(c.workspace?.name))
+    #expect(c.window?.title == "\(workspace) — snake game")
     c.split(.leftRight)
     #expect(await until { c.views.count == 2 })
     let container = try #require(c.containers[first])
@@ -202,6 +206,29 @@ extension MuxNativeTests {
     // The header sits above the Metal view, outside the cell grid.
     c.window?.contentView?.layoutSubtreeIfNeeded()
     #expect(container.paneView.frame.maxY <= container.header.frame.minY)
+    // The whole card is the terminal's background; the terminal clears to
+    // it rather than laying a translucent background twice.
+    #expect(container.terminalBackground == c.terminalBackground)
+    #expect(container.paneView.inCard)
+    #expect(container.paneView.renderer.options.backgroundOpacity == 0)
+    // A program's default background (OSC 11) wears the card too.
+    c.send(.text("printf '\\033]11;rgb:12/34/56\\007'\r"), to: first)
+    #expect(await until { container.paneView.drawnBackground == 0x12_3456 })
+    let card = try #require(container.cardBackground)
+    #expect(abs(card.redComponent - 0x12 / 255) < 0.001)
+    #expect(abs(card.greenComponent - 0x34 / 255) < 0.001)
+    #expect(abs(card.blueComponent - 0x56 / 255) < 0.001)
+    #expect(card.alphaComponent == c.terminalBackground.alphaComponent)
+    container.displayIfNeeded()
+    #expect(container.layer?.backgroundColor == card.cgColor)
+    // The terminal's transparent pixels on an opaque layer would composite
+    // black, even with an opaque background.
+    var opaque = Configuration()
+    opaque.backgroundOpacity = 1
+    c.apply(opaque)
+    #expect(container.paneView.layer?.isOpaque == false)
+    #expect(container.paneView.renderer.options.backgroundOpacity == 0)
+    #expect(container.terminalBackground?.alphaComponent == 1)
     // The divider is a keyboard/VoiceOver adjustable splitter.
     let splitter = try #require(
       c.layoutView.accessibilityChildren()?

@@ -1,3 +1,4 @@
+import Crypto
 import Foundation
 @testable import RoamingApp
 import SSHIdentity
@@ -10,7 +11,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
   ) {
     let secrets = InMemoryIdentitySecretStore()
     let legacy = InMemoryLegacyKeySource(keys: [
-      "phone": IdentitySecret(.init()).privateKey
+      "phone": Curve25519.Signing.PrivateKey()
     ])
     let model = app(secrets: secrets, legacy: legacy)
     await select("account-a", in: model)
@@ -34,7 +35,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
   ) {
     let secrets = SuspendedIdentitySecrets()
     let legacy = InMemoryLegacyKeySource(keys: [
-      "phone": IdentitySecret(.init()).privateKey
+      "phone": Curve25519.Signing.PrivateKey()
     ])
     let model = app(secrets: secrets, legacy: legacy)
     await select("account-a", in: model)
@@ -89,7 +90,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     defer { try? FileManager.default.removeItem(at: directory) }
     let key = IdentitySecret(.init())
     let secrets = SuspendedIdentitySecrets()
-    let legacy = InMemoryLegacyKeySource(keys: ["phone": key.privateKey])
+    let legacy = InMemoryLegacyKeySource(keys: ["phone": key.ed25519PrivateKey!])
     let model = app(secrets: secrets, legacy: legacy)
     await select("account-a", in: model)
     let host = legacyHost("A")
@@ -104,8 +105,8 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
           SSHIdentityMetadata(
             id: id,
             name: "Deleted",
-            publicKey: deleted
-              ? key.publicKey : IdentitySecret(.init()).publicKey,
+            publicKeyLine: deleted
+              ? key.publicKeyLine : IdentitySecret(.init()).publicKeyLine,
             storage: .deviceOnly,
             revision: LogicalRevision(counter: 100, deviceID: UUID()),
             deletedAt: deleted ? .now : nil
@@ -135,7 +136,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     let host = legacyHost("New")
     #expect(try originalModel.save(host))
     let changed = InMemoryLegacyKeySource(keys: [
-      "phone": IdentitySecret(.init()).privateKey
+      "phone": Curve25519.Signing.PrivateKey()
     ])
     let model = app(secrets: secrets, legacy: changed)
     await model.identityStore.recover()
@@ -214,7 +215,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
             snapshot.insertIdentity(
               SSHIdentityMetadata(
                 name: "Other \(index)",
-                publicKey: key.publicKey,
+                publicKeyLine: key.publicKeyLine,
                 storage: .deviceOnly,
                 revision: LogicalRevision(
                   counter: 0,
@@ -305,7 +306,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     defer { try? FileManager.default.removeItem(at: directory) }
     let (_, secrets, _, identity) = try await migratedLegacyFixture()
     let replacement = InMemoryLegacyKeySource(keys: [
-      "phone": IdentitySecret(.init()).privateKey
+      "phone": Curve25519.Signing.PrivateKey()
     ])
     let model = app(secrets: secrets, legacy: replacement)
     await model.identityStore.recover()

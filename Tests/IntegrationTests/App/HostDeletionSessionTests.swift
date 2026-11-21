@@ -24,7 +24,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     )
     let key = try await model.identityStore.resolve(identity.id)
     let server = try await TestSSHServer.start(authorizedKeys: [
-      NIOSSHPrivateKey(ed25519Key: key.privateKey).publicKey
+      NIOSSHPrivateKey(ed25519Key: key.ed25519PrivateKey!).publicKey
     ])
     let host = HostProfile(
       nickname: "A",

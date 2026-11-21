@@ -71,7 +71,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
             SSHIdentityMetadata(
               id: identity.id,
               name: "B",
-              publicKey: IdentitySecret(.init()).publicKey,
+              publicKeyLine: IdentitySecret(.init()).publicKeyLine,
               storage: .deviceOnly,
               revision: .init(counter: 100, deviceID: UUID())
             )
@@ -109,7 +109,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     let key = IdentitySecret(.init())
     let model = app(
       secrets: secrets,
-      legacy: InMemoryLegacyKeySource(keys: ["phone": key.privateKey])
+      legacy: InMemoryLegacyKeySource(keys: ["phone": key.ed25519PrivateKey!])
     )
     await select("account-a", in: model)
     let host = HostProfile(
@@ -171,8 +171,8 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     let original = try await model.identityStore.resolve(identity.id)
     let replacement = IdentitySecret(.init())
     let server = try await TestSSHServer.start(authorizedKeys: [
-      NIOSSHPrivateKey(ed25519Key: original.privateKey).publicKey,
-      NIOSSHPrivateKey(ed25519Key: replacement.privateKey).publicKey,
+      NIOSSHPrivateKey(ed25519Key: original.ed25519PrivateKey!).publicKey,
+      NIOSSHPrivateKey(ed25519Key: replacement.ed25519PrivateKey!).publicKey,
     ])
     let host = HostProfile(
       nickname: "A",
@@ -235,7 +235,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
               SSHIdentityMetadata(
                 id: identity.id,
                 name: "B",
-                publicKey: replacement.publicKey,
+                publicKeyLine: replacement.publicKeyLine,
                 storage: .deviceOnly,
                 revision: .init(counter: 100, deviceID: UUID())
               )

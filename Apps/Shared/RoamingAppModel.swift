@@ -303,10 +303,14 @@ public struct PasswordPrompt: Hashable, Sendable, Identifiable {
   public let host: HostProfile
   /// The previous password was rejected.
   public let isRetry: Bool
+  /// The answer can be saved in the Keychain: only for a saved host,
+  /// unchanged; never a draft, a quick connect or an unsaved edit.
+  public let canSave: Bool
 
-  public init(host: HostProfile, isRetry: Bool) {
+  public init(host: HostProfile, isRetry: Bool, canSave: Bool = false) {
     self.host = host
     self.isRetry = isRetry
+    self.canSave = canSave
   }
 }
 
@@ -374,6 +378,17 @@ public final class RoamingAppModel {
   var modalDepth = 0
   /// Hosts with a remembered roaming session to resume.
   public private(set) var resumableHosts: Set<UUID> = []
+  /// Ordinary SSH recovery, keepalive and address-family settings
+  /// (spec.roaming.md §9.1). Applies to connections opened afterwards.
+  public var resilience: ConnectionResilienceSettings {
+    didSet {
+      guard resilience != oldValue else { return }
+      resilience.save(to: settingsDefaults)
+    }
+  }
+  @ObservationIgnored
+  private let settingsDefaults: UserDefaults
+
   /// Companion settings (iPhone only; ignored elsewhere).
   public var companionSettings: CompanionSettings {
     didSet {
@@ -442,6 +457,13 @@ public final class RoamingAppModel {
   /// Session passwords, in memory only, never logged or persisted.
   @ObservationIgnored
   private var passwords: [UUID: (host: HostProfile, value: String)] = [:]
+  /// Prompts whose answer the user asked to save in the Keychain.
+  @ObservationIgnored
+  private var passwordsToSave: Set<UUID> = []
+  /// Passwords the user chose to keep, device-only, per host
+  /// (spec.ssh-identity.md §13.3).
+  @ObservationIgnored
+  let savedPasswords: any SavedPasswordStore
   @ObservationIgnored
   private var sshAccess: SSHAccess?
   /// Closes still in flight; a quit waits for them (spec §9).
@@ -497,9 +519,16 @@ public final class RoamingAppModel {
     ),
     secrets: (any IdentitySecretStore)? = nil,
     legacyKeys: (any LegacyKeySource)? = nil,
-    cloud: (any ConnectionCloudDatabase)? = nil
+    cloud: (any ConnectionCloudDatabase)? = nil,
+    savedPasswords: (any SavedPasswordStore)? = nil,
+    settingsDefaults: UserDefaults? = nil
   ) {
     self.profile = profile
+    let settingsDefaults = settingsDefaults ?? UITesting.defaults ?? .standard
+    self.settingsDefaults = settingsDefaults
+    self.resilience = ConnectionResilienceSettings.load(from: settingsDefaults)
+    self.savedPasswords =
+      savedPasswords ?? IdentityKeychainConfiguration.savedPasswordStore()
     self.store = store
     self.resumeStore = resumeStore
     self.companionSettings = Self.loadCompanionSettings()
@@ -584,10 +613,49 @@ public final class RoamingAppModel {
     let visible = snapshot.visibleHosts
     let identities = Set(visible)
     let changed = hosts.filter { !identities.contains($0) }
+    let previous = connections
     connections = snapshot
     hosts = visible
     refreshResumableHosts()
     for host in changed { invalidateConnectionPrompts(for: host) }
+    retireSavedPasswords(from: previous, to: snapshot)
+  }
+
+  /// A saved password outlives neither its host nor the endpoint it was
+  /// entered for, whether this device or another (via sync) deleted or
+  /// edited the host. A host only moved aside for another account keeps it.
+  private func retireSavedPasswords(
+    from old: ConnectionSnapshot,
+    to new: ConnectionSnapshot
+  ) {
+    var current: [UUID: HostProfile] = [:]
+    for host in new.hosts { current[host.id] = host }
+    var retired: [(id: UUID, now: HostProfile?)] = []
+    for host in old.hosts {
+      if let now = current[host.id] {
+        // Compared as `SavedPassword.matches` does.
+        if host.host.lowercased() != now.host.lowercased()
+          || host.port != now.port || host.username != now.username
+        {
+          retired.append((host.id, now))
+        }
+      } else if new.hostTombstones[host.id] != nil {
+        retired.append((host.id, nil))
+      }
+    }
+    guard !retired.isEmpty else { return }
+    let store = savedPasswords
+    Task {
+      for (id, now) in retired {
+        // One already saved for the new endpoint stays.
+        if let now, let saved = try? await store.read(host: id),
+          saved.matches(host: now.host, port: now.port, username: now.username)
+        {
+          continue
+        }
+        try? await store.delete(host: id)
+      }
+    }
   }
 
   /// Applies `mutate` to a copy of the snapshot and commits it atomically.
@@ -692,6 +760,7 @@ public final class RoamingAppModel {
       return
     }
     let selection = connectionSelection(for: host)
+    // Committing the deletion also removes its saved password.
     guard commitConnections({ $0.deleteHost(host.id) }) else { return }
     if let active = activeSession?.selection,
       HostDataOwner(active) == HostDataOwner(selection)
@@ -1091,11 +1160,18 @@ public final class RoamingAppModel {
       }
     } else if let known = passwords[host.id], known.host == host {
       return known.value
+    } else if let saved = await savedPassword(for: host) {
+      return saved
     }
+    guard !Task.isCancelled else { return nil }
     guard passwordRequests.count < Self.maxPendingConnectionPrompts else {
       return nil
     }
-    let prompt = PasswordPrompt(host: host, isRetry: retry)
+    let prompt = PasswordPrompt(
+      host: host,
+      isRetry: retry,
+      canSave: hosts.first { $0.id == host.id } == host
+    )
     passwordRequests[prompt.id] = host
     defer { passwordRequests[prompt.id] = nil }
     let answer: String? = await withTaskCancellationHandler {
@@ -1113,14 +1189,57 @@ public final class RoamingAppModel {
     } onCancel: {
       self.resumePromptCancellation { self.cancelPassword(prompt.id) }
     }
+    let save = passwordsToSave.remove(prompt.id) != nil
     guard !Task.isCancelled, passwordRequests[prompt.id] == host else {
       return nil
     }
     let current = hosts.first { $0.id == host.id }
     if let answer, current == nil || current == host {
       passwords[host.id] = (host, answer)
+      // Only a saved host can keep a password; an unsaved draft cannot.
+      if save, current == host {
+        try? await savedPasswords.save(
+          SavedPassword(
+            host: host.host,
+            port: host.port,
+            username: host.username,
+            password: answer
+          ),
+          host: host.id
+        )
+      }
     }
     return answer
+  }
+
+  /// The Keychain password saved for exactly this host's endpoint. A host
+  /// whose address, port or username changed since never receives it.
+  private func savedPassword(for host: HostProfile) async -> String? {
+    guard hosts.first(where: { $0.id == host.id }) == host,
+      let saved = try? await savedPasswords.read(host: host.id),
+      saved.matches(host: host.host, port: host.port, username: host.username),
+      !Task.isCancelled, hosts.first(where: { $0.id == host.id }) == host
+    else { return nil }
+    passwords[host.id] = (host, saved.password)
+    return saved.password
+  }
+
+  /// Whether a password is saved in the Keychain for `host`.
+  func hasSavedPassword(for host: HostProfile) async -> Bool {
+    guard let saved = try? await savedPasswords.read(host: host.id) else {
+      return false
+    }
+    return saved.matches(
+      host: host.host,
+      port: host.port,
+      username: host.username
+    )
+  }
+
+  /// Removes the Keychain password saved for `host`, if any.
+  func forgetSavedPassword(for host: HostProfile) async {
+    if passwords[host.id]?.host == host { passwords[host.id] = nil }
+    try? await savedPasswords.delete(host: host.id)
   }
 
   private func cancelPassword(_ id: UUID) {
@@ -1141,6 +1260,15 @@ public final class RoamingAppModel {
   /// An older attempt may reject a different password or profile. Its failure
   /// must not cancel fresh consent or clear a newer remembered credential.
   func forgetRejectedPassword(_ password: String, for host: HostProfile) {
+    // A rejected saved password is removed, so it is not offered again.
+    let store = savedPasswords
+    Task {
+      guard let saved = try? await store.read(host: host.id),
+        saved.password == password,
+        saved.matches(host: host.host, port: host.port, username: host.username)
+      else { return }
+      try? await store.delete(host: host.id)
+    }
     guard let known = passwords[host.id], known.host == host,
       known.value == password
     else { return }
@@ -1157,11 +1285,18 @@ public final class RoamingAppModel {
   }
 
   /// `nil` cancels; the prompt id rejects stale answers.
-  public func resolvePassword(_ password: String?, for id: UUID? = nil) {
+  public func resolvePassword(
+    _ password: String?,
+    remember: Bool = false,
+    for id: UUID? = nil
+  ) {
     guard let prompt = pendingPassword, id == nil || id == prompt.id else {
       return
     }
     pendingPassword = nil
+    if remember, prompt.canSave, password?.isEmpty == false {
+      passwordsToSave.insert(prompt.id)
+    }
     if let index = passwordQueue.firstIndex(where: { $0.prompt.id == prompt.id }
     ) {
       let value = password.flatMap { $0.isEmpty ? nil : $0 }

@@ -354,7 +354,10 @@ package enum ConnectionRecords {
       let storage = f["storage"]?.string.flatMap(IdentityStoragePolicy.init),
       let createdAt = f["createdAt"]?.date
     else { return .malformed("fields") }
-    if algorithm != SSHIdentityMetadata.algorithm { return .unsupported }
+    // Records from a newer build stay opaque rather than malformed.
+    guard SSHKeyAlgorithm(rawValue: algorithm) != nil else {
+      return .unsupported
+    }
     let metadata = SSHIdentityMetadata(
       id: id,
       name: name,

@@ -1,3 +1,4 @@
+import SessionCore
 import SwiftMuxProtocol
 
 /// The attached workspace's tabs and panes, as a roaming client shows them
@@ -37,11 +38,17 @@ public struct RemoteLayout: Codable, Hashable, Sendable {
   public var tabs: [Tab]
   public var activeTab: TabID
 
-  /// Tabs one layout may list, and panes per tab.
+  /// Tabs one layout may list, and panes across all its tabs: with every
+  /// name and title empty, a full layout takes under a fifth of a record.
   public static let maxTabs = 64
-  public static let maxPanesPerTab = 64
+  public static let maxPanes = 64
   /// Bytes of one name or title; longer ones are cut at a character.
   public static let maxNameBytes = 256
+  /// Encoded bytes of a layout the host sends, leaving its `Layout`
+  /// message room in one control record. Titles of control characters
+  /// escape to six bytes each, so the host cuts names and titles further
+  /// until the layout fits.
+  static let maxEncodedBytes = RSTLimits.maxControlRecordBytes - 512
 
   public init(
     workspaceName: String,
@@ -55,31 +62,59 @@ public struct RemoteLayout: Codable, Hashable, Sendable {
     self.activeTab = activeTab
   }
 
-  /// The client's view of `ws`, bounded to the wire limits.
+  /// The client's view of `ws`, bounded to the wire limits and to one
+  /// control record.
   public init(_ ws: WorkspaceSnapshot) {
-    let tabs = ws.tabs.prefix(Self.maxTabs)
-      .map { tab in
+    var tabs: [Tab] = []
+    var remaining = Self.maxPanes
+    for tab in ws.tabs.prefix(Self.maxTabs) where remaining > 0 {
+      let panes = tab.layout.panes.prefix(remaining)
+      remaining -= panes.count
+      tabs.append(
         Tab(
           id: tab.id,
           name: Self.bounded(tab.name),
-          panes: tab.layout.panes.prefix(Self.maxPanesPerTab)
-            .map { id in
-              let summary = ws.pane(id)
-              return Pane(
-                id: id,
-                title: Self.bounded(summary?.title ?? ""),
-                exited: summary?.exitStatus != nil
-              )
-            },
+          panes: panes.map { id in
+            let summary = ws.pane(id)
+            return Pane(
+              id: id,
+              title: Self.bounded(summary?.title ?? ""),
+              exited: summary?.exitStatus != nil
+            )
+          },
           activePane: tab.activePane
         )
-      }
+      )
+    }
     self.init(
       workspaceName: Self.bounded(ws.name),
       revision: ws.layoutRevision,
-      tabs: Array(tabs),
+      tabs: tabs,
       activeTab: ws.activeTab
     )
+    fitToRecord()
+  }
+
+  /// Halves the bytes every name and title may keep until the encoded
+  /// layout fits `maxEncodedBytes`; with all of them empty it does.
+  mutating func fitToRecord() {
+    let encoder = makeEncoder()
+    var budget = Self.maxNameBytes
+    while budget > 0, let size = try? encoder.encode(self).count,
+      size > Self.maxEncodedBytes
+    {
+      budget /= 2
+      workspaceName = Self.bounded(workspaceName, to: budget)
+      for t in tabs.indices {
+        tabs[t].name = Self.bounded(tabs[t].name, to: budget)
+        for p in tabs[t].panes.indices {
+          tabs[t].panes[p].title = Self.bounded(
+            tabs[t].panes[p].title,
+            to: budget
+          )
+        }
+      }
+    }
   }
 
   public var activeTabLayout: Tab? { tabs.first { $0.id == activeTab } }
@@ -87,20 +122,23 @@ public struct RemoteLayout: Codable, Hashable, Sendable {
   /// Within the wire limits (a decoded layout must be).
   public var isValid: Bool {
     tabs.count <= Self.maxTabs && workspaceName.utf8.count <= Self.maxNameBytes
+      && tabs.reduce(0) { $0 + $1.panes.count } <= Self.maxPanes
       && tabs.allSatisfy { tab in
-        tab.panes.count <= Self.maxPanesPerTab
-          && tab.name.utf8.count <= Self.maxNameBytes
+        tab.name.utf8.count <= Self.maxNameBytes
           && tab.panes.allSatisfy { $0.title.utf8.count <= Self.maxNameBytes }
       }
   }
 
-  static func bounded(_ text: String) -> String {
-    guard text.utf8.count > maxNameBytes else { return text }
+  /// `text` cut at a character to at most `limit` UTF-8 bytes, as the
+  /// host cuts names and a client cuts a name it sends.
+  public static func bounded(
+    _ text: String,
+    to limit: Int = maxNameBytes
+  ) -> String {
+    guard text.utf8.count > limit else { return text }
     var result = ""
     for character in text {
-      guard result.utf8.count + character.utf8.count <= maxNameBytes else {
-        break
-      }
+      guard result.utf8.count + character.utf8.count <= limit else { break }
       result.append(character)
     }
     return result
@@ -128,5 +166,32 @@ public enum LayoutAction: Codable, Hashable, Sendable {
       !name.isEmpty && name.utf8.count <= RemoteLayout.maxNameBytes
     default: true
     }
+  }
+}
+
+// MARK: Display names
+
+extension RemoteLayout.Pane {
+  /// The title as native chrome shows it (`DisplayText.sanitize`); nil
+  /// when the program reported none.
+  public var displayTitle: String? {
+    let title = DisplayText.sanitize(title)
+    return title.isEmpty ? nil : title
+  }
+}
+
+extension RemoteLayout.Tab {
+  /// The service names new tabs by number; chrome shows the active pane's
+  /// program instead, as the Mac's tab strip does.
+  public var hasAutomaticName: Bool {
+    let name = DisplayText.sanitize(name)
+    return name.isEmpty || name.allSatisfy(\.isNumber)
+  }
+
+  /// What chrome shows for the tab: a name someone gave it, else the
+  /// active pane's title; nil when neither is known.
+  public var displayName: String? {
+    guard hasAutomaticName else { return DisplayText.sanitize(name) }
+    return panes.first { $0.id == activePane }?.displayTitle
   }
 }

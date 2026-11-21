@@ -23,7 +23,10 @@ extension ViewBehaviorTests {
     _ distance: CGFloat,
     _ tracking: Bool
   ) throws {
-    let view = try makeView()
+    // One line per wheel unit (the default multiplier is 3).
+    let view = try makeView(
+      configuration: Configuration.configured([("mouse-scroll-multiplier", "1")])
+    )
     view.session.resize(columns: 10, rows: 2)
     view.session.feed(Array("row0\r\nrow1\r\nrow2\r\nrow3".utf8))
     if tracking { view.session.feed(Array("\u{1B}[?1000h\u{1B}[?1006h".utf8)) }
@@ -475,7 +478,9 @@ extension ViewBehaviorTests {
     _ horizontal: Int32,
     _ vertical: Int32
   ) throws {
-    let view = try makeView()
+    let view = try makeView(
+      configuration: Configuration.configured([("mouse-scroll-multiplier", "1")])
+    )
     let writes = Mutex<[[UInt8]]>([])
     view.session.onWrite = { bytes in writes.withLock { $0.append(bytes) } }
     view.session.feed(Array("\u{1B}[?1000h\u{1B}[?1006h".utf8))
@@ -508,6 +513,46 @@ extension ViewBehaviorTests {
       count: Int(abs(horizontal))
     )
     #expect(sent == verticalReports + horizontalReports)
+  }
+
+  @Test(.enabled(if: hasMetal), arguments: [false, true])
+  func `the wheel multiplier scales history, not mouse reports`(
+    _ tracking: Bool
+  ) throws {
+    // The default multiplier (3).
+    let view = try makeView()
+    view.session.resize(columns: 10, rows: 2)
+    view.session.feed(Array("0\r\n1\r\n2\r\n3\r\n4\r\n5".utf8))
+    if tracking { view.session.feed(Array("\u{1B}[?1000h\u{1B}[?1006h".utf8)) }
+    view.draw(in: view)
+    let writes = Mutex<[[UInt8]]>([])
+    view.session.onWrite = { bytes in writes.withLock { $0.append(bytes) } }
+    let cg = try #require(
+      CGEvent(
+        scrollWheelEvent2Source: nil,
+        units: .line,
+        wheelCount: 1,
+        wheel1: 1,
+        wheel2: 0,
+        wheel3: 0,
+      )
+    )
+    cg.location = .zero
+    let event = try #require(NSEvent(cgEvent: cg))
+    #expect(!event.hasPreciseScrollingDeltas && event.scrollingDeltaY == 1)
+    view.scrollWheel(with: event)
+    let snapshot = view.session.snapshot()
+    let sent = writes.withLock {
+      $0.map { String(decoding: $0, as: UTF8.self) }
+    }
+    if tracking {
+      // vim and less scroll their own lines per report.
+      #expect(sent == ["\u{1B}[<64;1;1M"])
+      #expect(snapshot.viewportOffset == 0)
+    } else {
+      #expect(sent.isEmpty)
+      #expect(snapshot.viewportOffset == 3)
+    }
   }
 
   @Test(.enabled(if: hasMetal), arguments: [-1, 1])

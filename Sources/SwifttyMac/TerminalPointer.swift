@@ -84,8 +84,9 @@ package final class TerminalPointer {
   ) {
     let scale = view.window?.backingScaleFactor ?? 2
     // Trackpads report pixels and already track the finger; only discrete
-    // wheel notches (about one line each) are scaled.
-    let wheel = CGFloat(multiplier)
+    // wheel notches (about one line each) are scaled. A program reporting
+    // the mouse picks its own distance per wheel event: one per notch.
+    let wheel = CGFloat(mode == .mouse ? 1 : multiplier)
     let lines = vertical.add(
       event.hasPreciseScrollingDeltas
         ? event.scrollingDeltaY / (renderer.cellSize.height / scale)

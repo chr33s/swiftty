@@ -219,6 +219,64 @@ struct ImpairedScreenDeltaTests {
     }
   }
 
+  /// A base refused by the client's own retention, not injected: one
+  /// `ScreenAck` reaches the host after the client's 2 s base lifetime,
+  /// while a newer screen is already shown. The host's next delta names
+  /// that aged base; the client refuses it once, full screens answer, and
+  /// deltas resume.
+  @Test
+  func `a base aged out of the client's retention recovers through a full screen`()
+    async throws
+  {
+    try await withRegistry { registry in
+      let grid = GridSize(columns: 60, rows: 12)
+      // No random impairment: the only cause of a refusal is the hold.
+      let rig = ImpairedRoamingRig(
+        registry: registry,
+        seed: Self.seeds[0],
+        profile: ImpairmentProfile(),
+        grid: grid
+      )
+      try await rig.start(grid)
+      let link = rig.link
+      try await rig.run("echo ready-$((1+1))")
+      try await rig.shows("ready-2")
+      try await rig.run(
+        "i=0; while [ $i -lt 12 ]; do i=$((i+1)); echo tick-$i; sleep 0.4; "
+          + "done; echo done-$((1+2))"
+      )
+      try await rig.shows("tick-2")
+      let before = await rig.client.deltaStatistics
+      let mark = link.snapshots.count
+      let hold = RoamingClient.frameBaseLifetime + .milliseconds(800)
+      link.holdNextScreenAck(for: hold)
+      try await rig.shows("done-3", timeout: .seconds(30))
+      let after = await rig.client.deltaStatistics
+      #expect(link.heldScreenAcks == 1)
+      #expect(link.corrupted.isEmpty)
+      #expect(
+        after.requestedFull - before.requestedFull == 1,
+        "\(after) from \(before); \(Array(link.snapshots[mark...]))"
+      )
+      let fulls = link.snapshots[mark...].filter {
+        !$0.delta && ($0.fate == .delivered || $0.fate == .lateAfterCancel)
+      }
+      // The host has no base until the replacement is acknowledged, so
+      // output in that interval is also sent whole; then deltas resume.
+      #expect(!fulls.isEmpty)
+      let lastFull = try #require(fulls.last?.revision)
+      #expect(
+        link.snapshots[mark...].contains {
+          $0.delta && $0.revision > lastFull && $0.fate == .delivered
+        },
+        "full screens \(fulls.map(\.revision))"
+      )
+      #expect(after.applied > before.applied)
+      _ = rig.expectInstallsMatchHost()
+      await rig.client.close(.detach)
+    }
+  }
+
   enum MissingSide: String, CaseIterable, Sendable { case client, host }
 
   @Test(arguments: MissingSide.allCases, [seeds[0], seeds[1]])

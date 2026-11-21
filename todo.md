@@ -41,7 +41,12 @@ None of these recurs on demand: on 2026-10-27 each was repeated 25–40 times wi
   idle close. The test now attaches the always-on lifecycle log, credit and
   configured QUIC limits on failure; compare client credit returns with the
   server's `remoteMaxStreams`/`opened` on recurrence. Production:
-  `Sources/AppleTransport/QUICRSTConnection.swift`.
+  `Sources/AppleTransport/QUICRSTConnection.swift`. A candidate cause was fixed
+  on 2026-11-20: an inbound stream that failed before `.ready` or was refused
+  never returned its credit, leaving the server one stream short for good
+  ([spec.multiplexer.md §11](spec.multiplexer.md#follow-up-review-and-measurements--2026-11-20)).
+  A leak cannot be confirmed as this run's cause without its log, so the item
+  stays open until the failure is shown not to recur.
 - [ ] **Rejected QUIC stream:** investigate
   `QUICTransportTests.rejectedSnapshotStreamIsReleased`. A valid replacement failed
   with `.closed` after the client read 65,536 bytes and released the rejected
@@ -68,36 +73,27 @@ None of these recurs on demand: on 2026-10-27 each was repeated 25–40 times wi
   (2026-11-19), two `AgentStartupTests` cases and one `ClipboardDropTests` case
   failed; each passed three of three runs alone. The failing case names and
   failure output were not recorded. Capture both on recurrence before treating
-  them as load-sensitive timing.
+  them as load-sensitive timing. A full `Scripts/test-native.sh` run on
+  2026-11-20 did not reproduce them; its only failures were four app tests
+  that assumed one line per wheel unit after the default
+  `mouse_scroll_multiplier` became 3 (fixed by pinning the multiplier).
 - [ ] **swroam escape under load:** `RoamingTerminalClientTests.escapeKTerminatesTheSession`
   hit its 10 s timeout once in a parallel Roaming/Runtime/Handover/Migration run
-  (2026-11-19) and passed five of five alone.
+  (2026-11-19) and passed five of five alone. It recurred in a full
+  IntegrationTests run on 2026-11-20 (`RoamingTerminalTests.swift:263`, "the
+  terminal client did not finish" after 10 s) and passed 15 of 15 alone.
+- [ ] **Late encoding under load:** `HostSnapshotEncodingTests.lateEncodingCannotRetireOrDeliverIntoReplacementStream(fails: false)`
+  failed once in the same 2026-11-20 full IntegrationTests run
+  (`HostSnapshotEncodingTests.swift:194`, `streams.count == 1`: the
+  replacement attachment's scheduler held more than one stream) and passed 15
+  of 15 alone. Capture the stream list on recurrence.
 
 ## Source review and harness follow-ups
 
 - [ ] Continue review of current source/app files. Geometry and physical-history
-  reviews remain deferred under the recorded scope exclusions.
-- [ ] Source candidate: an inbound QUIC stream that fails before `.ready`, or is
-  refused in `adopt`/`classify`, may never return its stream credit
-  (`QUICRSTConnection.swift`). Not reproduced deterministically.
-- [ ] Review the changes merged since 2026-10-27, which the earlier review passes
-  do not cover: scrollback compression, host-side history scrolling, the mobile
-  keyboard lift and custom keyboard, JavaScript automation, JSONC config and
-  `swsh`.
-- [ ] Review the rest of the changes merged since 2026-11-14. The `SMXB/1`
-  decoder, delta applier and baselines, `copySelection` and the `swroam` trust
-  store and raw-mode paths were reviewed on 2026-11-19; the `RoamingKit`,
-  `RoamingConnect` and `TTYKit` extractions and `PresentationSelection`
-  remapping were not.
-- [ ] Source candidates from that review, not reproduced: `swroam` leaves the
-  terminal raw while stopped by an external `SIGTSTP` (Ctrl-Z itself goes to the
-  remote session); `RoamingTerminalClient.run` returns without restoring raw mode
-  if `outcome` is already set right after `tty.enter()`; `FrameValidator` accepts
-  a negative `search.selected` from JSON that `SMXB/1` cannot encode.
-- [ ] Performance candidate, not a defect: at 512×256, renderer import
-  (2.1–2.3 ms p95 of about 4.9 ms) revalidates a frame that `SMXB/1` decode has
-  already validated. Remove the second pass only if paired runs show a gain and a
-  mutation test shows that invalid frames are still rejected.
+  reviews remain deferred under the recorded scope exclusions. Everything merged
+  through 2026-11-20 has now had one pass; its fixes are recorded in
+  [spec.multiplexer.md §11](spec.multiplexer.md#follow-up-review-and-measurements--2026-11-20).
 
 ## Platform and release validation
 
@@ -112,17 +108,15 @@ None of these recurs on demand: on 2026-10-27 each was repeated 25–40 times wi
   full app UI and SSH bootstrap on tvOS and visionOS, physical devices, signing,
   and signed CloudKit/Keychain propagation. Preserve exact toolchain/platform
   evidence and distinguish disabled checks from executed tests.
-- [ ] Finish [A20 and A22](spec.roaming.md#13-acceptance-tests). The in-process
-  impaired link (`Tests/IntegrationTests/Host/ImpairedRSTLink.swift`) covers
-  stream delay, reordering, reset and stale arrival, duplicated control records,
-  kills at acknowledgement boundaries and mid-copy, and stripped features. Still
-  open: packet-level loss and RTT over real QUIC at the recovery-target profile;
-  a base refused naturally after the 2 s / 16-revision retention window rather
-  than injected; and whether the Apple clients re-derive a selection after
-  reconnecting, since row versions are per attachment.
-- [ ] Report `screenDeltas` bytes per screen and client CPU, with and without
-  deltas (both zlib-encoded), for 80×24 typing and 200×80 scrolling under the
-  recovery-target network profile ([spec.roaming.md §13](spec.roaming.md#13-acceptance-tests)).
+- [ ] Finish [A20 and A22](spec.roaming.md#13-acceptance-tests) over real QUIC:
+  packet-level loss and RTT at the recovery-target profile. The in-process
+  impaired link covers stream delay, reordering, reset and stale arrival,
+  duplicated control records, kills at acknowledgement boundaries and mid-copy,
+  stripped features, and a base refused naturally by the client's retention.
+  The `screenDeltas` bytes and CPU report
+  ([spec.multiplexer.md §11](spec.multiplexer.md#follow-up-review-and-measurements--2026-11-20))
+  was measured on that in-process path; repeat it over shaped real QUIC when
+  the profile exists. It needs a network shaper (`dnctl`/`pfctl`, root).
 - [ ] Run the OS-gated QUIC reset test in CI: the `xcode-27` runner (macOS
   27.0.1) skips it, so it executes only locally on 27.2+.
 

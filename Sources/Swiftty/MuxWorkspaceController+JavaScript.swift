@@ -36,21 +36,32 @@ extension MuxWorkspaceController {
   }
 
   static func automationShortcut(_ event: NSEvent) -> String? {
-    guard var key = event.charactersIgnoringModifiers?.lowercased(),
+    // The key's own character: `charactersIgnoringModifiers` still applies
+    // Shift, so ⌘⇧1 would read "!" where `bindKey("cmd+shift+1")` names 1.
+    let base =
+      event.type == .keyDown || event.type == .keyUp
+      ? event.characters(byApplyingModifiers: []) : nil
+    guard var key = (base ?? event.charactersIgnoringModifiers)?.lowercased(),
       !key.isEmpty
     else { return nil }
-    let special = [
-      "\r": "enter", "\t": "tab", " ": "space", "\u{1b}": "escape",
-      "\u{7f}": "backspace", "\u{f700}": "up", "\u{f701}": "down",
-      "\u{f702}": "left", "\u{f703}": "right",
-    ]
-    key = special[key] ?? key
+    key = shortcutKeyName(key)
     var parts = [key]
     for (flag, name): (NSEvent.ModifierFlags, String) in [
       (.command, "cmd"), (.control, "ctrl"), (.option, "alt"),
       (.shift, "shift"),
     ] { if event.modifierFlags.contains(flag) { parts.append(name) } }
     return parts.sorted().joined(separator: "+")
+  }
+
+  /// The name `bindKey` uses for a key's character. `+` separates parts
+  /// of a shortcut, so that key is named `plus`.
+  static func shortcutKeyName(_ key: String) -> String {
+    let special = [
+      "\r": "enter", "\t": "tab", " ": "space", "\u{1b}": "escape",
+      "\u{7f}": "backspace", "\u{f700}": "up", "\u{f701}": "down",
+      "\u{f702}": "left", "\u{f703}": "right", "+": "plus",
+    ]
+    return special[key] ?? key
   }
 
   func updateAutomationFocus() {

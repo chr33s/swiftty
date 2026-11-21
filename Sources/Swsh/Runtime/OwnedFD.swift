@@ -77,7 +77,9 @@ struct OwnedFD: ~Copyable {
     guard fchmod(fd, 0o600) == 0, fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 else {
       throw SystemFailure("payload descriptor setup")
     }
-    return owner
+    // Out of any originally closed standard slot: a stage's stdin or stdout
+    // wiring would overwrite it before the launcher reads it.
+    return try duplicate(fd)
   }
 
   /// Called only by the launch owner, which serializes pipe creation and spawn.

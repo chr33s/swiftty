@@ -24,8 +24,8 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     let original = try await model.identityStore.resolve(identity.id)
     let replacement = IdentitySecret(.init())
     let server = try await TestSSHServer.start(authorizedKeys: [
-      NIOSSHPrivateKey(ed25519Key: original.privateKey).publicKey,
-      NIOSSHPrivateKey(ed25519Key: replacement.privateKey).publicKey,
+      NIOSSHPrivateKey(ed25519Key: original.ed25519PrivateKey!).publicKey,
+      NIOSSHPrivateKey(ed25519Key: replacement.ed25519PrivateKey!).publicKey,
     ])
     _ = NSApplication.shared
     let window = NSWindow(
@@ -78,7 +78,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
               SSHIdentityMetadata(
                 id: identity.id,
                 name: "B",
-                publicKey: replacement.publicKey,
+                publicKeyLine: replacement.publicKeyLine,
                 storage: .deviceOnly,
                 revision: .init(counter: 100, deviceID: UUID())
               )

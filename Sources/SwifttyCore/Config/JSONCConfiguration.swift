@@ -54,6 +54,7 @@ extension Configuration {
     for (key, value) in [
       ("theme", jsonc.theme), ("cursor-style", jsonc.cursorStyle),
       ("cursor-style-blink", jsonc.cursorStyleBlink.map(String.init)),
+      ("tab-position", jsonc.window.tabs),
     ] {
       if let value, let problem = set(key, value) {
         diagnostics.append("\(key): \(problem)")

@@ -18,7 +18,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
       kind: .deleteSecret,
       policy: .iCloudKeychain,
       name: "Old removal",
-      publicKey: SSHEd25519Key.authorizedKeysLine(for: key.publicKey),
+      publicKey: key.publicKeyLine,
       reassign: [],
       stage: .recorded,
       createdAt: .now

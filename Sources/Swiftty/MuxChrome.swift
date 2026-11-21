@@ -12,6 +12,9 @@ struct MuxTabItem: Equatable {
   /// The tab's stored name, which a rename edits; nil for an unnamed tab
   /// (the service's number), which shows its program instead.
   var name: String?
+  /// The tab's tooltip: the program for a named tab, and the pane count
+  /// when split. Empty shows none.
+  var detail: String = ""
 }
 
 enum MuxIcons {
@@ -41,6 +44,10 @@ enum MuxIcons {
 /// A small filled circle marking unseen output.
 @MainActor
 final class MuxActivityDot: NSView {
+  /// A ring around the dot, cutting it out of what it overlaps (a tab's
+  /// icon badge); nil draws none.
+  var ring: NSColor? { didSet { needsDisplay = true } }
+
   override init(frame: NSRect) {
     super.init(frame: frame)
     wantsLayer = true
@@ -58,15 +65,71 @@ final class MuxActivityDot: NSView {
 
   override func updateLayer() {
     layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+    layer?.borderWidth = ring == nil ? 0 : 1.5
+    layer?.borderColor = ring?.cgColor
   }
 
   override var wantsUpdateLayer: Bool { true }
 }
 
+/// A tab's icon in a small circle: dark with a light glyph for the active
+/// tab, muted for the others.
+@MainActor
+final class MuxTabIconBadge: NSView {
+  let icon = NSImageView()
+  var isActive = false {
+    didSet {
+      icon.contentTintColor = isActive ? .white : .secondaryLabelColor
+      needsDisplay = true
+    }
+  }
+
+  override init(frame: NSRect) {
+    super.init(frame: frame)
+    wantsLayer = true
+    translatesAutoresizingMaskIntoConstraints = false
+    icon.translatesAutoresizingMaskIntoConstraints = false
+    icon.setAccessibilityElement(false)
+    icon.contentTintColor = .secondaryLabelColor
+    addSubview(icon)
+    NSLayoutConstraint.activate([
+      icon.centerXAnchor.constraint(equalTo: centerXAnchor),
+      icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+      widthAnchor.constraint(equalTo: heightAnchor),
+    ])
+    setAccessibilityElement(false)
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError() }
+
+  override var wantsUpdateLayer: Bool { true }
+
+  override func updateLayer() {
+    guard let layer else { return }
+    layer.cornerRadius = bounds.height / 2
+    layer.backgroundColor =
+      (isActive
+      ? NSColor.black.withAlphaComponent(0.7)
+      : NSColor.labelColor.withAlphaComponent(0.1))
+      .cgColor
+    layer.borderWidth = 1
+    layer.borderColor =
+      NSColor.white.withAlphaComponent(isActive ? 0.18 : 0.08).cgColor
+  }
+
+  override func layout() {
+    super.layout()
+    layer?.cornerRadius = bounds.height / 2
+  }
+}
+
 // MARK: Tab strip
 
 /// The window-level tab strip: icon, title, activity marker and close
-/// button per tab. Double-click renames; narrow windows scroll horizontally.
+/// button per tab. Double-click renames. In the toolbar (`window.tabs`
+/// top) tabs sit in a row and narrow windows scroll horizontally; in the
+/// sidebar (left) they stack in a column that scrolls vertically.
 @MainActor
 final class MuxTabStrip: NSGlassEffectContainerView {
   var onSelect: ((TabID) -> Void)?
@@ -75,9 +138,18 @@ final class MuxTabStrip: NSGlassEffectContainerView {
   /// A rename edit ended, however it did (renamed, unchanged, cancelled,
   /// or its field went away).
   var onRenameEnded: (() -> Void)?
+  /// Tabs stack in a column (the sidebar) rather than a row (the toolbar).
+  var isVertical = false {
+    didSet { if isVertical != oldValue { applyOrientation() } }
+  }
   private let stack = NSStackView()
   private let scrollView = NSScrollView()
   private(set) var buttons: [MuxTabButton] = []
+  private var rowConstraints: [NSLayoutConstraint] = []
+  private var columnConstraints: [NSLayoutConstraint] = []
+  /// Each button spans the column's width while vertical.
+  private var buttonWidths: [NSLayoutConstraint] = []
+  static let columnSpacing: CGFloat = 4
 
   override init(frame: NSRect) {
     super.init(frame: frame)
@@ -87,14 +159,17 @@ final class MuxTabStrip: NSGlassEffectContainerView {
     stack.orientation = .horizontal
     stack.spacing = 2
     stack.alignment = .centerY
+    // A flipped clip keeps a short column at the top of the sidebar.
+    scrollView.contentView = FlippedClipView()
     scrollView.drawsBackground = false
     scrollView.horizontalScrollElasticity = .none
     scrollView.verticalScrollElasticity = .none
+    scrollView.autohidesScrollers = true
     scrollView.automaticallyAdjustsContentInsets = false
     scrollView.translatesAutoresizingMaskIntoConstraints = false
     scrollView.documentView = stack
     content.addSubview(scrollView)
-    NSLayoutConstraint.activate([
+    rowConstraints = [
       scrollView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
       scrollView.trailingAnchor.constraint(
         equalTo: trailingAnchor,
@@ -103,7 +178,16 @@ final class MuxTabStrip: NSGlassEffectContainerView {
       scrollView.heightAnchor.constraint(equalToConstant: 24),
       widthAnchor.constraint(greaterThanOrEqualToConstant: 102),
       heightAnchor.constraint(equalToConstant: 30),
-    ])
+    ]
+    columnConstraints = [
+      scrollView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+      scrollView.trailingAnchor.constraint(
+        equalTo: trailingAnchor,
+        constant: -8
+      ), scrollView.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+      scrollView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+    ]
+    NSLayoutConstraint.activate(rowConstraints)
     setContentHuggingPriority(.defaultHigh, for: .horizontal)
     setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     setAccessibilityRole(.tabGroup)
@@ -114,18 +198,76 @@ final class MuxTabStrip: NSGlassEffectContainerView {
   required init?(coder: NSCoder) { fatalError() }
 
   override var intrinsicContentSize: NSSize {
-    NSSize(width: max(102, stack.fittingSize.width + 12), height: 30)
+    guard !isVertical else {
+      return NSSize(
+        width: NSView.noIntrinsicMetric,
+        height: NSView.noIntrinsicMetric
+      )
+    }
+    return NSSize(width: max(102, stack.fittingSize.width + 12), height: 30)
   }
 
   override func layout() {
     super.layout()
-    stack.setFrameSize(
-      NSSize(
-        width: max(stack.fittingSize.width, scrollView.bounds.width),
-        height: 24
-      )
-    )
+    sizeStack()
     stack.layoutSubtreeIfNeeded()
+  }
+
+  /// The stack is the scroll view's document, sized by frame: a column of
+  /// rows, or a row as wide as its tabs (at least the strip).
+  private func sizeStack() {
+    if isVertical {
+      let rows = CGFloat(buttons.count)
+      stack.setFrameSize(
+        NSSize(
+          width: scrollView.contentSize.width,
+          height: max(
+            0,
+            rows * MuxTabButton.columnHeight + (rows - 1) * Self.columnSpacing
+          )
+        )
+      )
+    } else {
+      stack.setFrameSize(
+        NSSize(
+          width: max(stack.fittingSize.width, scrollView.bounds.width),
+          height: MuxTabButton.rowHeight
+        )
+      )
+    }
+  }
+
+  private func applyOrientation() {
+    let (old, new) =
+      isVertical
+      ? (rowConstraints, columnConstraints)
+      : (columnConstraints, rowConstraints)
+    NSLayoutConstraint.deactivate(old)
+    NSLayoutConstraint.activate(new)
+    stack.orientation = isVertical ? .vertical : .horizontal
+    stack.alignment = isVertical ? .leading : .centerY
+    stack.spacing = isVertical ? Self.columnSpacing : 2
+    scrollView.hasVerticalScroller = isVertical
+    scrollView.verticalScrollElasticity = isVertical ? .allowed : .none
+    for b in buttons { b.isVertical = isVertical }
+    sizeStack()
+    fitButtons()
+    stack.setFrameOrigin(.zero)
+    scrollView.contentView.scroll(to: .zero)
+    invalidateIntrinsicContentSize()
+    needsLayout = true
+  }
+
+  /// Buttons span the column while vertical; in a row they size to fit.
+  private func fitButtons() {
+    NSLayoutConstraint.deactivate(buttonWidths)
+    buttonWidths =
+      isVertical
+      ? buttons.map {
+        $0.widthAnchor.constraint(equalTo: stack.widthAnchor)
+          .withPriority(.required - 1)
+      } : []
+    NSLayoutConstraint.activate(buttonWidths)
   }
 
   func update(_ items: [MuxTabItem]) {
@@ -146,6 +288,7 @@ final class MuxTabStrip: NSGlassEffectContainerView {
       let b =
         kept.removeValue(forKey: item.id) ?? spare.popLast() ?? MuxTabButton()
       b.strip = self
+      b.isVertical = isVertical
       b.item = item
       return b
     }
@@ -162,12 +305,49 @@ final class MuxTabStrip: NSGlassEffectContainerView {
       stack.insertArrangedSubview(b, at: i)
     }
     buttons = next
+    fitButtons()
     invalidateIntrinsicContentSize()
     needsLayout = true
+    // Sized first: rows laid out in a stack of no size cannot fit.
+    sizeStack()
     layoutSubtreeIfNeeded()
     if let active = buttons.first(where: { $0.item?.isActive == true }) {
       active.scrollToVisible(active.bounds)
     }
+  }
+}
+
+extension NSLayoutConstraint {
+  fileprivate func withPriority(
+    _ priority: NSLayoutConstraint.Priority
+  ) -> NSLayoutConstraint {
+    self.priority = priority
+    return self
+  }
+}
+
+/// Keeps a document shorter than its scroll view at the top.
+private final class FlippedClipView: NSClipView {
+  override var isFlipped: Bool { true }
+}
+
+/// The column beside the panes that holds the tab strip when
+/// `window.tabs` is left. It draws nothing of its own: the window shows
+/// through, and the panes beside it sit in a rounded card.
+@MainActor
+final class MuxTabSidebar: NSView {
+  static let width: CGFloat = 220
+
+  /// Shows `strip` filling the column.
+  func host(_ strip: NSView) {
+    strip.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(strip)
+    NSLayoutConstraint.activate([
+      strip.leadingAnchor.constraint(equalTo: leadingAnchor),
+      strip.trailingAnchor.constraint(equalTo: trailingAnchor),
+      strip.topAnchor.constraint(equalTo: topAnchor),
+      strip.bottomAnchor.constraint(equalTo: bottomAnchor),
+    ])
   }
 }
 
@@ -208,10 +388,28 @@ final class MuxTabLabel: NSTextField {
   }
 }
 
+/// A tab's glass: drawn behind the button's content; clicks on it reach
+/// the button.
 @MainActor
-final class MuxTabButton: NSGlassEffectView, NSTextFieldDelegate {
+private final class MuxTabGlass: NSGlassEffectView {
+  override var mouseDownCanMoveWindow: Bool { false }
+}
+
+/// One tab: its icon in a circular badge, then its title. In a row (the
+/// toolbar) it is a glass capsule; in a column (the sidebar) a full-width
+/// row, a glass capsule only when active.
+@MainActor
+final class MuxTabButton: NSView, NSTextFieldDelegate {
+  static let columnHeight: CGFloat = 30
+  static let rowHeight: CGFloat = 24
   weak var strip: MuxTabStrip?
-  private let icon = NSImageView()
+  private let glass = MuxTabGlass()
+  /// The tab's icon, titles and actions. Glass draws over its siblings, so
+  /// while it shows, this lives in its content view; otherwise in the
+  /// button. Its subviews' constraints are all within it, so moving it
+  /// keeps them.
+  private let content = NSView()
+  private let badge = MuxTabIconBadge()
   let label = MuxTabLabel(labelWithString: "")
   private let dot = MuxActivityDot()
   let closeButton = NSButton()
@@ -223,6 +421,31 @@ final class MuxTabButton: NSGlassEffectView, NSTextFieldDelegate {
   private var edited = false
   /// While a rename is open: ends it when another window takes the keys.
   private var keyWatcher: KeyWindowWatcher?
+  private var hovered = false {
+    didSet { if hovered != oldValue { refreshAppearance() } }
+  }
+  private var rowConstraints: [NSLayoutConstraint] = []
+  private var columnConstraints: [NSLayoutConstraint] = []
+  private var badgeLeading: NSLayoutConstraint!
+  private var badgeSize: NSLayoutConstraint!
+  private var labelLeading: NSLayoutConstraint!
+  private var closeTrailing: NSLayoutConstraint!
+
+  /// Laid out as a sidebar row rather than a toolbar pill.
+  var isVertical = false {
+    didSet {
+      guard isVertical != oldValue else { return }
+      NSLayoutConstraint.deactivate(
+        isVertical ? rowConstraints : columnConstraints
+      )
+      NSLayoutConstraint.activate(
+        isVertical ? columnConstraints : rowConstraints
+      )
+      applyMetrics()
+      updateTrackingAreas()
+      refreshAppearance()
+    }
+  }
 
   var item: MuxTabItem? {
     didSet {
@@ -230,36 +453,35 @@ final class MuxTabButton: NSGlassEffectView, NSTextFieldDelegate {
       // tab, or none, ends it without renaming.
       if oldValue?.id != item?.id { cancelRename() }
       guard let item, item != oldValue else { return }
-      icon.image = MuxIcons.image(item.symbol, "")
-      label.font =
-        item.isActive
-        ? .systemFont(ofSize: 12, weight: .semibold) : .systemFont(ofSize: 12)
-      tintColor =
-        item.isActive
-        ? .selectedContentBackgroundColor.withAlphaComponent(0.18) : nil
+      badge.icon.image = MuxIcons.image(item.symbol, "")
+      toolTip = item.detail.isEmpty ? nil : item.detail
       dot.isHidden = !item.hasActivity
       showTitle()
-      needsDisplay = true
+      refreshAppearance()
     }
   }
+
+  /// The second line a column used to show: the program (for a named
+  /// tab) and the pane count, now the row's tooltip (tests).
+  var detailText: String { toolTip ?? "" }
 
   init() {
     super.init(frame: .zero)
     translatesAutoresizingMaskIntoConstraints = false
-    style = .regular
-    cornerRadius = 6
-    effectIsInteractive = true
-    let content = NSView(frame: bounds)
-    content.autoresizingMask = [.width, .height]
-    contentView = content
-    icon.translatesAutoresizingMaskIntoConstraints = false
-    icon.symbolConfiguration = .init(pointSize: 11, weight: .regular)
-    icon.setAccessibilityElement(false)
+    wantsLayer = true
+    layer?.cornerCurve = .continuous
+    glass.style = .regular
+    glass.effectIsInteractive = true
+    glass.frame = bounds
+    glass.autoresizingMask = [.width, .height]
+    addSubview(glass)
+    content.translatesAutoresizingMaskIntoConstraints = false
     label.translatesAutoresizingMaskIntoConstraints = false
     label.lineBreakMode = .byTruncatingTail
     label.delegate = self
     label.onAbort = { [weak self] in self?.cancelRename() }
     label.setAccessibilityElement(false)
+    dot.ring = .windowBackgroundColor
     closeButton.image = MuxIcons.image("xmark", "End tab")
     closeButton.toolTip = "End Tab (terminates its processes)"
     closeButton.isBordered = false
@@ -267,35 +489,145 @@ final class MuxTabButton: NSGlassEffectView, NSTextFieldDelegate {
     closeButton.target = self
     closeButton.action = #selector(closeClicked)
     closeButton.translatesAutoresizingMaskIntoConstraints = false
-    for v in [icon, label, dot, closeButton] as [NSView] {
+    for v in [badge, label, dot, closeButton] as [NSView] {
       content.addSubview(v)
     }
+    badgeLeading = badge.leadingAnchor.constraint(
+      equalTo: content.leadingAnchor
+    )
+    badgeSize = badge.heightAnchor.constraint(equalToConstant: 18)
+    labelLeading = label.leadingAnchor.constraint(equalTo: badge.trailingAnchor)
+    closeTrailing = closeButton.trailingAnchor.constraint(
+      equalTo: content.trailingAnchor
+    )
     NSLayoutConstraint.activate([
-      heightAnchor.constraint(equalToConstant: 24),
-      widthAnchor.constraint(lessThanOrEqualToConstant: 220),
-      widthAnchor.constraint(greaterThanOrEqualToConstant: 90),
-      icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-      icon.centerYAnchor.constraint(equalTo: centerYAnchor),
-      label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 5),
-      label.centerYAnchor.constraint(equalTo: centerYAnchor),
-      dot.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 4),
-      dot.centerYAnchor.constraint(equalTo: centerYAnchor),
+      badgeLeading, badgeSize, labelLeading, closeTrailing,
+      badge.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+      label.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+      // Unseen output marks the badge's lower trailing corner.
+      dot.centerXAnchor.constraint(equalTo: badge.trailingAnchor, constant: -2),
+      dot.centerYAnchor.constraint(equalTo: badge.bottomAnchor, constant: -2),
+      closeButton.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+    ])
+    // Widths yield to a stack not yet sized (zero wide before its first
+    // layout): a required width there is unsatisfiable, and AppKit throws.
+    rowConstraints = [
+      heightAnchor.constraint(equalToConstant: Self.rowHeight),
+      widthAnchor.constraint(lessThanOrEqualToConstant: 220)
+        .withPriority(.required - 1),
+      widthAnchor.constraint(greaterThanOrEqualToConstant: 90)
+        .withPriority(.required - 1),
       closeButton.leadingAnchor.constraint(
-        equalTo: dot.trailingAnchor,
+        equalTo: label.trailingAnchor,
         constant: 4
       ),
-      closeButton.trailingAnchor.constraint(
-        equalTo: trailingAnchor,
-        constant: -6
-      ), closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-    ])
+    ]
+    columnConstraints = [
+      heightAnchor.constraint(equalToConstant: Self.columnHeight),
+      label.trailingAnchor.constraint(
+        lessThanOrEqualTo: closeButton.leadingAnchor,
+        constant: -4
+      ),
+    ]
+    NSLayoutConstraint.activate(rowConstraints)
     label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     setAccessibilityElement(true)
     setAccessibilityRole(.radioButton)
+    applyMetrics()
+    refreshAppearance()
   }
 
   @available(*, unavailable)
   required init?(coder: NSCoder) { fatalError() }
+
+  /// Sizes for the current orientation: a capsule either way.
+  private func applyMetrics() {
+    let height = isVertical ? Self.columnHeight : Self.rowHeight
+    badgeLeading.constant = isVertical ? 5 : 3
+    badgeSize.constant = isVertical ? 22 : 18
+    labelLeading.constant = isVertical ? 9 : 6
+    closeTrailing.constant = isVertical ? -8 : -6
+    glass.cornerRadius = height / 2
+    layer?.cornerRadius = height / 2
+    badge.icon.symbolConfiguration = .init(
+      pointSize: isVertical ? 11 : 9,
+      weight: .medium
+    )
+  }
+
+  /// Fonts, glass and hover for the current tab and orientation.
+  private func refreshAppearance() {
+    let active = item?.isActive == true
+    let size: CGFloat = isVertical ? 13 : 12
+    label.font =
+      active
+      ? .systemFont(ofSize: size, weight: .medium) : .systemFont(ofSize: size)
+    label.textColor = active ? .labelColor : .secondaryLabelColor
+    badge.isActive = active
+    glass.tintColor = active ? NSColor.white.withAlphaComponent(0.08) : nil
+    // A row always reads as a pill; a column shows glass on its active row.
+    glass.isHidden = isVertical && !active
+    if glass.isHidden, content.superview !== self {
+      glass.contentView = nil
+      addSubview(content)
+      pinContent()
+    } else if !glass.isHidden, glass.contentView !== content {
+      content.removeFromSuperview()
+      glass.contentView = content
+      pinContent()
+    }
+    // A column offers End Tab on the row under the pointer or the active
+    // one, so a click on a row's empty edge never ends it.
+    closeButton.isHidden = isVertical && !active && !hovered
+    needsDisplay = true
+  }
+
+  /// The content fills the button wherever it lives; moving it dropped
+  /// its edges, and the button's size follows from its content.
+  private func pinContent() {
+    NSLayoutConstraint.activate([
+      content.leadingAnchor.constraint(equalTo: leadingAnchor),
+      content.trailingAnchor.constraint(equalTo: trailingAnchor),
+      content.topAnchor.constraint(equalTo: topAnchor),
+      content.bottomAnchor.constraint(equalTo: bottomAnchor),
+    ])
+  }
+
+  /// Whether the title draws inside the glass, above it (tests).
+  var titleIsInGlass: Bool { !glass.isHidden && label.isDescendant(of: glass) }
+
+  /// Whether the glass shows (tests).
+  var showsGlass: Bool { !glass.isHidden }
+
+  override var wantsUpdateLayer: Bool { true }
+
+  override func updateLayer() {
+    let highlight = isVertical && hovered && item?.isActive != true
+    layer?.backgroundColor =
+      highlight ? NSColor.labelColor.withAlphaComponent(0.06).cgColor : nil
+  }
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    for area in trackingAreas where area.owner === self {
+      removeTrackingArea(area)
+    }
+    guard isVertical else {
+      hovered = false
+      return
+    }
+    addTrackingArea(
+      NSTrackingArea(
+        rect: .zero,
+        options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+        owner: self
+      )
+    )
+  }
+
+  override func mouseEntered(with event: NSEvent) { hovered = true }
+
+  override func mouseExited(with event: NSEvent) { hovered = false }
 
   override var mouseDownCanMoveWindow: Bool { false }
 
@@ -466,14 +798,30 @@ struct MuxPaneHeaderState: Equatable {
 @MainActor
 final class MuxPaneContainer: NSView {
   static let headerHeight: CGFloat = 30
-  static let cornerRadius: CGFloat = 10
+  static let cornerRadius: CGFloat = 12
   /// Space between the card's edge and its terminal (sides and bottom).
   static let cardInset: CGFloat = 6
   let paneView: MuxPaneView
   let header = MuxPaneHeader()
+  /// The terminal's background, which a card shows around its terminal so
+  /// the whole pane reads as one surface.
+  var terminalBackground: NSColor? { didSet { needsDisplay = true } }
+  /// What the card wears: the terminal's drawn default background (a
+  /// program may set its own) at the theme background's opacity.
+  var cardBackground: NSColor? {
+    guard let base = terminalBackground else { return nil }
+    guard let bg = paneView.drawnBackground else { return base }
+    return NSColor(
+      srgbRed: CGFloat(bg >> 16 & 0xFF) / 255,
+      green: CGFloat(bg >> 8 & 0xFF) / 255,
+      blue: CGFloat(bg & 0xFF) / 255,
+      alpha: base.alphaComponent
+    )
+  }
   var showsHeader = true {
     didSet {
       header.isHidden = !showsHeader
+      paneView.inCard = showsHeader
       if oldValue != showsHeader {
         needsLayout = true
         needsDisplay = true
@@ -484,6 +832,8 @@ final class MuxPaneContainer: NSView {
   init(paneView: MuxPaneView) {
     self.paneView = paneView
     super.init(frame: .zero)
+    paneView.inCard = showsHeader
+    paneView.onBackgroundChange = { [weak self] in self?.needsDisplay = true }
     wantsLayer = true
     layer?.cornerCurve = .continuous
     addSubview(header)
@@ -501,7 +851,9 @@ final class MuxPaneContainer: NSView {
     layer.borderWidth = showsHeader ? 1 : 0
     layer.borderColor = NSColor.separatorColor.cgColor
     layer.backgroundColor =
-      showsHeader ? NSColor.labelColor.withAlphaComponent(0.04).cgColor : nil
+      showsHeader
+      ? (cardBackground ?? NSColor.labelColor.withAlphaComponent(0.04))
+        .cgColor : nil
   }
 
   @available(*, unavailable)
@@ -621,10 +973,11 @@ final class MuxPaneHeader: NSView {
       label.centerYAnchor.constraint(equalTo: centerYAnchor),
       dot.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 4),
       dot.centerYAnchor.constraint(equalTo: centerYAnchor),
-      buttons.leadingAnchor.constraint(
-        greaterThanOrEqualTo: dot.trailingAnchor,
-        constant: 6
-      ),
+      // Yields while the header has no width yet (its frame is set by
+      // the card's layout): AppKit throws on an unsatisfiable constraint.
+      buttons.leadingAnchor
+        .constraint(greaterThanOrEqualTo: dot.trailingAnchor, constant: 6)
+        .withPriority(.required - 1),
       buttons.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
       buttons.centerYAnchor.constraint(equalTo: centerYAnchor),
     ])

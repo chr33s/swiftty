@@ -149,9 +149,7 @@ extension MuxNativeTests {
       var foreign = frame
       foreign.identity.server = ServerInstanceID()
       foreign.identity.revision &+= 1_000
-      let imported = try #require(
-        MuxPaneView.importFrame(foreign, limits: .standard)
-      )
+      let imported = MuxPaneView.importFrame(foreign, limits: .standard)
       view.receive(imported, server: a.server)
       view.draw(in: view)
       #expect(view.presented?.frame.identity.server == a.server)

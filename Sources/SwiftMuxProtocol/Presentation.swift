@@ -90,6 +90,17 @@ public enum DisplayText {
     !name.isEmpty && sanitize(name, limit: .max) == name
   }
 
+  /// A workspace's shown name: sanitized, and a service default (a bare
+  /// number) reads as "Workspace 0" rather than "0". A name a person gave
+  /// shows as given.
+  public static func workspaceName(_ name: String) -> String {
+    let shown = sanitize(name)
+    guard !shown.isEmpty, shown.allSatisfy(\.isASCII),
+      shown.allSatisfy(\.isNumber)
+    else { return shown }
+    return "Workspace \(shown)"
+  }
+
   /// The plain name a person typed or pasted means: spacing folded and
   /// invisibles dropped, whole; nil when nothing is left.
   public static func plainName(_ typed: String) -> String? {

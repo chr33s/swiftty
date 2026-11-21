@@ -6,6 +6,10 @@ struct JSONSourceIndex {
   let bytes: [UInt8]
   var cursor = 0
   var positions: [[String]: Int] = [:]
+  /// Deepest path indexed. Every configuration key lies within it, and a
+  /// deeper value reports its nearest indexed ancestor; indexing every
+  /// value of a deeply nested 1 MiB file costs seconds and gigabytes.
+  static let maxIndexedDepth = 8
 
   init(_ data: Data) throws {
     bytes = Array(data)
@@ -121,8 +125,11 @@ struct JSONSourceIndex {
     guard depth < 128 else {
       throw failure("Configuration nesting exceeds 128 levels")
     }
-    positions[path] = cursor
+    if depth <= Self.maxIndexedDepth { positions[path] = cursor }
     guard cursor < bytes.count else { throw failure("Expected a JSON value") }
+    func child(_ component: @autoclosure () -> String) -> [String] {
+      depth < Self.maxIndexedDepth ? path + [component()] : path
+    }
     switch bytes[cursor] {
     case 123:
       cursor += 1
@@ -134,7 +141,7 @@ struct JSONSourceIndex {
           throw failure("Duplicate key '\(key)'")
         }
         guard consume(58) else { throw failure("Expected ':'") }
-        try value(path: path + [key], depth: depth + 1)
+        try value(path: child(key), depth: depth + 1)
         if consume(125) { return }
         guard consume(44) else { throw failure("Expected ',' or '}'") }
       } while true
@@ -143,7 +150,7 @@ struct JSONSourceIndex {
       if consume(93) { return }
       var index = 0
       repeat {
-        try value(path: path + [String(index)], depth: depth + 1)
+        try value(path: child(String(index)), depth: depth + 1)
         index += 1
         if consume(93) { return }
         guard consume(44) else { throw failure("Expected ',' or ']'") }

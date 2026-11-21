@@ -31,7 +31,7 @@ struct RuntimeFaultTests {
     "cancel-before-cleanup", "cancel-during-cleanup", "cancel-observer",
     "cancel-cleanup-restore-failure", "nonblocking-editor-input",
     "owned-resource-collection", "coalesced-status", "low-fd-pipe",
-    "low-fd-payload", "low-fd-handoff",
+    "low-fd-payload", "low-fd-handoff", "closed-standard-payload",
   ])
   func isolatedRuntimeFault(_ fault: String) throws {
     let process = Process()
@@ -94,6 +94,10 @@ public func swshRuntimeFaultProbe(_ argument: UnsafePointer<CChar>) -> Int32 {
 private func runRuntimeFault(_ fault: String) throws {
   if fault.hasPrefix("low-fd-") {
     try verifyDescriptorExhaustion(fault)
+    return
+  }
+  if fault == "closed-standard-payload" {
+    try verifyPayloadAvoidsClosedStandardSlots()
     return
   }
   if fault.hasPrefix("cancel-") {
@@ -366,6 +370,34 @@ private let descriptorLimit = RLIMIT_NOFILE
 #else
 private let descriptorLimit = Int32(RLIMIT_NOFILE.rawValue)
 #endif
+
+/// A shell started with a standard descriptor closed (`swsh <&-`): the
+/// payload file must not take that slot, where the stage's own stdin or
+/// stdout wiring would overwrite it before the launcher reads it.
+private func verifyPayloadAvoidsClosedStandardSlots() throws {
+  let saved = (dup(0), dup(1))
+  guard saved.0 >= 0, saved.1 >= 0 else { throw SystemFailure("dup") }
+  defer {
+    _ = dup2(saved.0, 0)
+    _ = dup2(saved.1, 1)
+    close(saved.0)
+    close(saved.1)
+  }
+  close(0)
+  close(1)
+  let file = try LauncherPayload(
+    build: "slots",
+    executable: [47],
+    arguments: [[47]],
+    environment: [],
+    redirects: []
+  )
+  .write()
+  let descriptor = file.withDescriptor { $0 }
+  guard descriptor > 2 else {
+    throw ProbeFailure("payload took closed standard slot \(descriptor)")
+  }
+}
 
 private func verifyDescriptorExhaustion(_ fault: String) throws {
   var original = rlimit()

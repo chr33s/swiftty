@@ -12,6 +12,16 @@ public enum IdentityStoragePolicy: String, Hashable, Sendable, Codable,
   case deviceOnly
   /// Synchronizable through iCloud Keychain; `WhenUnlocked`.
   case iCloudKeychain
+  /// A P-256 key generated inside this device's Secure Enclave (§13.2).
+  /// Its private half never leaves the device; only an encrypted handle is
+  /// stored, device-only, in the Keychain.
+  case secureEnclave
+
+  /// Policies a software (generated or imported) key may choose.
+  public static let softwareCases: [Self] = [.deviceOnly, .iCloudKeychain]
+
+  /// Whether the private key can exist only on the device that made it.
+  public var isDeviceBound: Bool { self != .iCloudKeychain }
 
   public var displayName: LocalizedStringResource {
     switch self {
@@ -19,6 +29,8 @@ public enum IdentityStoragePolicy: String, Hashable, Sendable, Codable,
       LocalizedStringResource("This device only", bundle: #bundle)
     case .iCloudKeychain:
       LocalizedStringResource("iCloud Keychain", bundle: #bundle)
+    case .secureEnclave:
+      LocalizedStringResource("Secure Enclave", bundle: #bundle)
     }
   }
 }
@@ -52,13 +64,15 @@ public struct SSHIdentityMetadata: Hashable, Sendable, Codable, Identifiable {
     case fingerprintMismatch
   }
 
-  public static let algorithm = "ssh-ed25519"
+  /// The Ed25519 algorithm name, the default for new identities.
+  public static let algorithm = SSHKeyAlgorithm.ed25519.rawValue
   public static let maxNameLength = 64
 
   public let id: UUID
   public var name: String
+  /// An `SSHKeyAlgorithm` raw value, such as `ssh-ed25519`.
   public let algorithm: String
-  /// Canonical `ssh-ed25519 <base64>` line, without a comment.
+  /// Canonical `"<type> <base64>"` line, without a comment.
   public let publicKey: String
   /// OpenSSH `SHA256:` fingerprint of `publicKey`.
   public let fingerprint: String
@@ -77,15 +91,43 @@ public struct SSHIdentityMetadata: Hashable, Sendable, Codable, Identifiable {
     revision: LogicalRevision,
     deletedAt: Date? = nil
   ) {
-    self.id = id
-    self.name = name
-    self.algorithm = Self.algorithm
-    self.publicKey = SSHEd25519Key.authorizedKeysLine(for: publicKey)
-    self.fingerprint = SSHEd25519Key.fingerprint(of: publicKey)
-    self.storage = storage
-    self.createdAt = createdAt
-    self.revision = revision
-    self.deletedAt = deletedAt
+    self.init(
+      id: id,
+      name: name,
+      algorithm: Self.algorithm,
+      publicKey: SSHEd25519Key.authorizedKeysLine(for: publicKey),
+      fingerprint: SSHEd25519Key.fingerprint(of: publicKey),
+      storage: storage,
+      createdAt: createdAt,
+      revision: revision,
+      deletedAt: deletedAt
+    )
+  }
+
+  /// Metadata for any supported key, from its canonical public-key line
+  /// (`IdentitySecret.publicKeyLine`). Callers must `validate()`.
+  public init(
+    id: UUID = UUID(),
+    name: String,
+    publicKeyLine: String,
+    storage: IdentityStoragePolicy,
+    createdAt: Date = .now,
+    revision: LogicalRevision,
+    deletedAt: Date? = nil
+  ) {
+    self.init(
+      id: id,
+      name: name,
+      algorithm: SSHPublicKeyFormat.keyType(openSSHPublicKey: publicKeyLine),
+      publicKey: publicKeyLine,
+      fingerprint: SSHPublicKeyFormat.fingerprint(
+        openSSHPublicKey: publicKeyLine
+      ) ?? "",
+      storage: storage,
+      createdAt: createdAt,
+      revision: revision,
+      deletedAt: deletedAt
+    )
   }
 
   /// Decoding entry point for records read from disk or CloudKit; callers
@@ -133,21 +175,36 @@ public struct SSHIdentityMetadata: Hashable, Sendable, Codable, Identifiable {
     return key
   }
 
-  /// `ssh-ed25519 <base64> <name>` for `authorized_keys`.
+  /// The parsed algorithm, if supported.
+  public var keyAlgorithm: SSHKeyAlgorithm? { SSHKeyAlgorithm(rawValue: algorithm) }
+
+  /// Picker and list label: `Ed25519`, `ECDSA P-256`, or
+  /// `P-256 · Secure Enclave`.
+  public var keyTypeLabel: String {
+    if storage == .secureEnclave { return "P-256 · Secure Enclave" }
+    return keyAlgorithm?.displayName ?? algorithm
+  }
+
+  /// `"<type> <base64> <name>"` for `authorized_keys`.
   public var authorizedKeysLine: String {
-    guard let key = ed25519PublicKey else { return publicKey }
-    return SSHEd25519Key.authorizedKeysLine(for: key, comment: name)
+    guard SSHKeyAlgorithm(canonicalPublicKeyLine: publicKey) != nil else {
+      return publicKey
+    }
+    return SSHPublicKeyFormat.authorizedKeysLine(publicKey, comment: name)
   }
 
   public func validate() throws(ValidationError) {
     guard Self.isValidName(name) else { throw .invalidName }
-    guard algorithm == Self.algorithm else { throw .unsupportedAlgorithm }
-    guard let key = ed25519PublicKey,
-      SSHEd25519Key.authorizedKeysLine(for: key) == publicKey
-    else { throw .invalidPublicKey }
-    guard SSHEd25519Key.fingerprint(of: key) == fingerprint else {
-      throw .fingerprintMismatch
+    guard let algorithm = keyAlgorithm else { throw .unsupportedAlgorithm }
+    // Only P-256 keys can live in the Secure Enclave (§13.2).
+    guard storage != .secureEnclave || algorithm == .ecdsaP256 else {
+      throw .unsupportedAlgorithm
     }
+    guard SSHKeyAlgorithm(canonicalPublicKeyLine: publicKey) == algorithm
+    else { throw .invalidPublicKey }
+    guard SSHPublicKeyFormat.fingerprint(openSSHPublicKey: publicKey)
+      == fingerprint
+    else { throw .fingerprintMismatch }
   }
 
   public var isValid: Bool { (try? validate()) != nil }

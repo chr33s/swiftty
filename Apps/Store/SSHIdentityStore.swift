@@ -24,6 +24,13 @@ package enum IdentityKeychainConfiguration {
     return KeychainIdentitySecretStore(accessGroup: accessGroup)
   }
 
+  package static func savedPasswordStore() -> any SavedPasswordStore {
+    if UITesting.storageDirectory != nil {
+      return InMemorySavedPasswordStore()
+    }
+    return KeychainSavedPasswordStore(accessGroup: accessGroup)
+  }
+
   package static func legacyKeySource() -> any LegacyKeySource {
     if UITesting.storageDirectory != nil { return InMemoryLegacyKeySource() }
     return KeychainLegacyKeySource()
@@ -54,9 +61,19 @@ public enum IdentityOperationError: Error, Hashable, Sendable {
   /// An unrecognized iCloud Keychain item, which may belong to another
   /// device: restore it rather than delete it.
   case syncedOrphan
+  /// The algorithm cannot use the requested storage, for example an
+  /// imported key in the Secure Enclave.
+  case unsupportedKeyType
+  case secureEnclave(SecureEnclaveKeyError)
 
   public var message: String {
     switch self {
+    case .unsupportedKeyType:
+      "Only new P-256 keys can be kept in the Secure Enclave."
+    case .secureEnclave(.unavailable):
+      "This device has no Secure Enclave. No key was saved."
+    case .secureEnclave:
+      "The Secure Enclave could not create a key. No key was saved."
     case .invalidName: "Enter a name of up to 64 characters."
     case .tooManyIdentities:
       "You can save up to \(ConnectionStore.maxIdentities) keys."
@@ -302,14 +319,30 @@ public final class SSHIdentityStore {
 
   // MARK: Creation
 
-  /// Generates and saves a new Ed25519 identity. The identity appears in
-  /// pickers only after its key is stored and verified.
+  /// Generates and saves a new identity. The identity appears in pickers
+  /// only after its key is stored and verified. A `.secureEnclave` policy
+  /// makes a device-bound P-256 key inside the Secure Enclave; with
+  /// `requireUserPresence` each use asks for Face ID, Touch ID or the
+  /// passcode (spec.ssh-identity.md §13.2).
   public func generate(
     name: String,
-    policy: IdentityStoragePolicy
+    algorithm: SSHKeyAlgorithm = .ed25519,
+    policy: IdentityStoragePolicy,
+    requireUserPresence: Bool = true
   ) async throws(IdentityOperationError) -> SSHIdentityMetadata {
-    try await create(
-      IdentitySecret(SSHEd25519Key.generate()),
+    let secret: IdentitySecret
+    if policy == .secureEnclave {
+      guard algorithm == .ecdsaP256 else { throw .unsupportedKeyType }
+      do {
+        secret = try SecureEnclaveKeys.generate(
+          requireUserPresence: requireUserPresence
+        )
+      } catch { throw .secureEnclave(error) }
+    } else {
+      secret = IdentitySecret(key: .generate(algorithm))
+    }
+    return try await create(
+      secret,
       name: name,
       policy: policy,
       kind: .generate
@@ -325,6 +358,8 @@ public final class SSHIdentityStore {
     name: String,
     policy: IdentityStoragePolicy
   ) async throws(IdentityOperationError) -> SSHIdentityMetadata {
+    // Imported software keys cannot be moved into the Secure Enclave.
+    guard policy != .secureEnclave else { throw .unsupportedKeyType }
     let context = accountContext
     let keychainAccount =
       policy == .iCloudKeychain
@@ -388,7 +423,7 @@ public final class SSHIdentityStore {
     let metadata = SSHIdentityMetadata(
       id: id,
       name: name,
-      publicKey: secret.publicKey,
+      publicKeyLine: secret.publicKeyLine,
       storage: policy,
       revision: LogicalRevision(counter: 0, deviceID: snapshot.deviceID)
     )
@@ -505,7 +540,7 @@ public final class SSHIdentityStore {
     } catch { throw .keychain(error) }
     try await checkKeychainAccount(intent, context: context)
     guard
-      SSHEd25519Key.authorizedKeysLine(for: stored.publicKey)
+      stored.publicKeyLine
         == intent.publicKey
     else { throw .integrityConflict }
   }
@@ -521,7 +556,7 @@ public final class SSHIdentityStore {
       publicKey: intent.publicKey,
       policy: intent.policy
     )
-    guard let key = SSHIdentityMetadata.ed25519PublicKey(line: intent.publicKey)
+    guard SSHKeyAlgorithm(canonicalPublicKeyLine: intent.publicKey) != nil
     else { throw .integrityConflict }
     try commit { snapshot in
       if intent.policy == .iCloudKeychain, let owner = intent.keychainAccount {
@@ -534,7 +569,7 @@ public final class SSHIdentityStore {
         SSHIdentityMetadata(
           id: intent.identityID,
           name: intent.name,
-          publicKey: key,
+          publicKeyLine: intent.publicKey,
           storage: intent.policy,
           createdAt: intent.createdAt,
           revision: LogicalRevision(counter: 0, deviceID: snapshot.deviceID)
@@ -887,7 +922,7 @@ public final class SSHIdentityStore {
     } catch { throw .importFailed(error) }
     try check(context)
     guard
-      SSHEd25519Key.authorizedKeysLine(for: key.secret.publicKey)
+      key.secret.publicKeyLine
         == identity.publicKey
     else { throw .publicKeyMismatch }
     let intent = IdentityIntent(
@@ -964,7 +999,7 @@ public final class SSHIdentityStore {
       kind: .importKey,
       policy: policy,
       name: name,
-      publicKey: SSHEd25519Key.authorizedKeysLine(for: secret.publicKey),
+      publicKey: secret.publicKeyLine,
       reassign: [],
       stage: .verified,
       createdAt: .now,
@@ -989,7 +1024,7 @@ public final class SSHIdentityStore {
     guard !knownIdentityIDs.contains(id) else { throw .integrityConflict }
     // A synchronizable item without metadata here may be another device's
     // key in transit; deleting it would remove it everywhere.
-    guard policy == .deviceOnly else { throw .syncedOrphan }
+    guard policy.isDeviceBound else { throw .syncedOrphan }
     do { try await secrets.delete(id: id, policy: policy) } catch {
       throw .keychain(error)
     }
@@ -1215,7 +1250,7 @@ public final class SSHIdentityStore {
         else { continue }
         if let original {
           guard
-            SSHEd25519Key.authorizedKeysLine(for: original.publicKey)
+            original.publicKeyLine
               == identity.publicKey
           else { continue }
           try await legacy.delete(label: label)

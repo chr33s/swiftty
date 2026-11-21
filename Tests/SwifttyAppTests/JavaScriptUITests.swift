@@ -7,6 +7,40 @@ import Testing
 import TestSupport
 
 extension MuxNativeTests {
+  /// `bindKey` names a key by its unshifted character, and `+` as `plus`:
+  /// ⌘⇧1 is "1+cmd+shift" as the runtime normalizes "cmd+shift+1".
+  @Test
+  @MainActor
+  func automationShortcutsNameUnshiftedKeys() throws {
+    func shortcut(
+      _ characters: String,
+      _ unmodified: String,
+      keyCode: UInt16,
+      _ flags: NSEvent.ModifierFlags
+    ) throws -> String? {
+      let event = try #require(
+        NSEvent.keyEvent(
+          with: .keyDown,
+          location: .zero,
+          modifierFlags: flags,
+          timestamp: 0,
+          windowNumber: 0,
+          context: nil,
+          characters: characters,
+          charactersIgnoringModifiers: unmodified,
+          isARepeat: false,
+          keyCode: keyCode
+        )
+      )
+      return MuxWorkspaceController.automationShortcut(event)
+    }
+    // ANSI key codes: 18 is the 1 key, 33 the [ key.
+    #expect(try shortcut("!", "!", keyCode: 18, [.command, .shift]) == "1+cmd+shift")
+    #expect(try shortcut("{", "{", keyCode: 33, [.command, .shift]) == "[+cmd+shift")
+    #expect(try shortcut("k", "k", keyCode: 40, [.command]) == "cmd+k")
+    #expect(MuxWorkspaceController.shortcutKeyName("+") == "plus")
+  }
+
   @Test(.enabled(if: hasMetal))
   func javaScriptReplaysHiddenWorkspaceIconThroughService() async throws {
     let directory = FileManager.default.temporaryDirectory

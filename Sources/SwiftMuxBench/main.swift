@@ -271,8 +271,15 @@ func frameStages(columns: Int, rows: Int) throws -> [(String, Double)] {
     _ = try timed("import") {
       try FrameImporter.snapshot(from: decoded, sequence: 1)
     }
+    // The app's path: `MuxConnection` delivers frames already validated.
+    _ = timed("import (validated)") {
+      FrameImporter.snapshot(fromValidated: decoded, sequence: 1)
+    }
   }
-  return ["capture", "export", "stamp", "encode", "decode+validate", "import"]
+  return [
+    "capture", "export", "stamp", "encode", "decode+validate", "import",
+    "import (validated)",
+  ]
     .map { ($0, percentile(times[$0] ?? [], 0.95)) }
 }
 

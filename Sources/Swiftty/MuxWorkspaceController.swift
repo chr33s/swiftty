@@ -36,6 +36,18 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   private(set) var views: [PaneID: MuxPaneView] = [:]
   private(set) var containers: [PaneID: MuxPaneContainer] = [:]
   let tabStrip = MuxTabStrip()
+  /// Holds the tab strip when tabs show on the left (`window.tabs`).
+  let tabSidebar = MuxTabSidebar()
+  /// Where the tab strip shows now: the toolbar or the sidebar.
+  private(set) var tabPosition = TabPosition.top
+  private var panesAtEdge: NSLayoutConstraint!
+  private var panesBesideSidebar: NSLayoutConstraint!
+  private var panesTrailing: NSLayoutConstraint!
+  private var panesBottom: NSLayoutConstraint!
+  /// The sidebar is hidden by its toggle (tabs on the left only).
+  private(set) var sidebarCollapsed = false
+  /// Space around the panes' card when tabs show on the left.
+  static let cardMargin: CGFloat = 8
   let automationStatus = JavaScriptStatusBar()
   var automationKeys: Set<String> = []
   var automationTabIcons: [TabID: String] = [:]
@@ -117,11 +129,28 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     layoutView.controller = self
     content.addSubview(layoutView)
     content.addSubview(automationStatus)
+    tabSidebar.translatesAutoresizingMaskIntoConstraints = false
+    tabSidebar.isHidden = true
+    content.addSubview(tabSidebar)
+    panesAtEdge = layoutView.leadingAnchor.constraint(
+      equalTo: content.leadingAnchor
+    )
+    panesBesideSidebar = layoutView.leadingAnchor.constraint(
+      equalTo: tabSidebar.trailingAnchor
+    )
+    panesTrailing = layoutView.trailingAnchor.constraint(
+      equalTo: content.trailingAnchor
+    )
+    panesBottom = layoutView.bottomAnchor.constraint(
+      equalTo: automationStatus.topAnchor
+    )
     NSLayoutConstraint.activate([
-      layoutView.topAnchor.constraint(equalTo: content.topAnchor),
-      layoutView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-      layoutView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-      layoutView.bottomAnchor.constraint(equalTo: automationStatus.topAnchor),
+      layoutView.topAnchor.constraint(equalTo: content.topAnchor), panesAtEdge,
+      panesTrailing, panesBottom,
+      tabSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+      tabSidebar.topAnchor.constraint(equalTo: content.topAnchor),
+      tabSidebar.bottomAnchor.constraint(equalTo: automationStatus.topAnchor),
+      tabSidebar.widthAnchor.constraint(equalToConstant: MuxTabSidebar.width),
       automationStatus.leadingAnchor.constraint(equalTo: content.leadingAnchor),
       automationStatus.trailingAnchor.constraint(
         equalTo: content.trailingAnchor
@@ -135,9 +164,12 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     )
     workspaceToolbar.onClick = { [weak self] in self?.toggleInbox() }
     workspaceToolbar.onNewTab = { [weak self] in self?.newTab() }
+    workspaceToolbar.onToggleSidebar = { [weak self] in self?.toggleSidebar() }
+    workspaceToolbar.sidebarControls.sidebarWidth = MuxTabSidebar.width
     window.toolbar = workspaceToolbar.toolbar
     window.toolbarStyle = .unifiedCompact
     window.titleVisibility = .hidden
+    setTabPosition(configuration.tabPosition)
     startPipelines()
   }
 
@@ -315,12 +347,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
           while let event = try await connection.nextEvent() {
             switch event {
             case let .frame(frame):
-              guard
-                let presentation = MuxPaneView.importFrame(
-                  frame,
-                  limits: limits
-                )
-              else { continue }
+              let presentation = MuxPaneView.importFrame(frame, limits: limits)
               await self?.present(presentation)
             default: await self?.handle(event)
             }
@@ -386,7 +413,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   // MARK: Layout
 
   private var workspaceTitle: String {
-    workspace.map { DisplayText.sanitize($0.name) }.flatMap(\.nonEmpty)
+    workspace.map { DisplayText.workspaceName($0.name) }.flatMap(\.nonEmpty)
       ?? "swiftty"
   }
 
@@ -460,6 +487,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
       else { continue }
       view.controller = self
       let container = MuxPaneContainer(paneView: view)
+      container.terminalBackground = terminalBackground
       container.header.onAction = { [weak self] action in
         self?.headerAction(action, pane: id)
       }
@@ -499,6 +527,12 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
         // Service default names are numbers; show the program instead.
         let automatic = name.isEmpty || name.allSatisfy(\.isNumber)
         let label = automatic ? title(of: tab.activePane) : name
+        let panes = tab.layout.panes.count
+        let detail = [
+          automatic ? nil : title(of: tab.activePane),
+          panes > 1 ? "\(panes) panes" : nil,
+        ]
+        .compactMap { $0 }.joined(separator: " · ")
         return MuxTabItem(
           id: tab.id,
           title: [automationTabIcons[tab.id], label].compactMap { $0 }
@@ -507,7 +541,8 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
           isActive: tab.id == ws.activeTab,
           hasActivity: tab.id != ws.activeTab
             && tab.layout.panes.contains(where: activity.contains),
-          name: automatic ? nil : tab.name
+          name: automatic ? nil : tab.name,
+          detail: detail
         )
       }
     )
@@ -526,21 +561,99 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
       )
     }
     let active = displayState.titles[tab.activePane].flatMap(\.nonEmpty)
-    window?.title = [automationTabIcons[tab.id], active ?? workspaceTitle]
-      .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
+    // The workspace, then what its active pane shows ("Workspace 0 — ~").
+    let shown = [workspaceTitle, active].compactMap { $0 }
+      .joined(separator: " — ")
+    window?.title = [automationTabIcons[tab.id], shown].compactMap { $0 }
+      .filter { !$0.isEmpty }.joined(separator: " ")
     updateAutomationFocus()
     showsTabs(ws.tabs.count > 1)
   }
 
   /// A one-tab workspace shows its title, not a strip with one choice.
-  /// The new-tab and inbox controls stay either way.
+  /// The new-tab and inbox controls stay either way. The sidebar stays
+  /// (its width would otherwise come and go with the second tab), and it
+  /// names the tabs, so the toolbar shows no title.
   private func showsTabs(_ shown: Bool) {
-    workspaceToolbar.tabs.isHidden = !shown
-    window?.titleVisibility = shown ? .hidden : .visible
+    switch tabPosition {
+    case .top:
+      workspaceToolbar.tabs.isHidden = !shown
+      window?.titleVisibility = shown ? .hidden : .visible
+    case .left: window?.titleVisibility = .hidden
+    }
   }
 
   /// Whether the tab strip is shown (tests).
-  var showsTabStrip: Bool { !workspaceToolbar.tabs.isHidden }
+  var showsTabStrip: Bool {
+    switch tabPosition {
+    case .top: !workspaceToolbar.tabs.isHidden
+    case .left: !tabSidebar.isHidden && tabStrip.superview === tabSidebar
+    }
+  }
+
+  /// Moves the tab strip to the toolbar (top) or the sidebar (left).
+  func setTabPosition(_ position: TabPosition) {
+    let toolbar = workspaceToolbar
+    switch position {
+    case .top:
+      if toolbar.tabs.view !== tabStrip {
+        tabStrip.removeFromSuperview()
+        tabStrip.isVertical = false
+        toolbar.tabs.view = tabStrip
+      }
+    case .left:
+      if toolbar.tabs.view === tabStrip { toolbar.tabs.view = nil }
+      if tabStrip.superview !== tabSidebar {
+        tabStrip.removeFromSuperview()
+        tabStrip.isVertical = true
+        tabSidebar.host(tabStrip)
+      }
+    }
+    toolbar.show(position)
+    let moved = tabPosition != position
+    tabPosition = position
+    layoutPanes()
+    showsTabs((workspace?.tabs.count ?? 0) > 1)
+    if moved {
+      refreshChrome()
+      layoutView.needsLayout = true
+    }
+  }
+
+  /// Hides or shows the sidebar (tabs on the left). Hidden, New Tab goes
+  /// too; the inbox and the toggle sit beside the window controls.
+  @objc
+  func toggleSidebar(_ sender: Any? = nil) {
+    guard tabPosition == .left else { return }
+    sidebarCollapsed.toggle()
+    layoutPanes()
+  }
+
+  /// Places the sidebar and panes for the tab position: on the left the
+  /// panes sit in a rounded card beside the sidebar (or, collapsed, in
+  /// its place); on top they fill the window.
+  private func layoutPanes() {
+    let left = tabPosition == .left
+    let sidebarShown = left && !sidebarCollapsed
+    let margin = left ? Self.cardMargin : 0
+    tabSidebar.isHidden = !sidebarShown
+    workspaceToolbar.sidebarControls.isCollapsed = !sidebarShown
+    panesBesideSidebar.isActive = false
+    panesAtEdge.isActive = false
+    panesAtEdge.constant = left ? margin : 0
+    if sidebarShown {
+      panesBesideSidebar.isActive = true
+    } else {
+      panesAtEdge.isActive = true
+    }
+    panesTrailing.constant = -margin
+    panesBottom.constant = -margin
+    layoutView.isCard = left
+    layoutView.needsLayout = true
+  }
+
+  /// Whether the panes show in a rounded card (tests).
+  var panesInCard: Bool { layoutView.isCard }
 
   private func markActivity(_ pane: PaneID) {
     guard !detached else { return }
@@ -584,7 +697,11 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     guard let tab = activeTab, let tree = displayedLayout else {
       return ([], [])
     }
-    let area = MuxLayoutView.area(bounds, split: tree.panes.count > 1)
+    let area = MuxLayoutView.area(
+      bounds,
+      split: tree.panes.count > 1,
+      margin: layoutView.splitMargin
+    )
     if let zoomed = tab.zoomedPane, let view = containers[zoomed] {
       let frame = NSRect(
         x: area.x,
@@ -628,7 +745,11 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
       ratio,
       at: path,
       of: tree,
-      in: MuxLayoutView.area(layoutView.bounds, split: tree.panes.count > 1),
+      in: MuxLayoutView.area(
+        layoutView.bounds,
+        split: tree.panes.count > 1,
+        margin: layoutView.splitMargin
+      ),
       minimum: minimumPaneSize,
       divider: MuxLayoutView.divider
     )
@@ -1281,6 +1402,9 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     let appearance = window?.effectiveAppearance ?? NSApp.effectiveAppearance
     let scheme = TerminalView.scheme(of: appearance)
     let p = config.palette(for: scheme)
+    for container in containers.values {
+      container.terminalBackground = terminalBackground
+    }
     var colors: [UInt32] = []
     colors.reserveCapacity(256)
     for i in 0 ..< 256 { colors.append(p.colors[i]) }
@@ -1299,6 +1423,23 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
           dark: scheme == .dark
         )
       )
+    )
+  }
+
+  /// The theme's terminal background at the configured opacity, as the
+  /// panes clear to it: a split tab's cards wear it around their terminal.
+  var terminalBackground: NSColor {
+    let appearance = window?.effectiveAppearance ?? NSApp.effectiveAppearance
+    let bg = config.palette(for: TerminalView.scheme(of: appearance)).background
+    let opacity =
+      config.backgroundOpacity.isNaN
+      ? 1 : max(0, min(1, config.backgroundOpacity))
+    return NSColor(
+      srgbRed: CGFloat(bg >> 16 & 0xFF) / 255,
+      green: CGFloat(bg >> 8 & 0xFF) / 255,
+      blue: CGFloat(bg & 0xFF) / 255,
+      // Quantized as the renderer's clear colour is.
+      alpha: CGFloat(UInt32(opacity * 255)) / 255
     )
   }
 
@@ -1345,6 +1486,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
       resolvesShellPreference || configuration.preferredShell != nil
     config = configuration
     for view in views.values { view.apply(paneConfiguration) }
+    setTabPosition(configuration.tabPosition)
     if let window {
       let focused =
         searchBar?.field.currentEditor() === window.firstResponder

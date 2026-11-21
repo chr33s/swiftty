@@ -10,6 +10,12 @@ private typealias EntryPoint =
     @escaping @Sendable (UnsafeRawBufferPointer) -> Void,
   ) async throws -> Bool
 
+/// The run's configuration JSON, written once before the run and only
+/// read after.
+private struct ConfigurationBytes: @unchecked Sendable {
+  let bytes: UnsafeRawBufferPointer
+}
+
 private final class RunEvidence: @unchecked Sendable {
   private let lock = NSLock()
   private var runStarted = false
@@ -18,6 +24,10 @@ private final class RunEvidence: @unchecked Sendable {
   private var started: Set<String> = []
   private var ended: Set<String> = []
   private var valid = true
+  /// A filtered run may select no test in this bundle.
+  let allowsEmpty: Bool
+
+  init(allowsEmpty: Bool) { self.allowsEmpty = allowsEmpty }
 
   func record(_ bytes: UnsafeRawBufferPointer) {
     lock.lock()
@@ -61,7 +71,8 @@ private final class RunEvidence: @unchecked Sendable {
   var completed: Bool {
     lock.lock()
     defer { lock.unlock() }
-    return valid && functions > 0 && runStarted && runEnded && started == ended
+    return valid && (functions > 0 || allowsEmpty) && runStarted && runEnded
+      && started == ended
   }
 }
 
@@ -125,21 +136,32 @@ struct SwiftTestingHost {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
     app.finishLaunching()
-    let evidence = RunEvidence()
+    // Newline-separated patterns (`--filter` in test-native.sh).
+    let filters =
+      (ProcessInfo.processInfo.environment["SWIFTTY_TEST_FILTER"] ?? "")
+      .split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+    let evidence = RunEvidence(allowsEmpty: !filters.isEmpty)
+    var arguments: [String: Any] = ["eventStreamVersion": 0, "parallel": false]
+    if !filters.isEmpty { arguments["filter"] = filters }
+    // Never freed: the ABI call reads it until the process exits.
+    let encoded = try! JSONSerialization.data(withJSONObject: arguments)
+    let storage = UnsafeMutableRawBufferPointer.allocate(
+      byteCount: encoded.count,
+      alignment: 1
+    )
+    storage.copyBytes(from: encoded)
+    let configuration = ConfigurationBytes(
+      bytes: UnsafeRawBufferPointer(storage)
+    )
     Task {
       do {
-        // Pin the JSON schema used by the completion audit. Static storage
-        // keeps this buffer valid across the asynchronous ABI call.
+        // `configuration` pins the JSON schema used by the completion audit.
         // Suites share AppKit state and some synchronously wait for dispatch
         // callbacks. Run them serially so small CI runners cannot starve those
         // callbacks behind unrelated tests on the cooperative thread pool.
-        let configuration: StaticString =
-          #"{"eventStreamVersion":0,"parallel":false}"#
-        let bytes = UnsafeRawBufferPointer(
-          start: configuration.utf8Start,
-          count: configuration.utf8CodeUnitCount,
-        )
-        let success = try await entry(bytes) { evidence.record($0) }
+        let success = try await entry(configuration.bytes) {
+          evidence.record($0)
+        }
         guard success else { exit(1) }
         guard evidence.completed else {
           fputs("Test bundle did not report a complete nonempty run\n", stderr)

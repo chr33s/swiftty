@@ -90,6 +90,58 @@ struct PresentationSelectionTests {
     #expect(s.withState { $0.selection } == nil)
   }
 
+  /// Row versions belong to an attachment's exporter and are never
+  /// reissued, so after a reattachment every row has a new version. The
+  /// client does not re-derive a selection from unchanged text: it ends
+  /// on the first frame that shows a selected row, and one that was off
+  /// the frame then ends when it comes back into view.
+  @Test
+  func `a reattachment's new row versions end the selection`() {
+    let fresh = Dictionary(uniqueKeysWithValues: (0 ..< 20).map { ($0, UInt64(7)) })
+    let s = TerminalSession(presentationColumns: 10, rows: 4)
+    #expect(s.installPresentation(Self.window(top: 10)))
+    Self.select(s, from: 1, to: 2)
+    // Same text, same rows, new versions.
+    #expect(s.installPresentation(Self.window(top: 10, versions: fresh)))
+    #expect(s.withState { $0.selection } == nil)
+    #expect(s.withState { $0.hasLivePresentationSelection } == false)
+
+    // Off the frame at the reattachment: kept until shown, then ended.
+    #expect(s.installPresentation(Self.window(top: 10)))
+    Self.select(s, from: 1, to: 2)
+    #expect(s.installPresentation(Self.window(top: 4)))
+    #expect(s.withState { $0.presentationSelectionBeyondView } != nil)
+    #expect(s.installPresentation(Self.window(top: 4, versions: fresh)))
+    #expect(s.installPresentation(Self.window(top: 10, versions: fresh)))
+    #expect(s.withState { $0.selection } == nil)
+    #expect(s.withState { $0.presentationSelectionBeyondView } == nil)
+  }
+
+  /// A new line or word selection is not the old live selection: one
+  /// whose start lands where the old start was clamped to the frame keeps
+  /// none of the old selection's host rows beyond the frame.
+  @Test
+  func `a new selection does not inherit a clamped end`() {
+    let s = TerminalSession(presentationColumns: 10, rows: 4)
+    #expect(s.installPresentation(Self.window(top: 10)))
+    Self.select(s, from: 1, to: 2)  // rows 11 and 12
+    // Scroll on one: row 11 is above the frame, so the anchor shows at (0, 0).
+    #expect(s.installPresentation(Self.window(top: 12)))
+    #expect(s.withState { $0.presentationSelectionBeyondView } != nil)
+    // A triple-click on row 0 selects that line, starting at (0, 0).
+    s.mutate { state in
+      state.beginSelection(
+        Selection(
+          anchor: state.viewportPoint(row: 0, column: 0),
+          head: state.viewportPoint(row: 0, column: 9)
+        )
+      )
+    }
+    #expect(s.installPresentation(Self.window(top: 12)))
+    #expect(s.withState { $0.selectionText } == "row 12")
+    #expect(s.withState { $0.presentationSelectionBeyondView } == nil)
+  }
+
   @Test
   func `a selection beyond the window is copied by the handler`() async {
     let s = TerminalSession(presentationColumns: 10, rows: 4)
@@ -148,6 +200,29 @@ struct PresentationSelectionTests {
     let beyond = s.withState { $0.presentationSelectionBeyondView }
     #expect(beyond?.anchor.row == 10)
     #expect(beyond?.head.row == 15)
+  }
+
+  /// A rectangle whose start has scrolled above the frame is drawn in its
+  /// own columns from the top row, not from column 0.
+  @Test
+  func `a clamped rectangle keeps its columns`() {
+    var selection = PresentationSelection(
+      generation: 3,
+      alternateScreen: false,
+      anchor: (row: 8, column: 2),
+      head: (row: 12, column: 5),
+      rectangle: true
+    )
+    let keys = (10 ..< 14).map { [UInt64(3), 0, UInt64($0), 1, 1] }
+    #expect(
+      selection.place(in: keys, columns: 10)
+        == .shown(anchor: .init(row: 0, column: 2), head: .init(row: 2, column: 5))
+    )
+    selection.rectangle = false
+    #expect(
+      selection.place(in: keys, columns: 10)
+        == .shown(anchor: .init(row: 0, column: 0), head: .init(row: 2, column: 5))
+    )
   }
 
   @Test

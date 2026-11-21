@@ -493,7 +493,7 @@ Rules specific to RST/1:
 
 With `layoutControl` listed by both sides, a client can see and change the attached workspace's tabs and panes, as the Mac's own window does. RST/1 otherwise shows only the workspace's active pane.
 
-- **`Layout`** (host to client): `attachmentEpoch` and a layout. The layout holds the workspace name, its layout revision, the active tab, and each tab's ID, name, panes in display order and active pane. Each pane has an ID, a title and whether it has exited. The host sends it after `Attached` and whenever any of these change. It carries names and titles only: no geometry, processes or working directories. At most 64 tabs, 64 panes per tab, and 256 bytes per name or title; the host cuts longer names at a character boundary, and a client rejects a layout over the limits as malformed.
+- **`Layout`** (host to client): `attachmentEpoch` and a layout. The layout holds the workspace name, its layout revision, the active tab, and each tab's ID, name, panes in display order and active pane. Each pane has an ID, a title and whether it has exited. The host sends it after `Attached` and whenever any of these other than the revision change; a revision that advances alone (a split ratio or zoom) sends none. It carries names and titles only: no geometry, processes or working directories. At most 64 tabs, 64 panes across all tabs, and 256 bytes per name or title; the host cuts longer names at a character boundary, and a client rejects a layout over the limits as malformed. A layout always fits one control record: where its JSON would leave less than 512 bytes of the 64 KiB record for the message around it (titles of control characters escape to six bytes each), the host halves the bytes every name and title may keep until it fits.
 - **`LayoutAction`** (client to host): `attachmentEpoch`, a client-chosen `requestID` and one action. The actions are split the shown pane (`leftRight` or `topBottom`), focus a pane, close a pane, new tab, select a tab, rename a tab, close a tab, and rename the workspace. Names are nonempty and within the 256-byte limit.
 - **`LayoutResult`** (host to client): the `requestID` and no error, or the reason: `writerBusy`, `limitExceeded`, `inputInvalid` (the tab or pane is gone, or the name is refused), `notAttached` or `internalError`.
 
@@ -576,6 +576,33 @@ and reveal intents belong to the individual terminal screen and are discarded
 when that screen closes, even if its lazy backend never started.
 
 If UDP is blocked, offer ordinary SSH. This opens a **different** shell; the retained roaming shell remains available until expiry. Same-session RST tunneling through an SSH channel is a later extension, not a hidden v1 promise.
+
+### 9.1 Ordinary SSH recovery and transport options
+
+Adapted from Shell's mobile-connectivity contract. Ordinary SSH has no continuity: a replacement transport is a **new shell** and is always reported as one. Roaming RST/1 recovery above is unchanged.
+
+**Settings → Connection** (per device, `UserDefaults` key `connection.resilience.v1`, never synced):
+
+| Setting | Default | Effect |
+|---|---|---|
+| Reconnect Automatically | On | A dropped ordinary SSH connection opens a new shell in the same screen. |
+| Attempts per Recovery Burst | 3 (1–10) | Attempts before slowing to the cooldown. |
+| Periodic Connection Health Checks | On | Probe the connection while a shell is shown in the foreground. |
+| Probe Interval | 30 s (15–300) | Time between probes. |
+| Keep Connections Alive | On | TCP keepalive: 30 s idle, 10 s interval, 3 probes. |
+| Force IPv4 | Off | Network.framework connects over IPv4 only; the POSIX transport refuses the option rather than ignoring it. |
+
+Keepalive and IPv4 apply to every SSH connection the app opens (ordinary shell, roaming bootstrap, SFTP, attention), from the next connection onward.
+
+**Loss versus exit.** Only a dropped *connection* is recovered. A shell that exits, or a channel the server closes while the connection still answers a probe, ends as before ("Shell exited" or "SSH connection lost") with no automatic replacement.
+
+**Recovery bursts.** One recovery at a time. A burst waits 1, 2, 4, 8 then 15 s before successive attempts. Once the burst is spent, the intent survives and attempts continue every 60 s. Returning to the foreground, a network path change, or **Reconnect Now** starts a fresh burst immediately. Recovery pauses in the background; nothing keeps the app alive. Each attempt resolves credentials again (a remembered or saved password, or the selected key); an error that needs the user — rejected credentials, a changed or unknown host key, an unavailable key, a cancelled prompt — stops recovery and shows the usual problem.
+
+**Health checks.** A probe asks the server to open and then immediately closes a session channel; any answer, including a refusal, proves the server is reading the connection. No bytes reach the running shell. A probe unanswered within 10 s closes the connection, which then follows the recovery rules. With periodic checks off, one bounded probe still runs on foreground return and on a path change.
+
+**Honest outcome.** A successful recovery shows, outside the terminal byte stream: *New shell opened. The connection dropped, so the previous shell ended and was not resumed; a command it was running may not have finished.* Earlier output stays visible above the new prompt. Input typed while disconnected is refused, never queued for the new shell.
+
+Acceptance: `ConnectionResilienceTests` (schedule, clamping, persistence), `SSHResilienceTests` (keepalive and IPv4 connect, IPv6 literal refused, unanswered probe, decoding older configurations) and `SSHShellControllerTests` (a dropped connection yields exactly one new shell and the notice with no password prompt; with recovery off the shell stays lost; errors needing the user stop recovery). Physical-device validation of Wi-Fi/cellular handover is pending.
 
 ## 10. SFTP: independent, resumable file operations
 
@@ -792,6 +819,8 @@ Maintain the design-provenance record (Appendix B) citing the paper and public s
 ---
 
 ## Revision record
+
+**2026-11-20 — Ordinary SSH recovery:** Add §9.1: automatic new-shell recovery in bounded bursts with a cooldown, health probes, TCP keepalive and an IPv4-only option, with honest new-shell reporting. RST/1 and roaming recovery are unchanged.
 
 **2026-11-19 — Shared frames, deltas and copy:** Add three additive features. `paneFrames` (§6, §7.2) adopts the multiplexer's frame model and `SMXB/1` codec under an `rstHeader` envelope. `screenDeltas` (§7.4) adds deltas in that format against the last acknowledged screen, with client baseline retention and `RequestFullScreen`. `copySelection` (§7.5) adds live selection across history and chunked host-side copy. Also adds A20–A22 and Gate 2a. Legacy JSON snapshots, outage recovery and the rest of RST/1 are unchanged.
 

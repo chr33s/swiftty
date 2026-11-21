@@ -44,16 +44,15 @@ public struct IdentityResolver: Sendable {
   ) async throws(IdentityResolutionError) -> IdentitySecret {
     guard let metadata else { throw .unknownIdentity }
     guard !metadata.isDeleted else { throw .deleted }
-    guard metadata.isValid, let expected = metadata.ed25519PublicKey else {
-      throw .integrityConflict
-    }
+    guard metadata.isValid else { throw .integrityConflict }
     guard !Task.isCancelled else { throw .cancelled }
     let secret: IdentitySecret
     do {
       secret = try await secrets.read(id: metadata.id, policy: metadata.storage)
     } catch { throw Self.map(error, policy: metadata.storage) }
     guard !Task.isCancelled else { throw .cancelled }
-    guard secret.publicKey.rawRepresentation == expected.rawRepresentation
+    guard secret.publicKeyLine == metadata.publicKey,
+      secret.matches(metadata.storage)
     else { throw .integrityConflict }
     return secret
   }
@@ -74,7 +73,7 @@ public struct IdentityResolver: Sendable {
   ) -> IdentityResolutionError {
     switch error {
     case .notFound:
-      policy == .deviceOnly ? .unavailableOnThisDevice : .awaitingKeyMaterial
+      policy.isDeviceBound ? .unavailableOnThisDevice : .awaitingKeyMaterial
     case .protectedDataUnavailable: .protectedDataUnavailable
     case .authenticationCancelled: .cancelled
     case .malformed, .ambiguous, .duplicate: .integrityConflict

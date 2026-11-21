@@ -125,8 +125,8 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     let remote = SSHIdentityMetadata(
       id: original.id,
       name: "Delivered",
-      publicKey: kind == "different"
-        ? IdentitySecret(.init()).publicKey : key.publicKey,
+      publicKeyLine: kind == "different"
+        ? IdentitySecret(.init()).publicKeyLine : key.publicKeyLine,
       storage: .iCloudKeychain,
       createdAt: original.createdAt,
       revision: LogicalRevision(counter: 100, deviceID: UUID()),
@@ -178,7 +178,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     let remote = SSHIdentityMetadata(
       id: original.id,
       name: "B",
-      publicKey: IdentitySecret(.init()).publicKey,
+      publicKeyLine: IdentitySecret(.init()).publicKeyLine,
       storage: .iCloudKeychain,
       revision: LogicalRevision(counter: 10, deviceID: UUID())
     )

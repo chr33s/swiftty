@@ -171,10 +171,6 @@ struct OpenSSHKeyImporterTests {
     #expect(
       Self.failure(try Self.fixture("rsa")) == .unsupportedAlgorithm("ssh-rsa")
     )
-    #expect(
-      Self.failure(try Self.fixture("ecdsa-pem"))
-        == .unsupportedFormat("PEM EC")
-    )
     #expect(Self.failure(try Self.fixture("plain.pub")) == .publicKeyOnly)
     #expect(Self.failure(try Self.fixture("plain-cert.pub")) == .certificate)
     #expect(Self.failure(Data("hello".utf8)) == .unrecognizedFormat)
@@ -285,7 +281,7 @@ struct OpenSSHKeyImporterTests {
     let builder = Builder()
     let key = try Self.decode(builder.data()).get()
     #expect(
-      key.secret.publicKey.rawRepresentation
+      key.secret.ed25519PrivateKey?.publicKey.rawRepresentation
         == builder.key.publicKey.rawRepresentation
     )
     #expect(key.comment == "synthetic")

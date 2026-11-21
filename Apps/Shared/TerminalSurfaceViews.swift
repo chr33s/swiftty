@@ -13,6 +13,21 @@ import AppKit
 import SwifttyMac
 #endif
 
+extension View {
+  /// What sits behind a terminal surface. iPhone and iPad paint the
+  /// terminal's colour, opaque, behind the whole screen
+  /// (`TerminalChromeBackground`); glass there would tint a translucent
+  /// terminal away from the bars, so none is added. Elsewhere, glass.
+  @ViewBuilder
+  func terminalBacking() -> some View {
+    #if os(iOS) && !targetEnvironment(macCatalyst)
+    self
+    #else
+    glassSurface(fillsSafeArea: false)
+    #endif
+  }
+}
+
 /// How the terminal pages between panes: the screen last seen of the pane
 /// a drag reveals (nil: none yet), and the switch once a drag commits.
 struct PaneSwitching {
@@ -88,11 +103,22 @@ struct RoamingSurfaceView: View {
   private var renaming: RenameTarget?
   @State
   private var newName = ""
+  @State
+  private var ending: EndRequest?
 
   /// What the rename prompt names.
   enum RenameTarget: Equatable {
     case tab(TabID)
     case workspace
+  }
+
+  /// Closing a pane or tab ends its processes; as on the Mac, it asks
+  /// first while one is still running.
+  struct EndRequest: Equatable {
+    let action: LayoutAction
+    let confirms: Bool
+    let message: String
+    let detail: String
   }
 
   var body: some View {
@@ -105,7 +131,7 @@ struct RoamingSurfaceView: View {
           commit: { controller.switchPane(next: $0) }
         ) : nil
     )
-    .uiTestingScreenProbe(controller.model).glassSurface(fillsSafeArea: false)
+    .uiTestingScreenProbe(controller.model).terminalBacking()
     .overlay { overlay }
     .safeAreaInset(edge: .bottom) {
       if controller.offersOrdinarySSH {
@@ -185,6 +211,22 @@ struct RoamingSurfaceView: View {
         bundle: #bundle
       )
     }
+    .confirmationDialog(
+      Text(ending?.message ?? ""),
+      isPresented: Binding(
+        get: { ending != nil },
+        set: { if !$0 { ending = nil } }
+      ),
+      titleVisibility: .visible,
+      presenting: ending
+    ) { request in
+      Button(.localized("End"), role: .destructive) {
+        controller.perform(request.action)
+      }
+      Button(.localized("Cancel"), role: .cancel) {}
+    } message: { request in
+      Text(request.detail)
+    }
     #if !os(tvOS)
     .adaptiveSheet(isPresented: $showsFiles) {
       SFTPBrowserView(selection: controller.selection, app: app)
@@ -234,7 +276,7 @@ struct RoamingSurfaceView: View {
       }
       if tab.panes.count > 1 || layout.tabs.count > 1 {
         Button(.localized("Close Pane"), systemImage: "xmark") {
-          controller.perform(.closePane(pane: tab.activePane))
+          end(Self.ending(pane: tab.activePane, of: tab))
         }
         .accessibilityIdentifier("session.closePane")
       }
@@ -273,13 +315,14 @@ struct RoamingSurfaceView: View {
         .accessibilityIdentifier("session.tabs")
       }
       Button(.localized("Rename Tab…"), systemImage: "pencil") {
-        newName = tab.name
+        // A numbered default is not offered for editing, as on the Mac.
+        newName = tab.hasAutomaticName ? "" : tab.name
         renaming = .tab(tab.id)
       }
       .accessibilityIdentifier("session.renameTab")
       if layout.tabs.count > 1 {
         Button(.localized("Close Tab"), systemImage: "xmark") {
-          controller.perform(.closeTab(tab: tab.id))
+          end(Self.ending(tab: tab, in: layout))
         }
         .accessibilityIdentifier("session.closeTab")
       }
@@ -315,8 +358,8 @@ struct RoamingSurfaceView: View {
   }
 
   private func commitRename() {
-    let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
     defer { renaming = nil }
+    let name = Self.renamed(newName)
     guard !name.isEmpty, let target = renaming else { return }
     switch target {
     case let .tab(id): controller.perform(.renameTab(tab: id, name: name))
@@ -324,14 +367,72 @@ struct RoamingSurfaceView: View {
     }
   }
 
-  static func title(of pane: RemoteLayout.Pane, at index: Int) -> String {
-    pane.title.isEmpty
-      ? String(localized: "Pane \(index + 1)", bundle: #bundle) : pane.title
+  /// A typed name as sent: trimmed, and cut at a character to the wire
+  /// limit the host would otherwise refuse (spec.roaming.md §7.6).
+  static func renamed(_ text: String) -> String {
+    RemoteLayout.bounded(text.trimmingCharacters(in: .whitespacesAndNewlines))
+      .trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
+  private func end(_ request: EndRequest) {
+    if request.confirms {
+      ending = request
+    } else {
+      controller.perform(request.action)
+    }
+  }
+
+  /// Ending `pane`; asks while its process runs, or when the layout does
+  /// not list it.
+  static func ending(pane: PaneID, of tab: RemoteLayout.Tab) -> EndRequest {
+    let index = tab.panes.firstIndex { $0.id == pane }
+    let name = index.map { title(of: tab.panes[$0], at: $0) } ?? ""
+    return EndRequest(
+      action: .closePane(pane: pane),
+      confirms: index.map { !tab.panes[$0].exited } ?? true,
+      message: String(localized: "End the pane “\(name)”?", bundle: #bundle),
+      detail: String(
+        localized: "Its process is still running and will be terminated.",
+        bundle: #bundle
+      )
+    )
+  }
+
+  /// Ending `tab` and every pane in it; asks while any process runs.
+  static func ending(
+    tab: RemoteLayout.Tab,
+    in layout: RemoteLayout
+  ) -> EndRequest {
+    let index = layout.tabs.firstIndex { $0.id == tab.id } ?? 0
+    let name = title(of: tab, at: index)
+    let count = tab.panes.count
+    return EndRequest(
+      action: .closeTab(tab: tab.id),
+      confirms: tab.panes.isEmpty || tab.panes.contains { !$0.exited },
+      message: String(localized: "End the tab “\(name)”?", bundle: #bundle),
+      detail: count > 1
+        ? String(
+          localized:
+            "Its \(count) panes and their processes will be terminated.",
+          bundle: #bundle
+        )
+        : String(
+          localized: "Its process is still running and will be terminated.",
+          bundle: #bundle
+        )
+    )
+  }
+
+  /// The program's title, as the Mac shows it, else a numbered default.
+  static func title(of pane: RemoteLayout.Pane, at index: Int) -> String {
+    pane.displayTitle ?? String(localized: "Pane \(index + 1)", bundle: #bundle)
+  }
+
+  /// The given name, else the active pane's program (the Mac's tab strip
+  /// replaces the service's numbered defaults the same way), else a
+  /// numbered default.
   static func title(of tab: RemoteLayout.Tab, at index: Int) -> String {
-    tab.name.isEmpty
-      ? String(localized: "Tab \(index + 1)", bundle: #bundle) : tab.name
+    tab.displayName ?? String(localized: "Tab \(index + 1)", bundle: #bundle)
   }
 
   @ViewBuilder
@@ -424,11 +525,12 @@ struct SSHSurfaceView: View {
         session: controller.session,
         capabilities: controller.model.capabilities
       )
-      .uiTestingScreenProbe(controller.model).glassSurface(fillsSafeArea: false)
+      .uiTestingScreenProbe(controller.model).terminalBacking()
       .overlay { overlay }
     }
     .ignoresSafeArea(.keyboard, edges: .bottom)
     .modifier(SSHSessionActions(controller: controller, app: app))
+    .modifier(SSHScenePhaseForwarding(controller: controller))
     .task { controller.start() }
   }
 
@@ -440,12 +542,34 @@ struct SSHSurfaceView: View {
     case .failed(let problem):
       ProblemCard(
         problem: problem,
-        retryTitle: .localized("Open New SSH Shell")
+        retryTitle: controller.recovery != nil
+          ? .localized("Reconnect Now") : .localized("Open New SSH Shell")
       ) { _ in
-        // A new, different shell; the old one is gone.
+        // While recovering, try now in this screen; otherwise open a new,
+        // different shell. Either way the old one is gone.
+        guard !controller.retryNow() else { return }
         Task { await app.openOrdinarySSH(from: controller.model) }
       }
     }
+  }
+}
+
+/// Forwards this window's scene phase to the SSH shell, which pauses
+/// health checks and recovery in the background and checks the connection
+/// on return (spec.roaming.md §9.1).
+private struct SSHScenePhaseForwarding: ViewModifier {
+  let controller: SSHShellController
+  @Environment(\.scenePhase)
+  private var scenePhase
+  @State
+  private var scene = UUID()
+
+  func body(content: Content) -> some View {
+    content.onAppear { controller.scenePhaseChanged(scenePhase, scene: scene) }
+      .onChange(of: scenePhase) { _, phase in
+        controller.scenePhaseChanged(phase, scene: scene)
+      }
+      .onDisappear { controller.scenePhaseChanged(nil, scene: scene) }
   }
 }
 
@@ -662,6 +786,8 @@ struct TerminalDisplayView: UIViewRepresentable {
     clip.paneSwitching = paneSwitching
     clip.terminal.onPaneDrag =
       paneSwitching == nil ? nil : { [weak clip] in clip?.drag($0) }
+    // The drag's end would now reach no handler.
+    if paneSwitching == nil { clip.endPaging() }
   }
 }
 
@@ -746,6 +872,14 @@ final class TerminalClipView: UIView {
       dragging = false
       settle()
     }
+  }
+
+  /// Paging was withdrawn (one pane left): a drag in progress settles
+  /// back instead of leaving the pages displaced.
+  func endPaging() {
+    guard dragging else { return }
+    dragging = false
+    settle()
   }
 
   /// Takes over from any turn still settling: the terminal shows its

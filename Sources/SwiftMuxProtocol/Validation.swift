@@ -85,7 +85,10 @@ public enum FrameValidator {
       h.viewportOffset <= h.scrollbackRows
     else { throw MuxError(.invalidRequest, "history window") }
     if let search = frame.search {
+      // `SMXB/1` encodes an absent index as -1, so a negative `selected`
+      // from JSON would not survive the binary form.
       guard search.matchCount >= 0, search.visible.count <= count,
+        search.selected.map({ $0 >= 0 && $0 < search.matchCount }) ?? true,
         search.selectedVisible.map({ $0 >= 0 && $0 < search.visible.count })
           ?? true
       else { throw MuxError(.invalidRequest, "search state") }

@@ -6,6 +6,7 @@ import NIOSSH
 import Synchronization
 
 #if canImport(Network)
+import Network
 import NIOTransportServices
 #endif
 
@@ -22,19 +23,48 @@ public struct SSHClientConfiguration: Hashable, Sendable, Codable {
   /// trust store and before any credential, so a known key outside this
   /// set still blocks. `nil` applies only the trust store.
   public var expectedHostKeyFingerprints: Set<String>?
+  /// Restricts name resolution and connection to IPv4 (spec.roaming.md
+  /// §9.1). Off by default.
+  public var forceIPv4: Bool
+  /// TCP keepalive probes, so an idle connection through a NAT or a
+  /// suspended peer is detected by the transport. `nil` disables them.
+  public var keepalive: SSHKeepalive?
 
   public init(
     host: String,
     port: Int = 22,
     username: String,
     connectTimeout: Duration = .seconds(20),
-    expectedHostKeyFingerprints: Set<String>? = nil
+    expectedHostKeyFingerprints: Set<String>? = nil,
+    forceIPv4: Bool = false,
+    keepalive: SSHKeepalive? = nil
   ) {
     self.host = host
     self.port = port
     self.username = username
     self.connectTimeout = connectTimeout
     self.expectedHostKeyFingerprints = expectedHostKeyFingerprints
+    self.forceIPv4 = forceIPv4
+    self.keepalive = keepalive
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case host, port, username, connectTimeout, expectedHostKeyFingerprints
+    case forceIPv4, keepalive
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    host = try c.decode(String.self, forKey: .host)
+    port = try c.decode(Int.self, forKey: .port)
+    username = try c.decode(String.self, forKey: .username)
+    connectTimeout = try c.decode(Duration.self, forKey: .connectTimeout)
+    expectedHostKeyFingerprints = try c.decodeIfPresent(
+      Set<String>.self,
+      forKey: .expectedHostKeyFingerprints
+    )
+    forceIPv4 = try c.decodeIfPresent(Bool.self, forKey: .forceIPv4) ?? false
+    keepalive = try c.decodeIfPresent(SSHKeepalive.self, forKey: .keepalive)
   }
 
   /// Identity host trust is scoped to; `nil` if host or port is invalid.
@@ -50,18 +80,42 @@ public struct SSHClientConfiguration: Hashable, Sendable, Codable {
   }
 }
 
+/// TCP keepalive timing (spec.roaming.md §9.1). The transport closes the
+/// connection after `count` unanswered probes, which the shell then
+/// reports as lost.
+public struct SSHKeepalive: Hashable, Sendable, Codable {
+  /// Idle time before the first probe, in seconds.
+  public var idle: Int
+  /// Time between unanswered probes, in seconds.
+  public var interval: Int
+  public var count: Int
+
+  public init(idle: Int = 30, interval: Int = 10, count: Int = 3) {
+    self.idle = max(1, idle)
+    self.interval = max(1, interval)
+    self.count = max(1, count)
+  }
+
+  public static let standard = SSHKeepalive()
+}
+
 /// A user credential. Descriptions are redacted; never log the payload.
 public enum SSHCredential: Sendable, CustomStringConvertible,
   CustomDebugStringConvertible
 {
   case password(String)
+  /// An Ed25519, ECDSA or Secure Enclave key (spec.ssh-identity.md §13).
+  case publicKey(SSHSigningKey)
+
   /// App-managed Ed25519 key (see `Ed25519KeyStore`).
-  case ed25519(Curve25519.Signing.PrivateKey)
+  public static func ed25519(_ key: Curve25519.Signing.PrivateKey) -> Self {
+    .publicKey(.ed25519(key))
+  }
 
   public var description: String {
     switch self {
     case .password: "SSHCredential.password(<redacted>)"
-    case .ed25519: "SSHCredential.ed25519(<redacted>)"
+    case .publicKey: "SSHCredential.publicKey(<redacted>)"
     }
   }
   public var debugDescription: String { description }
@@ -102,8 +156,8 @@ final class CredentialOfferDelegate: NIOSSHClientUserAuthenticationDelegate,
       switch credential {
       case let .password(password) where availableMethods.contains(.password):
         .password(.init(password: password))
-      case let .ed25519(key) where availableMethods.contains(.publicKey):
-        .privateKey(.init(privateKey: NIOSSHPrivateKey(ed25519Key: key)))
+      case let .publicKey(key) where availableMethods.contains(.publicKey):
+        .privateKey(.init(privateKey: key.nioPrivateKey))
       default: nil
       }
     guard first, let offer else {
@@ -375,8 +429,7 @@ public final class SSHConnection: Sendable {
     do {
       let connecting = try connectChannel(
         loop: loop,
-        host: configuration.host,
-        port: configuration.port,
+        configuration: configuration,
         timeout: timeout,
         initializer: initializer
       )
@@ -439,23 +492,52 @@ public final class SSHConnection: Sendable {
 
   private static func connectChannel(
     loop: any EventLoop,
-    host: String,
-    port: Int,
+    configuration: SSHClientConfiguration,
     timeout: TimeAmount,
     initializer: @escaping @Sendable (any Channel) -> EventLoopFuture<Void>
   ) throws -> EventLoopFuture<any Channel> {
+    let host = configuration.host
+    let port = configuration.port
     #if canImport(Network)
     if let bootstrap = NIOTSConnectionBootstrap(validatingGroup: loop) {
-      return bootstrap.connectTimeout(timeout).channelInitializer(initializer)
-        .connect(host: host, port: port)
+      let tcp = NWProtocolTCP.Options()
+      tcp.noDelay = true
+      if let keepalive = configuration.keepalive {
+        tcp.enableKeepalive = true
+        tcp.keepaliveIdle = keepalive.idle
+        tcp.keepaliveInterval = keepalive.interval
+        tcp.keepaliveCount = keepalive.count
+      }
+      let forceIPv4 = configuration.forceIPv4
+      return bootstrap.connectTimeout(timeout).tcpOptions(tcp)
+        .configureNWParameters { parameters in
+          guard forceIPv4,
+            let ip = parameters.defaultProtocolStack.internetProtocol
+              as? NWProtocolIP.Options
+          else { return }
+          ip.version = .v4
+        }
+        .channelInitializer(initializer).connect(host: host, port: port)
     }
     #endif
     guard let bootstrap = ClientBootstrap(validatingGroup: loop) else {
       throw SSHClientError.invalidConfiguration("event loop group")
     }
-    return bootstrap.connectTimeout(timeout)
+    var configured = bootstrap.connectTimeout(timeout)
       .channelOption(.socketOption(.tcp_nodelay), value: 1)
-      .channelInitializer(initializer).connect(host: host, port: port)
+    if configuration.keepalive != nil {
+      configured = configured.channelOption(
+        .socketOption(.so_keepalive),
+        value: 1
+      )
+    }
+    // Address-family selection needs Network.framework, which every Apple
+    // client uses. Refuse rather than silently connecting over IPv6.
+    if configuration.forceIPv4 {
+      throw SSHClientError.invalidConfiguration("IPv4-only transport")
+    }
+    return configured.channelInitializer(initializer)
+      .connect(host: host, port: port)
   }
 
   public var isActive: Bool { channel.isActive }

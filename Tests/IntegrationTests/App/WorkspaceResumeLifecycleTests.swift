@@ -175,7 +175,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     )
     let secret = try await model.identityStore.resolve(identity.id)
     let server = try await TestSSHServer.start(authorizedKeys: [
-      NIOSSHPrivateKey(ed25519Key: secret.privateKey).publicKey
+      NIOSSHPrivateKey(ed25519Key: secret.ed25519PrivateKey!).publicKey
     ])
     let gate = WorkspaceBootstrapGate()
     server.state.bootstrapForwarder.withLock {

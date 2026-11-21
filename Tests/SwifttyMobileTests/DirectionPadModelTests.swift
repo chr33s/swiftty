@@ -228,8 +228,8 @@ struct DirectionPadModelTests {
 struct AccessoryRowLayoutTests {
   @Test
   func `row widths match the specification`() {
-    #expect(AccessoryRowLayout.requiredWidth(count: 7) == 352)
-    #expect(AccessoryRowLayout.requiredWidth(count: 6) == 304)
+    #expect(AccessoryRowLayout.requiredWidth(count: 7) == 356)
+    #expect(AccessoryRowLayout.requiredWidth(count: 6) == 308)
   }
 
   private func check(_ layout: AccessoryRowLayout, width: CGFloat) {
@@ -255,25 +255,28 @@ struct AccessoryRowLayoutTests {
     }
   }
 
-  @Test(arguments: [352.0, 393, 440])
-  func `the full phone row fits from 352 points`(_ width: Double) throws {
+  @Test(arguments: [356.0, 393, 440])
+  func `the full phone row fits from 356 points`(_ width: Double) throws {
     let layout = AccessoryRowLayout(width: width)
     #expect(
       layout.items == [
-        .key(.escape), .key(.tab), .key(.control), .key(.alt), .paste, .keys,
-        .pad,
+        .key(.escape), .key(.tab), .key(.control), .key(.alt), .paste, .pad,
+        .keys,
       ]
     )
     #expect(layout.height == 56)
     check(layout, width: width)
+    let paste = try #require(layout.frames[.paste])
     let pad = try #require(layout.frames[.pad])
     let keys = try #require(layout.frames[.keys])
-    #expect(pad.minX - keys.maxX == 8)
-    #expect(Double(pad.maxX) == width - 8)
+    // The pad sits between Paste and Keys, with its wider gap each side.
+    #expect(pad.minX - paste.maxX == 8)
+    #expect(keys.minX - pad.maxX == 8)
+    #expect(Double(keys.maxX) == width - 8)
   }
 
-  @Test(arguments: [304.0, 320, 351])
-  func `paste moves into keys below 352 points`(_ width: Double) {
+  @Test(arguments: [308.0, 320, 355])
+  func `paste moves into keys below 356 points`(_ width: Double) {
     let layout = AccessoryRowLayout(width: width)
     #expect(!layout.showsPaste)
     #expect(layout.rows.count == 1 && layout.items.count == 6)

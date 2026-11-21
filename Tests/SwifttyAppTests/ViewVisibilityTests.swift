@@ -54,7 +54,7 @@ struct ViewVisibilityTests {
           )
         )
         pane.receive(
-          try #require(MuxPaneView.importFrame(frame, limits: .init())),
+          MuxPaneView.importFrame(frame, limits: .init()),
           server: server
         )
       }

@@ -72,10 +72,10 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     let key = IdentitySecret(.init())
     let model = app(
       secrets: InMemoryIdentitySecretStore(),
-      legacy: InMemoryLegacyKeySource(keys: ["phone": key.privateKey])
+      legacy: InMemoryLegacyKeySource(keys: ["phone": key.ed25519PrivateKey!])
     )
     let server = try await TestSSHServer.start(authorizedKeys: [
-      NIOSSHPrivateKey(ed25519Key: key.privateKey).publicKey
+      NIOSSHPrivateKey(ed25519Key: key.ed25519PrivateKey!).publicKey
     ])
     do {
       let host = HostProfile(

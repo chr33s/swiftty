@@ -11,6 +11,12 @@ public enum FrameImporter {
     limits: MuxLimits = .standard
   ) throws(MuxError) -> OwnedScreen {
     try FrameValidator.validate(frame, limits: limits)
+    return convert(frame)
+  }
+
+  /// Converts a frame that already passed `FrameValidator` (every frame
+  /// `MuxConnection` delivers): an invalid one can trap.
+  private static func convert(_ frame: PaneFrame) -> OwnedScreen {
     let g = frame.grid
     let count = g.columns * g.rows
     var cells: [Cell] = []
@@ -104,6 +110,22 @@ public enum FrameImporter {
         },
       selectedSearchMatch: search?.selectedVisible,
       searchMatchCount: search?.matchCount ?? 0
+    )
+  }
+
+  /// A renderer snapshot of a frame `MuxConnection` delivered, which it
+  /// has already validated against the server's limits.
+  package static func snapshot(
+    fromValidated frame: PaneFrame,
+    selection: HighlightSpan? = nil,
+    sequence: UInt64,
+    limits: MuxLimits = .standard
+  ) -> RenderSnapshot {
+    assert((try? FrameValidator.validate(frame, limits: limits)) != nil)
+    return RenderSnapshot(
+      owned: convert(frame),
+      selection: selection,
+      sequence: sequence
     )
   }
 

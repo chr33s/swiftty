@@ -40,6 +40,90 @@ struct HostLayoutTests {
     return error
   }
 
+  /// A history window belongs to the pane it was opened on: switching
+  /// panes shows the new pane's live screen, not the same row number in
+  /// its history.
+  @Test
+  func `switching panes returns the history window to live output`()
+    async throws
+  {
+    try await withRegistry { registry in
+      let grant = try await registry.create(
+        grid: GridSize(columns: 40, rows: 8)
+      )
+      let client = TestClient(registry)
+      _ = try await client.attached(grant, features: [.layoutControl])
+      let first = try #require(
+        try await layout(client, "initial layout").activeTabLayout?.activePane
+      )
+      var sequence: UInt64 = 0
+      func run(_ command: String) async throws {
+        sequence += 1
+        try await client.send(
+          .input(
+            .init(
+              attachmentEpoch: 1,
+              sequence: sequence,
+              operation: .committedText(command)
+            )
+          )
+        )
+        sequence += 1
+        try await client.send(
+          .input(
+            .init(
+              attachmentEpoch: 1,
+              sequence: sequence,
+              operation: .key(SemanticKey(.enter))
+            )
+          )
+        )
+      }
+      _ = try await client.snapshot("prompt") { screenText($0).contains("$") }
+      try await run("i=0; while [ $i -lt 200 ]; do echo a-$i; i=$((i+1)); done")
+      _ = try await client.snapshot("first pane output") {
+        $0.textLines.contains("a-199")
+      }
+      try await client.send(
+        .layoutAction(epoch: 1, requestID: 1, .split(axis: .leftRight))
+      )
+      #expect(try await result(client, 1) == nil)
+      let second = try #require(
+        try await layout(client, "two panes") {
+          $0.activeTabLayout?.panes.count == 2
+        }.activeTabLayout?.activePane
+      )
+      _ = try await client.snapshot("second prompt") {
+        screenText($0).contains("$") && !$0.textLines.contains("a-199")
+      }
+      try await run("i=0; while [ $i -lt 400 ]; do echo b-$i; i=$((i+1)); done")
+      _ = try await client.snapshot("second pane output") {
+        $0.textLines.contains("b-399")
+      }
+      try await client.send(
+        .layoutAction(epoch: 1, requestID: 2, .focusPane(pane: first))
+      )
+      #expect(try await result(client, 2) == nil)
+      let back = try await client.snapshot("first pane again") {
+        $0.textLines.contains("a-199")
+      }
+      try await client.send(.viewport(epoch: 1, lines: 50))
+      let window = try await client.snapshot("first pane window", after: back) {
+        !$0.cursor.visible
+      }
+      try await client.send(
+        .layoutAction(epoch: 1, requestID: 3, .focusPane(pane: second))
+      )
+      #expect(try await result(client, 3) == nil)
+      // Bounded by the window: older frames of the second pane match too.
+      let shown = try await client.snapshot("second pane", after: window) {
+        $0.textLines.contains { $0.hasPrefix("b-") }
+      }
+      #expect(shown.cursor.visible)
+      #expect(shown.textLines.contains("b-399"))
+    }
+  }
+
   @Test
   func `a client changes panes, tabs and the workspace name`() async throws {
     try await withRegistry { registry in
@@ -134,6 +218,33 @@ struct HostLayoutTests {
       #expect(try await result(client, 9) == .inputInvalid)
       #expect(!client.isClosed)
     }
+  }
+
+  @Test
+  func `a revision alone does not resend the layout`() {
+    let pane = PaneID()
+    let tab = TabID()
+    var layout = RemoteLayout(
+      workspaceName: "w",
+      revision: 1,
+      tabs: [
+        .init(
+          id: tab,
+          name: "0",
+          panes: [.init(id: pane, title: "zsh")],
+          activePane: pane
+        )
+      ],
+      activeTab: tab
+    )
+    #expect(RoamingSession.layoutChanged(from: nil, to: layout))
+    var next = layout
+    next.revision = 2
+    #expect(!RoamingSession.layoutChanged(from: layout, to: next))
+    next.tabs[0].panes[0].title = "vim"
+    #expect(RoamingSession.layoutChanged(from: layout, to: next))
+    layout.revision = 3
+    #expect(RoamingSession.layoutChanged(from: next, to: layout))
   }
 
   @Test

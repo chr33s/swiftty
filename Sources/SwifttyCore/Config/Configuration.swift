@@ -182,6 +182,14 @@ public struct ThemeSelection: Sendable, Equatable {
   }
 }
 
+/// Where a workspace window shows its tabs.
+public enum TabPosition: String, Sendable, CaseIterable {
+  /// A strip in the window toolbar.
+  case top
+  /// A sidebar beside the panes.
+  case left
+}
+
 /// Frontend settings populated from JSONC or configured programmatically.
 public struct Configuration: Sendable, Equatable {
   /// Maximum UTF-8 bytes in a configuration file.
@@ -234,7 +242,8 @@ public struct Configuration: Sendable, Equatable {
   public var copyOnSelect = false
   public var mouseHideWhileTyping = false
   /// Lines per discrete mouse-wheel notch (`mouse-scroll-multiplier`);
-  /// precise trackpad scrolling is unaffected.
+  /// precise trackpad scrolling is unaffected, and mouse-reporting
+  /// programs get one wheel event per notch.
   public var mouseScrollMultiplier = Self.defaultMouseScrollMultiplier
   public static let defaultMouseScrollMultiplier = 3.0
   public static let mouseScrollMultiplierRange = 0.01 ... 10_000.0
@@ -257,6 +266,8 @@ public struct Configuration: Sendable, Equatable {
   public var windowHeight: Double?
   public var windowPaddingX: Double = 4
   public var windowPaddingY: Double = 4
+  /// Where workspace tabs show (`window.tabs`).
+  public var tabPosition = TabPosition.top
 
   public var keybindings = Keybindings.defaults
 
@@ -365,6 +376,10 @@ public struct Configuration: Sendable, Equatable {
       case "block_hollow": (cursorStyle, cursorHollow) = (.block, true)
       default: return invalid()
       }
+    case "tab-position":
+      guard let position = value.isEmpty ? .top : TabPosition(rawValue: value)
+      else { return invalid() }
+      tabPosition = position
     case "cursor-style-blink":
       if value.isEmpty {
         cursorStyleBlink = nil

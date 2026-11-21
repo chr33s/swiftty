@@ -225,6 +225,16 @@ struct SettingsView: View {
           }
           ForEach(model.themes, id: \.self) { Text($0).tag($0) }
         }
+        Picker(
+          "Tabs",
+          selection: Binding(
+            get: { model.configuration.tabPosition },
+            set: { model.set("tab-position", $0.rawValue) }
+          )
+        ) {
+          Text("Top").tag(TabPosition.top)
+          Text("Left").tag(TabPosition.left)
+        }
         LabeledContent("Background Opacity") {
           Slider(value: $opacity, in: 0.1 ... 1) { editing in
             draggingOpacity = editing

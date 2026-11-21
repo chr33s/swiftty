@@ -23,8 +23,8 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     let original = try await model.identityStore.resolve(identity.id)
     let replacement = IdentitySecret(.init())
     let server = try await TestSSHServer.start(authorizedKeys: [
-      NIOSSHPrivateKey(ed25519Key: original.privateKey).publicKey,
-      NIOSSHPrivateKey(ed25519Key: replacement.privateKey).publicKey,
+      NIOSSHPrivateKey(ed25519Key: original.ed25519PrivateKey!).publicKey,
+      NIOSSHPrivateKey(ed25519Key: replacement.ed25519PrivateKey!).publicKey,
     ])
     let host = HostProfile(
       nickname: "A",
@@ -70,7 +70,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
             SSHIdentityMetadata(
               id: identity.id,
               name: "Replacement",
-              publicKey: replacement.publicKey,
+              publicKeyLine: replacement.publicKeyLine,
               storage: .deviceOnly,
               revision: .init(counter: 100, deviceID: UUID())
             )
@@ -108,7 +108,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     let key = IdentitySecret(.init())
     let model = app(
       secrets: InMemoryIdentitySecretStore(),
-      legacy: InMemoryLegacyKeySource(keys: ["phone": key.privateKey])
+      legacy: InMemoryLegacyKeySource(keys: ["phone": key.ed25519PrivateKey!])
     )
     let server = try await TestSSHServer.start()
     let host = HostProfile(
@@ -165,7 +165,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     let key = IdentitySecret(.init())
     let model = app(
       secrets: InMemoryIdentitySecretStore(),
-      legacy: InMemoryLegacyKeySource(keys: ["phone": key.privateKey])
+      legacy: InMemoryLegacyKeySource(keys: ["phone": key.ed25519PrivateKey!])
     )
     let legacy = kind == "legacy" || kind == "backgroundMigration"
     let identity =
@@ -174,8 +174,8 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
       : try await model.identityStore.generate(name: "A", policy: .deviceOnly)
     let authorized =
       if let identity {
-        try await model.identityStore.resolve(identity.id).privateKey
-      } else { key.privateKey }
+        try await model.identityStore.resolve(identity.id).ed25519PrivateKey!
+      } else { key.ed25519PrivateKey! }
     let server = try await TestSSHServer.start(authorizedKeys: [
       NIOSSHPrivateKey(ed25519Key: authorized).publicKey
     ])
@@ -231,7 +231,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     )
     let secret = try await model.identityStore.resolve(identity.id)
     let server = try await TestSSHServer.start(authorizedKeys: [
-      NIOSSHPrivateKey(ed25519Key: secret.privateKey).publicKey
+      NIOSSHPrivateKey(ed25519Key: secret.ed25519PrivateKey!).publicKey
     ])
     let host = HostProfile(
       nickname: "A",
