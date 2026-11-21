@@ -167,6 +167,47 @@ public actor MuxGatewayConnection {
     }
   }
 
+  // MARK: Saved layouts (spec.durability.md §12.2)
+
+  /// Listing marks Saved records as offered, which starts their retention.
+  public func savedWorkspaces() async throws -> SavedWorkspaceList {
+    guard case let .savedWorkspaces(list) = try await request(.savedWorkspaces)
+    else { throw MuxError(.invalidRequest, "unexpected saved list") }
+    return list
+  }
+
+  /// A new workspace with the saved layout and fresh shells. An uncertain
+  /// outcome is settled by the gateway from inventory; never retry blindly.
+  public func reopenSaved(
+    _ request: SavedReopenRequest
+  ) async throws -> (WorkspaceID, WorkspaceTemplateOutcome) {
+    guard
+      case let .reopened(id, outcome) = try await self.request(
+        .reopenSaved(request)
+      )
+    else { throw MuxError(.invalidRequest, "unexpected reopen response") }
+    return (id, outcome)
+  }
+
+  public func setSavedPolicy(
+    _ policy: SavedLayoutPolicy,
+    expectedRevision: UInt64
+  ) async throws -> SavedLayoutPolicy {
+    guard
+      case let .savedPolicy(value) = try await request(
+        .setSavedPolicy(policy, expectedRevision: expectedRevision)
+      )
+    else { throw MuxError(.invalidRequest, "unexpected policy response") }
+    return value
+  }
+
+  /// Nil deletes every saved record and the key.
+  public func deleteSaved(_ id: WorkspaceID?) async throws {
+    guard case .deletedSaved = try await request(.deleteSaved(id)) else {
+      throw MuxError(.invalidRequest, "unexpected delete response")
+    }
+  }
+
   /// Opens a terminal transport; attachment and takeover remain explicit worker
   /// operations. The returned connection has its own lifetime and must be closed.
   public func openWorkspace(
@@ -206,7 +247,12 @@ public actor MuxGatewayConnection {
       return try MuxConnection.commandPayloadBytes(.newWorkspace(launch))
     case let .route(selector, _), let .end(selector):
       return try MuxConnection.commandPayloadBytes(.endWorkspace(selector))
-    case .listWorkspaces: return 256
+    case let .reopenSaved(request):
+      return try MuxConnection.commandPayloadBytes(
+        .newWorkspace(NewWorkspaceRequest(launch: request.launch))
+      ) + request.runCommandSlots.count * 8
+    case .listWorkspaces, .savedWorkspaces, .setSavedPolicy, .deleteSaved:
+      return 256
     }
   }
 

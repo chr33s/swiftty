@@ -254,3 +254,162 @@ public enum SavedLayoutHost {
     return name.isEmpty ? nil : name
   }
 }
+
+// MARK: Gateway control
+
+/// What the app does with Saved records when it launches.
+public enum SavedReopenAtLaunch: String, Codable, Sendable, Equatable {
+  case ask
+  case automatic
+  case never
+}
+
+/// Service-scoped, gateway-owned policy (spec.durability.md §12.2.2).
+public struct SavedLayoutPolicy: Codable, Sendable, Equatable {
+  /// Advanced by every accepted change.
+  public var revision: UInt64
+  public var saveLayout: Bool
+  /// Requires `saveLayout`.
+  public var saveOutput: Bool
+  public var reopenAtLaunch: SavedReopenAtLaunch
+  /// 1–365 days after a Saved record was first offered.
+  public var retentionDays: Int
+
+  public static let defaults = SavedLayoutPolicy(
+    revision: 0,
+    saveLayout: true,
+    saveOutput: false,
+    reopenAtLaunch: .ask,
+    retentionDays: 30
+  )
+
+  public init(
+    revision: UInt64,
+    saveLayout: Bool,
+    saveOutput: Bool,
+    reopenAtLaunch: SavedReopenAtLaunch,
+    retentionDays: Int
+  ) {
+    self.revision = revision
+    self.saveLayout = saveLayout
+    self.saveOutput = saveOutput
+    self.reopenAtLaunch = reopenAtLaunch
+    self.retentionDays = retentionDays
+  }
+
+  public var isValid: Bool {
+    (1 ... 365).contains(retentionDays) && (saveLayout || !saveOutput)
+  }
+}
+
+/// A saved record as a frontend may list it (§12.2.6).
+public struct SavedWorkspaceListing: Codable, Sendable, Equatable {
+  public enum State: String, Codable, Sendable, Equatable {
+    /// The live workspace; nothing to reopen.
+    case live
+    /// Retained but unavailable; its layout can open in a new workspace.
+    case unavailable
+    case saved
+    /// Written by a newer schema; listed, untouched, not reopenable.
+    case newer
+    /// Failed validation and was quarantined; not reopenable.
+    case unreadable
+  }
+
+  public struct CommandSlot: Codable, Sendable, Equatable {
+    public var slot: Int
+    public var command: [String]
+    public init(slot: Int, command: [String]) {
+      self.slot = slot
+      self.command = command
+    }
+  }
+
+  public var id: WorkspaceID
+  public var state: State
+  public var name: String
+  public var savedAt: Date?
+  /// The writing build, when it differs from this gateway's.
+  public var build: String?
+  public var tabCount: Int
+  public var paneCount: Int
+  /// Panes that started a command; they run again only if chosen.
+  public var commands: [CommandSlot]
+  public var hasOutput: Bool
+
+  public init(
+    id: WorkspaceID,
+    state: State,
+    name: String,
+    savedAt: Date?,
+    build: String?,
+    tabCount: Int,
+    paneCount: Int,
+    commands: [CommandSlot],
+    hasOutput: Bool
+  ) {
+    self.id = id
+    self.state = state
+    self.name = name
+    self.savedAt = savedAt
+    self.build = build
+    self.tabCount = tabCount
+    self.paneCount = paneCount
+    self.commands = commands
+    self.hasOutput = hasOutput
+  }
+}
+
+public struct SavedWorkspaceList: Codable, Sendable, Equatable {
+  public enum StoreState: Codable, Sendable, Equatable {
+    case available
+    /// Keychain locked or denied; nothing is read, written or deleted.
+    case unavailable(String)
+    /// The key was missing, so earlier records were deleted.
+    case keyLost
+  }
+
+  public var store: StoreState
+  public var policy: SavedLayoutPolicy
+  public var workspaces: [SavedWorkspaceListing]
+
+  public init(
+    store: StoreState,
+    policy: SavedLayoutPolicy,
+    workspaces: [SavedWorkspaceListing]
+  ) {
+    self.store = store
+    self.policy = policy
+    self.workspaces = workspaces
+  }
+}
+
+/// A frontend's reopen request: the record contributes shape, names and
+/// directories; launch settings come from the frontend, as for a new
+/// workspace (§12.2.7).
+public struct SavedReopenRequest: Codable, Sendable, Equatable {
+  public var record: WorkspaceID
+  /// Base launch; its command and directory are replaced per pane.
+  public var launch: LaunchSpec
+  public var columns: Int
+  public var rows: Int
+  public var remainOnExit: Bool
+  /// Slots whose saved commands the user explicitly chose to run.
+  public var runCommandSlots: [Int]
+
+  public init(
+    record: WorkspaceID,
+    launch: LaunchSpec,
+    columns: Int = 80,
+    rows: Int = 24,
+    remainOnExit: Bool = false,
+    runCommandSlots: [Int] = []
+  ) {
+    self.record = record
+    self.launch = launch
+    self.columns = columns
+    self.rows = rows
+    self.remainOnExit = remainOnExit
+    self.runCommandSlots = runCommandSlots
+  }
+}

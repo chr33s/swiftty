@@ -7,7 +7,26 @@ import SwiftMuxProtocol
 package actor GatewayWorkspaceCreator {
   private struct Job {
     let bytes: Int
-    let task: Task<GuardianAuthority, any Error>
+    let task: Task<Created, any Error>
+  }
+
+  /// One explicit creation command, transmitted at most once.
+  package enum Payload: Sendable {
+    case request(NewWorkspaceRequest)
+    /// A reopened saved layout (spec.durability.md §12.2.7).
+    case template(WorkspaceTemplate)
+
+    var command: MuxCommand {
+      switch self {
+      case let .request(value): .newWorkspace(value)
+      case let .template(value): .newWorkspaceFromTemplate(value)
+      }
+    }
+  }
+
+  package struct Created: Sendable {
+    package let authority: GuardianAuthority
+    package let outcome: WorkspaceTemplateOutcome?
   }
 
   private let supervisor: GatewaySupervisor
@@ -30,6 +49,14 @@ package actor GatewayWorkspaceCreator {
     request: NewWorkspaceRequest,
     timeout: Duration = .seconds(15)
   ) async throws -> GuardianAuthority {
+    try await create(id, payload: .request(request), timeout: timeout).authority
+  }
+
+  package func create(
+    _ id: WorkspaceID,
+    payload: Payload,
+    timeout: Duration = .seconds(15)
+  ) async throws -> Created {
     try Task.checkCancellation()
     guard !closed else {
       throw MuxError(.connectionLost, "workspace creator closed")
@@ -40,18 +67,18 @@ package actor GatewayWorkspaceCreator {
     guard jobs[id] == nil else {
       throw MuxError(.quiescing, "workspace creation already pending")
     }
-    let charge = try MuxConnection.commandPayloadBytes(.newWorkspace(request))
+    let charge = try MuxConnection.commandPayloadBytes(payload.command)
     guard jobs.count < 4, charge <= (4 << 20) - bytes else {
       throw MuxError(.resourceLimit, "workspace creation capacity exhausted")
     }
     let supervisor = supervisor
     let requirement = peerRequirement
     let task = Task.detached {
-      try await withThrowingTaskGroup(of: GuardianAuthority.self) { group in
+      try await withThrowingTaskGroup(of: Created.self) { group in
         group.addTask {
           try await Self.perform(
             id,
-            request: request,
+            payload: payload,
             supervisor: supervisor,
             peerRequirement: requirement
           )
@@ -93,10 +120,10 @@ package actor GatewayWorkspaceCreator {
 
   private static func perform(
     _ id: WorkspaceID,
-    request: NewWorkspaceRequest,
+    payload: Payload,
     supervisor: GatewaySupervisor,
     peerRequirement: String?
-  ) async throws -> GuardianAuthority {
+  ) async throws -> Created {
     guard
       try await !supervisor.inventory()
         .contains(where: { $0.authority.workspace == id })
@@ -141,15 +168,29 @@ package actor GatewayWorkspaceCreator {
     do {
       // This mutating command is transmitted at most once, including timeout,
       // cancellation and loss of its reply. Closing a client does not End it.
-      let reply = try await client.execute(.newWorkspace(request))
-      guard case let .created(snapshot) = reply, snapshot.id == id else {
+      if case .template = payload,
+        await client.welcome?.features.contains(.savedLayoutMetadata) != true
+      {
+        throw MuxError(
+          .incompatibleVersion,
+          "worker cannot reopen saved layouts"
+        )
+      }
+      let reply = try await client.execute(payload.command)
+      let outcome: WorkspaceTemplateOutcome?
+      switch (payload, reply) {
+      case let (.request, .created(snapshot)) where snapshot.id == id:
+        outcome = nil
+      case let (.template, .createdFromTemplate(snapshot, value))
+      where snapshot.id == id: outcome = value
+      default:
         throw MuxError(
           .invalidRequest,
           "workspace \(id) returned an invalid creation result"
         )
       }
       await client.close()
-      return authority
+      return Created(authority: authority, outcome: outcome)
     } catch {
       await client.close()
       throw error

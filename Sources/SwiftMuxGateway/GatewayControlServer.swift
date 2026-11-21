@@ -252,6 +252,20 @@ package final class GatewayControlServer: @unchecked Sendable {
     case let .end(selector):
       try await runtime.endWorkspace(selector)
       return (.ended, nil)
+    case .savedWorkspaces:
+      return (.savedWorkspaces(try await runtime.savedWorkspaces()), nil)
+    case let .reopenSaved(request):
+      let (id, outcome) = try await runtime.reopenSaved(request)
+      return (.reopened(id, outcome), nil)
+    case let .setSavedPolicy(policy, expected):
+      return (
+        .savedPolicy(
+          try await runtime.setSavedPolicy(policy, expectedRevision: expected)
+        ), nil
+      )
+    case let .deleteSaved(id):
+      try await runtime.deleteSaved(id)
+      return (.deletedSaved, nil)
     }
   }
 

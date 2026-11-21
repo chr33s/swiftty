@@ -132,6 +132,23 @@ package actor GatewayGraphObservation {
     }
   }
 
+  /// The saved-layout view at the current point (spec.durability.md
+  /// §12.2.3); nil when the worker predates `savedLayoutMetadata`.
+  package func savedLayoutState() async throws -> SavedLayoutState? {
+    guard !closed,
+      await client.welcome?.features.contains(.savedLayoutMetadata) == true
+    else { return nil }
+    guard
+      case let .savedLayoutState(state) = try await client.execute(
+        .savedLayoutState
+      )
+    else { throw MuxError(.invalidRequest, "missing saved layout state") }
+    guard state.graph.map({ $0.id == authority.workspace }) ?? true else {
+      throw MuxError(.unauthorized, "invalid saved layout identity")
+    }
+    return state
+  }
+
   package func close() async {
     closed = true
     graph = nil

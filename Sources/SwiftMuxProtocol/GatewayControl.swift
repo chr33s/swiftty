@@ -26,6 +26,13 @@ public enum GatewayControlCommand: Codable, Sendable, Equatable {
   case route(WorkspaceSelector, role: AttachmentRole)
   case create(WorkspaceID, NewWorkspaceRequest)
   case end(WorkspaceSelector)
+  // Saved layouts (spec.durability.md §12.2). Local native frontends only.
+  /// Lists saved records; marks Saved ones as offered.
+  case savedWorkspaces
+  case reopenSaved(SavedReopenRequest)
+  case setSavedPolicy(SavedLayoutPolicy, expectedRevision: UInt64)
+  /// Nil deletes every record and the key.
+  case deleteSaved(WorkspaceID?)
 }
 
 public enum GatewayControlEvent: Codable, Sendable {
@@ -45,6 +52,10 @@ public enum GatewayControlReply: Codable, Sendable {
   case route(GatewayRouteDescriptor)
   case created(WorkspaceID)
   case ended
+  case savedWorkspaces(SavedWorkspaceList)
+  case reopened(WorkspaceID, WorkspaceTemplateOutcome)
+  case savedPolicy(SavedLayoutPolicy)
+  case deletedSaved
 }
 
 public struct GatewayRouteDescriptor: Codable, Sendable, Equatable {

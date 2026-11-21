@@ -34,6 +34,11 @@ package actor GatewayWorkspaceDirectory {
   private let supervisor: GatewaySupervisor
   private let peerRequirement: String?
   private let capacity: Int
+  /// Saved layouts (spec.durability.md §12.2): each consumed graph's saved
+  /// view, and observation loss. Never on the discovery critical path.
+  private var onSavedLayout:
+    (@Sendable (GuardianAuthority, SavedLayoutState) async -> Void)?
+  private var onObservationLost: (@Sendable (WorkspaceID) async -> Void)?
   private var entries: [WorkspaceID: Entry] = [:]
   private var tasks: [UUID: Task<Void, Never>] = [:]
   private var opening = 0
@@ -55,6 +60,15 @@ package actor GatewayWorkspaceDirectory {
     self.supervisor = supervisor
     self.peerRequirement = peerRequirement
     self.capacity = capacity
+  }
+
+  package func setSavedLayoutHooks(
+    state:
+      @escaping @Sendable (GuardianAuthority, SavedLayoutState) async -> Void,
+    lost: @escaping @Sendable (WorkspaceID) async -> Void
+  ) {
+    onSavedLayout = state
+    onObservationLost = lost
   }
 
   package var records: [Record] {
@@ -276,6 +290,9 @@ package actor GatewayWorkspaceDirectory {
         }
         let summary = await observation.summary
         let graph = await graphObservation.graph
+        if let state = try? await graphObservation.savedLayoutState() {
+          await self?.savedLayout(id, token: token, state: state)
+        }
         guard
           await self?.opened(id, token: token, summary: summary, graph: graph)
             == true
@@ -303,6 +320,9 @@ package actor GatewayWorkspaceDirectory {
                   await self?.updatedGraph(id, token: token, graph: graph)
                     == true
                 else { return }
+                if let state = try await graphObservation.savedLayoutState() {
+                  await self?.savedLayout(id, token: token, state: state)
+                }
               }
             }
             defer { group.cancelAll() }
@@ -378,12 +398,24 @@ package actor GatewayWorkspaceDirectory {
     }
   }
 
+  private func savedLayout(
+    _ id: WorkspaceID,
+    token: UUID,
+    state: SavedLayoutState
+  ) async {
+    guard !closed, let entry = entries[id], entry.token == token,
+      let hook = onSavedLayout
+    else { return }
+    await hook(entry.inventory.authority, state)
+  }
+
   private func observationFailed(
     _ id: WorkspaceID,
     token: UUID,
     error: any Error
   ) {
     guard !closed, entries[id]?.token == token else { return }
+    if let lost = onObservationLost { Task { await lost(id) } }
     entries[id]?.task = nil
     entries[id]?.summary = nil
     entries[id]?.graph = nil

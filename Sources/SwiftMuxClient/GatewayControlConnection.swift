@@ -21,6 +21,10 @@ package final class GatewayControlConnection: @unchecked Sendable {
     case route(Route)
     case created(WorkspaceID)
     case ended
+    case savedWorkspaces(SavedWorkspaceList)
+    case reopened(WorkspaceID, WorkspaceTemplateOutcome)
+    case savedPolicy(SavedLayoutPolicy)
+    case deletedSaved
   }
 
   private struct Pending {
@@ -106,7 +110,12 @@ package final class GatewayControlConnection: @unchecked Sendable {
         _ = try MuxConnection.commandPayloadBytes(.newWorkspace(launch))
       case let .route(selector, _), let .end(selector):
         _ = try MuxConnection.commandPayloadBytes(.endWorkspace(selector))
-      case .listWorkspaces: break
+      case let .reopenSaved(request):
+        _ = try MuxConnection.commandPayloadBytes(
+          .newWorkspace(NewWorkspaceRequest(launch: request.launch))
+        )
+      case .listWorkspaces, .savedWorkspaces, .setSavedPolicy, .deleteSaved:
+        break
       }
       let request = GatewayControlRequest.command(
         gateway: identity,
@@ -239,6 +248,19 @@ package final class GatewayControlConnection: @unchecked Sendable {
     case let (.create(expected, _), .created(actual)) where expected == actual:
       return .created(actual)
     case (.end, .ended): return .ended
+    case (.savedWorkspaces, let .savedWorkspaces(list)):
+      guard list.workspaces.count <= GatewayControl.maxWorkspaces,
+        Set(list.workspaces.map(\.id)).count == list.workspaces.count
+      else { return nil }
+      return .savedWorkspaces(list)
+    case let (.reopenSaved(request), .reopened(id, outcome))
+    where id != request.record: return .reopened(id, outcome)
+    case let (.setSavedPolicy(policy, expected), .savedPolicy(value))
+    where value.revision > expected && value.isValid
+      && value.saveLayout == policy.saveLayout
+      && value.saveOutput == policy.saveOutput:
+      return .savedPolicy(value)
+    case (.deleteSaved, .deletedSaved): return .deletedSaved
     default: return nil
     }
   }

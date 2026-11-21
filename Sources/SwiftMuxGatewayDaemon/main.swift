@@ -35,9 +35,21 @@ do {
           .connect(machService: configuration.guardianService, queue: $0)
         }
       )
+      // Saved layouts (spec.durability.md §12.2): sealed records under the
+      // user's SwiftMux support directory, keyed from the login keychain.
+      let support = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/SwiftMux")
+      let identifier = Bundle.main.bundleIdentifier ?? "dev.chr33s.swiftmux"
+      let saved = SavedLayoutService(
+        files: SavedLayoutFiles(root: support),
+        keys: LoginKeychainKeyStore(service: "\(identifier).saved-workspaces"),
+        build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion")
+          as? String ?? "unknown"
+      )
       let started = try await GatewayRuntime.start(
         supervisor: supervisor,
-        peerRequirement: requirement
+        peerRequirement: requirement,
+        saved: saved
       )
       runtime = started
       try Task.checkCancellation()

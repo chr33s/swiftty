@@ -38,6 +38,55 @@ struct GatewayCreationTests {
     await supervisor.close()
   }
 
+  @Test
+  func templateCreationSendsTheTemplateOnce() async throws {
+    let fixture = Fixture(mode: .success)
+    defer { fixture.close() }
+    let supervisor = try await fixture.connect()
+    let creator = GatewayWorkspaceCreator(
+      supervisor: supervisor,
+      peerRequirement: nil
+    )
+    let id = WorkspaceID()
+    let launch = LaunchSpec(
+      command: nil,
+      workingDirectory: nil,
+      environment: [:]
+    )
+    let created = try await creator.create(
+      id,
+      payload: .template(
+        WorkspaceTemplate(
+          name: "reopened",
+          columns: 80,
+          rows: 24,
+          remainOnExit: false,
+          launch: launch,
+          panes: [launch, launch],
+          tabs: [
+            WorkspaceTemplateTab(
+              name: "1",
+              layout: .split(
+                axis: .leftRight,
+                ratio: 0.5,
+                first: .pane(slot: 0),
+                second: .pane(slot: 1)
+              ),
+              activeSlot: 0
+            )
+          ],
+          activeTab: 0,
+          outputOptOut: false
+        )
+      )
+    )
+    #expect(created.authority.workspace == id)
+    #expect(created.outcome?.failedSlots == [1])
+    #expect(fixture.launches.withLock { $0 } == 1)
+    await creator.close()
+    await supervisor.close()
+  }
+
   @Test(arguments: [false, true])
   func uncertainLaunchIsNotRetriedOrEnded(cancelled: Bool) async throws {
     let fixture = Fixture(mode: .noReply)
@@ -234,6 +283,7 @@ struct GatewayCreationTests {
                     acceptedProfile: nil,
                     limits: .standard,
                     innerTerm: SMX.fallbackInnerTerm,
+                    features: .supported.union(.savedLayoutMetadata),
                     forwardedTransport: hello.forwardedTransport
                   )
                 ),
@@ -261,6 +311,34 @@ struct GatewayCreationTests {
                 )
               )
             }
+          case let .request(id, .newWorkspaceFromTemplate(template)):
+            self.launches.withLock { $0 += 1 }
+            let snapshot = WorkspaceSnapshot(
+              id: self.authorities.keys.first!,
+              name: template.name ?? "0",
+              tabs: [],
+              activeTab: TabID(),
+              panes: [],
+              layoutRevision: 1
+            )
+            channel.send(
+              try! SMXCodec.encode(
+                ServerMessage.reply(
+                  id: id,
+                  result: .success(
+                    .createdFromTemplate(
+                      snapshot,
+                      WorkspaceTemplateOutcome(
+                        panes: [0: PaneID()],
+                        failedSlots: [1],
+                        directoryFallbackSlots: []
+                      )
+                    )
+                  )
+                ),
+                limit: 4 << 20
+              )
+            )
           default: break
           }
         }

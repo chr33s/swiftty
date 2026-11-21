@@ -9,6 +9,8 @@ package actor GatewayRuntime {
   private let directory: GatewayWorkspaceDirectory
   private let routes: GatewayNativeRoutes
   private let creator: GatewayWorkspaceCreator
+  /// Saved layouts (spec.durability.md §12.2); nil disables them.
+  private let saved: SavedLayoutService?
   private var monitor: Task<Void, Never>?
   private var closed = false
   package private(set) var failure: MuxError?
@@ -17,12 +19,14 @@ package actor GatewayRuntime {
     supervisor: GatewaySupervisor,
     directory: GatewayWorkspaceDirectory,
     routes: GatewayNativeRoutes,
-    creator: GatewayWorkspaceCreator
+    creator: GatewayWorkspaceCreator,
+    saved: SavedLayoutService?
   ) {
     self.supervisor = supervisor
     self.directory = directory
     self.routes = routes
     self.creator = creator
+    self.saved = saved
   }
 
   /// Takes ownership of the supervisor. Initial inventory must succeed; worker
@@ -32,7 +36,8 @@ package actor GatewayRuntime {
     peerRequirement: String?,
     capacity: Int = 32,
     connectionLimit: Int = 64,
-    pollInterval: Duration = .seconds(1)
+    pollInterval: Duration = .seconds(1),
+    saved: SavedLayoutService? = nil
   ) async throws -> GatewayRuntime {
     var directory: GatewayWorkspaceDirectory?
     do {
@@ -53,6 +58,19 @@ package actor GatewayRuntime {
         capacity: capacity,
         connectionLimit: connectionLimit
       )
+      if let saved {
+        await saved.start(incarnation: await supervisor.identity?.incarnation)
+        await saved.setRetire { authority in
+          // A definitively ended worker owns no process; retire it.
+          try? await supervisor.endAndForget(authority)
+        }
+        await discovery.setSavedLayoutHooks(
+          state: { authority, state in
+            await saved.observe(authority, state: state)
+          },
+          lost: { id in await saved.workerLost(id) }
+        )
+      }
       try await discovery.refresh()
       try Task.checkCancellation()
       let runtime = GatewayRuntime(
@@ -62,7 +80,8 @@ package actor GatewayRuntime {
         creator: GatewayWorkspaceCreator(
           supervisor: supervisor,
           peerRequirement: peerRequirement
-        )
+        ),
+        saved: saved
       )
       await runtime.startMonitor(interval: pollInterval)
       do { try Task.checkCancellation() } catch {
@@ -201,16 +220,113 @@ package actor GatewayRuntime {
     return try await creator.create(id, request: request, timeout: timeout)
   }
 
-  package func endWorkspace(_ selector: WorkspaceSelector) async throws {
+  /// `disposition` tells the saved-layout store why (§12.2.6). The record
+  /// learns it before End, so a crash after End still applies it.
+  package func endWorkspace(
+    _ selector: WorkspaceSelector,
+    disposition: SavedLayoutDisposition = .ended
+  ) async throws {
     try checkOpen()
     let record = try await directory.resolve(selector)
     try checkOpen()
+    let id = record.inventory.authority.workspace
+    await saved?.markEnding(id, disposition: disposition)
     try await supervisor.endAndForget(record.inventory.authority)
+    await saved?.didEnd(id, disposition: disposition)
     // The monitor reconciles inventory and routes; no uncertain mutation replay.
+  }
+
+  // MARK: Saved layouts
+
+  private func savedService() throws -> SavedLayoutService {
+    guard let saved else {
+      throw MuxError(.notFound, "saved layouts are not configured")
+    }
+    return saved
+  }
+
+  private func savedInventory() async -> SavedLayoutInventory {
+    await Self.savedInventory(directory: directory, supervisor: supervisor)
+  }
+
+  private static func savedInventory(
+    directory: GatewayWorkspaceDirectory,
+    supervisor: GatewaySupervisor
+  ) async -> SavedLayoutInventory {
+    var workspaces: [WorkspaceID: SavedLayoutInventoryState] = [:]
+    for record in await directory.records {
+      let state: SavedLayoutInventoryState =
+        switch record.state {
+        case .available: record.graph.map { .live(name: $0.name) } ?? .empty
+        case .empty: .empty
+        case .unavailable: .unavailable
+        case .starting, .discovering: .pending
+        }
+      workspaces[record.inventory.authority.workspace] = state
+    }
+    return SavedLayoutInventory(
+      incarnation: await supervisor.identity?.incarnation,
+      workspaces: workspaces
+    )
+  }
+
+  package func savedWorkspaces() async throws -> SavedWorkspaceList {
+    try checkOpen()
+    let saved = try savedService()
+    return await saved.list(await savedInventory(), markOffered: true)
+  }
+
+  package func reopenSaved(
+    _ request: SavedReopenRequest
+  ) async throws -> (WorkspaceID, WorkspaceTemplateOutcome) {
+    try checkOpen()
+    let saved = try savedService()
+    let creator = creator
+    return try await saved.reopen(request, inventory: await savedInventory()) {
+      id,
+      template in
+      let created = try await creator.create(id, payload: .template(template))
+      guard let outcome = created.outcome else {
+        throw MuxError(.invalidRequest, "missing template outcome")
+      }
+      return outcome
+    }
+  }
+
+  package func setSavedPolicy(
+    _ policy: SavedLayoutPolicy,
+    expectedRevision: UInt64
+  ) async throws -> SavedLayoutPolicy {
+    try checkOpen()
+    return try await savedService()
+      .setPolicy(policy, expectedRevision: expectedRevision)
+  }
+
+  package func deleteSaved(_ id: WorkspaceID?) async throws {
+    try checkOpen()
+    try await savedService().deleteSaved(id)
+  }
+
+  private static func reconcileSaved(
+    _ saved: SavedLayoutService,
+    directory: GatewayWorkspaceDirectory,
+    supervisor: GatewaySupervisor
+  ) async {
+    let inventory = await savedInventory(
+      directory: directory,
+      supervisor: supervisor
+    )
+    await saved.reconcile(inventory) { id in
+      let items = try await supervisor.inventory()
+      guard let item = items.first(where: { $0.authority.workspace == id })
+      else { return }
+      try await supervisor.endAndForget(item.authority)
+    }
   }
 
   package func close() async {
     closed = true
+    await saved?.shutdown()
     monitor?.cancel()
     await routes.close()
     await creator.close()
@@ -232,6 +348,7 @@ package actor GatewayRuntime {
     let routes = routes
     let supervisor = supervisor
     let creator = creator
+    let saved = saved
     monitor = Task.detached { [weak self] in
       let failure: MuxError
       do {
@@ -241,6 +358,13 @@ package actor GatewayRuntime {
           {
             // A selection already reconciles routes. Retry this read-only work
             // at the next inventory poll rather than queueing another task.
+          }
+          if let saved {
+            await Self.reconcileSaved(
+              saved,
+              directory: directory,
+              supervisor: supervisor
+            )
           }
         }
         failure = MuxError(.connectionLost, "gateway discovery stopped")
@@ -256,9 +380,11 @@ package actor GatewayRuntime {
     }
   }
 
-  private func monitorEnded(_ error: MuxError) {
+  private func monitorEnded(_ error: MuxError) async {
     guard !closed else { return }
     failure = error
     closed = true
+    // Guardian or discovery loss: held exit changes are discarded (§12.2.5).
+    await saved?.guardianLost()
   }
 }
