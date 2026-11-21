@@ -22,6 +22,18 @@ struct WorkspaceMigrationCheckpoint: Codable {
     var zoomedPane: PaneID?
   }
 
+  /// The controller lease at the cut. Provisional on import: it grants
+  /// nothing until the same relay resumes it (§6).
+  struct LeaseCheckpoint: Codable {
+    var attachment: AttachmentID
+    var generation: UInt64
+    var holder: LeaseHolder
+    var nextInput: UInt64
+    var geometryGeneration: UInt64
+    var pastes: [UInt64: ActivePaste]
+    var readiness: Bool
+  }
+
   struct PaneCheckpoint: Codable {
     var id: PaneID
     var process: UUID
@@ -62,6 +74,13 @@ struct WorkspaceMigrationCheckpoint: Codable {
   var savedLayoutCauses: UInt8
   var savedLayoutEnd: SavedLayoutEnd?
   var theme: MuxTheme?
+  /// The service instance the candidate continues.
+  var server: ServerInstanceID
+  var lease: LeaseCheckpoint?
+  var leaseGeneration: UInt64
+  /// The guardian writer capability the old worker held; the candidate
+  /// continues with it, so queued writes are not cancelled (§7.2 step 6).
+  var writer: UUID?
 }
 
 /// The guardian's view of a pane at the cut.
@@ -155,11 +174,16 @@ extension MuxService {
   /// The checkpoint at the cut. Pane handles come from the transport.
   nonisolated func migrationCheckpoint(
     handles: [PaneID: MigrationPaneHandle],
+    writer: UUID?,
     completion: @escaping @Sendable (Result<Data, MuxError>) -> Void
   ) {
     onQueue { service in
       do {
-        completion(.success(try service.encodeMigrationCheckpoint(handles)))
+        completion(
+          .success(
+            try service.encodeMigrationCheckpoint(handles, writer: writer)
+          )
+        )
       } catch {
         completion(
           .failure(
@@ -172,7 +196,8 @@ extension MuxService {
   }
 
   private func encodeMigrationCheckpoint(
-    _ handles: [PaneID: MigrationPaneHandle]
+    _ handles: [PaneID: MigrationPaneHandle],
+    writer: UUID?
   ) throws -> Data {
     guard migrationFrozen, let id = configuration.workerWorkspace,
       let ws = workspaces.first(where: { $0.id == id })
@@ -235,7 +260,22 @@ extension MuxService {
       attention: try attention.inbox.checkpoint(),
       savedLayoutCauses: savedLayoutCauses.rawValue,
       savedLayoutEnd: savedLayoutEnd,
-      theme: theme
+      theme: theme,
+      server: instance,
+      lease: leases[ws.id]
+        .map {
+          .init(
+            attachment: $0.attachment,
+            generation: $0.generation,
+            holder: $0.holder,
+            nextInput: $0.nextInput,
+            geometryGeneration: $0.geometryGeneration,
+            pastes: $0.pastes,
+            readiness: $0.readiness.enabled
+          )
+        },
+      leaseGeneration: leaseGenerations[ws.id] ?? 0,
+      writer: writer
     )
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
@@ -382,7 +422,75 @@ extension MuxService {
     )
     savedLayoutEnd = checkpoint.savedLayoutEnd
     theme = checkpoint.theme
+    guard checkpoint.server == instance else {
+      throw MuxError(.invalidRequest, "candidate instance mismatch")
+    }
+    leaseGenerations[checkpoint.workspace] = checkpoint.leaseGeneration
+    if let carried = checkpoint.lease {
+      var lease = Lease(
+        client: UUID(),  // No connection holds it until resumed.
+        workspace: checkpoint.workspace,
+        generation: carried.generation,
+        holder: carried.holder
+      )
+      lease.attachment = carried.attachment
+      lease.nextInput = carried.nextInput
+      lease.geometryGeneration = carried.geometryGeneration
+      lease.pastes = carried.pastes
+      lease.readiness.enabled = carried.readiness
+      provisionalLease = lease
+      // An unresumed lease is fenced like a lost connection.
+      queue.asyncAfter(deadline: .now() + Self.provisionalLeaseLifetime) {
+        [weak self] in
+        self?
+          .assumeIsolated {
+            $0.fenceProvisionalLease(
+              reason: "replacement lease was not resumed"
+            )
+          }
+      }
+    }
     // Snoozes that expired during the cut expire now, once.
     attentionChanged()
+  }
+
+  static let provisionalLeaseLifetime: DispatchTimeInterval = .seconds(10)
+
+  /// The relay that held the lease continues it on this worker: same
+  /// attachment, input watermark and open pastes; fresh frame state, so
+  /// full frames follow its subscriptions.
+  func resumeAttachment(
+    _ attachment: AttachmentID,
+    nextInput: UInt64,
+    client: Client,
+    hello: Hello
+  ) -> MuxResult {
+    guard hello.frontend != .control, clientLeases[client.id] == nil,
+      clientViewers[client.id] == nil, var lease = provisionalLease,
+      lease.attachment == attachment, nextInput >= lease.nextInput,
+      leases[lease.workspace] == nil,
+      let ws = workspaces.first(where: { $0.id == lease.workspace })
+    else { return .failure(MuxError(.staleAttachment, "no lease to resume")) }
+    provisionalLease = nil
+    lease.client = client.id
+    lease.nextInput = nextInput
+    leases[ws.id] = lease
+    leaseOrder.append(ws.id)
+    clientLeases[client.id] = ws.id
+    publishWorkspaces()
+    var snap = snapshot(ws)
+    snap.attachmentRole = .controller
+    return .success(.attached(attachment: attachment, workspace: snap))
+  }
+
+  /// Anyone else attaching, or expiry: the carried lease's pending work is
+  /// fenced exactly as a lost connection's would be.
+  func fenceProvisionalLease(reason: String) {
+    guard let lease = provisionalLease else { return }
+    provisionalLease = nil
+    guard leases[lease.workspace] == nil else { return }
+    leases[lease.workspace] = lease
+    leaseOrder.append(lease.workspace)
+    releaseLease(lease.workspace, notify: false, fence: true, reason: reason)
   }
 }

@@ -272,9 +272,6 @@ extension MuxService {
     if clientViewers[id] != nil {
       return ack(MuxError(.unauthorized, "observers cannot write"))
     }
-    if migrationFrozen {
-      return ack(MuxError(.quiescing, "workspace is moving to a new worker"))
-    }
     guard let wsID = clientLeases[id], let current = leases[wsID] else {
       return ack(MuxError(.notAttached))
     }
@@ -289,6 +286,10 @@ extension MuxService {
       return ack(MuxError(.inputGap, "expected input \(current.nextInput)"))
     }
     leases[wsID]?.nextInput += 1
+    // Answered once, like any refusal: never written, never retried as-is.
+    if migrationFrozen {
+      return ack(MuxError(.quiescing, "workspace is moving to a new worker"))
+    }
     guard let pane = panes[record.pane], pane.workspace == wsID,
       !pane.detachedFromLayout
     else { return ack(MuxError(.notFound, "pane")) }

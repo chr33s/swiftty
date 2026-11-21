@@ -6,8 +6,13 @@ import SwiftMuxXPC
 /// Selections reuse listeners; each accepted connection still validates authority.
 package actor GatewayNativeRoutes {
   private struct Route {
-    let authority: GuardianAuthority
+    var authority: GuardianAuthority
     let listener: GatewayNativeEndpoint
+    /// Released by a planned replacement: kept while the candidate is
+    /// still publishing, rather than pruned as replaced.
+    var migratedAt: ContinuousClock.Instant? = nil
+    /// A transaction is running; inventory may show either owner.
+    var migrating = false
   }
 
   private let supervisor: GatewaySupervisor
@@ -77,6 +82,33 @@ package actor GatewayNativeRoutes {
     return listener.endpoint
   }
 
+  /// Hold the route through a planned replacement's transaction.
+  package func beginMigration(_ workspace: WorkspaceID) {
+    routes[workspace]?.migrating = true
+  }
+
+  /// The transaction finished without release: ordinary pruning resumes.
+  package func endMigration(_ workspace: WorkspaceID) {
+    routes[workspace]?.migrating = false
+  }
+
+  /// A planned replacement released `workspace` from `old` to `next`: the
+  /// listener and its relays continue rather than closing (§6).
+  package func migrated(
+    _ workspace: WorkspaceID,
+    from old: GuardianAuthority,
+    to next: GuardianAuthority
+  ) {
+    guard !closed, var route = routes[workspace], route.authority == old else {
+      return
+    }
+    route.authority = next
+    route.migratedAt = .now
+    route.migrating = false
+    routes[workspace] = route
+    route.listener.rebind(to: next)
+  }
+
   /// Call after inventory changes, or before selection (done automatically).
   /// Retirement disconnects frontend transports, never guardian-owned processes.
   package func reconcile() async throws {
@@ -118,6 +150,15 @@ package actor GatewayNativeRoutes {
         !available.contains(where: { $0.inventory.authority == route.authority }
         )
       else { continue }
+      if route.migrating { continue }
+      if let migrated = route.migratedAt,
+        ContinuousClock.now - migrated < .seconds(10),
+        records.contains(where: {
+          $0.inventory.authority.workspace == route.authority.workspace
+        })
+      {
+        continue  // The candidate is still publishing.
+      }
       await route.listener.close()
       routes.removeValue(forKey: id)
       try checkOpen()

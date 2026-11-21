@@ -24,7 +24,7 @@ package final class GatewayNativeEndpoint: @unchecked Sendable {
   private let queue = DispatchQueue(label: "swiftmux.gateway.native-endpoint")
   private let listener: SMXListener
   private let supervisor: GatewaySupervisor
-  private let authority: GuardianAuthority
+  private var authority: GuardianAuthority
   private let peerRequirement: String?
   private let capacity: Int
   private let admission: GatewayNativeAdmission
@@ -103,6 +103,39 @@ package final class GatewayNativeEndpoint: @unchecked Sendable {
     let liveRelays = Array(relays.values)
     relays.removeAll()
     for live in liveRelays { live.relay.close() }
+  }
+
+  /// A planned replacement released this listener's workspace to `next`.
+  /// New frontends resolve the candidate; live relays continue on it.
+  package func rebind(to next: GuardianAuthority) {
+    queue.async { [self] in
+      guard !closed, next.workspace == authority.workspace,
+        next.generation > authority.generation
+      else { return }
+      authority = next
+      let live = relays.values.map(\.relay)
+      guard !live.isEmpty else { return }
+      let supervisor = supervisor
+      Task { [weak self] in
+        // The candidate publishes its endpoint just after release.
+        let deadline = ContinuousClock.now + .seconds(10)
+        var endpoint: GuardianWorkerEndpoint?
+        while endpoint == nil, ContinuousClock.now < deadline {
+          endpoint = try? await supervisor.workerEndpoint(next)
+          if endpoint == nil { try? await Task.sleep(for: .milliseconds(20)) }
+        }
+        guard let self else { return }
+        self.queue.async {
+          for relay in live {
+            if let endpoint {
+              relay.rebind(to: endpoint)
+            } else {
+              relay.close(MuxError(.connectionLost, "replacement unreachable"))
+            }
+          }
+        }
+      }
+    }
   }
 
   private func accept(_ channel: SMXChannel) {

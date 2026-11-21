@@ -3661,10 +3661,9 @@ outcomes. A guardian workspace now reports why its worker stopped
 
 The signed run (`qualify-guardian-lifecycle.py --worker-builds`, Developer ID
 team `72KB9YQR7B`) moves a live build-one workspace onto a guardian-launched
-build-two worker. It was released after a 26 ms frozen interval. Shell PID, job
+build-two worker. It was released after a 32 ms frozen interval. Shell PID, job
 PID and parent, variables, interactive flags, the version-specific terminfo
-path and prior screen content were all unchanged, under a fresh service
-instance. The old worker exits; build one stays pinned by the migrated shell
+path, prior screen content and the service instance were all unchanged. The old worker exits; build one stays pinned by the migrated shell
 and is collected only after End and retirement. Cleanup left no registrations
 or processes.
 
@@ -3677,10 +3676,22 @@ the last reference to the old worker SIGKILLed it at once. Both are fixed.
 
 Deviations and open items:
 
-- Live attachments are not transferred. Clients re-attach to the candidate,
-  which is a fresh service instance with full frames. Paste bytes still
-  unwritten at release are therefore cancelled, as on any detach. They are
-  never resubmitted, and acknowledged ordinary input is preserved.
+- Live attachments are carried over (§6). The candidate continues the old
+  service instance and the guardian writer grant. Because an unchanged grant
+  no longer cancels queued input, the guardian's queued writes and open paste
+  continue. The checkpoint carries the controller lease as provisional. The
+  gateway relay that held it drains the old worker's outstanding replies,
+  re-handshakes with the candidate and resumes the lease with its input
+  watermark (`resumeAttachment`; sequences refused while frozen are consumed,
+  never reused). It then replays its subscriptions; full frames follow. Any
+  other attach, or 10 s without a resume, fences the provisional lease exactly
+  as a lost connection would (UA3). Routes are held through the transaction so
+  discovery cannot prune them. `aLiveFrontendContinuesOnTheCandidate`: a
+  frontend that stays connected has its 1,500-line open paste written in full
+  (`paste=1500:0`), then keeps typing on the same connection and server
+  instance. Breaking writer continuity loses the paste.
+  `anOpenPasteAtTheCutIsNeverResubmitted` covers the re-attaching frontend, for
+  which the remainder is fenced and never resubmitted.
 - Automation actions deferred during a cut that ends in release are retired
   with the old worker; the candidate starts its own script runtime, the same
   volatile-state reset a gateway restart discloses (§5.1).

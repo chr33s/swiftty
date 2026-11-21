@@ -39,6 +39,9 @@ public struct MuxServiceConfiguration: Sendable {
   /// Guardian worker mode: one lifetime workspace identity, provisioned by
   /// its supervisor. Ordinary local services continue allocating identities.
   var workerWorkspace: WorkspaceID?
+  /// A planned replacement's candidate continues its predecessor's service
+  /// instance (spec.durability.md §6).
+  var instance: ServerInstanceID?
   var requiresGatewayBinding = false
 
   public init(launcherPath: String) { self.launcherPath = launcherPath }
@@ -327,7 +330,7 @@ extension ViewerViewport {
   }
 }
 
-struct ActivePaste {
+struct ActivePaste: Codable {
   var pane: PaneID
   var bytes = 0
 }
@@ -335,8 +338,8 @@ struct ActivePaste {
 /// One interactive lease on one workspace (spec.inbox.md §2). A client
 /// holds at most one; a workspace has at most one holder.
 struct Lease {
-  let client: UUID
-  let attachment = AttachmentID()
+  var client: UUID
+  var attachment = AttachmentID()
   var workspace: WorkspaceID
   /// The workspace's lease generation when this lease was granted.
   var generation: UInt64

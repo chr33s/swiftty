@@ -251,10 +251,31 @@ package actor GatewayRuntime {
     try checkOpen()
     let record = try await directory.resolve(selector)
     try checkOpen()
-    let status = try await supervisor.migrate(
-      record.inventory.authority,
-      started: started
-    )
+    let workspace = record.inventory.authority.workspace
+    await routes.beginMigration(workspace)
+    let status: GuardianMigrationStatus
+    do {
+      status = try await supervisor.migrate(
+        record.inventory.authority,
+        started: started
+      )
+    } catch {
+      await routes.endMigration(workspace)
+      throw error
+    }
+    if status.outcome != .released { await routes.endMigration(workspace) }
+    if status.outcome == .released,
+      let next = try? await supervisor.inventory()
+        .first(where: { $0.authority.workspace == status.workspace })?
+        .authority
+    {
+      // Live frontends continue on the candidate instead of reconnecting.
+      await routes.migrated(
+        status.workspace,
+        from: record.inventory.authority,
+        to: next
+      )
+    }
     // Release or abort changed the owner generation: refresh discovery so
     // routes ask for the current authority, not the fenced one.
     for _ in 0 ..< 100 {

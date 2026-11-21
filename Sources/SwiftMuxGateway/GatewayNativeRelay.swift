@@ -14,9 +14,21 @@ package final class GatewayNativeRelay: @unchecked Sendable {
   private struct CommandCharge {
     let bytes: Int
     let changesAttachment: Bool
-    let subscribedPanes: Set<PaneID>?
+    let subscribedPanes: [PaneID]?
     let inboxChange: Bool?
   }
+
+  /// Planned replacement (spec.durability.md §6): moving this frontend's
+  /// attachment to the candidate without closing the frontend.
+  private enum Rebind {
+    /// Waiting for the old worker to answer outstanding work.
+    case draining(GuardianWorkerEndpoint, deadline: DispatchTime)
+    case hello
+    case resuming
+    case subscribing
+    case inbox
+  }
+  private static let internalRequest: UInt64 = .max - 15
 
   private struct InputCharge {
     let bytes: Int
@@ -25,8 +37,18 @@ package final class GatewayNativeRelay: @unchecked Sendable {
   }
 
   private let frontend: SMXChannel
-  private let worker: SMXChannel
-  private let endpoint: GuardianWorkerEndpoint
+  private var worker: SMXChannel
+  private var endpoint: GuardianWorkerEndpoint
+  private let peerRequirement: String?
+  private var upstream = 0
+  private var rebinding: Rebind?
+  private var held: [Data] = []
+  private var heldBytes = 0
+  private var attachment: AttachmentID?
+  private var subscriptions: [PaneID] = []
+  private var inboxSubscribed = false
+  /// One past the highest input sequence the old worker answered.
+  private var nextInput: UInt64 = 1
   private let onClosed: @Sendable (MuxError) -> Void
   private var hello: Hello?
   private var welcome: Welcome?
@@ -54,6 +76,7 @@ package final class GatewayNativeRelay: @unchecked Sendable {
   ) throws {
     self.frontend = frontend
     self.endpoint = endpoint
+    self.peerRequirement = peerRequirement
     onClosed = closed
     worker = .connect(endpoint: endpoint.endpoint, queue: frontend.queue)
     guard frontend.peerEUID == geteuid(),
@@ -75,16 +98,156 @@ package final class GatewayNativeRelay: @unchecked Sendable {
       case .closed: self.close()
       }
     }
+    activateWorker()
+    armDeadline()
+  }
+
+  private func activateWorker() {
+    let generation = upstream
     worker.activate(recordLimit: { [weak self] in
       SMXCodec.serverRecordLimit(self?.welcome?.limits ?? .standard)
     }) { [weak self] event in
-      guard let self else { return }
+      guard let self, generation == self.upstream else { return }
       switch event {
       case let .message(data): self.receiveWorker(data)
       case .closed: self.close()
       }
     }
-    armDeadline()
+  }
+
+  /// After a planned replacement released this workspace to `next`:
+  /// drain the old worker's outstanding replies, then continue the same
+  /// frontend connection on the candidate.
+  package func rebind(to next: GuardianWorkerEndpoint) {
+    guard !ended, rebinding == nil, welcome != nil,
+      next.authority.workspace == endpoint.authority.workspace,
+      next.instance == endpoint.instance
+    else {
+      if !ended, rebinding == nil {
+        close(MuxError(.serverInstanceChanged, "worker replaced"))
+      }
+      return
+    }
+    rebinding = .draining(next, deadline: .now() + 3)
+    continueRebind()
+  }
+
+  private func continueRebind() {
+    guard case let .draining(next, deadline) = rebinding else { return }
+    guard commands.isEmpty, inputs.isEmpty else {
+      guard DispatchTime.now() < deadline else {
+        close(MuxError(.connectionLost, "old worker did not settle"))
+        return
+      }
+      frontend.queue.asyncAfter(deadline: .now() + .milliseconds(5)) {
+        [weak self] in self?.continueRebind()
+      }
+      return
+    }
+    let candidate = SMXChannel.connect(
+      endpoint: next.endpoint,
+      queue: frontend.queue
+    )
+    guard
+      peerRequirement.map({ candidate.requirePeer(codeSigning: $0) }) ?? true
+    else {
+      candidate.cancel()
+      close(MuxError(.unauthorized, "replacement worker rejected"))
+      return
+    }
+    let old = worker
+    upstream &+= 1
+    worker = candidate
+    endpoint = next
+    rebinding = .hello
+    activateWorker()
+    old.cancel()
+    frames.removeAll()
+    inbox.removeAll()
+    guard let hello,
+      let data = try? SMXCodec.encode(
+        ClientMessage.hello(hello),
+        limit: SMXCodec.clientRecordLimit(.standard)
+      )
+    else {
+      close()
+      return
+    }
+    worker.send(data)
+  }
+
+  private func sendInternal(_ command: MuxCommand) throws {
+    worker.send(
+      try SMXCodec.encode(
+        ClientMessage.request(id: Self.internalRequest, command: command),
+        limit: SMXCodec.clientRecordLimit(welcome?.limits ?? .standard)
+      )
+    )
+  }
+
+  /// Handshake records from the candidate during a rebind. True when the
+  /// message was consumed here.
+  private func receiveRebind(_ message: ServerMessage) throws -> Bool {
+    switch (rebinding, message) {
+    case let (.hello, .welcome(value)):
+      guard value.server == endpoint.instance,
+        value.forwardedTransport == .local,
+        value.protocolVersion == welcome?.protocolVersion
+      else {
+        throw MuxError(.incompatibleVersion, "replacement worker differs")
+      }
+      if let attachment {
+        rebinding = .resuming
+        try sendInternal(.resumeAttachment(attachment, nextInput: nextInput))
+      } else {
+        finishRebind()
+      }
+      return true
+    case let (.resuming, .reply(Self.internalRequest, result)):
+      guard case .success(.attached) = result else {
+        throw MuxError(.staleAttachment, "attachment could not resume")
+      }
+      if subscriptions.isEmpty {
+        try afterSubscriptions()
+      } else {
+        rebinding = .subscribing
+        try sendInternal(.setSubscriptions(subscriptions))
+      }
+      return true
+    case let (.subscribing, .reply(Self.internalRequest, result)):
+      guard case .success = result else {
+        throw MuxError(.staleAttachment, "subscriptions could not resume")
+      }
+      try afterSubscriptions()
+      return true
+    case let (.inbox, .reply(Self.internalRequest, result)):
+      guard case .success = result else {
+        throw MuxError(.staleAttachment, "inbox could not resume")
+      }
+      finishRebind()
+      return true
+    case (.hello, _), (.resuming, .reply), (.subscribing, .reply),
+      (.inbox, .reply):
+      throw MuxError(.invalidRequest, "unexpected replacement handshake")
+    default: return false
+    }
+  }
+
+  private func afterSubscriptions() throws {
+    if inboxSubscribed {
+      rebinding = .inbox
+      try sendInternal(.subscribeInbox(true))
+    } else {
+      finishRebind()
+    }
+  }
+
+  private func finishRebind() {
+    rebinding = nil
+    let pending = held
+    held.removeAll()
+    heldBytes = 0
+    for data in pending where !ended { receiveFrontend(data) }
   }
 
   deinit {
@@ -111,6 +274,16 @@ package final class GatewayNativeRelay: @unchecked Sendable {
 
   private func receiveFrontend(_ data: Data) {
     guard !ended else { return }
+    // Mid-rebind, frontend records wait for the candidate, in order.
+    if rebinding != nil {
+      guard held.count < 1024, data.count <= (8 << 20) - heldBytes else {
+        close(MuxError(.resourceLimit, "relay rebind backlog exhausted"))
+        return
+      }
+      held.append(data)
+      heldBytes += data.count
+      return
+    }
     do {
       let message = try SMXCodec.decode(
         ClientMessage.self,
@@ -146,12 +319,14 @@ package final class GatewayNativeRelay: @unchecked Sendable {
       switch message {
       case .hello: throw MuxError(.invalidRequest, "duplicate frontend hello")
       case let .request(id, command):
-        if case .observeWorkspaceGraph = command {
-          reject(
-            id,
-            MuxError(.unauthorized, "gateway graph subscription is internal")
-          )
+        switch command {
+        case .observeWorkspaceGraph, .resumeAttachment:
+          reject(id, MuxError(.unauthorized, "gateway-internal command"))
           return
+        default: break
+        }
+        guard id != Self.internalRequest else {
+          throw MuxError(.invalidRequest, "reserved request identifier")
         }
         guard commands[id] == nil else {
           throw MuxError(.invalidRequest, "duplicate outstanding request")
@@ -208,9 +383,9 @@ package final class GatewayNativeRelay: @unchecked Sendable {
           changesAttachment = true
         default: changesAttachment = false
         }
-        let subscribedPanes: Set<PaneID>?
+        let subscribedPanes: [PaneID]?
         if case let .setSubscriptions(panes) = command {
-          subscribedPanes = Set(panes)
+          subscribedPanes = panes
         } else {
           subscribedPanes = nil
         }
@@ -293,6 +468,7 @@ package final class GatewayNativeRelay: @unchecked Sendable {
         from: data,
         limit: SMXCodec.serverRecordLimit(welcome?.limits ?? .standard)
       )
+      if rebinding != nil, try receiveRebind(message) { return }
       if welcome == nil {
         guard DispatchTime.now() < handshakeDeadline else {
           throw MuxError(.connectionLost, "worker handshake timed out")
@@ -330,17 +506,31 @@ package final class GatewayNativeRelay: @unchecked Sendable {
           throw MuxError(.invalidRequest, "unknown worker reply")
         }
         commandBytes -= charge.bytes
-        if case .success = result {
-          if charge.changesAttachment { frames.removeAll() }
-          if charge.inboxChange == false { inbox.removeAll() }
+        if case let .success(reply) = result {
+          if charge.changesAttachment {
+            frames.removeAll()
+            subscriptions = []
+            if case let .attached(value, _) = reply {
+              attachment = value
+            } else {
+              attachment = nil
+            }
+          }
+          if let on = charge.inboxChange {
+            inboxSubscribed = on
+            if !on { inbox.removeAll() }
+          }
           if let panes = charge.subscribedPanes {
+            subscriptions = panes
             frames = frames.filter { panes.contains($0.key) }
           }
         }
+        if rebinding != nil { continueRebind() }
       case let .inputAck(sequence, _):
         guard let charge = inputs.removeValue(forKey: sequence) else {
           throw MuxError(.invalidRequest, "unknown input acknowledgement")
         }
+        nextInput = max(nextInput, sequence &+ 1)
         guard DispatchTime.now() < charge.deadline else {
           throw MuxError(
             .connectionLost,
@@ -354,6 +544,7 @@ package final class GatewayNativeRelay: @unchecked Sendable {
           inputBytes -= charge.bytes
         }
         armDeadline()
+        if rebinding != nil { continueRebind() }
       case let .event(.frame(frame)):
         guard frame.identity.server == endpoint.instance,
           frames[frame.identity.pane] == nil,
@@ -373,7 +564,10 @@ package final class GatewayNativeRelay: @unchecked Sendable {
             token: update.acknowledgementToken
           )
         )
-      case .event(.detached): frames.removeAll()
+      case .event(.detached):
+        frames.removeAll()
+        attachment = nil
+        subscriptions = []
       case let .event(.layout(graph)):
         let panes = Set(graph.panes.map(\.id))
         frames = frames.filter { panes.contains($0.key) }

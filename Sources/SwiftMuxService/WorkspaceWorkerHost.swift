@@ -119,12 +119,15 @@ package final class WorkspaceWorkerHost: @unchecked Sendable {
     }
   }
 
-  private func makeService() throws -> MuxService {
+  private func makeService(
+    instance: ServerInstanceID? = nil
+  ) throws -> MuxService {
     guard let broker else {
       throw MuxError(.connectionLost, "worker transport gone")
     }
     var configuration = MuxServiceConfiguration(launcherPath: launcherPath)
     configuration.workerWorkspace = workspace
+    configuration.instance = instance
     configuration.requiresGatewayBinding = true
     configuration.peerRequirement = peerRequirement
     let workspaceID = workspace
@@ -264,8 +267,9 @@ package final class WorkspaceWorkerHost: @unchecked Sendable {
       }
     case let .export(transaction):
       guard let service else { return }
-      broker.migrationHandles { handles in
-        service.migrationCheckpoint(handles: handles) { result in
+      broker.migrationHandles { handles, writer in
+        service.migrationCheckpoint(handles: handles, writer: writer) {
+          result in
           switch result {
           case let .success(data): broker.migrationExport(transaction, data)
           case let .failure(error): broker.migrationRefused(transaction, error)
@@ -292,7 +296,13 @@ package final class WorkspaceWorkerHost: @unchecked Sendable {
       let data = importBytes
       importBytes = Data()
       do {
-        let service = try makeService()
+        struct Continuity: Decodable {
+          var server: ServerInstanceID
+          var writer: UUID?
+        }
+        let continuity = try JSONDecoder().decode(Continuity.self, from: data)
+        broker.adoptWriter(continuity.writer)
+        let service = try makeService(instance: continuity.server)
         self.service = service
         service.importMigrationCheckpoint(
           data,

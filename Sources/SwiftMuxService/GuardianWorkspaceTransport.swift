@@ -139,9 +139,11 @@ final class GuardianWorkspaceTransport: @unchecked Sendable {
 
   /// Each pane's guardian handle, process and applied output at the cut.
   func migrationHandles(
-    completion: @escaping @Sendable ([PaneID: MigrationPaneHandle]) -> Void
+    completion:
+      @escaping @Sendable ([PaneID: MigrationPaneHandle], UUID?) -> Void
   ) {
     queue.async { [self] in
+      let writer = writer
       let current = routes.compactMap { id, route in
         route.handle.map { (id, $0, route.process) }
       }
@@ -161,13 +163,20 @@ final class GuardianWorkspaceTransport: @unchecked Sendable {
           group.leave()
         }
       }
-      group.notify(queue: .global()) { completion(collected.withLock { $0 }) }
+      group.notify(queue: .global()) {
+        completion(collected.withLock { $0 }, writer)
+      }
     }
   }
 
   /// Whether every command submitted so far has its guardian result.
   func commandsIdle(completion: @escaping @Sendable (Bool) -> Void) {
     queue.async { [self] in completion(failure == nil && commands.isIdle) }
+  }
+
+  /// A candidate continues the writer capability the guardian kept.
+  func adoptWriter(_ capability: UUID?) {
+    queue.sync { if writer == nil { writer = capability } }
   }
 
   func migrationFrozen(_ transaction: UUID) {
@@ -325,6 +334,12 @@ final class GuardianWorkspaceTransport: @unchecked Sendable {
       }
       guard !replacingWriter else {
         completion(MuxError(.resourceLimit, "writer transition pending"));
+        return
+      }
+      // The same grant again (a released candidate's first binding): no
+      // writer transition, so nothing queued is cancelled.
+      if capability != nil, capability == writer {
+        completion(nil)
         return
       }
       replacingWriter = true

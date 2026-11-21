@@ -536,6 +536,74 @@ struct MigrationTests {
     await started.runtime.close()
   }
 
+  /// The spec's preferred path (§6): a frontend that stays connected
+  /// continues on the candidate. The gateway relay resumes its lease, so
+  /// its open paste and queued input are written in full, and it keeps
+  /// typing on the same connection and server instance.
+  @Test
+  func aLiveFrontendContinuesOnTheCandidate() async throws {
+    let rig = try Rig()
+    defer { rig.close() }
+    let started = try await Self.start(rig)
+    let client = started.client
+    let pane = started.pane
+    let server = await client.welcome?.server
+    let file = NSTemporaryDirectory() + "migration-live-\(UUID().uuidString)"
+    defer { try? FileManager.default.removeItem(atPath: file) }
+    try await client.send(
+      .text("stty -echo; sleep 1; cat > \(file)\r"),
+      to: pane
+    )
+    try await Task.sleep(for: .milliseconds(200))
+    let count = 1_500
+    let text =
+      (0 ..< count)
+      .map { String(format: "p%05d-", $0) + String(repeating: "y", count: 90) }
+      .joined(separator: "\r") + "\r"
+    let state = try await client.paste(text, to: pane)
+    #expect(state == .completed)
+    #expect(rig.guardian.pendingInputBytesForTesting(rig.workspace) > 0)
+    let status = try await started.runtime.migrateWorkspace(
+      .id(rig.workspace),
+      started: rig.candidate()
+    )
+    #expect(
+      status.outcome == .released,
+      "\(String(describing: status.failure))"
+    )
+    /// Input refused while the relay moves is never written; send again.
+    func type(_ text: String) async throws {
+      let deadline = ContinuousClock.now + .seconds(10)
+      while true {
+        do {
+          try await client.send(.text(text), to: pane)
+          return
+        } catch let error as MuxError
+          where error.code == .quiescing && ContinuousClock.now < deadline
+        { try await Task.sleep(for: .milliseconds(20)) }
+      }
+    }
+    try await type("\r\u{4}")
+    try await type(
+      "stty echo; awk 'NF==0{next} {if(short)bad++; n=substr($0,2,5)+0; "
+        + "if(n!=want)bad++; want=n+1; short=(length($0)!=97)} "
+        + "END{printf \"paste=%d:%d\\n\", want, bad}' \(file)\r"
+    )
+    let frame = try await client.frame(of: pane) {
+      $0.lines.contains { $0.contains("paste=") }
+    }
+    let line = try #require(frame.lines.first { $0.contains("paste=") })
+    #expect(line.hasSuffix("paste=\(count):0"), "\(line)")
+    try await type("echo same-$MARK-$$\r")
+    _ = try await client.frame(of: pane) {
+      $0.lines.contains("same-kept-42-\(started.shell)")
+    }
+    #expect(await client.welcome?.server == server)
+    #expect(rig.retired.withLock { $0 })
+    await client.close()
+    await started.runtime.close()
+  }
+
   // MARK: Candidate failure (MR4)
 
   @Test

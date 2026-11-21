@@ -87,6 +87,10 @@ None of these recurs on demand: on 2026-10-27 each was repeated 25–40 times wi
   parallel `SwiftMuxTests` run (2026-11-21), and did not recur in about 14
   later runs. `attach` now reports directory states, and the guardian
   inventory carries `lossReason`; capture both on recurrence.
+- [ ] **Abandoned paste under load:** `ServiceTests.abandonedPasteClosesItsEnvelope`
+  timed out waiting for its frame once in a parallel `SwiftMuxTests` run
+  (2026-11-21) and passed five of five alone in about 3 s. Capture the paste
+  envelope state and frame revisions on recurrence.
 - [ ] **Clipboard and launcher reports under load:** in parallel
   `SwiftMuxTests` runs on 2026-11-21, `ClipboardDropTests` "controllers answer
   reads and programs receive the data" timed out once, and
@@ -114,10 +118,6 @@ None of these recurs on demand: on 2026-10-27 each was repeated 25–40 times wi
   returns, and the roaming start path prompts twice (probe, then bootstrap).
   Sign off the loop, or exclude prompt time from the deadline, and verify on a
   device (SE-02).
-- [ ] **Planned replacement follow-ups** ([spec.durability.md §13.72](spec.durability.md)):
-  transfer live attachments to the candidate instead of re-attaching (a paste
-  still unwritten at release is cancelled today, because a new controller's
-  attach discards the previous lease's unwritten input).
 - [ ] **Installer integration (UA8, signed UA4):** register the guardian and
   gateway agents from the app, transition from the monolithic agent behind the
   empty-state barrier with End confirmation, add an installer-side

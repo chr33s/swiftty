@@ -145,8 +145,9 @@ def qualify_worker_builds(args, binary, launcher, *, run, bundle, wait_for):
         assert new_fields[:3] == old_fields[:3], (old_fields, new_fields)
         assert new_fields[4] == "ok", new_fields
         assert migration["retainedScreen"] == "true", migration
-        # A fresh service instance: clients rebuild baselines with full frames.
-        assert migration["server"] not in ("", evidence["first"]["server"]), migration
+        # The candidate continues the service instance; frontends keep their
+        # connection and receive full frames.
+        assert migration["server"] == evidence["first"]["server"], migration
         assert migration["workerBuild"] == "two", migration
         assert int(migration["worker"]) != int(evidence["first"]["worker"]), migration
         assert int(migration["frozenMilliseconds"]) < 2000, migration
@@ -176,7 +177,7 @@ def qualify_worker_builds(args, binary, launcher, *, run, bundle, wait_for):
         (root / "collection").unlink()
         (root / "collect-one").touch()
         wait_for(lambda: expect_file("collection", "pinned"), "migrated shell keeps build one pinned")
-        evidence["checks"].append("planned replacement onto signed build two keeps shell, job, variables and screen under a fresh service instance; old worker retired; build one stays pinned by the shell")
+        evidence["checks"].append("planned replacement onto signed build two keeps shell, job, variables, screen and service instance; old worker retired; build one stays pinned by the shell")
         (root / "end-all").touch()
 
         def ended():

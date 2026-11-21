@@ -131,10 +131,11 @@ private struct MuxCommandPayload {
       try clipboard(contents)
     case .clipboardReadResult, .clipboardWriteResult: break
     case .status, .listWorkspaces, .detachActive, .endAllWorkspaces, .quiesce,
-      .detach, .observeWorkspaces, .observeWorkspaceGraph, .savedLayoutState,
-      .exportSavedOutput, .setOutputOptOut, .subscribeInbox, .selectTab,
-      .endTab, .focusPane, .toggleZoom, .endPane, .scroll, .searchStep,
-      .endSearch, .clearScreen, .resetTerminal, .link, .commandOutput:
+      .resumeAttachment, .detach, .observeWorkspaces, .observeWorkspaceGraph,
+      .savedLayoutState, .exportSavedOutput, .setOutputOptOut, .subscribeInbox,
+      .selectTab, .endTab, .focusPane, .toggleZoom, .endPane, .scroll,
+      .searchStep, .endSearch, .clearScreen, .resetTerminal, .link,
+      .commandOutput:
       break
     }
   }

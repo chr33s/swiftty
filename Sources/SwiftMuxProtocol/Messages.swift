@@ -683,6 +683,11 @@ public enum MuxCommand: Codable, Sendable, Equatable {
   /// `expectedLease` must name the lease generation the user saw, so a
   /// stale prompt cannot displace a newer holder.
   case takeover(WorkspaceSelector, expectedLease: UInt64)
+  /// Gateway relay only (spec.durability.md §6): after a planned
+  /// replacement, continue the controller lease the checkpoint carried.
+  /// `nextInput` is the relay's watermark: every sequence after the
+  /// checkpoint's was refused by the frozen worker, so it is never reused.
+  case resumeAttachment(AttachmentID, nextInput: UInt64)
   case detach
   case switchWorkspace(WorkspaceSelector)
 
@@ -813,7 +818,7 @@ public enum MuxCommand: Codable, Sendable, Equatable {
       .setTheme, .takeover, .observeWorkspaces, .observeWorkspaceGraph,
       .savedLayoutState, .exportSavedOutput, .newWorkspaceFromTemplate,
       .subscribeAutomation, .subscribeInbox, .inbox, .locateAttention,
-      .markSeen, .snooze, .markReviewed:
+      .markSeen, .snooze, .markReviewed, .resumeAttachment:
       false
     default: true
     }

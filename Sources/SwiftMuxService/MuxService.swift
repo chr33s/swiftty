@@ -19,7 +19,9 @@ public actor MuxService {
     queue.asUnownedSerialExecutor()
   }
 
-  public nonisolated let instance = ServerInstanceID()
+  /// A planned replacement's candidate continues its predecessor's
+  /// instance, so frontends keep accepting its frames (full frames follow).
+  public nonisolated let instance: ServerInstanceID
   nonisolated let configuration: MuxServiceConfiguration
   nonisolated let launcher: PaneLauncher
   private let log = Logger(
@@ -41,7 +43,7 @@ public actor MuxService {
   /// Last observer window id issued (`ViewerViewport.id`).
   var nextWindowID: UInt64 = 0
   /// Last granted lease generation per workspace; `takeover` names it.
-  private var leaseGenerations: [WorkspaceID: UInt64] = [:]
+  var leaseGenerations: [WorkspaceID: UInt64] = [:]
   /// Removed graph panes still count toward capacity until process ownership
   /// retirement is acknowledged. Failure cannot turn into a false empty state.
   var retiringPanes: [PaneID: PaneRuntime] = [:]
@@ -61,6 +63,9 @@ public actor MuxService {
   var savedOutputExport: SavedOutputExport?
   /// Planned replacement: admission is closed for a cut (§7.2).
   var migrationFrozen = false
+  /// The controller lease a checkpoint carried, until its relay resumes it
+  /// or it is fenced (§6).
+  var provisionalLease: Lease?
   var gatewayPeerPID: Int32?
   var pendingHistoryBytes = 0
   /// Latest frontend theme, applied to every pane and to new ones.
@@ -108,6 +113,7 @@ public actor MuxService {
       )
     }
     self.configuration = configuration
+    instance = configuration.instance ?? ServerInstanceID()
     queue = DispatchSerialQueue(label: "swiftmux.service", qos: .userInitiated)
     attention = InboxHub(serviceEpoch: instance, limits: configuration.limits)
     launcher = PaneLauncher(
@@ -517,6 +523,15 @@ public actor MuxService {
         hello: hello,
         reply: reply,
       )
+    case let .resumeAttachment(attachment, nextInput):
+      reply(
+        resumeAttachment(
+          attachment,
+          nextInput: nextInput,
+          client: client,
+          hello: hello
+        )
+      )
     case .detach:
       if let ws = clientLeases[client.id] {
         releaseLease(ws, notify: false, reason: "detached")
@@ -627,6 +642,8 @@ public actor MuxService {
       } catch { fail(error) }
       return
     }
+    // A different frontend: the lease a replacement carried is fenced.
+    fenceProvisionalLease(reason: "another frontend attached")
     guard leases[ws.id] == nil else {
       return fail(
         MuxError(.leaseHeld, "another frontend controls this workspace"),
@@ -652,6 +669,7 @@ public actor MuxService {
       return fail(MuxError(.quiescing, "service is preparing to update"))
     }
     let ws = try workspace(selector)
+    fenceProvisionalLease(reason: "another frontend took control")
     // Names the lease the user agreed to displace; a newer holder
     // (or none) means the prompt is stale.
     guard expected == leaseGenerations[ws.id, default: 0] else {
@@ -724,11 +742,9 @@ public actor MuxService {
 
   /// Lease and snapshot at one ordering point; frames follow on
   /// subscription.
-  private func grantLease(
-    _ ws: Workspace,
-    to client: Client,
-    hello: Hello,
-  ) -> MuxReply {
+  func grantLease(_ ws: Workspace, to client: Client, hello: Hello, )
+    -> MuxReply
+  {
     recordLocalUse(ws.id, by: client)
     leaseGenerations[ws.id, default: 0] &+= 1
     let lease = Lease(
@@ -1060,9 +1076,10 @@ public actor MuxService {
     case .status, .listWorkspaces, .newWorkspace, .newWorkspaceFromTemplate,
       .endWorkspace, .renameWorkspace, .detachActive, .endAllWorkspaces,
       .attach, .detach, .switchWorkspace, .quiesce, .setTheme, .takeover,
-      .observeWorkspaces, .observeWorkspaceGraph, .savedLayoutState,
-      .exportSavedOutput, .subscribeAutomation, .subscribeInbox, .inbox,
-      .locateAttention, .markSeen, .snooze, .markReviewed:
+      .resumeAttachment, .observeWorkspaces, .observeWorkspaceGraph,
+      .savedLayoutState, .exportSavedOutput, .subscribeAutomation,
+      .subscribeInbox, .inbox, .locateAttention, .markSeen, .snooze,
+      .markReviewed:
       ok()  // handled by `handle`
     }
   }
