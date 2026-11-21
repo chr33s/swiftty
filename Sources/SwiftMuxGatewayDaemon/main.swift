@@ -6,6 +6,11 @@ import SwiftMuxGuardian
 
 // This is a separate native control service, not a replacement registration for
 // the legacy SMX agent. Installation must explicitly choose the durable topology.
+if CommandLine.arguments.count == 2,
+  ["register", "unregister", "status"].contains(CommandLine.arguments[1])
+{
+  exit(HelperAgentCommand.run(CommandLine.arguments[1]))
+}
 do {
   let configuration = try GatewayDaemonConfiguration(
     arguments: Array(CommandLine.arguments.dropFirst())

@@ -289,6 +289,19 @@ package actor GatewayRuntime {
     return status
   }
 
+  /// Fresh guardian inventory, so retained and unavailable workspaces count.
+  package func installationStatus() async throws -> GatewayInstallationStatus {
+    try checkOpen()
+    let inventory = try await supervisor.inventory()
+    guard let incarnation = await supervisor.guardianIncarnation else {
+      throw MuxError(.notAttached, "guardian identity unknown")
+    }
+    return GatewayInstallationStatus(
+      guardianIncarnation: incarnation,
+      workspaces: inventory.count
+    )
+  }
+
   /// After an update selects a new worker build (spec.durability.md §5.2):
   /// move live workspaces still on older builds, one at a time. A refusal
   /// or rollback is a deferred upgrade for that workspace, never a failed

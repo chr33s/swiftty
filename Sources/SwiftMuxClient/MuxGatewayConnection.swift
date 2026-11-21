@@ -170,6 +170,13 @@ public actor MuxGatewayConnection {
   // MARK: Saved layouts (spec.durability.md §12.2)
 
   /// Listing marks Saved records as offered, which starts their retention.
+  public func installationStatus() async throws -> GatewayInstallationStatus {
+    guard
+      case let .installation(status) = try await request(.installationStatus)
+    else { throw MuxError(.invalidRequest, "unexpected installation status") }
+    return status
+  }
+
   public func savedWorkspaces() async throws -> SavedWorkspaceList {
     guard case let .savedWorkspaces(list) = try await request(.savedWorkspaces)
     else { throw MuxError(.invalidRequest, "unexpected saved list") }
@@ -286,7 +293,7 @@ public actor MuxGatewayConnection {
         .newWorkspace(NewWorkspaceRequest(launch: request.launch))
       ) + request.runCommandSlots.count * 8
     case .listWorkspaces, .savedWorkspaces, .setSavedPolicy, .deleteSaved,
-      .previousOutput, .discardPreviousOutput:
+      .previousOutput, .discardPreviousOutput, .installationStatus:
       return 256
     }
   }

@@ -118,12 +118,13 @@ None of these recurs on demand: on 2026-10-27 each was repeated 25–40 times wi
   returns, and the roaming start path prompts twice (probe, then bootstrap).
   Sign off the loop, or exclude prompt time from the deadline, and verify on a
   device (SE-02).
-- [ ] **Installer integration (UA8, signed UA4):** register the guardian and
-  gateway agents from the app, transition from the monolithic agent behind the
-  empty-state barrier with End confirmation, add an installer-side
-  `GatewayReplacement` and a native-control trigger for `GatewayUpdater.install`,
-  then qualify update, rollback, uninstall and reboot signed
-  ([spec.durability.md §13.73](spec.durability.md)).
+- [ ] **Real-installation qualification (UA8, signed UA4):** on a disposable
+  Mac or account, transition an installed monolithic agent with a
+  Developer ID-signed, notarized `SWIFTTY_DURABLE=1` package, reboot, and run
+  an update through an installer-side `GatewayReplacement` and a native-control
+  trigger for `GatewayUpdater.install`, including rollback
+  ([spec.durability.md §13.73–§13.74](spec.durability.md)). Fixture-agent
+  qualification passes.
 
 ## Platform and release validation
 

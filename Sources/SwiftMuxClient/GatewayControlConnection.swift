@@ -27,6 +27,7 @@ package final class GatewayControlConnection: @unchecked Sendable {
     case savedPolicy(SavedLayoutPolicy)
     case deletedSaved
     case previousOutput(SavedOutputPage)
+    case installation(GatewayInstallationStatus)
   }
 
   private struct Pending {
@@ -117,7 +118,7 @@ package final class GatewayControlConnection: @unchecked Sendable {
           .newWorkspace(NewWorkspaceRequest(launch: request.launch))
         )
       case .listWorkspaces, .savedWorkspaces, .setSavedPolicy, .deleteSaved,
-        .previousOutput, .discardPreviousOutput:
+        .previousOutput, .discardPreviousOutput, .installationStatus:
         break
       }
       let request = GatewayControlRequest.command(
@@ -269,6 +270,8 @@ package final class GatewayControlConnection: @unchecked Sendable {
     where page.offset == offset && page.bytes.count <= SavedOutputPage.maxBytes
       && page.total <= SavedOutput.maxBytes:
       return .previousOutput(page)
+    case let (.installationStatus, .installation(status))
+    where status.workspaces >= 0: return .installation(status)
     default: return nil
     }
   }

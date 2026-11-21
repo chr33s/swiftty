@@ -1,0 +1,16 @@
+{
+  "scope": "durable installer with isolated fixture agents",
+  "root": "/private/var/folders/nd/0ftffstd2dz0bj7v78hwpf700000gn/T/swiftty-installer-qualification-bzs8qyi2",
+  "revision": "c4510a95eae22bc4ee35f78ec83579ce4becc162",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2.1\nBuildVersion:\t\t26B131",
+  "passed": true,
+  "checks": [
+    "declined adoption leaves the legacy agent and its shell running; nothing is registered or recorded",
+    "confirmed adoption ends legacy sessions, unregisters the legacy agent, registers guardian then gateway and records the verified incarnation; no shell is adopted",
+    "guardian maintenance is refused while sessions live unless confirmed; confirmed maintenance ends them, restarts the guardian with a new incarnation and records it",
+    "after a guardian restart the installer reports ended sessions with the old and new incarnations, never restoration, and then reports the new guardian as running",
+    "uninstall ends confirmed sessions, removes both durable agents and the record, and does not reinstate the legacy agent"
+  ],
+  "adopted": "B637C355-A65C-4B7F-91E6-64E34DFDE21D",
+  "cleanup_errors": []
+}

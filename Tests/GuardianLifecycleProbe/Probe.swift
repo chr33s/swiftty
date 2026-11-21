@@ -47,6 +47,7 @@ enum GuardianLifecycleProbe {
     case "validate-gateway-candidate", "stage-gateway-candidate":
       try validateGatewayCandidate(args)
     case "worker": try await runWorker()
+    case "durable-install": try await durableInstall(args)
     case "status", "create", "send", "end":
       guard args.count >= 2,
         args[1].hasPrefix("com.chr33s.swiftty.durability-probe.")

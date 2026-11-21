@@ -276,6 +276,8 @@ package final class GatewayControlServer: @unchecked Sendable {
     case let .discardPreviousOutput(id, pane):
       try await runtime.discardPreviousOutput(id, pane: pane)
       return (.deletedSaved, nil)
+    case .installationStatus:
+      return (.installation(try await runtime.installationStatus()), nil)
     }
   }
 

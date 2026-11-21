@@ -29,6 +29,7 @@ package actor GatewaySupervisor {
   private var waiting: [Request] = []
   private var failure: MuxError?
   package private(set) var identity: GuardianGatewayConnection.Identity?
+  package var guardianIncarnation: UUID? { identity?.incarnation }
   package var pendingCommandCount: Int {
     waiting.count + (active == nil ? 0 : 1)
   }

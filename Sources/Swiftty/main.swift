@@ -4,6 +4,7 @@ import ServiceManagement
 import SwiftMuxClient
 import SwiftMuxGuardian
 import SwiftMuxProtocol
+import Synchronization
 
 // `swiftty --swiftmux-agent register|unregister|status` manages the bundled
 // SwiftMux LaunchAgent without opening windows (packaging checks, scripts).
@@ -36,6 +37,18 @@ if arguments.dropFirst().first == "--running-app" {
   }
   print(running ? "running" : "stopped")
   exit(0)
+}
+if arguments.dropFirst().first == "--durable-sessions" {
+  let done = DispatchSemaphore(value: 0)
+  let status = Mutex<Int32>(0)
+  let rest = Array(arguments.dropFirst(2))
+  Task.detached {
+    let value = await DurableSessions.command(rest)
+    status.withLock { $0 = value }
+    done.signal()
+  }
+  done.wait()
+  exit(status.withLock { $0 })
 }
 if let i = arguments.firstIndex(of: "--swiftmux-agent") {
   let service = SMAppService.agent(plistName: SMX.agentPlistName)
@@ -76,7 +89,12 @@ if let i = arguments.firstIndex(of: "--swiftmux-agent") {
 }
 
 let app = NSApplication.shared
-let gatewayApplication = gatewayService.map { service in
+// Once the durable topology is installed, the app uses its gateway; an
+// explicit `--gateway-service` still wins.
+let selectedGateway =
+  gatewayService
+  ?? (DurableSessions.isInstalled ? DurableSessions.gatewayControl : nil)
+let gatewayApplication = selectedGateway.map { service in
   MuxGatewayApplication(connect: {
     try await MuxGatewayConnection.connect(
       peerRequirement: GuardianPeerSigningPolicy.requirementForCurrentProcess(),
@@ -87,4 +105,13 @@ let gatewayApplication = gatewayService.map { service in
 let delegate = AppDelegate(gatewayApplication: gatewayApplication)
 app.delegate = delegate
 app.setActivationPolicy(.regular)
+if DurableSessions.isInstalled {
+  Task { @MainActor in
+    guard let notice = await DurableSessions.startupNotice() else { return }
+    let alert = NSAlert()
+    alert.messageText = String(localized: "SwiftMux Sessions")
+    alert.informativeText = notice
+    alert.runModal()
+  }
+}
 app.run()

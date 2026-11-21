@@ -3743,3 +3743,72 @@ Open: the daemon cannot yet re-register a gateway agent itself. Rollback uses
 installer acts. The trigger and the signed end-to-end run (stage, prepare,
 re-register and complete) therefore wait on installer integration (UA8).
 Both signed builds still share one implementation.
+
+### 13.74 Installer integration (UA8) — 2026-11-21
+
+`DurableInstallation` (`Sources/SwiftMuxClient/DurableInstallation.swift`)
+owns the lifecycle steps that need the empty-state barrier.
+
+- **Initial adoption** ends the monolithic agent's sessions only after an
+  explicit confirmation. It waits for that agent to be empty, then unregisters
+  it and registers the guardian and then the gateway. It verifies an empty
+  guardian through the gateway's new `installationStatus` native-control
+  request, which reports the incarnation and every retained workspace. Then it
+  records the verified incarnation in an owner-only record. No shell is
+  adopted. A failure before verification unregisters both durable agents and
+  restores the empty legacy agent.
+- **Guardian maintenance** and **uninstall** run behind the same barrier:
+  End confirmation, End through the gateway, then a wait for an empty guardian.
+  Maintenance unregisters the gateway and guardian, replaces the helpers,
+  registers them and requires a new incarnation. Uninstall removes both agents
+  and the record without reinstating the legacy agent.
+- **Startup** never claims restoration. After a guardian restart (crash,
+  logout or reboot) it reports `sessionsEnded` with the old and new
+  incarnations. An unreachable gateway is reported, not replaced by a local
+  shell.
+
+Production adapters are `HelperProcessAgent` (each helper's own `register`
+and `unregister` commands: `swiftmux-guardian` and `swiftmux-gateway` now
+register their embedded agents through `SMAppService`) and
+`GatewayControlStatus`. The guardian accepts `--support-config`, which
+resolves the owner's support directory from the account database, because a
+signed agent plist cannot name a per-user path.
+
+The app side (`Sources/Swiftty/DurableSessions.swift`) works as follows.
+`SWIFTTY_DURABLE=1 Scripts/package-swiftmux.sh` adds a signed guardian
+helper, gateway helper and worker build under `Contents/Library/Helpers`.
+`swiftty --durable-sessions adopt|maintain|uninstall|status [--confirm]`
+copies the helpers into the support directory and validates their signatures,
+installs and selects the worker build, writes the guardian configuration and
+runs the installer. Once installed, the app uses the durable gateway by
+default and shows the startup notice. An app built without the helpers
+behaves exactly as before.
+
+Evidence:
+
+- `DurableInstallationTests` (seven tests) check exact step order with
+  recorded fakes. They cover confirmation, declined adoption, adoption with no
+  sessions, rollback before transition, maintenance, uninstall and restart
+  reporting.
+- `qualify-guardian-lifecycle.py --installer` uses Developer ID team
+  `72KB9YQR7B` and isolated, uniquely named fixture agents, driving the
+  production adapters from a separate signed installer process
+  ([installer.json](Benchmarks/Durability/2026-11-21-planned-replacement/installer.json)).
+  - A legacy monolithic agent with a live shell first declines adoption: the
+    agent and shell keep running and nothing is registered.
+  - Confirmed adoption ends the shell, unregisters the legacy agent, registers
+    the guardian and gateway, and records the verified incarnation.
+  - With a live durable workspace, maintenance is refused until confirmed.
+    Confirmed maintenance ends the workspace and restarts the guardian under a
+    new incarnation.
+  - `launchctl kickstart -k` of the guardian stands in for a reboot and is
+    reported as `sessions-ended:<old>:<new>`, then `running:<new>`.
+  - Uninstall removes both agents and the record and leaves the legacy agent
+    unregistered. Cleanup left no registrations or processes.
+- An ad-hoc package with `SWIFTTY_DURABLE=1` built, signed and verified all
+  three helpers. Their agent plists lint, and `--durable-sessions status`
+  reports `notInstalled` without changing anything.
+
+Not established, as agreed: the real transition of this Mac's installed
+agent, a machine reboot, and a Developer ID-signed, notarized production
+package. Those qualify the same code paths on the real installation.

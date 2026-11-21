@@ -132,11 +132,20 @@ def main():
                         help="qualify the exact signed guardian executable and gateway role restriction")
     parser.add_argument("--gateway-daemon", action="store_true",
                         help="qualify exact guardian/gateway executables with an independent native frontend")
+    parser.add_argument("--installer", action="store_true",
+                        help="qualify durable adoption, maintenance, restart reporting and uninstall with fixture agents")
     args = parser.parse_args()
     binary = args.bin_dir.resolve() / "GuardianLifecycleProbe"
     launcher = args.bin_dir.resolve() / "swmux-launcher"
     if not binary.is_file() or not launcher.is_file():
         parser.error("build GuardianLifecycleProbe and swmux-launcher first")
+    if args.installer:
+        for product in ("swiftmux-guardian", "swiftmux-gateway", "swiftmux-worker", "swsh"):
+            if not (args.bin_dir.resolve() / product).is_file():
+                parser.error(f"build {product} first")
+        from qualify_installer import qualify_installer
+        qualify_installer(args, binary, launcher, run=run, bundle=bundle, wait_for=wait_for)
+        return
     if args.gateway_daemon:
         for product in ("swiftmux-guardian", "swiftmux-gateway", "swiftmux-worker", "swsh", "swmux"):
             if not (args.bin_dir.resolve() / product).is_file():

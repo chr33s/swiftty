@@ -139,6 +139,109 @@ for exe in swiftmux-agent swmux-launcher swmux swsh; do
   codesign --force --options runtime "$timestamp" --sign "$identity" \
     --identifier "$bundle_id.$exe" "$app/Contents/MacOS/$exe"
 done
+# Durable sessions (spec.durability.md §9), opt-in with SWIFTTY_DURABLE=1: the
+# guardian and gateway helpers and a worker build, each separately signed. The
+# app copies them into the owner's support directory and each registers its
+# own agent (`swiftty --durable-sessions adopt`); nothing here registers.
+if [ "${SWIFTTY_DURABLE:-0}" = 1 ]; then
+  helpers="$app/Contents/Library/Helpers"
+  guardian_label=com.chr33s.swiftty.swiftmux-guardian
+  gateway_label=com.chr33s.swiftty.swiftmux-gateway
+  helper_bundle() { # NAME LABEL EXECUTABLE MACHSERVICES ARGUMENTS...
+    name=$1 helper_label=$2 program=$3 services=$4
+    shift 4
+    dir="$helpers/$name.app/Contents"
+    mkdir -p "$dir/MacOS" "$dir/Library/LaunchAgents" "$dir/Resources"
+    cp "$bin/$program" "$dir/MacOS/$program"
+    cp "$bin/swmux-launcher" "$dir/MacOS/swmux-launcher"
+    cat > "$dir/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>$helper_label</string>
+  <key>CFBundleName</key><string>$name</string>
+  <key>CFBundleExecutable</key><string>$program</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>$version</string>
+  <key>CFBundleVersion</key><string>$build</string>
+  <key>LSMinimumSystemVersion</key><string>27.0</string>
+  <key>LSUIElement</key><true/>
+  <key>SwiftMuxAgentLabel</key><string>$helper_label</string>
+</dict>
+</plist>
+PLIST
+    arguments="<string>$program</string>"
+    for argument in "$@"; do arguments="$arguments<string>$argument</string>"; done
+    cat > "$dir/Library/LaunchAgents/$helper_label.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$helper_label</string>
+  <key>BundleProgram</key><string>Contents/MacOS/$program</string>
+  <key>ProgramArguments</key><array>$arguments</array>
+  <key>AssociatedBundleIdentifiers</key><array><string>$bundle_id</string></array>
+  <key>MachServices</key><dict>$services</dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>EnablePressuredExit</key><false/>
+  <key>EnableTransactions</key><false/>
+</dict>
+</plist>
+PLIST
+    for exe in "$program" swmux-launcher; do
+      codesign --force --options runtime "$timestamp" --sign "$identity" \
+        --identifier "$helper_label.$exe" "$dir/MacOS/$exe"
+    done
+    codesign --force --options runtime "$timestamp" --sign "$identity" \
+      "$helpers/$name.app"
+  }
+  helper_bundle SwiftMuxGuardian "$guardian_label" swiftmux-guardian \
+    "<key>$guardian_label</key><true/><key>$guardian_label.control</key><true/>" \
+    --support-config
+  helper_bundle SwiftMuxGateway "$gateway_label" swiftmux-gateway \
+    "<key>$gateway_label.control</key><true/>" \
+    --guardian-service "$guardian_label.control" \
+    --guardian-identifier "$guardian_label.swiftmux-guardian" \
+    --control-service "$gateway_label.control"
+  cat > "$helpers/SwiftMuxGateway.app/Contents/Resources/gateway-build.json" <<JSON
+{"schema": 1, "build": "$build", "guardianProtocol": 1, "workerProtocols": [2], "nativeControlProtocol": 1}
+JSON
+  codesign --force --options runtime "$timestamp" --sign "$identity" \
+    "$helpers/SwiftMuxGateway.app"
+  worker="$helpers/Worker.app/Contents"
+  mkdir -p "$worker/MacOS" "$worker/Resources"
+  for exe in swiftmux-worker swmux-launcher swsh; do
+    cp "$bin/$exe" "$worker/MacOS/$exe"
+    codesign --force --options runtime "$timestamp" --sign "$identity" \
+      --identifier "$bundle_id.worker.$exe" "$worker/MacOS/$exe"
+  done
+  # The inner TERM's entry, as a pinned per-build resource (bytes only).
+  mkdir -p "$worker/Resources/terminfo/78"
+  cat /usr/share/terminfo/78/xterm-256color \
+    > "$worker/Resources/terminfo/78/xterm-256color"
+  printf '{"schema": 1, "build": "%s", "guardianProtocol": 1, "workerProtocol": 2}\n' \
+    "$version-$build" > "$worker/Resources/build.json"
+  cat > "$worker/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>$bundle_id.worker</string>
+  <key>CFBundleName</key><string>SwiftMux Worker</string>
+  <key>CFBundleExecutable</key><string>swiftmux-worker</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleVersion</key><string>$build</string>
+  <key>LSMinimumSystemVersion</key><string>27.0</string>
+</dict>
+</plist>
+PLIST
+  codesign --force --options runtime "$timestamp" --sign "$identity" \
+    "$helpers/Worker.app"
+fi
+
 # Associated domains is the only entitlement, and only when configured.
 entitlements=""
 if [ -n "$applinks" ]; then

@@ -37,6 +37,21 @@ public enum GatewayControlCommand: Codable, Sendable, Equatable {
   case previousOutput(WorkspaceID, pane: PaneID, offset: Int)
   /// Nil pane discards every pane's previous output.
   case discardPreviousOutput(WorkspaceID, pane: PaneID?)
+  /// Installer state (spec.durability.md §9): the guardian incarnation and
+  /// every workspace it retains, available or not.
+  case installationStatus
+}
+
+/// What an installer needs before guardian maintenance or uninstall.
+public struct GatewayInstallationStatus: Codable, Sendable, Equatable {
+  public let guardianIncarnation: UUID
+  /// Running, unavailable and retained-exit workspaces; the empty-state
+  /// barrier holds only when this is zero.
+  public let workspaces: Int
+  public init(guardianIncarnation: UUID, workspaces: Int) {
+    self.guardianIncarnation = guardianIncarnation
+    self.workspaces = workspaces
+  }
 }
 
 public enum GatewayControlEvent: Codable, Sendable {
@@ -61,6 +76,7 @@ public enum GatewayControlReply: Codable, Sendable {
   case savedPolicy(SavedLayoutPolicy)
   case deletedSaved
   case previousOutput(SavedOutputPage)
+  case installation(GatewayInstallationStatus)
 }
 
 public struct GatewayRouteDescriptor: Codable, Sendable, Equatable {
