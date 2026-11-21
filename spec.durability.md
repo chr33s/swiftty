@@ -2,22 +2,23 @@
 
 **Repository:** [chr33s/swiftty](https://github.com/chr33s/swiftty)  
 **Status:** Implementation in progress; signed helper feasibility verified; production durability capabilities not yet enabled  
-**Version:** 0.8 — explicit update barrier and consolidated replacement control\
-**Date:** 2026-11-03  
+**Version:** 0.9 — saved layout and output after reboot (§12.2)\
+**Date:** 2026-11-21\
 **Baseline:** `7d3aa5bc4c3844ab9dc0987c25a630b08adf7018`, inspected working tree  
 **Builds on:** [SwiftMux](spec.multiplexer.md), [roaming](spec.roaming.md), [unified service and inbox](spec.inbox.md), [scrollback](spec.scrollback.md), and [JavaScript](spec.javascript.md)  
 **Platform:** Native macOS host; existing supported clients; Swift 6.4 in Swift 6 language mode and deployment minimums from [spec.apple.md](spec.apple.md)
 
 ## 1. Decision and intended outcome
 
-Deliver two independently releasable capabilities:
+Deliver three independently releasable capabilities:
 
 1. **Update durability:** app and gateway updates/restarts preserve running sessions. Existing workspace workers continue using their pinned build; new workspaces may use the new build. This requires no terminal checkpoint or replay journal.
 2. **Planned worker replacement:** compatible workers transfer complete terminal state during a bounded pause, preserving shells and jobs. This adds an on-demand in-memory checkpoint and a fenced activation transaction, not general crash replay.
+3. **Saved layouts (§12.2):** a workspace lost to guardian death, logout or reboot can be reopened as a new workspace with the same layout and fresh shells. This restores no process or terminal state.
 
 Use a stable per-user process guardian, one terminal worker per workspace, and a restartable gateway/coordinator. The guardian owns processes and ordered PTY I/O; workers own workspace semantics and terminal state. Keep the guardian small enough to change infrequently. Its update requires an empty-state barrier.
 
-Exact recovery after an unexpected worker crash and saved layout/history after reboot are separate future extensions (§12). Neither blocks shipping the capabilities above. Do not introduce continuous journals, periodic checkpoints, a session database, synchronous disk commits or speculative pre-copy for these releases.
+Exact recovery after an unexpected worker crash remains a future extension (§12.1). Capability C (§12.2) ships after A2 and does not depend on B; neither C nor §12.1 blocks shipping A or B. Do not introduce continuous journals, periodic checkpoints, a session database, synchronous disk commits or speculative pre-copy for Capabilities A and B. Capability C's store is written asynchronously by the gateway and is never on the PTY I/O, command-admission or migration path.
 
 ### 1.1 Scope and guarantees
 
@@ -31,6 +32,8 @@ Exact recovery after an unexpected worker crash and saved layout/history after r
 | Guardian death, logout or reboot | No live-session guarantee; mark old sessions lost | Same |
 | Explicit End | Terminate only the authorized target | Same, including during migration |
 | Sleep/wake | Preserve sessions if the OS retains their processes; no progress guarantee during sleep | Same |
+
+Capability C changes only the guardian death, logout and reboot row: sessions are still lost, but their saved layouts can be reopened with fresh shells (§12.2).
 
 “Seamless replacement” means preserved process and terminal semantics with a bounded pause on the successful path. It does not mean zero interruption or crash recovery after the new worker starts changing state. A live shell without its terminal state is not a recovered session. Do not claim exactly-once shell-command execution or automatically replay uncertain input.
 
@@ -63,9 +66,9 @@ Implement planned replacement as one sequential operation over the guardian's tr
 | [`UpdateCoordinator`](Sources/SwiftMuxClient/UpdateCoordinator.swift) waits for an empty service | Preserve that path for initial adoption and guardian maintenance; add gateway-only updates |
 | [`Parser`](Sources/SwifttyEngine/Terminal/Parser.swift) and [`TerminalState`](Sources/SwifttyEngine/Terminal/TerminalState.swift) are noncopyable | Planned replacement needs explicit export/import, never raw memory serialization |
 
-When update durability is implemented, it supersedes the service-loss and ordinary-update requirements in spec.multiplexer.md §8 and the single-process ownership assumption in spec.inbox.md §1. When planned replacement is implemented, it additionally supersedes the exclusion of live engine migration. Until each gate passes, existing documents remain the implemented contract.
+When update durability is implemented, it supersedes the service-loss and ordinary-update requirements in spec.multiplexer.md §8 and the single-process ownership assumption in spec.inbox.md §1. When planned replacement is implemented, it additionally supersedes the exclusion of live engine migration. When saved layouts are implemented, they amend spec.md *Lifetime* ("a service crash, logout or reboot is not restored transparently") and *Startup and discovery* as §12.2 describes. Until each gate passes, existing documents remain the implemented contract.
 
-Preserve observer limits, takeover consent, reply provenance, input cancellation, retained exit screens and screen-only roaming scope. History remains in memory as specified by spec.scrollback.md. Negotiate changed protocol semantics explicitly; do not silently redefine an existing epoch field.
+Preserve observer limits, takeover consent, reply provenance, input cancellation, retained exit screens and screen-only roaming scope. History remains in memory as specified by spec.scrollback.md; the only exception is Capability C's opt-in, bounded saved output (§12.2). Negotiate changed protocol semantics explicitly; do not silently redefine an existing epoch field.
 
 ## 3. Processes and ownership
 
@@ -190,7 +193,7 @@ its final compatibility check and replacement.
 
 Rollback requires a gateway compatible with the currently running guardian/workers. Keep a compatible gateway build available; do not imply app rollback reverses live worker state.
 
-Use one guardian-owned admission barrier for this sequence, not a second migration transaction. Its pause state survives gateway disconnect and is inspectable by the replacement gateway. Authenticate changes against the current gateway and a monotonic barrier revision; every accepted change advances that revision so a delayed resume cannot undo a newer pause. Pausing blocks new worker admission, not existing terminal I/O, discovery or targeted End. It grants no installation authority by itself. If the updater disappears, leave admission paused until its successor verifies the installed gateway and worker selection and explicitly resumes; neither timeout nor reconnect implies success. Use a 30-second deadline for settling admitted launches; expiry defers the update and resumes admission with the unchanged selections. This deadline does not automatically clear a barrier after gateway replacement has begun.
+Use one guardian-owned admission barrier for this sequence, not a second migration transaction. Its pause state survives gateway disconnect and is inspectable by the replacement gateway. Authenticate changes against the current gateway and a monotonic barrier revision; every accepted change advances that revision so a delayed resume cannot undo a newer pause. Pausing blocks new worker admission, not existing terminal I/O, discovery or targeted End. It grants no installation authority by itself. Record a phase with the pause: `settling` until the updater begins step 4, then `replacing`. Only the current gateway advances it, using the barrier revision. Use a 30-second deadline for settling admitted launches. The guardian enforces it: if the phase is still `settling` at expiry, it resumes admission with the unchanged selections and advances the revision, so the update is deferred even if no updater survives. A gateway that binds and finds admission paused in `settling` did not start that update and cannot finish it, so it resumes admission the same way. If the updater disappears in `replacing`, leave admission paused until its successor verifies the installed gateway and worker selection and explicitly resumes, or restores the rollback gateway and prior selection first; neither timeout nor reconnect implies success, and the settlement deadline does not clear a `replacing` barrier. (`GuardianServer+Admission.swift` currently records only the pause and revision.)
 
 ## 6. Capability B: on-demand checkpoints
 
@@ -256,8 +259,8 @@ Transitions name the transaction and expected phase. Duplicate transitions or ha
 
 ### 7.2 Procedure
 
-1. **Prepare.** Validate signatures, versions, candidate health and peak memory admission while the old worker continues. Start the candidate dormant.
-2. **Freeze admission.** Reject new input, graph mutations and resize requests with explicit retryable status. Preserve the distinction between unsent client input and uncertain already-submitted input. Settle pending launches, external operations and timers.
+1. **Prepare.** Validate signatures, versions, candidate health and peak memory admission while the old worker continues. Start the candidate dormant. Wait, within the preparation deadline, until the workspace has no outstanding spawn, creation or launch. Launches can take up to the 15-second creation deadline (§3.1), longer than the frozen interval allows.
+2. **Freeze admission.** Reject new input, graph mutations and resize requests with explicit retryable status. Preserve the distinction between unsent client input and uncertain already-submitted input. Close admission atomically with a check, on the worker's command queue, that no launch is outstanding; if one was admitted since step 1, return to preparation. Settle external operations and timers.
 3. **Establish cut.** Pause PTY reads/writes after in-progress syscalls settle. Deliver already-read output and drain already-admitted worker operations through explicit watermarks. Collect resulting writer submissions and acknowledgements without requiring their queued bytes to reach the PTY. If reply pressure prevents reaching a cut, abort; do not deadlock waiting for a write while writes are paused. Old worker confirms its queues and graph are frozen.
 4. **Export/import.** Export a complete checkpoint and writer revision. Candidate imports without effects and reports ready with the exact cut/digest. Invalid state aborts migration.
 5. **Assign and activate.** Guardian fences the old generation and assigns a new one, while keeping I/O and mutation gates closed. Candidate acknowledges activation and ability to serve. The old worker remains unchanged and available for rollback.
@@ -292,11 +295,11 @@ The migration deadline is independent of the normal worker-health watchdog: a re
 
 ## 8. Failure behavior and resource bounds
 
-On active-worker death or watchdog expiry, preserve guardian-owned processes/descriptors, stop reads and writes, and revoke user-input capabilities. Keep only already-buffered bytes within existing limits. Report “terminal worker unavailable; processes retained” and offer explicit End. Do not attach a fresh emulator, replay input or restart a shell automatically. A fresh workspace is a separate user action; it does not silently terminate retained processes. Retained unavailable panes remain addressable for termination and count toward resource limits.
+On active-worker death or watchdog expiry, preserve guardian-owned processes/descriptors, stop reads and writes, and revoke user-input capabilities. Discard output already buffered for that worker and release its budget: no emulator can apply it, and exact recovery is deferred (§12.1). Report “terminal worker unavailable; processes retained” and offer explicit End. Do not attach a fresh emulator, replay input or restart a shell automatically. A fresh workspace is a separate user action; it does not silently terminate retained processes. Retained unavailable panes remain addressable for termination and count toward resource limits.
 
 Workspace teardown has two acknowledgements: End accepts termination; Forget releases the inventory entry, capacity and build pin only after End and all owned workers, panes and pending launches have finished. Both commands validate the current gateway and exact workspace authority on the guardian queue. Premature Forget returns a retryable quiescing result; stale authority has no effect. Retain duplicate results using the existing bounded command window. After a lost connection, inspect inventory before retrying cleanup; an absent entry is already retired, while a different generation is a different owner.
 
-Guardian death creates a new incarnation on restart. Old attachments fail; matching PIDs do not establish ownership. Mark known old sessions lost. This edition does not adopt orphaned shells or restore history after reboot.
+Guardian death creates a new incarnation on restart. Old attachments fail; matching PIDs do not establish ownership. Mark known old sessions lost. This edition does not adopt orphaned shells. Capability C (§12.2) can reopen saved layouts with fresh shells and show saved output read-only; that is not adoption or restoration of the old session.
 
 | Resource | Initial policy |
 | --- | --- |
@@ -377,6 +380,8 @@ Record transaction IDs, owner generations, phase/cut, buffered byte counts, paus
 | A2 | Versioned builds, discovery and compatible updates | UA1–UA8 below pass; ship update durability without checkpoint code |
 | B0 | Field inventory and on-demand checkpoint codecs | Canonical state round trips and mixed-version compatibility fixtures pass |
 | B1 | Frozen cut, activation/release gate, rollback and deadlines | MR1–MR8 below pass; ship planned replacement independently of §12 |
+| C0 | Saved-layout metadata, sealed store, End dispositions, discovery and template reopening (§12.2) | RS1–RS11 pass; requires A2, not B |
+| C1 | Opt-in saved output, paged export and read-only viewer (§12.2.5, §12.2.8) | RS12–RS14 pass, with export and write cost measured |
 
 ### 11.1 Update durability acceptance
 
@@ -408,7 +413,7 @@ Use deterministic protocol/state-machine tests, real-PTY integration tests and s
 
 Measure preparation, total frozen interval, activation/rollback latency, CPU, IPC volume and peak RSS for idle shells, full history, many panes and sustained output. Initial target: p95 frozen interval below 250 ms for a workspace with 16 MiB history on recorded Apple silicon hardware. The 2-second frozen-interval watchdog in §7.3 covers activation too; it is distinct from the 5-second normal worker-health watchdog. If workloads exceed it, defer migration and retain the old worker; pre-copy requires a separate measured design change, not silent deadline expansion.
 
-## 12. Deferred extensions and their required proofs
+## 12. Extensions: deferred crash recovery and saved layouts
 
 ### 12.1 Exact unexpected-worker-crash recovery
 
@@ -420,15 +425,216 @@ Guardian survival remains the boundary unless a further design solves guardian o
 
 ### 12.2 Saved layout and history after reboot
 
-Specify separately: persistence opt-in/default, retention/deletion, atomic snapshot publication, storage quotas, schema migration, corruption and disk-full behavior, timestamps, and handling of sensitive terminal contents. Saved presentation is not live process recovery. Fresh shells require explicit action, fresh process/terminal incarnations and validated launch settings; never replay historical input, commands or external effects.
+Capability C lets a workspace lost to guardian death, logout or reboot be reopened as a **new** workspace with the same shape: tabs, splits, names and working directories, with fresh shells. Optionally, the earlier main-screen output can be shown read-only. Saved presentation is not live process recovery. Fresh shells require explicit action, fresh process/terminal incarnations and validated launch settings; never replay historical input, commands or external effects.
 
-Keep this storage independent of the guardian's live I/O and migration release gate. No database or periodic disk checkpoint is required by Capabilities A or B.
+Keep this storage independent of the guardian's live I/O and migration release gate. Capabilities A and B require no database or periodic disk checkpoint, and C adds none to them: the gateway writes its store asynchronously, off the PTY I/O, command-admission and migration paths. Deliver C0 (saved layout) after A2, and C1 (saved output) after C0. C does not depend on B.
+
+#### 12.2.1 Decisions
+
+| Decision | Consequence |
+| --- | --- |
+| The gateway owns the store | Only the gateway reads, writes and deletes records. The guardian has no knowledge of the store. Workers supply metadata and exports on request and never touch the disk |
+| Follow the graph, but not exits | Layout writes follow `observeWorkspaceGraph` updates. Changes caused by commands are saved promptly. Changes caused by process exit wait out a hold, so shutdown cannot shrink a saved layout (§12.2.5) |
+| End carries a disposition | End commands state why the workspace ends. The worker reports this through guardian inventory, and the gateway applies it to the record before Forget (§12.2.6) |
+| Save layout by default; save output only by opt-in | Layout makes reboot recovery useful by default. Output can hold secrets, so it stays off until enabled |
+| Seal every record | Paths, names and arguments are sensitive too. §12.2.4 states what sealing does and does not protect against |
+| Ask before reopening by default | Automatic reopening is a standing user choice and only ever starts login shells |
+| The requesting frontend supplies launch settings | Reopening resolves the shell, environment and launch policy exactly as New Workspace does. The record contributes only shape, names, directories and, on explicit request, saved commands |
+| Keep saved output outside the terminal engine | A separate read-only viewer renders it. It never reaches a PTY, parser, `TerminalState`, link handler or automation |
+
+#### 12.2.2 Policy
+
+The policy is service-scoped state owned by the gateway, not frontend configuration. App instances with different configuration files, and `swmux`, therefore cannot disagree about it.
+
+| Setting | Values | Default | Meaning |
+| --- | --- | --- | --- |
+| Save layout | on, off | on | Save layout records for live workspaces |
+| Save output | on, off | off | Also save bounded main-screen output (C1). Requires Save layout |
+| Reopen at launch | ask, automatic, never | ask | What the app does with Saved records when it launches |
+| Retention | 1–365 days | 30 | How long a Saved record is kept after it was first offered (§12.2.9) |
+
+The gateway stores the policy with a monotonic revision in `~/Library/Application Support/SwiftMux/saved-policy.json` (mode 0600). The file sits outside the record store, so deleting the store never resets the policy. A missing file means the defaults. An unreadable or invalid file disables writing and deletion until the user sets the policy again; report it.
+
+Change the policy only with an explicit `setSavedPolicy(expectedRevision:)` gateway control command. The native Settings pane under the app menu's Terminal Service item sends it, as does `swmux saved policy`. Frontends never send the policy on attach or configuration reload. A stale expected revision is refused.
+
+A store operation records the policy revision when it starts. It rechecks the revision on the store's serial queue immediately before publishing, and drops the result if the policy no longer permits its content.
+- Turning Save output off cancels running exports and rewrites every record without output under a new key. It deletes the old generations and the old key before the command is acknowledged (§12.2.4).
+- Turning Save layout off deletes all records and the key before acknowledgement. The policy file remains.
+
+A workspace can opt out of output saving (**Workspace › Don't Save Output**). The worker keeps the flag as workspace metadata, reports it to the gateway, and carries it into a reopened workspace (§12.2.7).
+
+Remote and forwarded clients cannot list, read, change or reopen saved records; the roaming facade remains screen-only. Saved records are reachable only through the authenticated local native control endpoint used by the app and `swmux`.
+
+#### 12.2.3 Worker metadata and record contents
+
+The graph already carries workspace and tab names, split trees with ratios, the active tab and pane, the zoomed pane and per-pane working directories (`WorkspaceSnapshot`, `TabSnapshot`, `PaneSummary` in `Messages.swift`). It has no per-pane launch command and no cause of change. C0 adds a negotiated `savedLayoutMetadata` feature to the gateway-only graph subscription (§5.1). Frontend snapshots do not change.
+
+| Field | Meaning |
+| --- | --- |
+| Pane launch | `loginShell`, or `command` with its argv (at most 4 KiB encoded). A longer command is recorded as `commandTooLong` and reopens as a login shell |
+| Pane local directory | The last reported directory when it is local (see below); otherwise absent |
+| Output opt-out | The workspace's Don't Save Output flag |
+| Change causes | The set of causes coalesced into this graph event: `command` (any attachment, CLI or automation command), `exit` (process exit or launch failure) and `metadata` (names and directories) |
+| Output revision | Per pane, a counter advanced when applied main-screen content changes (C1). It is read only by export requests and never causes a graph event |
+
+The engine currently accepts any `file://` OSC 7 URL as the working directory (`TerminalState.swift:259-264`). Workers must record the URL's host. They report a local directory only when the host is empty, `localhost`, or the Mac's own host name (case-insensitive, with or without `.local`). Directories reported from SSH sessions are therefore never saved. Split directory inheritance should use the same check.
+
+A record holds:
+
+| Section | Content | Tier |
+| --- | --- | --- |
+| Header | Format and schema versions, writing build, record ID (the source workspace ID), generation, store sequence, guardian incarnation, layout revision, `savedAt` (UTC, for display only), `firstOfferedAt`, `reopeningAs` and disposition | C0 |
+| Workspace | Name, tab order and names, split trees (axis, ratio), active tab and pane, zoomed pane, output opt-out | C0 |
+| Panes | Stable slot index, local directory, launch (`loginShell`, `command` argv or `commandTooLong`) | C0 |
+| Output | For each pane, the newest main-screen rows in the at-rest row format (§12.2.4) | C1 |
+| Previous output | Output carried over from the record this workspace was reopened from, kept until viewed and dismissed (§12.2.8) | C1 |
+
+Never save:
+- environment values or program-reported titles;
+- tab icons or alternate-screen content;
+- cursor, mode or parser state;
+- input, paste or clipboard data, including OSC 52 payloads;
+- hyperlink targets or OSC 7501 attention records;
+- PIDs, leases or capabilities.
+
+#### 12.2.4 Storage format and protection
+
+| Path (under `~/Library/Application Support/SwiftMux/`) | Purpose |
+| --- | --- |
+| `saved-policy.json` | Policy (§12.2.2); plaintext, with no terminal content |
+| `saved/workspaces/<workspace-id>.<generation>.smxs` | Sealed record generations |
+| `saved/quarantine/` | At most 8 unreadable files and 64 MiB, oldest dropped first |
+
+`saved/` has mode 0700, its files mode 0600, and it is excluded from backups.
+
+**Sealing.** A file holds the magic `SMXS`, a format version (UInt16, big-endian), flags, a 12-byte random nonce and an AES-256-GCM ciphertext and tag. The additional authenticated data is the magic, format version, flags, and the workspace ID and generation from the file name, so a file renamed to another record or generation fails authentication. The GCM tag is the integrity check; there is no separate checksum. The plaintext is a length-prefixed sectioned body: header, workspace and pane sections as canonical JSON, then any output sections. Validate every declared length, count and reference against §12.2.9 before allocation, as checkpoints do (§6).
+
+**At-rest row format.** Output uses its own versioned binary encoding, not the SMX wire codec. SMX is a Codable JSON IPC codec, and its `PaneFrame` covers one viewport and carries title and cursor state. An output section holds:
+- a palette of 256 RGB entries;
+- a style table, where each style has foreground, background and underline colors (each default, a palette index or RGB) plus attribute bits;
+- a grapheme table of UTF-8 strings, each at most `maxGraphemeScalars` scalars;
+- rows, each a wrap flag and cell count followed by, for each cell, a grapheme index, width and style index.
+
+All integers are fixed-width and big-endian. Keep fixtures for every format version and fuzz the decoder.
+
+**Publication.** Write each new generation to a temporary file in the same directory, flush it with `F_BARRIERFSYNC`, and rename it to its final name. Generation numbers increase monotonically for each record. Then delete all but the newest two generations.
+
+Readers use the newest generation that authenticates and validates, and quarantine any newer generation that fails. They ignore temporary files, which the gateway removes at startup. A write torn by power loss therefore falls back to the previous generation instead of losing the record. Routine writes do not use `F_FULLFSYNC`, which flushes the whole drive cache.
+
+**Key.** Keep one 256-bit key in the user's login keychain, as a generic password the gateway creates, with its partition list limited to the gateway's team. Access it with authentication UI disabled, so the gateway never prompts.
+- Only `errSecItemNotFound` while records exist means the key is lost. Delete those records, create a new key and report the loss.
+- Any other failure (locked keychain, interaction not allowed, access denied, I/O error) makes the store unavailable. Do not read, write or delete records. Retry with backoff and again after the session unlocks, and report **Saved workspaces unavailable**.
+- Never fall back to plaintext.
+
+**Threat model.** Sealing keeps saved content unreadable in copied files, in other accounts and in backups. The store is excluded from backups, and the key stays in the keychain. Sealing is not a boundary against code running as the user. Other binaries signed by the same team can read the key without a prompt, and any process running as the user can request it through a visible keychain prompt. Deletion rotates or removes the key. However, APFS local snapshots can keep deleted files until they expire, and the login keychain is itself backed up. State both in Settings.
+
+#### 12.2.5 Writing
+
+- **Dirty tracking.** A graph event marks a workspace dirty only when a saved field changed: structure, ratios, names, active tab or pane, zoom, launch, local directory or output opt-out. A title change alone never causes a write.
+- **Command-caused changes.** Write at most once every 5 seconds per workspace, and at most twice per second across the store, with one write in flight per workspace. Writes never block graph consumption, credit rearm or terminal I/O.
+- **Exit-caused changes.** Hold a graph event whose causes include `exit` for 10 seconds before it can be written. Discard every held exit-caused change, and keep the last written record, if during the hold the gateway receives SIGTERM, loses its guardian connection or loses the workspace's worker. Command-caused changes coalesced with an exit share its hold. This keeps logout, shutdown and guardian loss from saving a layout that the processes dying around them have already shrunk.
+- **Output (C1).** Every 60 seconds, for each live workspace with output saving enabled, request `exportSavedOutput(pane, ifChangedSince: outputRevision)` for its panes. An unchanged pane returns `notModified`. Otherwise the worker copies up to 2,000 main-screen rows or 2 MiB into one bounded export buffer per workspace. It serves the buffer in pages of at most 192 KiB, below `maxControlRecordBytes` and the client's 4 MiB bound, and releases it after the last page, on cancellation, or after 10 idle seconds. Workers refuse exports while the workspace is frozen for replacement (§7) or the pane shows the alternate screen; the previous output section is kept.
+- **Shutdown.** On SIGTERM, the gateway gets one best-effort 2-second pass that writes pending command-caused changes only, never held exit-caused ones. Power loss or a crash can lose up to 5 seconds of layout changes and up to 60 seconds of output. Disclose this in Settings.
+- **Failure.** A failed write (disk full, store unavailable, I/O error) keeps the newest good generation and shows **Not saved since <time>** for the workspace. It retries on its own timer, with exponential backoff capped at 5 minutes, whether or not the workspace changes again. Never stop PTY I/O, refuse commands or delay migration because of a storage failure (§8).
+
+Measure CPU, write volume and export pauses for idle, busy and full-history workspaces before C1 ships.
+
+#### 12.2.6 Ending and discovery
+
+**Disposition.** End commands carry a disposition, set by whoever issues them. When a workspace ends, its worker reports the disposition to the guardian, and guardian inventory keeps it until Forget:
+
+| Disposition | Issued by | Effect on the record |
+| --- | --- | --- |
+| `ended` | End from a user, CLI or automation command, including `swmux end` and `end-all` | Delete |
+| `retained` | End issued by an update with `endWorkspaces` (`UpdateCoordinator.install`), guardian maintenance, initial adoption, or uninstall without purge | Keep it as Saved |
+| `exited` | Reported by the worker when the last pane exits | Delete after the exit hold; keep it if SIGTERM or guardian loss intervenes |
+
+The gateway applies the disposition to the record and then issues Forget (§8). A gateway that crashes in between finds the entry still in inventory and applies it again; deletion is idempotent. The guardian's own SIGTERM path (`GuardianServer.shutdown`) fences workers before terminating panes, so it produces no exit-caused graph changes. Records of the workspaces it stops remain Saved under the next incarnation.
+
+**Classification.** After initial inventory (§5.1), classify each readable record:
+
+| State | Condition | Shown as |
+| --- | --- | --- |
+| Live | Same guardian incarnation; the workspace is in inventory and available | The live workspace; the record keeps updating |
+| Unavailable | Same incarnation; the workspace is retained but unavailable (§8) | The unavailable workspace, plus **Reopen Layout in New Workspace** |
+| Saved | A different incarnation, or a `retained` disposition | **Saved**, with `savedAt` and the writing build when it differs |
+| Orphaned | Same incarnation, absent from inventory, and no disposition applied | Saved, and logged. Every Forget follows a disposition, so this happens only after outside interference |
+| Newer | No readable generation, and the newest is a schema this build does not support | **Saved by a newer version**: listed, left untouched and not reopenable |
+
+A record whose `reopeningAs` equals another record's ID has been superseded by that record, so delete it. This removes the duplicate left when a reopened workspace is itself lost before its source record was deleted.
+
+#### 12.2.7 Reopening
+
+Reopening is a gateway operation. A local frontend requests it from the Open Workspace chooser, from the launch prompt, or with `swmux restore <name|id> [--run-saved-commands]`. When Reopen at launch is set to automatic, the app issues the same request at launch, once for each Saved record, and never runs saved commands. The gateway runs at most one reopen per record at a time and refuses a duplicate request while one is in flight.
+
+1. **Request.** The frontend builds its base `LaunchSpec`, environment snapshot and grid exactly as for New Workspace (spec.md *Launch settings*). It also names the slots, if any, whose saved commands the user chose to run.
+2. **Template.** The gateway combines the request with the record. A chosen `command` slot gets its saved argv; every other pane gets the base launch, which starts a login shell. Each pane uses its saved local directory. Name the workspace after the record, adding the lowest free ` (n)` suffix if a workspace in inventory already has that name, because §5.1 rejects duplicate names in selection. Carry over the output opt-out and, in C1, the record's output as the new workspace's previous output.
+3. **Mark.** Write a new generation with `reopeningAs` set to a freshly generated workspace ID. If that write fails, refuse the reopen.
+4. **Create.** Create the workspace through explicit gateway creation (§3.1), using a new negotiated worker command, `newWorkspaceFromTemplate`, within the existing 4 MiB creation budget and `MuxLimits`. The worker builds every tab and split and launches each pane with fresh process and terminal incarnations.
+   - The launcher changes to the requested directory. On failure it falls back to home and reports `directoryFallback`, and the pane header shows **Saved directory unavailable**. The gateway never checks directories itself, so a stale mount or privacy prompt cannot block it.
+   - A pane that fails to launch is removed from its split, as an exited pane is today, and reported in the result. Creation fails only if every pane fails.
+   - The worker publishes the graph only after the whole template is applied.
+5. **Settle.** After a definitive successful result, which includes a non-nil graph, delete the source record; the new workspace saves its own records from then on. After a definitive failure, clear `reopeningAs`. A lost or timed-out creation is uncertain and is not retried. A gateway that restarts with `reopeningAs` set looks up that ID in inventory:
+   - **non-nil graph:** the reopen happened. Delete the source record.
+   - **definitively empty** (no published workspace): the template was never applied. End and Forget the empty worker, which owns no processes, and clear `reopeningAs`.
+   - **unavailable:** keep the record Saved, and list the unavailable workspace for End.
+   - **starting:** wait for the next inventory refresh.
+
+Label a reopened workspace and its panes **Reopened from saved layout — earlier processes ended** until the first input. Reopening never sends input and never claims that the earlier session continues.
+
+When Reopen at launch is set to ask, the launch flow in spec.md (*Startup and discovery*) gains one step. If live workspaces exist, behave as before. Otherwise, if Saved records exist, offer them before creating a new one-shell workspace. Listing Saved records to a frontend sets `firstOfferedAt` on any record that lacks it.
+
+#### 12.2.8 Viewing saved output (C1)
+
+A reopened pane whose workspace record holds previous output for its slot shows **Show Previous Output** in its header. The frontend requests that section from the gateway in pages of at most 192 KiB. It renders the rows in a read-only viewer through the shared frame import and Metal renderer, with literal search and copy. Saved rows carry no link targets, and the viewer opens no links. Nothing in the viewer reaches the pane's PTY, parser, history, search index, JavaScript filters, OSC handling or inbox.
+
+The frontend releases the rows when the pane ends or the viewer is closed. The gateway removes the previous output from the record when the user chooses **Discard Previous Output**, when the pane ends, or when Save output is turned off.
+
+#### 12.2.9 Limits, retention and migration
+
+| Resource | Limit |
+| --- | --- |
+| Saved records | 32. Live and Unavailable records do not count and are never evicted. At the limit, discard the Saved record with the lowest store sequence, which is the least recently written |
+| Layout plaintext | 256 KiB per record |
+| Output per pane | The newest 2,000 rows or 2 MiB encoded, whichever is smaller |
+| Store total | 64 MiB. Over the limit, drop output from Saved records first, oldest store sequence first, then previous output and output of live records. Never drop layout; if layout alone exceeds the limit, report **Not saved** for new writes |
+| Retention | A Saved record expires Retention days after `firstOfferedAt`. A record that has never been offered does not expire, and a `savedAt` in the future is treated as now. A clock jump at boot therefore cannot expire records before anyone has seen them |
+| Quarantine | 8 files and 64 MiB |
+
+The store sequence is a store-wide counter. At startup it is recovered as one more than the largest value in any readable record. The store sequence, not wall-clock time, orders eviction.
+
+A reader supports its own schema version and the previous one. At startup, the gateway rewrites readable records of the previous version at its own version, so later schema changes never strand them. Generations of a newer version are left untouched. After a gateway rollback, the older gateway keeps saving a Live workspace at its own version. The generation rule eventually removes the newer generation, so fields that only the newer version knew are lost. A record whose newest readable generation fails validation is reported as **Saved layout unreadable**. Never partially reopen a record.
+
+**Delete Saved Workspaces**, in the same Settings pane or as `swmux saved delete (ID | --all)`, deletes the chosen records; `--all` also deletes the key. `uninstall.sh --purge` deletes the store, `saved-policy.json` and the keychain item (`security delete-generic-password`). A plain uninstall keeps them.
+
+#### 12.2.10 Acceptance
+
+| ID | Scenario | Required evidence | Gate |
+| --- | --- | --- | --- |
+| RS1 | Reboot, logout and guardian SIGKILL with a two-tab, three-pane workspace | Listed as Saved. Reopening reproduces tabs, splits, ratios, names, active pane and zoom, with new PIDs and local directories | C0 |
+| RS2 | Gateway SIGKILL and update with live workers | Records stay Live; no Saved duplicates or reopen offer | C0 |
+| RS3 | Shells killed around logout, shutdown and guardian loss; user `exit` in one pane, and in the last pane | The saved layout is not shrunk by shutdown. Ordinary exits shrink the record, or delete it, after the hold | C0 |
+| RS4 | End, `swmux end-all`, update with `endWorkspaces`, guardian maintenance, gateway crash between disposition and Forget | `ended` deletes and `retained` keeps the record; reapplying is idempotent | C0 |
+| RS5 | Crash at every publication step, torn files and power loss, renamed generation or record, wrong key | Falls back to the previous generation or quarantines; no partial reopen; no plaintext | C0 |
+| RS6 | Keychain item missing, keychain locked, interaction not allowed, access denied | Only a missing item deletes records. Other failures leave the store untouched and report it unavailable | C0 |
+| RS7 | Crash after mark, after create and after the new workspace's first record; reboot of a reopened workspace; concurrent automatic, chooser and `swmux` requests | No duplicate or silently lost workspace; outcome settled from inventory; no automatic retry | C0 |
+| RS8 | Command slots chosen and not chosen, `commandTooLong`, missing directory, remote OSC 7 directory, pane launch failure, name collision | Saved commands run only by explicit choice; fallbacks are labelled; remote paths are never saved | C0 |
+| RS9 | Concurrent `setSavedPolicy`, stale revision, unreadable policy file, Save layout off, deleting one record and all records, purge | Revisions serialize; an unreadable policy disables writes and deletion; data and key are removed before acknowledgement | C0 |
+| RS10 | Schema N−1, N and N+1 records; gateway rollback; 32 Saved records; 64 MiB; clock jump; never-offered records | Rewriting, untouched newer records, eviction by store sequence and no premature expiry, as specified | C0 |
+| RS11 | Remote and forwarded clients | Listing, policy changes and reopening are refused | C0 |
+| RS12 | Saved output containing escape-like text, OSC 52, OSC 7501 and OSC 8 | The viewer shows cells only: no PTY write, reply, clipboard write, link, inbox item or JavaScript event | C1 |
+| RS13 | Save output turned off during an export; per-workspace opt-out; opt-out carried through reopening | The export is cancelled; output is removed and the key rotated before acknowledgement; the opt-out is preserved | C1 |
+| RS14 | Paged export, frozen workspace, alternate screen, `notModified`, idle export buffer | Exports are bounded, refused or released as specified | C1 |
+
+Before C1 ships, measure layout write latency and volume under rapid renames and splits, and C1 export pauses and CPU on workspaces with 16 MiB of history.
 
 ## 13. Evidence and completion record
 
 Record commit, OS/toolchain, hardware, signing configuration, commands, failure-injection seeds, measurements and deviations here as work proceeds. Mark update durability implemented only after A0–A2 and UA1–UA8 pass; mark planned replacement implemented only after B0–B1 and MR1–MR8 pass. Update README and relevant lifetime/protocol contracts at each release without claiming the deferred extensions.
 
 The first proof is independent signed-helper registration and lifetime. The second release additionally requires the complete checkpoint field inventory and mixed-version compatibility matrix. Neither may rest on an undocumented packaging or serialization assumption.
+
+Entries up to 2026-11-03 cite logs and evidence files under `/private/tmp` and `/private/var/folders`. Those files were not retained, so these entries record what was observed; they are not auditable artifacts. From now on, commit retained evidence (logs, `evidence.json`, measurements) under `Benchmarks/Durability/<date>-<topic>/` and cite that path. Cite a temporary path only alongside a committed copy.
 
 ### 13.1 A0 packaging feasibility evidence — 2026-11-02
 
