@@ -304,6 +304,7 @@ package final class MemoryKeyStore: SavedLayoutKeyStore {
 
 /// `<root>/saved/workspaces/<workspace>.<generation>.smxs`, the quarantine
 /// and `<root>/saved-policy.json`. Not thread-safe: one owner serializes it.
+/// Sendable: immutable paths; file operations are serialized by the owning actor.
 package final class SavedLayoutFiles: @unchecked Sendable {
   package let root: URL
   package var saved: URL { root.appendingPathComponent("saved") }

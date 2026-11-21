@@ -243,6 +243,8 @@ The guardian owns one bounded in-memory transaction record containing the transa
 | Released | Retire old worker and finish | Keep candidate as owner; failure of candidate makes workspace unavailable |
 | Finished | Return the recorded outcome until acknowledged retirement | No further ownership transition |
 
+An abort from frozen is reported as `aborting` until the old worker acknowledges that admission reopened under the fresh authority, or for at most 500 ms before the outcome becomes unavailable (§7.3). Cancellation during preparation finishes directly. `aborting` is a reporting phase of abort, not a further ownership transition.
+
 Import, generation assignment and activation are ordered handshakes within frozen, not additional ownership commits. Each names the transaction, operation and candidate generation. Import must match the settled cut/digest; activation requires matching import readiness. Assignment fences the old generation but grants the candidate no effects while the gates remain closed.
 
 Represent these prerequisites as fields in the transaction record. Derive routing eligibility and candidate effect admission from that record's release decision; do not maintain separately writable “committed”, “routable” or “I/O enabled” ownership flags. Acknowledgements establish prerequisites, not independent authority. Reuse the existing bounded command/result window for retries and outcome retirement rather than adding a migration-specific replay protocol.
@@ -3606,3 +3608,84 @@ python3 Scripts/qualify-guardian-lifecycle.py [MODE] \
 
 Update durability is therefore still not shippable as a product capability:
 the signed lifecycle proofs pass, but UA4's orchestration and UA8 remain open.
+
+### 13.72 Planned replacement (B0, B1) — 2026-11-21
+
+Implemented on `durability` atop `77940f0a` (B0 engine checkpoints) and
+committed with this entry. macOS 27.2.1 (26B131), Apple M5 Max, Swift 6.4.2.
+
+**Checkpoint (B0, §6).** The engine section is the fixed-width big-endian
+`TerminalState` checkpoint plus the parser (`CheckpointCodec.swift`,
+`TerminalState+Checkpoint.swift`); it is refused while replies, events or the
+program-status journal are unsettled. The workspace section
+(`WorkspaceMigrationCheckpoint`, `MuxService+Migration.swift`) carries the
+graph, layout revision, launch metadata, retained exit states, per-pane frame,
+geometry, change and viewport counters and terminal epochs, the attention inbox
+under its original service epoch, and the saved-layout causes and End. Pending
+inbox changes are delivered and the snooze timer stopped before the cut; snoozes
+are re-armed on resume or import. The guardian moves the checkpoint in 256 KiB
+chunks (at most 256 MiB) and keeps its SHA-256; the candidate must report the
+same digest, and it re-encodes every restored engine and refuses a
+non-canonical result. Import adopts the guardian's processes and spawns,
+replies and notifies nothing.
+
+**Transaction (B1, §7).** `GuardianServer+Migration.swift` holds the record:
+preparing → frozen → released → finished, with `aborting` while an aborted old
+worker confirms it resumed (500 ms, then unavailable). The cut is the old
+worker frozen with every admitted input operation answered, its command queue
+idle and all output acknowledged. While frozen, the guardian still admits the
+old worker's writes, resizes and pane ends (they were already acknowledged to
+clients) and refuses only launches. Child exits are held for the selected
+owner. Release rechecks the absolute deadline and then moves the connection,
+authority, expected worker PID, worker process, build and endpoint to the
+candidate. The old worker is retired and reaped. Each pane keeps the build pin
+it was launched under, so a migrated shell keeps its original version's
+resources pinned. Abort resumes the old worker under a fresh generation. A lost
+gateway aborts a transaction it started before release. End before release
+wins, with outcome `ended`. The gateway drives the transaction with
+`GatewaySupervisor.migrate` and `GatewayRuntime.migrateWorkspace`, then retires
+the outcome with `acknowledgeMigration`. The window holds at most 64 unretired
+outcomes. A guardian workspace now reports why its worker stopped
+(`lossReason`).
+
+| Gate | Evidence |
+| --- | --- |
+| MR1 | `replacementUnderInteractiveLoad`: 100 output lines stream through the cut once, in order, while a typist sends lines. Every acknowledged line appears once, in order; refused lines never appear. Same shell PID |
+| MR2 | `CheckpointTests`: 12 differential seeds, 200 seeds with reflow, every cut of a short stream, compressed history plus an active search anchor with a cut inside UTF-8 and an SGR sequence, corrupt-input fuzz |
+| MR3 | `pendingWritesCrossTheCutOnce` (guardian backlog > 0 at the cut; the exact byte count arrives once; no-migration control) and `anOpenPasteAtTheCutIsNeverResubmitted` (contiguous, never duplicated; the control receives every line) |
+| MR4 | Candidate lost at admission, hung before import (one 2-second deadline, not extended), crashed after assignment before release, never connected (preparation timeout; old authority unchanged), and lost after release (unavailable; shell retained) |
+| MR5 | Gateway lost mid-cut: the guardian aborts alone, a replacement gateway reads the retained outcome, replayed freeze and cancel return it unchanged, and acknowledgement retires it once. Gateway lost after release: the candidate is rediscovered. Expired deadline refuses release. Duplicate begin is refused |
+| MR6 | End before release: outcome `ended`, the shell is terminated and nothing reopens. A child that exits while frozen reaches the candidate exactly once (`exiting`, `exited`) and never the old worker. An old worker that does not acknowledge resumption leaves the workspace unavailable |
+| MR7 | A corrupt checkpoint, an unsupported format and an oversized total are each refused, and the old worker resumes and accepts input |
+| MR8 | Old-worker death while frozen: `unavailable`, shell retained, nothing promoted. Signed: [worker-builds-migration.json](Benchmarks/Durability/2026-11-21-planned-replacement/worker-builds-migration.json) |
+
+The signed run (`qualify-guardian-lifecycle.py --worker-builds`, Developer ID
+team `72KB9YQR7B`) moves a live build-one workspace onto a guardian-launched
+build-two worker. It was released after a 26 ms frozen interval. Shell PID, job
+PID and parent, variables, interactive flags, the version-specific terminfo
+path and prior screen content were all unchanged, under a fresh service
+instance. The old worker exits; build one stays pinned by the migrated shell
+and is collected only after End and retirement. Cleanup left no registrations
+or processes.
+
+Fault-injection hooks were mutation-checked: dropping held exits, ignoring the
+frozen deadline, ignoring gateway loss and skipping the resumption
+acknowledgement each fail their tests. Running the signed path found two
+defects the single-process tests could not: release left the old worker's
+expected PID (the candidate's endpoint publication was refused), and dropping
+the last reference to the old worker SIGKILLed it at once. Both are fixed.
+
+Deviations and open items:
+
+- Live attachments are not transferred. Clients re-attach to the candidate,
+  which is a fresh service instance with full frames. Paste bytes still
+  unwritten at release are therefore cancelled, as on any detach. They are
+  never resubmitted, and acknowledged ordinary input is preserved.
+- Not exercised: peak-memory admission at preparation (bounded only by the
+  256 MiB checkpoint limit) and insufficient memory (MR7); reply-pressure
+  stalls at the cut (MR3), which are covered only by the deadline abort;
+  clipboard-completion and automation-timer races (MR6).
+- Both signed builds share one implementation, so cross-implementation schema
+  compatibility is enforced only by the checkpoint format number.
+- No user-facing command starts a planned replacement. Update orchestration
+  (UA4) is the intended caller of `migrateWorkspace`.

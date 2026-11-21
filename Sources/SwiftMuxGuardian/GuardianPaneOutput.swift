@@ -5,6 +5,7 @@ import SwiftMuxProtocol
 /// Worker-side ordered output consumption. Owns transport records, never a
 /// PTY, parser, writer or terminal snapshot. Parsing may stop inside a record
 /// while a query reply awaits admission; acknowledge only fully applied records.
+/// Sendable: records and sequences are touched only on `queue`.
 package final class GuardianPaneOutput: @unchecked Sendable {
   private struct Record {
     let sequence: UInt64
@@ -39,6 +40,20 @@ package final class GuardianPaneOutput: @unchecked Sendable {
   package var onFailure: ((MuxError) -> Void)?
 
   package init(queue: DispatchQueue) { self.queue = queue }
+
+  /// Output applied so far (the planned-replacement cut).
+  package var appliedThrough: UInt64 {
+    dispatchPrecondition(condition: .onQueue(queue))
+    return appliedSequence
+  }
+
+  /// A candidate adopting a pane continues after the cut (§7).
+  package func resume(after sequence: UInt64) {
+    dispatchPrecondition(condition: .onQueue(queue))
+    precondition(records.isEmpty && nextSequence == 1)
+    appliedSequence = sequence
+    nextSequence = sequence + 1
+  }
 
   package func receive(sequence: UInt64, bytes: Data) {
     dispatchPrecondition(condition: .onQueue(queue))

@@ -305,6 +305,64 @@ final class PaneRuntime: @unchecked Sendable {
 
   deinit { scrollbackMaintenance?.cancel() }
 
+  // MARK: Planned replacement (spec.durability.md §6)
+
+  /// The pane's terminal at the cut: engine, parser and the counters that
+  /// keep frame and epoch identities continuous.
+  struct MigrationCheckpoint: Sendable {
+    var terminal: [UInt8]
+    var parser: [UInt8]
+    var revision: UInt64
+    var geometryGeneration: UInt64
+    var changeCount: UInt64
+    var viewport: UInt64
+    var epoch: TerminalEpochID
+  }
+
+  /// Refused while effects are unsettled (replies, events, clipboard).
+  func migrationCheckpoint() throws -> MigrationCheckpoint {
+    try queue.sync { () throws -> MigrationCheckpoint in
+      guard !resizing, geometryWork.isEmpty else {
+        throw CheckpointError("geometry change in flight")
+      }
+      var writer = CheckpointWriter()
+      parser.checkpoint(into: &writer)
+      return MigrationCheckpoint(
+        terminal: try state.checkpoint(),
+        parser: writer.bytes,
+        revision: revision,
+        geometryGeneration: geometryGeneration,
+        changeCount: changeCount,
+        viewport: currentViewport.load(ordering: .relaxed),
+        epoch: terminalEpoch
+      )
+    }
+  }
+
+  /// Before publication: replaces the fresh engine with the checkpointed
+  /// one, keeping this runtime's host hooks. Emits nothing.
+  func restoreMigration(_ c: MigrationCheckpoint) throws {
+    try queue.sync { () throws in
+      var restored = try TerminalState.restored(checkpoint: c.terminal)
+      var reader = CheckpointReader(c.parser)
+      var restoredParser = Parser()
+      try restoredParser.restore(from: &reader)
+      try reader.finish()
+      restored.onShellCommandFinished = state.onShellCommandFinished
+      restored.kittyClipboardReader = state.kittyClipboardReader
+      restored.kittyClipboardWriter = state.kittyClipboardWriter
+      restored.setScrollbackCompression(state.scrollbackCompression.requested)
+      // A pane that adopted its process keeps the engine the cut left.
+      state = restored
+      parser = restoredParser
+      revision = c.revision
+      geometryGeneration = c.geometryGeneration
+      changeCount = c.changeCount
+      currentViewport.store(c.viewport, ordering: .relaxed)
+      terminalEpoch = c.epoch
+    }
+  }
+
   func launch(
     _ spec: LaunchSpec,
     launcher: PaneLauncher,
@@ -861,6 +919,9 @@ final class PaneRuntime: @unchecked Sendable {
 
   /// Reserve one operation and its estimated bytes before scheduling work.
   /// The operation slot survives PTY writes until its admission response.
+  /// Every admitted input operation has its guardian admission result.
+  var inputSettled: Bool { inputOperations.withLock { $0 == 0 } }
+
   func reserve(_ bytes: Int) -> Bool {
     inputOperations.withLock { count in
       guard count < Self.inputOperationLimit, reserveAdditionalBytes(bytes)

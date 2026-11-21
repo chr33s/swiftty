@@ -20,7 +20,10 @@ do {
       try bootstrap.connect(queue: queue, handlers: handlers)
     },
     ready: { _ in },
-    unavailable: { _ in exit(75) }
+    unavailable: { _ in exit(75) },
+    candidate: bootstrap.migration,
+    // Retired after a planned replacement: the guardian keeps every process.
+    retired: { exit(0) }
   )
   withExtendedLifetime(host) { dispatchMain() }
 } catch {

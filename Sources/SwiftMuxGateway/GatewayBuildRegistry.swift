@@ -23,6 +23,7 @@ package final class GatewayBuildPin: Sendable {
 /// Single installation owner per version root. Staging may publish additional
 /// immutable versions concurrently; only this owner changes choices or collects.
 /// Registration/readiness and recovery of process pins belong to the updater.
+/// Sendable: mutable choice and pins are guarded by `lock`.
 package final class GatewayBuildRegistry: @unchecked Sendable {
   private let root: URL
   private let staging: GatewayUpdateStaging

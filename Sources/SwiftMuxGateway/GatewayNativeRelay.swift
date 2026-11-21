@@ -9,6 +9,7 @@ import SwiftMuxXPC
 /// All methods and callbacks run on the frontend channel queue. The enclosing
 /// router owns workspace selection and retains this object until `closed`.
 /// Wire identities and acknowledgement timing are preserved; nothing is replayed.
+/// Sendable: state is touched only on the frontend channel queue.
 package final class GatewayNativeRelay: @unchecked Sendable {
   private struct CommandCharge {
     let bytes: Int

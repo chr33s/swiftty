@@ -214,7 +214,7 @@ extension GuardianServer {
         guard let self, let worker, let workspace = self.workspaces[id],
           workspace.worker === worker
         else { return }
-        self.loseWorker(workspace)
+        self.loseWorker(workspace, MuxError(.connectionLost, "worker exited"))
         self.checkStopped()
       }
       do { try worker.activate() } catch {
@@ -239,7 +239,10 @@ extension GuardianServer {
           workspace.worker === worker, workspace.connection == nil,
           !workspace.unavailable
         else { return }
-        self.loseWorker(workspace)
+        self.loseWorker(
+          workspace,
+          MuxError(.connectionLost, "worker did not connect")
+        )
       }
     }
   }

@@ -7,6 +7,7 @@ import SwiftMuxXPC
 
 /// Native control ingress. State and callbacks belong to queue. Cancelling this
 /// listener does not End sessions or close the separately owned runtime.
+/// Sendable: peers, jobs and the listener are touched only on `queue`.
 package final class GatewayControlServer: @unchecked Sendable {
   private final class Peer {
     let channel: SMXChannel

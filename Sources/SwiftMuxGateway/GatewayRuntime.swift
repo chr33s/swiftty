@@ -239,6 +239,35 @@ package actor GatewayRuntime {
     // The monitor reconciles inventory and routes; no uncertain mutation replay.
   }
 
+  // MARK: Planned replacement (spec.durability.md §7)
+
+  /// Moves a workspace to a new worker of the selected build, preserving its
+  /// processes. `started` runs once the transaction exists (a supervisor
+  /// that launches candidates itself can ignore it).
+  package func migrateWorkspace(
+    _ selector: WorkspaceSelector,
+    started: (@Sendable (GuardianMigrationStatus) async throws -> Void)? = nil
+  ) async throws -> GuardianMigrationStatus {
+    try checkOpen()
+    let record = try await directory.resolve(selector)
+    try checkOpen()
+    let status = try await supervisor.migrate(
+      record.inventory.authority,
+      started: started
+    )
+    // Release or abort changed the owner generation: refresh discovery so
+    // routes ask for the current authority, not the fenced one.
+    for _ in 0 ..< 100 {
+      do {
+        try await directory.refresh()
+        break
+      } catch let error as MuxError where error.code == .quiescing {
+        try await Task.sleep(for: .milliseconds(10))
+      }
+    }
+    return status
+  }
+
   // MARK: Saved layouts
 
   private func savedService() throws -> SavedLayoutService {

@@ -8,6 +8,7 @@ import SwiftMuxXPC
 /// state belongs to `queue`. PTYs outlive connections; only explicit End or
 /// guardian shutdown terminates them. The supervisor provisions workers and
 /// writer capabilities; neither is self-issued over the worker connection.
+/// Sendable: mutable state is touched only on `queue`.
 package final class GuardianServer: @unchecked Sendable {
   package let incarnation = UUID()
   let queue = DispatchQueue(label: "swiftmux.guardian", qos: .userInitiated)
@@ -38,6 +39,13 @@ package final class GuardianServer: @unchecked Sendable {
   }
 
   var pendingWorkers: [WorkspaceID: PendingWorker] = [:]
+  /// At most one planned replacement per host (§7.1).
+  var migration: Migration?
+  /// Recent outcomes, retained until queried (bounded).
+  var finishedMigrations: [UUID: GuardianMigrationStatus] = [:]
+  let migrationPreparationTimeout: TimeInterval
+  let migrationFrozenTimeout: TimeInterval
+  let migrationResumeTimeout: TimeInterval
   private var lastGeneration: UInt64 = 0
 
   /// Never reuse authority, even when a retired workspace ID is submitted again.
@@ -61,12 +69,19 @@ package final class GuardianServer: @unchecked Sendable {
   final class Peer {
     let channel: SMXChannel
     var workspace: WorkspaceID?
+    /// A migration candidate before release (spec.durability.md §7).
+    var migration: UUID?
     init(_ channel: SMXChannel) { self.channel = channel }
   }
 
   final class Workspace {
-    let authority: GuardianAuthority
-    let expectedPID: Int32
+    /// Replaced only by planned replacement's release or abort.
+    var authority: GuardianAuthority
+    /// After an abort, the same worker connection may still deliver records
+    /// it sent under the fenced generation; nobody else holds it.
+    var previousAuthority: GuardianAuthority?
+    /// The authenticated worker process; release moves it to the candidate.
+    var expectedPID: Int32
     var token: UUID?
     var connection: UUID?
     var unavailable = false
@@ -88,8 +103,11 @@ package final class GuardianServer: @unchecked Sendable {
     var progressTimer: DispatchSourceTimer?
     var worker: GuardianWorkerProcess?
     var buildPin: GuardianBuildPin?
+    var lossReason: MuxError?
     var launchError: MuxError?
     var serviceEndpoint: GuardianWorkerEndpoint?
+    /// Planned replacement holds output and refuses commands (§7.2).
+    var migrationFrozen = false
 
     init(authority: GuardianAuthority, pid: Int32, token: UUID) {
       self.authority = authority
@@ -101,6 +119,10 @@ package final class GuardianServer: @unchecked Sendable {
   final class Pane {
     let process = UUID()
     let runtime: GuardianPTY
+    /// The build whose launcher and resources the child started with. A
+    /// planned replacement changes the workspace's build, not this one: the
+    /// version stays pinned while the process can still reference it.
+    var build: GuardianBuildPin?
     var nextOutput: UInt64 = 1
     var acknowledged: UInt64 = 0
     var outstanding: [UInt64: Int] = [:]
@@ -121,6 +143,9 @@ package final class GuardianServer: @unchecked Sendable {
     peerRequirement: String?,
     progressTimeout: TimeInterval = 5,
     admissionSettlementTimeout: TimeInterval = 30,
+    migrationPreparationTimeout: TimeInterval = 30,
+    migrationFrozenTimeout: TimeInterval = 2,
+    migrationResumeTimeout: TimeInterval = 0.5,
     buildSelectionQueue: DispatchQueue = .global(qos: .utility)
   ) throws(MuxError) {
     try limits.validateForService()
@@ -143,6 +168,9 @@ package final class GuardianServer: @unchecked Sendable {
     self.peerRequirement = peerRequirement
     self.progressTimeout = progressTimeout
     self.admissionSettlementTimeout = admissionSettlementTimeout
+    self.migrationPreparationTimeout = migrationPreparationTimeout
+    self.migrationFrozenTimeout = migrationFrozenTimeout
+    self.migrationResumeTimeout = migrationResumeTimeout
     self.buildSelectionQueue = buildSelectionQueue
     launcher = PaneLauncher(
       launcherPath: launcherPath,
@@ -202,6 +230,7 @@ package final class GuardianServer: @unchecked Sendable {
     queue.sync {
       precondition(pid > 0)
       guard gateway != identity || gatewayPID != pid else { return }
+      if let previous = gateway, previous != identity { gatewayLost(previous) }
       gateway = identity
       gatewayPID = pid
       for workspace in workspaces.values {
@@ -254,6 +283,7 @@ package final class GuardianServer: @unchecked Sendable {
   package func revokeGateway(_ identity: UUID) {
     queue.sync {
       guard gateway == identity else { return }
+      gatewayLost(identity)
       gateway = nil
       gatewayPID = nil
       for workspace in workspaces.values {
@@ -279,7 +309,10 @@ package final class GuardianServer: @unchecked Sendable {
   func publishGatewayBinding(_ workspace: Workspace) {
     guard workspace.observesGateway, !workspace.unavailable else { return }
     guard workspace.gatewayRevision < UInt64.max else {
-      loseWorker(workspace);
+      loseWorker(
+        workspace,
+        MuxError(.resourceLimit, "gateway revision exhausted")
+      );
       return
     }
     workspace.gatewayRevision += 1
@@ -356,7 +389,8 @@ package final class GuardianServer: @unchecked Sendable {
           starting: workspace.token != nil && !workspace.unavailable
             && !workspace.ending,
           launchError: workspace.launchError,
-          workerProtocol: workspace.buildPin?.manifest.workerProtocol
+          workerProtocol: workspace.buildPin?.manifest.workerProtocol,
+          lossReason: workspace.lossReason
         )
       }
       return settled
@@ -379,7 +413,7 @@ package final class GuardianServer: @unchecked Sendable {
       self.pendingWorkers[id]?.ending = true
       guard let workspace = self.workspaces[id] else { return }
       workspace.ending = true
-      self.loseWorker(workspace)
+      self.loseWorker(workspace, MuxError(.notAttached, "workspace ended"))
       for pane in workspace.panes.values { pane.runtime.terminate() }
     }
   }
@@ -410,7 +444,7 @@ package final class GuardianServer: @unchecked Sendable {
         )
       }
       workspace.ending = true
-      loseWorker(workspace)
+      loseWorker(workspace, MuxError(.notAttached, "workspace ended"))
       for pane in workspace.panes.values { pane.runtime.terminate() }
     }
   }
@@ -422,7 +456,10 @@ package final class GuardianServer: @unchecked Sendable {
       self.listener?.cancel()
       self.listener = nil
       for workspace in self.workspaces.values {
-        self.loseWorker(workspace)
+        self.loseWorker(
+          workspace,
+          MuxError(.connectionLost, "guardian stopping")
+        )
         for pane in workspace.panes.values { pane.runtime.terminate() }
       }
       self.checkStopped()

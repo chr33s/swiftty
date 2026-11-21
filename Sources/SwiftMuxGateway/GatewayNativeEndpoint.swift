@@ -8,6 +8,7 @@ import SwiftMuxXPC
 /// A gateway-owned native listener for one selected workspace authority.
 /// Endpoint possession is not authorization. Every frontend is authenticated and
 /// resolves the current worker through the guardian before its relay is admitted.
+/// Sendable: admissions and live relays are touched only on `queue`.
 package final class GatewayNativeEndpoint: @unchecked Sendable {
   private struct Admission {
     let channel: SMXChannel

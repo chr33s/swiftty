@@ -1,3 +1,4 @@
+import CryptoKit
 import Dispatch
 import Foundation
 import SwiftMuxGuardian
@@ -6,6 +7,7 @@ import SwiftMuxProtocol
 /// The supervised worker's composition root. Gateway death cannot destroy its
 /// service, graph or terminal state. Loss of guardian authority fails closed;
 /// teardown never substitutes for the guardian's explicit End operation.
+/// Sendable: mutable state is touched only on `queue`.
 package final class WorkspaceWorkerHost: @unchecked Sendable {
   private struct Binding: Equatable {
     let identity: UUID
@@ -24,6 +26,12 @@ package final class WorkspaceWorkerHost: @unchecked Sendable {
   private var failure: MuxError?
   private var binding: Binding?
   private var transition: (@Sendable (MuxError?) -> Void)?
+  /// Planned replacement (spec.durability.md §7).
+  private let candidate: UUID?
+  private let onRetired: @Sendable () -> Void
+  private var importBytes = Data()
+  private var imported = false
+  private var retired = false
 
   package init(
     workspace: WorkspaceID,
@@ -32,8 +40,12 @@ package final class WorkspaceWorkerHost: @unchecked Sendable {
     connect: (DispatchQueue, GuardianWorkerConnection.Handlers) throws ->
       GuardianWorkerConnection,
     ready: @escaping @Sendable (ServerInstanceID) -> Void,
-    unavailable: @escaping @Sendable (MuxError) -> Void
+    unavailable: @escaping @Sendable (MuxError) -> Void,
+    candidate: UUID? = nil,
+    retired: @escaping @Sendable () -> Void = {}
   ) throws {
+    self.candidate = candidate
+    onRetired = retired
     self.workspace = workspace
     self.launcherPath = launcherPath
     self.peerRequirement = peerRequirement
@@ -63,6 +75,10 @@ package final class WorkspaceWorkerHost: @unchecked Sendable {
           } else {
             completion(MuxError(.unauthorized, "invalid gateway binding"))
           }
+        },
+        migration: { [weak self] event in
+          guard let self else { return }
+          self.queue.async { self.migration(event) }
         },
         ready: { [weak self] in
           guard let self else { return }
@@ -103,8 +119,32 @@ package final class WorkspaceWorkerHost: @unchecked Sendable {
     }
   }
 
+  private func makeService() throws -> MuxService {
+    guard let broker else {
+      throw MuxError(.connectionLost, "worker transport gone")
+    }
+    var configuration = MuxServiceConfiguration(launcherPath: launcherPath)
+    configuration.workerWorkspace = workspace
+    configuration.requiresGatewayBinding = true
+    configuration.peerRequirement = peerRequirement
+    let workspaceID = workspace
+    configuration.paneProcessFactory = { id, workspace, queue, limits in
+      guard workspace == workspaceID else {
+        throw MuxError(.unauthorized, "worker workspace mismatch")
+      }
+      return try broker.makePane(id: id, queue: queue, limits: limits)
+    }
+    return try MuxService(configuration: configuration)
+  }
+
   private func startService() {
-    guard failure == nil, service == nil, let broker else { return }
+    guard failure == nil, let broker else { return }
+    // A released candidate already imported its workspace.
+    if let service, candidate != nil {
+      publish(service, broker: broker)
+      return
+    }
+    guard service == nil else { return }
     do {
       var configuration = MuxServiceConfiguration(launcherPath: launcherPath)
       configuration.workerWorkspace = workspace
@@ -119,21 +159,28 @@ package final class WorkspaceWorkerHost: @unchecked Sendable {
       }
       let service = try MuxService(configuration: configuration)
       self.service = service
-      let endpoint = service.listenAnonymously()
-      broker.publishServiceEndpoint(endpoint, instance: service.instance) {
-        [weak self] error in
-        guard let self else { return }
-        self.queue.async { [self] in
-          guard self.failure == nil else { return }
-          if let error {
-            self.fail(error);
-            return
-          }
-          self.ready = true
-          self.onReady(service.instance)
-        }
-      }
+      publish(service, broker: broker)
     } catch { fail(error) }
+  }
+
+  private func publish(
+    _ service: MuxService,
+    broker: GuardianWorkspaceTransport
+  ) {
+    let endpoint = service.listenAnonymously()
+    broker.publishServiceEndpoint(endpoint, instance: service.instance) {
+      [weak self] error in
+      guard let self else { return }
+      self.queue.async { [self] in
+        guard self.failure == nil else { return }
+        if let error {
+          self.fail(error);
+          return
+        }
+        self.ready = true
+        self.onReady(service.instance)
+      }
+    }
   }
 
   private func replaceBinding(
@@ -190,6 +237,104 @@ package final class WorkspaceWorkerHost: @unchecked Sendable {
           }
         }
       }
+    }
+  }
+
+  // MARK: Planned replacement (spec.durability.md §7.2)
+
+  private func migration(_ event: GuardianWorkerConnection.MigrationEvent) {
+    guard failure == nil, let broker else { return }
+    switch event {
+    case let .freeze(transaction):
+      guard let service, ready else {
+        broker.migrationRefused(
+          transaction,
+          MuxError(.quiescing, "worker not ready")
+        )
+        return
+      }
+      service.freezeForMigration(commandsIdle: {
+        broker.commandsIdle(completion: $0)
+      }) { error in
+        if let error {
+          broker.migrationRefused(transaction, error)
+        } else {
+          broker.migrationFrozen(transaction)
+        }
+      }
+    case let .export(transaction):
+      guard let service else { return }
+      broker.migrationHandles { handles in
+        service.migrationCheckpoint(handles: handles) { result in
+          switch result {
+          case let .success(data): broker.migrationExport(transaction, data)
+          case let .failure(error): broker.migrationRefused(transaction, error)
+          }
+        }
+      }
+    case let .aborted(transaction):
+      service?.thawMigration { broker.migrationResumed(transaction) }
+    case .retire:
+      // The guardian fenced this worker; no process is ended here.
+      retired = true
+      onRetired()
+    case .welcome: break
+    case let .importChunk(transaction, offset, total, bytes):
+      guard candidate == transaction, !imported, offset == importBytes.count,
+        total > 0, total <= GuardianMigrationWire.checkpointLimit,
+        offset + bytes.count <= total
+      else {
+        fail(MuxError(.invalidRequest, "invalid checkpoint import"))
+        return
+      }
+      importBytes.append(bytes)
+      guard importBytes.count == total else { return }
+      let data = importBytes
+      importBytes = Data()
+      do {
+        let service = try makeService()
+        self.service = service
+        service.importMigrationCheckpoint(
+          data,
+          adopt: { id, handle, queue, limits in
+            try broker.adoptPane(
+              id: id,
+              handle: handle.handle,
+              pid: handle.pid,
+              appliedOutput: handle.appliedOutput,
+              queue: queue,
+              limits: limits
+            )
+          }
+        ) { [weak self] error in
+          guard let self else { return }
+          self.queue.async { [self] in
+            if let error {
+              fail(error)
+              return
+            }
+            imported = true
+            broker.migrationImported(
+              transaction,
+              digest: Data(SHA256.hash(data: data))
+            )
+          }
+        }
+      } catch {
+        fail(
+          error as? MuxError
+            ?? MuxError(.invalidRequest, "candidate service failed")
+        )
+      }
+    case let .activate(transaction):
+      guard candidate == transaction, imported, service != nil else {
+        fail(MuxError(.invalidRequest, "candidate cannot activate"))
+        return
+      }
+      broker.migrationActivated(transaction)
+    case .released:
+      // `ready` follows and publishes the imported service.
+      break
     }
   }
 

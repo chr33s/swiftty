@@ -85,6 +85,37 @@ package enum GuardianRequest: Codable, Sendable {
     pane: GuardianPaneHandle,
     through: UInt64
   )
+
+  // Planned replacement (spec.durability.md §7). The candidate is admitted
+  // only for its transaction; it has no command authority until release.
+  case migrationHello(
+    version: Int,
+    workspace: WorkspaceID,
+    transaction: UUID,
+    token: UUID
+  )
+  /// Old worker: admission is closed and every pane queue has settled.
+  case migrationFrozen(authority: GuardianAuthority, transaction: UUID)
+  /// Old worker: one piece of the checkpoint taken at the cut.
+  case migrationChunk(
+    authority: GuardianAuthority,
+    transaction: UUID,
+    offset: Int,
+    total: Int,
+    bytes: Data
+  )
+  /// Old worker: the freeze could not settle; abort.
+  case migrationRefused(
+    authority: GuardianAuthority,
+    transaction: UUID,
+    error: MuxError
+  )
+  /// Candidate: imported without effects, with the digest it imported.
+  case migrationImported(transaction: UUID, digest: Data)
+  /// Candidate: activated and able to serve once released.
+  case migrationActivated(transaction: UUID)
+  /// The old worker reopened admission after an abort (§7.3).
+  case migrationResumed(authority: GuardianAuthority, transaction: UUID)
 }
 
 package enum GuardianResult: Codable, Equatable, Sendable {
@@ -113,6 +144,82 @@ package enum GuardianEvent: Codable, Sendable {
   case exiting(pane: GuardianPaneHandle)
   case exited(pane: GuardianPaneHandle, status: Int32, forced: Bool)
   case refused(MuxError)
+
+  // Planned replacement (spec.durability.md §7).
+  /// To the old worker: close admission and settle for a cut.
+  case migrationFreeze(transaction: UUID)
+  /// To the old worker: output through the cut is applied; export now.
+  case migrationExport(transaction: UUID)
+  /// To the old worker before release: resume under this authority.
+  case migrationAborted(transaction: UUID, authority: GuardianAuthority)
+  /// To the old worker after release: exit without ending any process.
+  case migrationRetire(transaction: UUID)
+  /// To the candidate: admitted for `transaction`; gates stay closed.
+  case migrationWelcome(transaction: UUID, authority: GuardianAuthority)
+  case migrationImport(transaction: UUID, offset: Int, total: Int, bytes: Data)
+  /// To the candidate: its generation is assigned; confirm it can serve.
+  case migrationActivate(transaction: UUID)
+  /// To the candidate: released; it now owns the workspace.
+  case migrationReleased(transaction: UUID)
+}
+
+/// Planned-replacement phases (spec.durability.md §7.1).
+package enum GuardianMigrationPhase: String, Codable, Sendable, Equatable {
+  case preparing
+  case frozen
+  /// Aborted from frozen: the candidate is fenced and the old worker has
+  /// 500 ms to confirm it resumed before the workspace is unavailable.
+  case aborting
+  case released
+  case finished
+}
+
+package enum GuardianMigrationOutcome: String, Codable, Sendable, Equatable {
+  /// The candidate owns the workspace.
+  case released
+  /// Aborted before release; the old worker resumed under fresh authority.
+  case resumed
+  /// The old worker could not resume, or the candidate failed after
+  /// release: processes are retained and the workspace is unavailable.
+  case unavailable
+  /// End arrived before release and won: the workspace's processes were
+  /// terminated and nothing was reopened (MR6).
+  case ended
+}
+
+package struct GuardianMigrationStatus: Codable, Sendable, Equatable {
+  package let transaction: UUID
+  package let workspace: WorkspaceID
+  package let phase: GuardianMigrationPhase
+  package let outcome: GuardianMigrationOutcome?
+  package let candidateConnected: Bool
+  package let failure: MuxError?
+  /// Frozen interval, once finished (milliseconds).
+  package let frozenMilliseconds: Int?
+
+  package init(
+    transaction: UUID,
+    workspace: WorkspaceID,
+    phase: GuardianMigrationPhase,
+    outcome: GuardianMigrationOutcome?,
+    candidateConnected: Bool,
+    failure: MuxError?,
+    frozenMilliseconds: Int?
+  ) {
+    self.transaction = transaction
+    self.workspace = workspace
+    self.phase = phase
+    self.outcome = outcome
+    self.candidateConnected = candidateConnected
+    self.failure = failure
+    self.frozenMilliseconds = frozenMilliseconds
+  }
+}
+
+/// Checkpoint transfer chunks stay well below the record limit.
+package enum GuardianMigrationWire {
+  package static let chunkBytes = 256 << 10
+  package static let checkpointLimit = 256 << 20
 }
 
 package struct GuardianPaneInventory: Codable, Sendable {
@@ -131,6 +238,8 @@ package struct GuardianWorkspaceInventory: Codable, Sendable {
   package var launchError: MuxError?
   /// From the retained, validated build pin; nil is unknown, never inferred.
   package var workerProtocol: Int? = nil
+  /// Why the worker stopped serving, once it has (diagnostics only).
+  package var lossReason: MuxError? = nil
 }
 
 package struct GuardianWorkerInventory: Codable, Sendable {

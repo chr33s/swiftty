@@ -8,6 +8,7 @@ import TerminalProcess
 /// Sole owner/reaper of a workspace worker. Constructed off the guardian queue;
 /// after publication, all operations and callbacks are confined to that queue.
 /// Shells are separate guardian children, never children of this process.
+/// Sendable: after publication, mutable state is touched only on `queue`.
 final class GuardianWorkerProcess: @unchecked Sendable {
   let pid: Int32
   let build: String

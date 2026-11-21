@@ -169,6 +169,65 @@ struct CheckpointTests {
     }
   }
 
+  /// MR2: compressed history and an active search anchor survive the cut,
+  /// and a cut inside a UTF-8 sequence or an escape continues exactly.
+  @Test(arguments: [UInt64(21), 22, 23])
+  func compressedHistoryAndSearchSurviveACut(seed: UInt64) throws {
+    var lines: [UInt8] = []
+    for i in 0 ..< 3_000 {
+      lines.append(contentsOf: "history line \(i) 漢字 é\r\n".utf8)
+    }
+    let tail = Array("\u{1B}[1;3".utf8) + Array("1mred 漢".utf8.prefix(5))
+    func build(_ state: inout TerminalState, _ parser: inout Parser) {
+      state.setScrollbackCompression(true)
+      parser.consume(lines.span, into: &state)
+      for _ in 0 ..< 200 where state.maintainScrollback() == .pending {}
+      state.search("line 12")
+      _ = state.selectSearchMatch(forward: false)
+      // Cut inside an SGR and inside a multibyte character.
+      parser.consume(tail.span, into: &state)
+      Self.settle(&state)
+    }
+    var straight = TerminalState(
+      columns: 32,
+      rows: 8,
+      scrollbackLimitRows: 4_000
+    )
+    var straightParser = Parser()
+    build(&straight, &straightParser)
+    var source = TerminalState(columns: 32, rows: 8, scrollbackLimitRows: 4_000)
+    var sourceParser = Parser()
+    build(&source, &sourceParser)
+    #expect(source.scrollbackStatistics.compressedUnits > 0)
+    let checkpoint = try source.checkpoint()
+    var w = CheckpointWriter()
+    sourceParser.checkpoint(into: &w)
+    var restored = try TerminalState.restored(checkpoint: checkpoint)
+    var restoredParser = Parser()
+    var reader = CheckpointReader(w.bytes)
+    try restoredParser.restore(from: &reader)
+    #expect(restored.searchMatches == straight.searchMatches)
+    #expect(restored.searchSelected == straight.searchSelected)
+    let rest = Array("字\u{1B}[0m done\r\n".utf8) + Self.stream(seed: seed)
+    straightParser.consume(rest.span, into: &straight)
+    restoredParser.consume(rest.span, into: &restored)
+    #expect(straight.output == restored.output)
+    Self.settle(&straight)
+    Self.settle(&restored)
+    _ = straight.selectSearchMatch(forward: true)
+    _ = restored.selectSearchMatch(forward: true)
+    #expect(straight.searchSelected == restored.searchSelected)
+    #expect(
+      straight.dumpPrimaryANSI() == restored.dumpPrimaryANSI(),
+      "seed \(seed)"
+    )
+    #expect(
+      try Self.snapshot(straightParser, &straight)
+        == Self.snapshot(restoredParser, &restored),
+      "seed \(seed)"
+    )
+  }
+
   @Test
   func everyCutOfAShortStreamRoundTrips() throws {
     let bytes = Self.stream(seed: 77, pieces: 60)

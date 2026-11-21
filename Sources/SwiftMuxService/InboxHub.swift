@@ -29,6 +29,9 @@ struct InboxHub {
     inbox = AttentionInbox(serviceEpoch: serviceEpoch, limits: limits)
   }
 
+  /// Planned replacement: the imported inbox, with no subscribers yet.
+  init(restoring inbox: AttentionInbox) { self.inbox = inbox }
+
   var limits: MuxLimits { inbox.limits }
 
   mutating func apply(

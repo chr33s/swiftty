@@ -71,6 +71,100 @@ extension GatewaySupervisor {
     return status
   }
 
+  // MARK: Planned replacement (spec.durability.md §7)
+
+  package func beginMigration(
+    _ authority: GuardianAuthority
+  ) async throws -> GuardianMigrationStatus {
+    guard
+      case let .migration(status) = try await request(
+        .beginMigration(authority: authority)
+      )
+    else { throw MuxError(.invalidRequest, "missing migration status") }
+    return status
+  }
+
+  package func freezeMigration(
+    _ transaction: UUID
+  ) async throws -> GuardianMigrationStatus {
+    guard
+      case let .migration(status) = try await request(
+        .freezeMigration(transaction: transaction)
+      )
+    else { throw MuxError(.invalidRequest, "missing migration status") }
+    return status
+  }
+
+  package func migrationStatus(
+    _ transaction: UUID
+  ) async throws -> GuardianMigrationStatus {
+    guard
+      case let .migration(status) = try await request(
+        .migrationStatus(transaction: transaction)
+      )
+    else { throw MuxError(.invalidRequest, "missing migration status") }
+    return status
+  }
+
+  package func cancelMigration(
+    _ transaction: UUID
+  ) async throws -> GuardianMigrationStatus {
+    guard
+      case let .migration(status) = try await request(
+        .cancelMigration(transaction: transaction)
+      )
+    else { throw MuxError(.invalidRequest, "missing migration status") }
+    return status
+  }
+
+  /// Retires a finished outcome; the guardian keeps at most 64 unretired.
+  package func acknowledgeMigration(
+    _ transaction: UUID
+  ) async throws -> GuardianMigrationStatus {
+    guard
+      case let .migration(status) = try await request(
+        .acknowledgeMigration(transaction: transaction)
+      )
+    else { throw MuxError(.invalidRequest, "missing migration status") }
+    return status
+  }
+
+  /// Drives one replacement: waits for the candidate within preparation,
+  /// freezes, then reads the guardian's outcome. Never retries an uncertain
+  /// step; the guardian decides release or abort on its own deadlines.
+  package func migrate(
+    _ authority: GuardianAuthority,
+    preparation: Duration = .seconds(30),
+    started: (@Sendable (GuardianMigrationStatus) async throws -> Void)? = nil
+  ) async throws -> GuardianMigrationStatus {
+    var status = try await beginMigration(authority)
+    try await started?(status)
+    let transaction = status.transaction
+    let deadline = ContinuousClock.now + preparation
+    while status.phase == .preparing {
+      if status.candidateConnected {
+        do {
+          status = try await freezeMigration(transaction)
+          continue
+        } catch let error as MuxError where error.code == .quiescing {
+          // A launch is settling; stay in preparation and try again.
+        }
+      }
+      guard ContinuousClock.now < deadline else {
+        status = try await cancelMigration(transaction)
+        break
+      }
+      try await Task.sleep(for: .milliseconds(20))
+      status = try await migrationStatus(transaction)
+    }
+    while status.phase != .finished {
+      try await Task.sleep(for: .milliseconds(10))
+      status = try await migrationStatus(transaction)
+    }
+    // The outcome is read; retire it so the window never fills.
+    return try await acknowledgeMigration(transaction)
+  }
+
   package func inventory() async throws -> [GuardianWorkspaceInventory] {
     guard case let .inventory(items) = try await request(.inventory) else {
       throw MuxError(.invalidRequest, "missing guardian inventory")

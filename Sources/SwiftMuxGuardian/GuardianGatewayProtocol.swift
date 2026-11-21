@@ -23,6 +23,15 @@ package enum GuardianGatewayCommand: Codable, Equatable, Sendable {
   case setAdmissionPaused(Bool, expectedRevision: UInt64)
   /// Settling → replacing (spec.durability.md §5.2).
   case advanceAdmissionPhase(expectedRevision: UInt64)
+  /// Planned replacement (§7): start a candidate from the selected build.
+  case beginMigration(authority: GuardianAuthority)
+  /// Close admission; the guardian runs the frozen phase to release or abort.
+  case freezeMigration(transaction: UUID)
+  case migrationStatus(transaction: UUID)
+  /// Abandon before release; after release this has no effect.
+  case cancelMigration(transaction: UUID)
+  /// Retire a finished outcome from the bounded retention window.
+  case acknowledgeMigration(transaction: UUID)
   case create(workspace: WorkspaceID)
   case endpoint(workspace: WorkspaceID)
   case grantWriter(workspace: WorkspaceID)
@@ -38,7 +47,8 @@ package enum GuardianGatewayEvent: Codable, Sendable {
     supportsEnsureWriter: Bool? = nil,
     supportsAdmissionControl: Bool? = nil,
     supportsWorkerSelection: Bool? = nil,
-    supportsAdmissionPhase: Bool? = nil
+    supportsAdmissionPhase: Bool? = nil,
+    supportsMigration: Bool? = nil
   )
   case result(sequence: UInt64, value: GuardianGatewayResult)
   case refused(MuxError)
@@ -58,6 +68,7 @@ package enum GuardianGatewayResult: Codable, Sendable {
   case writer(UUID)
   /// End was accepted. Inventory establishes when process teardown finishes.
   case ending
+  case migration(GuardianMigrationStatus)
   /// All owned processes finished and the workspace's resources were released.
   case forgotten
   case rejected(MuxError)

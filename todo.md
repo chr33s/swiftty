@@ -82,6 +82,18 @@ None of these recurs on demand: on 2026-10-27 each was repeated 25–40 times wi
   (2026-11-19) and passed five of five alone. It recurred in a full
   IntegrationTests run on 2026-11-20 (`RoamingTerminalTests.swift:263`, "the
   terminal client did not finish" after 10 s) and passed 15 of 15 alone.
+- [ ] **Migration availability under load:** `MigrationTests.releaseKeepsTheShellItsStateAndItsScreen`
+  once timed out waiting for an available workspace after release, in a
+  parallel `SwiftMuxTests` run (2026-11-21), and did not recur in about 14
+  later runs. `attach` now reports directory states, and the guardian
+  inventory carries `lossReason`; capture both on recurrence.
+- [ ] **Clipboard and launcher reports under load:** in parallel
+  `SwiftMuxTests` runs on 2026-11-21, `ClipboardDropTests` "controllers answer
+  reads and programs receive the data" timed out once, and
+  `PaneRegistrationTests.immediateRealLaunchesPreserveFinalOutputAndMetadata`
+  once saw terminal bytes (`ESC[?2026h…`) in place of the launcher's success
+  report. Neither touches planned replacement; capture the report bytes and
+  the clipboard request order on recurrence.
 - [ ] **Late encoding under load:** `HostSnapshotEncodingTests.lateEncodingCannotRetireOrDeliverIntoReplacementStream(fails: false)`
   failed once in the same 2026-11-20 full IntegrationTests run
   (`HostSnapshotEncodingTests.swift:194`, `streams.count == 1`: the
@@ -102,6 +114,12 @@ None of these recurs on demand: on 2026-10-27 each was repeated 25–40 times wi
   returns, and the roaming start path prompts twice (probe, then bootstrap).
   Sign off the loop, or exclude prompt time from the deadline, and verify on a
   device (SE-02).
+- [ ] **Planned replacement follow-ups** ([spec.durability.md §13.72](spec.durability.md)):
+  transfer live attachments to the candidate instead of re-attaching (a paste
+  still unwritten at release is cancelled today); add peak-memory admission at
+  preparation and an insufficient-memory test (MR7); add reply-pressure-stall
+  (MR3) and clipboard-completion and automation-timer race tests (MR6); give
+  update orchestration (UA4) a caller of `GatewayRuntime.migrateWorkspace`.
 
 ## Platform and release validation
 

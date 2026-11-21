@@ -25,7 +25,8 @@ struct GuardianGatewayConnectionTests {
         capability,
         admission,
         selection,
-        phase
+        phase,
+        migration
       ) = try JSONDecoder().decode(GuardianGatewayEvent.self, from: oldBytes)
     else {
       Issue.record("old welcome did not decode");
@@ -34,6 +35,7 @@ struct GuardianGatewayConnectionTests {
     #expect(decodedIncarnation == incarnation && decodedGateway == gateway)
     #expect(
       capability == nil && admission == nil && selection == nil && phase == nil
+        && migration == nil
     )
     let newBytes = try JSONEncoder()
       .encode(

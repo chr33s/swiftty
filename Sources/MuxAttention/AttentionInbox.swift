@@ -30,7 +30,7 @@ public struct AttentionInbox: Sendable {
   /// items are bounded too.
   public static let itemOverhead = 256
 
-  private struct Current {
+  private struct Current: Codable {
     var incarnation: UInt64
     var record: StatusRecord
     var status: AttentionStatus
@@ -38,7 +38,7 @@ public struct AttentionInbox: Sendable {
     var request: OccurrenceID?
   }
 
-  private struct PaneState {
+  private struct PaneState: Codable {
     var epoch: TerminalEpochID
     var records: [String: Current] = [:]
     /// Least recently updated first.
@@ -46,7 +46,7 @@ public struct AttentionInbox: Sendable {
     var nextIncarnation: UInt64 = 0
   }
 
-  private struct Entry {
+  private struct Entry: Codable {
     var item: AttentionItem
     /// Creation order: the stable page order and cursor.
     var sequence: UInt64
@@ -68,6 +68,61 @@ public struct AttentionInbox: Sendable {
   public init(serviceEpoch: ServerInstanceID, limits: MuxLimits = .standard) {
     self.serviceEpoch = serviceEpoch
     self.limits = limits
+  }
+
+  // MARK: Planned replacement (spec.durability.md §6)
+
+  private struct Snapshot: Codable {
+    var serviceEpoch: ServerInstanceID
+    var revision: UInt64
+    var textBytes: Int
+    var panes: [PaneID: PaneState]
+    var entries: [OccurrenceID: Entry]
+    var openFailure: [AttentionSource: OccurrenceID]
+    var openResult: [AttentionSource: OccurrenceID]
+    var history: [OccurrenceID]
+    var nextSequence: UInt64
+  }
+
+  /// Items, records and occurrence bookkeeping. Pending change notices
+  /// must have been flushed: they are undelivered effects.
+  public func checkpoint() throws -> Data {
+    guard pendingChanged.isEmpty, pendingRemoved.isEmpty, !pendingResync else {
+      throw MuxError(.quiescing, "attention changes not yet delivered")
+    }
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return try encoder.encode(
+      Snapshot(
+        serviceEpoch: serviceEpoch,
+        revision: revision,
+        textBytes: textBytes,
+        panes: panes,
+        entries: entries,
+        openFailure: openFailure,
+        openResult: openResult,
+        history: history,
+        nextSequence: nextSequence
+      )
+    )
+  }
+
+  /// The inbox continues under its original service epoch, so existing
+  /// sources and locators keep their meaning after replacement.
+  public init(checkpoint data: Data, limits: MuxLimits) throws {
+    let snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
+    guard snapshot.entries.count <= limits.statusRecordsPerPane * 64 + 1024,
+      snapshot.textBytes >= 0
+    else { throw MuxError(.invalidRequest, "invalid attention checkpoint") }
+    self.init(serviceEpoch: snapshot.serviceEpoch, limits: limits)
+    revision = snapshot.revision
+    textBytes = snapshot.textBytes
+    panes = snapshot.panes
+    entries = snapshot.entries
+    openFailure = snapshot.openFailure
+    openResult = snapshot.openResult
+    history = snapshot.history
+    nextSequence = snapshot.nextSequence
   }
 
   // MARK: Input

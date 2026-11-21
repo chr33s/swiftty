@@ -44,7 +44,7 @@ def qualify_worker_builds(args, binary, launcher, *, run, bundle, wait_for):
     guardian_label = prefix + ".guardian"
     guardian = root / "Guardian.app"
     registered = []
-    evidence = {"scope": "signed registry installation, selected builds and live resource pins",
+    evidence = {"scope": "signed registry installation, selected builds, live resource pins and planned replacement",
                 "same_worker_implementation": True, "production_gateway": False,
                 "revision": run("git", "rev-parse", "HEAD"), "os": run("/usr/bin/sw_vers"),
                 "root": str(root), "passed": False, "checks": []}
@@ -125,6 +125,58 @@ def qualify_worker_builds(args, binary, launcher, *, run, bundle, wait_for):
         evidence["reattached"] = wait_for(reattached, "reattach old pinned worker", timeout=25)
         evidence["inventory"] = inventory()
         evidence["checks"].append("gateway replacement preserves old worker, shell, job, prior output and version-specific terminfo")
+
+        # Planned replacement (spec.durability.md §7, MR8): move the build-one
+        # workspace onto the selected build-two worker without touching its
+        # shell, job or terminal state.
+        workspace = evidence["first"]["workspace"]
+
+        def record_of(items):
+            return next(item for item in items if item["authority"]["workspace"] == workspace)
+
+        before = record_of(inventory())
+        (first_directory / "gateway-migrate").touch()
+        migration = wait_for(lambda: json.loads((first_directory / "migration.json").read_text()),
+                             "planned replacement", timeout=40)
+        evidence["migration"] = migration
+        assert migration["outcome"] == "released", migration
+        old_fields = evidence["reattached"]["proof"].split("=", 1)[1].strip().split(":")
+        new_fields = migration["proof"].split("=", 1)[1].strip().split(":")
+        assert new_fields[:3] == old_fields[:3], (old_fields, new_fields)
+        assert new_fields[4] == "ok", new_fields
+        assert migration["retainedScreen"] == "true", migration
+        # A fresh service instance: clients rebuild baselines with full frames.
+        assert migration["server"] not in ("", evidence["first"]["server"]), migration
+        assert migration["workerBuild"] == "two", migration
+        assert int(migration["worker"]) != int(evidence["first"]["worker"]), migration
+        assert int(migration["frozenMilliseconds"]) < 2000, migration
+        assert int(run("/bin/ps", "-o", "ppid=", "-p", migration["worker"])) == evidence["first"]["guardian"]
+        assert int(run("/bin/ps", "-o", "ppid=", "-p", old_fields[2])) == int(old_fields[1])
+
+        def migrated():
+            record = record_of(inventory())
+            assert record["available"], record
+            assert record["worker"]["pid"] == int(migration["worker"]), record
+            assert record["worker"]["build"] == "two", record
+            assert record["panes"][0]["pid"] == int(old_fields[1]), record
+            assert record["authority"]["generation"] > before["authority"]["generation"], record
+            return record
+
+        evidence["migrated"] = wait_for(migrated, "candidate owns the workspace")
+
+        def old_worker_retired():
+            try:
+                os.kill(int(evidence["first"]["worker"]), 0)
+            except ProcessLookupError:
+                return True
+            raise RuntimeError("old worker still running")
+
+        wait_for(old_worker_retired, "old worker retired", timeout=15)
+        # The shell started under build one still references its resources.
+        (root / "collection").unlink()
+        (root / "collect-one").touch()
+        wait_for(lambda: expect_file("collection", "pinned"), "migrated shell keeps build one pinned")
+        evidence["checks"].append("planned replacement onto signed build two keeps shell, job, variables and screen under a fresh service instance; old worker retired; build one stays pinned by the shell")
         (root / "end-all").touch()
 
         def ended():
@@ -146,6 +198,10 @@ def qualify_worker_builds(args, binary, launcher, *, run, bundle, wait_for):
         evidence["passed"] = True
     except Exception as error:
         evidence["error"] = str(error)
+        try:
+            evidence["inventory_at_error"] = inventory()
+        except Exception:
+            pass
         raise
     finally:
         cleanup = []
@@ -169,6 +225,8 @@ def qualify_worker_builds(args, binary, launcher, *, run, bundle, wait_for):
                 proof = evidence[name]
                 fields = proof["proof"].split("=", 1)[1].strip().split(":")
                 owned.update(int(pid) for pid in (proof["guardian"], proof["gateway"], proof["worker"], fields[1], fields[2]))
+        if evidence.get("migration", {}).get("worker"):
+            owned.add(int(evidence["migration"]["worker"]))
 
         def processes_gone():
             for pid in owned:

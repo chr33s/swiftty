@@ -6,6 +6,7 @@ import SwiftMuxXPC
 
 /// Separate listener so workers cannot promote their own connection to gateway
 /// authority. Production supplies the designated gateway signing requirement.
+/// Sendable: listener, peers and selection are touched only on `queue`.
 package final class GuardianGatewayServer: @unchecked Sendable {
   private let queue = DispatchQueue(label: "swiftmux.guardian.gateway")
   private let guardian: GuardianServer
@@ -124,7 +125,8 @@ package final class GuardianGatewayServer: @unchecked Sendable {
           supportsEnsureWriter: true,
           supportsAdmissionControl: true,
           supportsWorkerSelection: buildRegistry != nil,
-          supportsAdmissionPhase: true
+          supportsAdmissionPhase: true,
+          supportsMigration: true
         ),
         to: peer
       )
@@ -268,6 +270,43 @@ package final class GuardianGatewayServer: @unchecked Sendable {
       case let .end(authority):
         try guardian.endWorkspace(authority: authority, gateway: identity)
         result = .ending
+      case let .beginMigration(authority):
+        result = .migration(
+          try guardian.beginMigration(
+            authority: authority,
+            gateway: identity,
+            registry: buildRegistry,
+            machService: workerMachService
+          )
+        )
+      case let .freezeMigration(transaction):
+        result = .migration(
+          try guardian.freezeMigration(
+            transaction: transaction,
+            gateway: identity
+          )
+        )
+      case let .migrationStatus(transaction):
+        result = .migration(
+          try guardian.migrationStatus(
+            transaction: transaction,
+            gateway: identity
+          )
+        )
+      case let .cancelMigration(transaction):
+        result = .migration(
+          try guardian.cancelMigration(
+            transaction: transaction,
+            gateway: identity
+          )
+        )
+      case let .acknowledgeMigration(transaction):
+        result = .migration(
+          try guardian.acknowledgeMigration(
+            transaction: transaction,
+            gateway: identity
+          )
+        )
       case let .forget(authority):
         try guardian.forgetWorkspace(authority: authority, gateway: identity)
         result = .forgotten

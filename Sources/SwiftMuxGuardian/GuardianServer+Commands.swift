@@ -145,7 +145,7 @@ extension GuardianServer {
     let handle = GuardianPaneHandle(pane: id, process: pane.process)
     runtime.canConsume = { [weak self, weak pane, weak workspace] in
       guard let self, let pane, let workspace, !workspace.unavailable,
-        workspace.connection != nil
+        workspace.connection != nil, !workspace.migrationFrozen
       else { return false }
       return pane.outstanding.count < GuardianWire.outputRecordLimit
         && pane.nextOutput < UInt64.max

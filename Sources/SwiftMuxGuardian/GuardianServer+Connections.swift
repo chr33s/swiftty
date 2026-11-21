@@ -34,17 +34,23 @@ extension GuardianServer {
           self.reject(id, MuxError(.invalidRequest, "invalid guardian request"))
         }
       case .closed:
-        if let workspace = self.peers.removeValue(forKey: id)?.workspace,
+        let peer = self.peers.removeValue(forKey: id)
+        if let transaction = peer?.migration {
+          self.candidateLost(transaction, connection: id)
+        } else if let workspace = peer?.workspace,
           let value = self.workspaces[workspace], value.connection == id
         {
-          self.loseWorker(value)
+          self.loseWorker(
+            value,
+            MuxError(.connectionLost, "worker connection closed")
+          )
         }
       }
     }
     queue.asyncAfter(deadline: .now() + 5) { [weak self] in
-      guard let self, let peer = self.peers[id], peer.workspace == nil else {
-        return
-      }
+      guard let self, let peer = self.peers[id], peer.workspace == nil,
+        peer.migration == nil
+      else { return }
       self.reject(id, MuxError(.unauthorized, "worker handshake timed out"))
     }
   }
@@ -81,6 +87,23 @@ extension GuardianServer {
     encodedBytes: Int
   ) throws {
     guard let peer = peers[id] else { return }
+    if case let .migrationHello(version, workspaceID, transaction, token) =
+      request
+    {
+      admitCandidate(
+        id,
+        peer: peer,
+        version: version,
+        workspace: workspaceID,
+        transaction: transaction,
+        token: token
+      )
+      return
+    }
+    if let transaction = peer.migration {
+      receiveCandidate(request, transaction: transaction, from: id)
+      return
+    }
     if case let .hello(version, workspaceID, token) = request {
       guard version == GuardianWire.version, peer.workspace == nil,
         let workspace = workspaces[workspaceID], workspace.token == token,
@@ -108,15 +131,53 @@ extension GuardianServer {
     switch request {
     case let .command(value, _, _), let .retire(value, _),
       let .outputAck(value, _, _), let .progress(value, _),
-      let .subscribeGateway(value), let .gatewayApplied(value, _):
+      let .subscribeGateway(value), let .gatewayApplied(value, _),
+      let .migrationFrozen(value, _), let .migrationChunk(value, _, _, _, _),
+      let .migrationRefused(value, _, _), let .migrationResumed(value, _):
       authority = value
-    case .hello: return
+    case .hello, .migrationHello, .migrationImported, .migrationActivated:
+      return
     }
-    guard authority == workspace.authority else {
+    guard
+      authority == workspace.authority
+        || authority == workspace.previousAuthority
+    else {
       reject(id, MuxError(.staleAttachment, "stale guardian authority"));
       return
     }
+    if workspace.migrationFrozen {
+      switch request {
+      case let .command(_, sequence, .spawn)
+      where sequence >= workspace.nextCommand:
+        // A launch cannot cross the cut (§3.1): explicit non-admission, so
+        // the worker cannot freeze and the transaction aborts or retries.
+        send(.retry(sequence: sequence), to: workspace)
+        return
+      default:
+        // Writes, resizes and pane ends the worker already admitted drain
+        // into the guardian; the cut includes them (§7.2 step 3).
+        break
+      }
+    }
     switch request {
+    case let .migrationFrozen(_, transaction):
+      oldWorkerFrozen(transaction, workspace: workspace)
+      return
+    case let .migrationChunk(_, transaction, offset, total, bytes):
+      receiveCheckpointChunk(
+        transaction,
+        offset: offset,
+        total: total,
+        bytes: bytes,
+        workspace: workspace
+      )
+      return
+    case let .migrationRefused(_, transaction, error):
+      if migration?.id == transaction { abortMigration(error) }
+      return
+    case let .migrationResumed(_, transaction):
+      oldWorkerResumed(transaction)
+      return
     case .subscribeGateway:
       guard workspace.serviceEndpoint != nil, !workspace.observesGateway else {
         reject(id, MuxError(.invalidRequest, "invalid gateway subscription"))
@@ -260,7 +321,11 @@ extension GuardianServer {
       for group in workspaces.values where !group.unavailable {
         for value in group.panes.values { value.runtime.flush() }
       }
-    case .hello: break
+      checkMigrationCut(workspace)
+    case .hello, .migrationHello, .migrationFrozen, .migrationChunk,
+      .migrationRefused, .migrationImported, .migrationActivated,
+      .migrationResumed:
+      break
     }
   }
 
@@ -283,6 +348,18 @@ extension GuardianServer {
   }
 
   func send(_ event: GuardianEvent, to workspace: Workspace) {
+    // Child exits during a freeze belong to whichever owner the transaction
+    // selects; hold them until release or abort (§7.2).
+    if workspace.migrationFrozen, let migration,
+      migration.workspace == workspace.authority.workspace
+    {
+      switch event {
+      case .exiting, .exited:
+        migration.held.append(event)
+        return
+      default: break
+      }
+    }
     guard let id = workspace.connection, let peer = peers[id],
       let bytes = try? JSONEncoder().encode(event),
       bytes.count <= GuardianWire.recordLimit
@@ -299,12 +376,25 @@ extension GuardianServer {
     if let workspaceID = peer.workspace,
       let workspace = workspaces[workspaceID], workspace.connection == id
     {
-      loseWorker(workspace)
+      loseWorker(workspace, error)
     }
   }
 
-  func loseWorker(_ workspace: Workspace) {
+  func loseWorker(
+    _ workspace: Workspace,
+    _ reason: MuxError = MuxError(.connectionLost, "worker lost")
+  ) {
     guard !workspace.unavailable else { return }
+    workspace.lossReason = reason
+    // Old-worker death before release aborts; promotion is crash recovery.
+    if let migration, migration.workspace == workspace.authority.workspace,
+      migration.phase == .preparing || migration.phase == .frozen
+    {
+      abortMigration(
+        MuxError(.connectionLost, "old worker lost during migration"),
+        oldWorkerLost: true
+      )
+    }
     let previous = workspace.connection
     workspace.unavailable = true
     workspace.connection = nil

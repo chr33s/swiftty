@@ -7,6 +7,7 @@ import SwiftMuxXPC
 /// Gateway side of the supervisor link. All methods and callbacks use the
 /// channel queue. One command is admitted at a time; false means not submitted.
 /// A failed admitted command has an unknown outcome and is never replayed here.
+/// Sendable: state is touched only on the channel queue.
 package final class GuardianGatewayConnection: @unchecked Sendable {
   package struct Identity: Sendable {
     package let incarnation: UUID
@@ -14,6 +15,7 @@ package final class GuardianGatewayConnection: @unchecked Sendable {
     package let supportsEnsureWriter: Bool
     package let supportsAdmissionControl: Bool
     package let supportsAdmissionPhase: Bool
+    package let supportsMigration: Bool
     package let supportsWorkerSelection: Bool
   }
 
@@ -26,6 +28,7 @@ package final class GuardianGatewayConnection: @unchecked Sendable {
     case writer(UUID)
     case ending
     case forgotten
+    case migration(GuardianMigrationStatus)
     case rejected(MuxError)
   }
 
@@ -110,6 +113,21 @@ package final class GuardianGatewayConnection: @unchecked Sendable {
       return true
     }
     switch command {
+    case .beginMigration, .freezeMigration, .migrationStatus, .cancelMigration,
+      .acknowledgeMigration:
+      guard identity.supportsMigration else {
+        completion(
+          .success(
+            .rejected(
+              MuxError(
+                .incompatibleVersion,
+                "guardian does not support planned replacement"
+              )
+            )
+          )
+        )
+        return true
+      }
     case .advanceAdmissionPhase:
       guard identity.supportsAdmissionPhase else {
         completion(
@@ -188,7 +206,8 @@ package final class GuardianGatewayConnection: @unchecked Sendable {
       supportsEnsureWriter,
       supportsAdmissionControl,
       supportsWorkerSelection,
-      supportsAdmissionPhase
+      supportsAdmissionPhase,
+      supportsMigration
     ):
       guard identity == nil, endpoint == nil else {
         invalidResponse();
@@ -202,6 +221,7 @@ package final class GuardianGatewayConnection: @unchecked Sendable {
         supportsEnsureWriter: supportsEnsureWriter == true,
         supportsAdmissionControl: supportsAdmissionControl == true,
         supportsAdmissionPhase: supportsAdmissionPhase == true,
+        supportsMigration: supportsMigration == true,
         supportsWorkerSelection: supportsWorkerSelection == true
       )
       identity = value
@@ -281,6 +301,14 @@ package final class GuardianGatewayConnection: @unchecked Sendable {
         status.revision == expectedRevision + 1
       else { return nil }
       return .admission(status)
+    case let (.beginMigration(authority), .migration(status))
+    where status.workspace == authority.workspace: return .migration(status)
+    case let (.freezeMigration(transaction), .migration(status)),
+      let (.migrationStatus(transaction), .migration(status)),
+      let (.cancelMigration(transaction), .migration(status)),
+      let (.acknowledgeMigration(transaction), .migration(status)):
+      guard status.transaction == transaction else { return nil }
+      return .migration(status)
     case let (.advanceAdmissionPhase(expectedRevision), .admission(status)):
       guard status.paused, status.phase == .replacing,
         status.pendingWorkers >= 0, expectedRevision < UInt64.max,

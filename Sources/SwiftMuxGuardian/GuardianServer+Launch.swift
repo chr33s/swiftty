@@ -29,6 +29,7 @@ extension GuardianServer {
       limits: limits
     )
     let pane = Pane(runtime)
+    pane.build = workspace.buildPin
     installConsumer(pane, id: id, workspace: workspace)
     workspace.pendingLaunch = PendingLaunch(
       id: id,

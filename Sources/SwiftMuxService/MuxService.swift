@@ -59,6 +59,8 @@ public actor MuxService {
   var templateCreations: [UUID: TemplateCreation] = [:]
   /// One saved-output snapshot being paged to the gateway (C1).
   var savedOutputExport: SavedOutputExport?
+  /// Planned replacement: admission is closed for a cut (§7.2).
+  var migrationFrozen = false
   var gatewayPeerPID: Int32?
   var pendingHistoryBytes = 0
   /// Latest frontend theme, applied to every pane and to new ones.
@@ -89,8 +91,8 @@ public actor MuxService {
   /// Called once the empty-state barrier holds for `idleExitDelay`.
   private var onIdle: (@Sendable () -> Void)?
   /// OSC 7501 attention inbox (spec.inbox.md §3).
-  private var attention: InboxHub
-  private var snoozeTimer: InboxSnoozeTimer?
+  var attention: InboxHub
+  var snoozeTimer: InboxSnoozeTimer?
 
   var limits: MuxLimits { configuration.limits }
 
@@ -824,7 +826,7 @@ public actor MuxService {
 
   /// After any reduction or acknowledgement: schedule the coalesced
   /// flush and the next snooze expiry.
-  private func attentionChanged() {
+  func attentionChanged() {
     if attention.inbox.hasPendingUpdate, !attention.flushScheduled {
       attention.flushScheduled = true
       queue.asyncAfter(deadline: .now() + InboxHub.flushDelay) { [weak self] in
@@ -848,7 +850,7 @@ public actor MuxService {
     snoozeTimer?.schedule(expiry)
   }
 
-  private func flushInbox() {
+  func flushInbox() {
     for (client, update) in attention.flush() {
       send(.event(.inbox(update)), to: client)
     }
@@ -1189,6 +1191,11 @@ public actor MuxService {
       clientViewers[client.id] == nil
     {
       return MuxError(.notAttached, "this connection holds no attachment")
+    }
+    // A planned replacement admits only reads that leave engine state as
+    // the cut left it; everything else retries after release or abort.
+    if migrationFrozen, !command.allowedWhileMigrating {
+      return MuxError(.quiescing, "workspace is moving to a new worker")
     }
     // At the update barrier only status, ending sessions and leaving are
     // admitted; the workspace graph is otherwise frozen.

@@ -13,6 +13,19 @@ import Testing
 /// (spec.durability.md §12.2; RS1, RS2, RS4 and RS11 end to end).
 @Suite(.serialized, .timeLimit(.minutes(1)))
 struct SavedLayoutGatewayTests {
+  /// The listing once discovery has completed (it refuses until then).
+  private func listing(
+    _ runtime: GatewayRuntime
+  ) async throws -> SavedWorkspaceList {
+    let deadline = ContinuousClock.now + .seconds(10)
+    while true {
+      do { return try await runtime.savedWorkspaces() } catch let error
+        as MuxError
+        where error.code == .quiescing && ContinuousClock.now < deadline
+      { try await Task.sleep(for: .milliseconds(20)) }
+    }
+  }
+
   private func waitUntil(_ condition: @Sendable () async -> Bool) async throws {
     let deadline = ContinuousClock.now + .seconds(10)
     while !(await condition()) {
@@ -135,6 +148,11 @@ struct SavedLayoutGatewayTests {
     )
     await bootstrap.close()
     try await waitUntil { await saved.record(workspace) != nil }
+    try await waitUntil {
+      await runtime.records.contains {
+        if case .available = $0.state { true } else { false }
+      }
+    }
     let routed = try await runtime.nativeEndpoint(
       for: .id(workspace),
       role: .controller
@@ -160,7 +178,7 @@ struct SavedLayoutGatewayTests {
     #expect(content.panes[0].launch == .command(["/bin/sh"]))
     #expect(content.panes[1].launch == .loginShell)
     // Live while its guardian runs; nothing to reopen.
-    let live = try await runtime.savedWorkspaces()
+    let live = try await listing(runtime)
     #expect(live.workspaces.map(\.state) == [.live])
     await #expect(throws: MuxError.self) {
       try await runtime.reopenSaved(
@@ -176,7 +194,7 @@ struct SavedLayoutGatewayTests {
     defer { second.lose() }
     let reread = service(root: root, keys: keys)
     let (next, _) = try await second.runtime(saved: reread)
-    let list = try await next.savedWorkspaces()
+    let list = try await listing(next)
     #expect(list.store == .available)
     let entry = try #require(list.workspaces.first { $0.id == workspace })
     #expect(entry.state == .saved && entry.name == "kept")
@@ -218,8 +236,12 @@ struct SavedLayoutGatewayTests {
       await saved.record(workspace)?.disposition == .retained
     }
     await bootstrap.close()
-    let list = try await runtime.savedWorkspaces()
-    #expect(list.workspaces.first { $0.id == workspace }?.state == .saved)
+    // Listed as saved once the gateway has observed the End.
+    try await waitUntil {
+      (try? await runtime.savedWorkspaces())?.workspaces
+        .first { $0.id == workspace }?
+        .state == .saved
+    }
     try await runtime.deleteSaved(workspace)
     #expect(await saved.record(workspace) == nil)
     await runtime.close()

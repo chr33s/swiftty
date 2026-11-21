@@ -10,6 +10,7 @@ import TerminalProcess
 /// operations and consumer callbacks are confined to `queue`; only `pid` is
 /// read cross-queue. The local adapter uses its pane queue until the IPC
 /// adapter supplies bounded transport callbacks instead.
+/// Sendable: mutable state is confined to `queue`; `pid` is atomic.
 package final class GuardianPTY: @unchecked Sendable {
   package let queue: DispatchQueue
   private let limits: MuxLimits

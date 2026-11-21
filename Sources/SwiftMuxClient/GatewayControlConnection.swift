@@ -8,6 +8,7 @@ import SwiftMuxXPC
 /// Queue-confined native bootstrap connection. One admitted command remains
 /// outstanding until its result arrives; uncertain mutations are never replayed.
 /// Construct and call on the channel queue. Callbacks use that same queue.
+/// Sendable: state is touched only on the channel queue.
 package final class GatewayControlConnection: @unchecked Sendable {
   package struct Route: Sendable {
     package let descriptor: GatewayRouteDescriptor

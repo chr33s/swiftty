@@ -6,6 +6,7 @@ import SwiftMuxProtocol
 /// release transport capacity immediately; a pane's later parsing/resize barrier
 /// must never hold this queue's in-flight slot. Progress probes and output acks
 /// continue using the connection directly.
+/// Sendable: lanes and the in-flight slot are touched only on the connection queue.
 package final class GuardianWorkerCommands: @unchecked Sendable {
   package typealias Completion =
     @Sendable (Result<GuardianResult, MuxError>) -> Void
@@ -30,6 +31,12 @@ package final class GuardianWorkerCommands: @unchecked Sendable {
   private var usage: [Lane: Usage] = [:]
   private var stopped: MuxError?
   private var pumping = false
+
+  /// Nothing waiting or in flight: every submitted command has its result.
+  package var isIdle: Bool {
+    dispatchPrecondition(condition: .onQueue(queue))
+    return active == nil && waiting.isEmpty
+  }
 
   package init(queue: DispatchQueue, send: @escaping Send) {
     self.queue = queue

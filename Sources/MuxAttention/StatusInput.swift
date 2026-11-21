@@ -3,7 +3,7 @@ import SwiftMuxProtocol
 
 /// One OSC 7501 record as a pane's terminal reports it, before identity
 /// and context are attached. Text is untrusted display data.
-public struct StatusRecord: Sendable, Equatable {
+public struct StatusRecord: Sendable, Equatable, Codable {
   /// Record id; `""` is the root.
   public var path: String
   public var state: AttentionState

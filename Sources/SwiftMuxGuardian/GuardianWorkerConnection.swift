@@ -8,8 +8,24 @@ import SwiftMuxXPC
 /// channel queue (the worker's workspace queue). No reconnection or input replay
 /// occurs after loss. One command is in flight; callers retain further work
 /// behind their existing bounded admission queues until its result arrives.
+/// Sendable: state is touched only on the channel queue.
 package final class GuardianWorkerConnection: @unchecked Sendable {
+  /// Planned-replacement events (spec.durability.md §7).
+  package enum MigrationEvent: Sendable {
+    // Old worker.
+    case freeze(UUID)
+    case export(UUID)
+    case aborted(UUID)
+    case retire(UUID)
+    // Candidate.
+    case welcome(UUID)
+    case importChunk(UUID, offset: Int, total: Int, bytes: Data)
+    case activate(UUID)
+    case released(UUID)
+  }
+
   package struct Handlers: Sendable {
+    package var migration: (@Sendable (MigrationEvent) -> Void)? = nil
     package var gatewayChanged:
       (
         @Sendable (
@@ -83,6 +99,9 @@ package final class GuardianWorkerConnection: @unchecked Sendable {
   private var applyingGateway: UInt64?
   private var pendingGateway: GuardianGatewayBinding?
   private var gatewayTimer: DispatchSourceTimer?
+  /// A candidate's transaction, until released.
+  private var migration: UUID?
+  private var candidateReleased = false
 
   package init(
     channel: SMXChannel,
@@ -90,6 +109,7 @@ package final class GuardianWorkerConnection: @unchecked Sendable {
     token: UUID,
     peerRequirement: String?,
     expectedGuardianPID: Int32? = nil,
+    candidateTransaction: UUID? = nil,
     handlers: Handlers
   ) throws {
     self.channel = channel
@@ -121,16 +141,23 @@ package final class GuardianWorkerConnection: @unchecked Sendable {
         self.finish(MuxError(.connectionLost, "guardian connection lost"))
       }
     }
-    channel.send(
-      try JSONEncoder()
-        .encode(
-          GuardianRequest.hello(
-            version: GuardianWire.version,
-            workspace: workspace,
-            token: token
-          )
+    migration = candidateTransaction
+    let hello: GuardianRequest =
+      if let candidateTransaction {
+        .migrationHello(
+          version: GuardianWire.version,
+          workspace: workspace,
+          transaction: candidateTransaction,
+          token: token
         )
-    )
+      } else {
+        .hello(
+          version: GuardianWire.version,
+          workspace: workspace,
+          token: token
+        )
+      }
+    channel.send(try JSONEncoder().encode(hello))
     channel.queue.asyncAfter(deadline: .now() + 5) { [weak self] in
       guard let self, self.authority == nil, !self.ended else { return }
       self.finish(MuxError(.connectionLost, "guardian handshake timed out"))
@@ -210,7 +237,139 @@ package final class GuardianWorkerConnection: @unchecked Sendable {
     finish(MuxError(.connectionLost, "worker closed guardian connection"))
   }
 
+  /// The current authority (an aborted migration replaces it).
+  package var currentAuthority: GuardianAuthority? {
+    dispatchPrecondition(condition: .onQueue(channel.queue))
+    return authority
+  }
+
+  // MARK: Planned replacement
+
+  package func migrationFrozen(_ transaction: UUID) {
+    dispatchPrecondition(condition: .onQueue(channel.queue))
+    guard !ended, let authority else { return }
+    send(.migrationFrozen(authority: authority, transaction: transaction))
+  }
+
+  /// After `aborted`: admission is open again under the fresh authority.
+  package func migrationResumed(_ transaction: UUID) {
+    dispatchPrecondition(condition: .onQueue(channel.queue))
+    guard !ended, let authority else { return }
+    send(.migrationResumed(authority: authority, transaction: transaction))
+  }
+
+  package func migrationRefused(_ transaction: UUID, _ error: MuxError) {
+    dispatchPrecondition(condition: .onQueue(channel.queue))
+    guard !ended, let authority else { return }
+    send(
+      .migrationRefused(
+        authority: authority,
+        transaction: transaction,
+        error: error
+      )
+    )
+  }
+
+  /// Sends the checkpoint in bounded chunks, in order.
+  package func migrationExport(_ transaction: UUID, checkpoint: Data) {
+    dispatchPrecondition(condition: .onQueue(channel.queue))
+    guard !ended, let authority else { return }
+    var offset = 0
+    repeat {
+      let end = min(checkpoint.count, offset + GuardianMigrationWire.chunkBytes)
+      send(
+        .migrationChunk(
+          authority: authority,
+          transaction: transaction,
+          offset: offset,
+          total: checkpoint.count,
+          bytes: checkpoint.subdata(
+            in: checkpoint.startIndex + offset ..< checkpoint.startIndex + end
+          )
+        )
+      )
+      offset = end
+    } while offset < checkpoint.count
+  }
+
+  package func migrationImported(_ transaction: UUID, digest: Data) {
+    dispatchPrecondition(condition: .onQueue(channel.queue))
+    guard !ended, migration == transaction else { return }
+    send(.migrationImported(transaction: transaction, digest: digest))
+  }
+
+  package func migrationActivated(_ transaction: UUID) {
+    dispatchPrecondition(condition: .onQueue(channel.queue))
+    guard !ended, migration == transaction else { return }
+    send(.migrationActivated(transaction: transaction))
+  }
+
   private func receive(_ event: GuardianEvent) {
+    // A candidate is admitted for its transaction only; it starts as an
+    // ordinary worker once released.
+    if let migration, !candidateReleased {
+      switch event {
+      case let .migrationWelcome(transaction, value):
+        guard transaction == migration, authority == nil,
+          value.workspace == workspace, value.generation > 0
+        else {
+          finish(MuxError(.invalidRequest, "unexpected migration welcome"))
+          return
+        }
+        authority = value
+        handlers.migration?(.welcome(transaction))
+      case let .migrationImport(transaction, offset, total, bytes):
+        guard transaction == migration, authority != nil else {
+          finish(MuxError(.invalidRequest, "unexpected migration import"))
+          return
+        }
+        handlers.migration?(
+          .importChunk(transaction, offset: offset, total: total, bytes: bytes)
+        )
+      case let .migrationActivate(transaction):
+        guard transaction == migration, authority != nil else {
+          finish(MuxError(.invalidRequest, "unexpected migration activation"))
+          return
+        }
+        handlers.migration?(.activate(transaction))
+      case let .migrationReleased(transaction):
+        guard transaction == migration, let authority else {
+          finish(MuxError(.invalidRequest, "unexpected migration release"))
+          return
+        }
+        candidateReleased = true
+        handlers.migration?(.released(transaction))
+        handlers.ready(authority)
+      case let .refused(error): finish(error)
+      default:
+        finish(MuxError(.invalidRequest, "guardian event before release"))
+      }
+      return
+    }
+    switch event {
+    case let .migrationFreeze(transaction):
+      handlers.migration?(.freeze(transaction))
+      return
+    case let .migrationExport(transaction):
+      handlers.migration?(.export(transaction))
+      return
+    case let .migrationAborted(transaction, value):
+      guard let current = authority, value.workspace == current.workspace,
+        value.incarnation == current.incarnation,
+        value.generation >= current.generation
+      else {
+        finish(MuxError(.invalidRequest, "invalid migration authority"))
+        return
+      }
+      // Resume under the fresh authority; the old one is fenced.
+      authority = value
+      handlers.migration?(.aborted(transaction))
+      return
+    case let .migrationRetire(transaction):
+      handlers.migration?(.retire(transaction))
+      return
+    default: break
+    }
     if case let .welcome(value) = event {
       guard authority == nil, value.workspace == workspace, value.generation > 0
       else {
@@ -305,7 +464,10 @@ package final class GuardianWorkerConnection: @unchecked Sendable {
     case let .exiting(pane): handlers.exiting(pane)
     case let .exited(pane, status, forced):
       handlers.exited(pane, status, forced)
-    case .welcome, .refused: break
+    case .welcome, .refused, .migrationFreeze, .migrationExport,
+      .migrationAborted, .migrationRetire, .migrationWelcome, .migrationImport,
+      .migrationActivate, .migrationReleased:
+      break
     }
   }
 

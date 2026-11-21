@@ -61,6 +61,7 @@ package final class GuardianBuildPin: Sendable {
 /// One registry belongs to the guardian. Installation publishes complete signed
 /// version directories; it must never replace a published directory in place.
 /// All validation/pinning/collection is serialized off the guardian I/O queue.
+/// Sendable: pins and selection are guarded by `lock`.
 package final class GuardianBuildRegistry: @unchecked Sendable {
   private let root: URL
   private let requirement: String?

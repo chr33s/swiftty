@@ -13,6 +13,8 @@ package struct GuardianWorkerBootstrap: Codable, Sendable {
   package let machService: String
   package let build: String
   package let peerRequirement: String?
+  /// A planned-replacement candidate's transaction (spec.durability.md §7).
+  package var migration: UUID? = nil
 
   package static func read() throws -> Self {
     let fd: Int32 = 3
@@ -51,6 +53,7 @@ package struct GuardianWorkerBootstrap: Codable, Sendable {
       token: token,
       peerRequirement: peerRequirement,
       expectedGuardianPID: guardianPID,
+      candidateTransaction: migration,
       handlers: handlers
     )
   }

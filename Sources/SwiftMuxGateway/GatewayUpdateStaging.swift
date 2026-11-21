@@ -5,6 +5,7 @@ import SwiftMuxProtocol
 
 /// Publishes immutable candidate copies. This store never changes registration,
 /// selects a running build or collects previously published versions.
+/// Sendable: stored properties are immutable; publication is serialized by `lock`.
 package final class GatewayUpdateStaging: @unchecked Sendable {
   private let root: URL
   private let bundleRequirement: String

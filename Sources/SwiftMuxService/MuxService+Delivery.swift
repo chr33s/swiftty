@@ -272,6 +272,9 @@ extension MuxService {
     if clientViewers[id] != nil {
       return ack(MuxError(.unauthorized, "observers cannot write"))
     }
+    if migrationFrozen {
+      return ack(MuxError(.quiescing, "workspace is moving to a new worker"))
+    }
     guard let wsID = clientLeases[id], let current = leases[wsID] else {
       return ack(MuxError(.notAttached))
     }

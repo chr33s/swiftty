@@ -1,5 +1,6 @@
 import Dispatch
 import Foundation
+import Synchronization
 import SwiftMuxGuardian
 import SwiftMuxProtocol
 import SwiftMuxXPC
@@ -7,9 +8,11 @@ import SwiftMuxXPC
 /// One guardian connection and admission window per workspace. The broker
 /// serializes routing, never terminal parsing. Pane queues may synchronously
 /// reserve a command here; this queue only dispatches asynchronously to panes.
+/// Sendable: every mutable field is touched only on `queue`.
 final class GuardianWorkspaceTransport: @unchecked Sendable {
   typealias Connect = (DispatchQueue, GuardianWorkerConnection.Handlers) throws
     -> GuardianWorkerConnection
+  /// Sendable: `handle` changes only on the transport queue.
   private final class Route: @unchecked Sendable {
     let process: GuardianPaneProcess
     var handle: GuardianPaneHandle?
@@ -45,6 +48,8 @@ final class GuardianWorkspaceTransport: @unchecked Sendable {
         GuardianGatewayBinding, @escaping @Sendable (MuxError?) -> Void
       ) -> Void
     )? = nil,
+    migration: (@Sendable (GuardianWorkerConnection.MigrationEvent) -> Void)? =
+      nil,
     ready: @escaping @Sendable () -> Void,
     closed: @escaping @Sendable (MuxError) -> Void
   ) throws {
@@ -54,56 +59,143 @@ final class GuardianWorkspaceTransport: @unchecked Sendable {
     onClosed = closed
     queue = DispatchQueue(label: "swiftmux.guardian.workspace.\(workspace)")
     try queue.sync {
-      connection = try connect(
-        queue,
-        .init(
-          ready: { [weak self] _ in
-            guard let self, self.failure == nil else { return }
-            self.ready = true
-            self.onReady()
-          },
-          endpointPublished: { [weak self] instance in
-            guard let self else { return }
-            guard let pending = self.publication, pending.instance == instance
-            else {
-              self.lost(
-                MuxError(.invalidRequest, "unexpected endpoint publication")
-              )
-              return
-            }
-            self.publication = nil
-            self.publishedEndpoint = true
-            pending.completion(nil)
-          },
-          gatewayChanged: gatewayChanged,
-          output: { [weak self] pane, sequence, bytes in
-            self?
-              .deliver(
-                .output(pane: pane, sequence: sequence, bytes: bytes),
-                to: pane
-              )
-          },
-          inputReleased: { [weak self] pane, bytes in
-            self?.deliver(.inputReleased(pane: pane, bytes: bytes), to: pane)
-          },
-          replyReleased: { [weak self] pane, bytes in
-            self?.deliver(.replyReleased(pane: pane, bytes: bytes), to: pane)
-          },
-          exiting: { [weak self] pane in
-            self?.deliver(.exiting(pane: pane), to: pane)
-          },
-          exited: { [weak self] pane, status, forced in
-            self?
-              .deliver(
-                .exited(pane: pane, status: status, forced: forced),
-                to: pane
-              )
-          },
-          progress: { [weak self] completion in self?.progress(completion) },
-          closed: { [weak self] in self?.lost($0) }
-        )
+      var handlers: GuardianWorkerConnection.Handlers = .init(
+        ready: { [weak self] _ in
+          guard let self, self.failure == nil else { return }
+          self.ready = true
+          self.onReady()
+        },
+        endpointPublished: { [weak self] instance in
+          guard let self else { return }
+          guard let pending = self.publication, pending.instance == instance
+          else {
+            self.lost(
+              MuxError(.invalidRequest, "unexpected endpoint publication")
+            )
+            return
+          }
+          self.publication = nil
+          self.publishedEndpoint = true
+          pending.completion(nil)
+        },
+        gatewayChanged: gatewayChanged,
+        output: { [weak self] pane, sequence, bytes in
+          self?
+            .deliver(
+              .output(pane: pane, sequence: sequence, bytes: bytes),
+              to: pane
+            )
+        },
+        inputReleased: { [weak self] pane, bytes in
+          self?.deliver(.inputReleased(pane: pane, bytes: bytes), to: pane)
+        },
+        replyReleased: { [weak self] pane, bytes in
+          self?.deliver(.replyReleased(pane: pane, bytes: bytes), to: pane)
+        },
+        exiting: { [weak self] pane in
+          self?.deliver(.exiting(pane: pane), to: pane)
+        },
+        exited: { [weak self] pane, status, forced in
+          self?
+            .deliver(
+              .exited(pane: pane, status: status, forced: forced),
+              to: pane
+            )
+        },
+        progress: { [weak self] completion in self?.progress(completion) },
+        closed: { [weak self] in self?.lost($0) }
       )
+      handlers.migration = migration
+      connection = try connect(queue, handlers)
     }
+  }
+
+  // MARK: Planned replacement (spec.durability.md §7)
+
+  /// A candidate takes over a pane the guardian owns, after the cut.
+  func adoptPane(
+    id: PaneID,
+    handle: GuardianPaneHandle,
+    pid: Int32,
+    appliedOutput: UInt64,
+    queue paneQueue: DispatchQueue,
+    limits: MuxLimits
+  ) throws -> GuardianPaneProcess {
+    let process = try queue.sync { () throws -> GuardianPaneProcess in
+      guard failure == nil, connection?.currentAuthority != nil else {
+        throw failure ?? MuxError(.connectionLost, "candidate not admitted")
+      }
+      guard routes[id] == nil, routes.count < maxPanes, handle.pane == id else {
+        throw MuxError(.resourceLimit, "duplicate adopted pane")
+      }
+      return try makeRoute(id: id, queue: paneQueue, limits: limits)
+    }
+    queue.sync { routes[id]?.handle = handle }
+    paneQueue.sync {
+      process.adopt(handle, pid: pid, appliedOutput: appliedOutput)
+    }
+    return process
+  }
+
+  /// Each pane's guardian handle, process and applied output at the cut.
+  func migrationHandles(
+    completion: @escaping @Sendable ([PaneID: MigrationPaneHandle]) -> Void
+  ) {
+    queue.async { [self] in
+      let current = routes.compactMap { id, route in
+        route.handle.map { (id, $0, route.process) }
+      }
+      // Pane queues call into this queue synchronously; never wait on one
+      // from here.
+      let collected = Mutex<[PaneID: MigrationPaneHandle]>([:])
+      let group = DispatchGroup()
+      for (id, handle, process) in current {
+        group.enter()
+        process.queue.async {
+          let value = MigrationPaneHandle(
+            handle: handle,
+            pid: process.pid,
+            appliedOutput: process.appliedOutput
+          )
+          collected.withLock { $0[id] = value }
+          group.leave()
+        }
+      }
+      group.notify(queue: .global()) { completion(collected.withLock { $0 }) }
+    }
+  }
+
+  /// Whether every command submitted so far has its guardian result.
+  func commandsIdle(completion: @escaping @Sendable (Bool) -> Void) {
+    queue.async { [self] in completion(failure == nil && commands.isIdle) }
+  }
+
+  func migrationFrozen(_ transaction: UUID) {
+    queue.async { [self] in connection?.migrationFrozen(transaction) }
+  }
+
+  func migrationResumed(_ transaction: UUID) {
+    queue.async { [self] in connection?.migrationResumed(transaction) }
+  }
+
+  func migrationRefused(_ transaction: UUID, _ error: MuxError) {
+    queue.async { [self] in connection?.migrationRefused(transaction, error) }
+  }
+
+  func migrationExport(_ transaction: UUID, _ checkpoint: Data) {
+    queue.async { [self] in
+      connection?.migrationExport(transaction, checkpoint: checkpoint)
+    }
+  }
+
+  func migrationImported(_ transaction: UUID, digest: Data) {
+    queue.async { [self] in
+      connection?.migrationImported(transaction, digest: digest)
+    }
+  }
+
+  func migrationActivated(_ transaction: UUID) {
+    queue.async { [self] in connection?.migrationActivated(transaction) }
   }
 
   /// Publish the worker service once, after its listener is active. Discovery
@@ -157,6 +249,16 @@ final class GuardianWorkspaceTransport: @unchecked Sendable {
           "guardian pane registry full or duplicate"
         )
       }
+      return try makeRoute(id: id, queue: paneQueue, limits: limits)
+    }
+  }
+
+  private func makeRoute(
+    id: PaneID,
+    queue paneQueue: DispatchQueue,
+    limits: MuxLimits
+  ) throws -> GuardianPaneProcess {
+    do {
       let process = GuardianPaneProcess(
         id: id,
         queue: paneQueue,

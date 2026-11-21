@@ -1,4 +1,5 @@
 import Dispatch
+import SwiftMuxProtocol
 import Foundation
 
 extension GuardianServer {
@@ -11,7 +12,10 @@ extension GuardianServer {
       guard let self, let workspace, !workspace.unavailable else { return }
       // A late queued acknowledgement cannot revive an expired owner.
       if DispatchTime.now() >= workspace.progressDeadline {
-        self.loseWorker(workspace)
+        self.loseWorker(
+          workspace,
+          MuxError(.connectionLost, "progress watchdog expired")
+        )
       }
     }
     timer.resume()

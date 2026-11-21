@@ -21,6 +21,7 @@ struct GuardianPaneTransport: Sendable {
 /// Worker-side PaneProcess. Owns neither a descriptor nor child lifetime. The
 /// guardian keeps the byte writer; this adapter tracks only transport admission
 /// and conservative reply credit, never partial PTY-write offsets.
+/// Sendable: mutable state is touched only on the pane's `queue`.
 final class GuardianPaneProcess: PaneProcess, @unchecked Sendable {
   let queue: DispatchQueue
   let id: PaneID
@@ -124,6 +125,24 @@ final class GuardianPaneProcess: PaneProcess, @unchecked Sendable {
         completion(.failure(error))
       }
     }
+  }
+
+  /// Planned replacement: take over a pane the guardian already owns,
+  /// continuing its output after the cut. Never spawns (§7.2).
+  func adopt(_ handle: GuardianPaneHandle, pid: Int32, appliedOutput: UInt64) {
+    dispatchPrecondition(condition: .onQueue(queue))
+    precondition(!started)
+    started = true
+    self.handle = handle
+    spawnedPID.store(pid, ordering: .releasing)
+    output.resume(after: appliedOutput)
+    isOpen = true
+  }
+
+  /// Output the parser has applied (the cut).
+  var appliedOutput: UInt64 {
+    dispatchPrecondition(condition: .onQueue(queue))
+    return output.appliedThrough
   }
 
   func appendInput(

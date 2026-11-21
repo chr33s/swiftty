@@ -521,7 +521,8 @@ struct GuardianGatewayTests {
           .encode(GuardianGatewayRequest.hello(version: GuardianWire.version))
       )
       guard
-        case let .welcome(incarnation, gateway, _, _, _, _) = try inbox.next().0
+        case let .welcome(incarnation, gateway, _, _, _, _, _) =
+          try inbox.next().0
       else { throw MuxError(.unauthorized, "gateway admission failed") }
       self.incarnation = incarnation
       identity = gateway

@@ -783,6 +783,17 @@ public enum MuxCommand: Codable, Sendable, Equatable {
     }
   }
 
+  /// Admitted while a planned replacement is frozen: reads that change no
+  /// engine or graph state (spec.durability.md §7.2).
+  public var allowedWhileMigrating: Bool {
+    switch self {
+    case .status, .listWorkspaces, .observeWorkspaces, .observeWorkspaceGraph,
+      .savedLayoutState, .exportSavedOutput, .inbox, .detach:
+      true
+    default: false
+    }
+  }
+
   /// Read-only viewer commands. Everything else is refused to an observer.
   public var allowedForObserver: Bool {
     switch self {

@@ -177,7 +177,7 @@ extension GuardianLifecycleProbe {
       .id(authority.workspace),
       role: .controller
     )
-    let client = opened.connection
+    var client = opened.connection
     guard await client.welcome?.server == server else {
       throw MuxError(
         .serverInstanceChanged,
@@ -263,6 +263,102 @@ extension GuardianLifecycleProbe {
     try JSONEncoder().encode(values)
       .write(to: root.appendingPathComponent("gateway.json"), options: .atomic)
     while true {
+      let migrate = root.appendingPathComponent("gateway-migrate")
+      if FileManager.default.fileExists(atPath: migrate.path) {
+        try FileManager.default.removeItem(at: migrate)
+        try stage("planned replacement")
+        // The guardian launches the candidate from its selected signed
+        // build; this gateway only drives the transaction (§7).
+        let status = try await runtime.migrateWorkspace(
+          .id(authority.workspace)
+        )
+        try JSONEncoder().encode(status)
+          .write(
+            to: root.appendingPathComponent("migration-status.json"),
+            options: .atomic
+          )
+        try JSONEncoder().encode(try await control.inventory())
+          .write(
+            to: root.appendingPathComponent("migration-inventory.json"),
+            options: .atomic
+          )
+        await client.close()
+        try stage("reattaching after replacement")
+        let reattachDeadline = ContinuousClock.now + .seconds(10)
+        var reopened: MuxConnection?
+        while reopened == nil {
+          do {
+            reopened =
+              try await frontendControl.openWorkspace(
+                .id(authority.workspace),
+                role: .controller
+              )
+              .connection
+          } catch {
+            guard ContinuousClock.now < reattachDeadline else { throw error }
+            try await Task.sleep(for: .milliseconds(50))
+          }
+        }
+        client = reopened!
+        guard
+          case let .attached(_, moved) = try await client.execute(
+            .attach(AttachRequest(.id(authority.workspace)))
+          ), let movedTab = moved.activeTabSnapshot
+        else { throw MuxError(.invalidRequest, "missing migrated workspace") }
+        _ = try await client.execute(
+          .setGeometry(
+            GeometryBatch(
+              layoutRevision: moved.layoutRevision,
+              generation: 1,
+              entries: [
+                .init(pane: movedTab.activePane, columns: 120, rows: 24)
+              ]
+            )
+          )
+        )
+        _ = try await client.execute(.setSubscriptions([movedTab.activePane]))
+        let after =
+          "moved_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        try await client.send(
+          .text(
+            "kill -0 $SWMUX_JOB && printf '\(after)=%s:%s:%s:%s:%s\\n' \"$SWMUX_PROBE\" \"$$\" \"$SWMUX_JOB\" \"$-\" \"$SWMUX_RESOURCES\"\r"
+          ),
+          to: movedTab.activePane
+        )
+        let afterDeadline = ContinuousClock.now + .seconds(10)
+        var afterProof: String?
+        var retainedScreen = false
+        while afterProof == nil, ContinuousClock.now < afterDeadline {
+          if case let .frame(frame) = try await client.nextEvent(
+            timeout: .seconds(2)
+          ) {
+            afterProof = frame.lines.first { $0.hasPrefix(after + "=durable:") }
+            retainedScreen = retainedScreen || frame.lines.contains(proof)
+          }
+        }
+        guard let afterProof else {
+          throw MuxError(.connectionLost, "post-migration proof did not arrive")
+        }
+        let movedWorker = try await control.inventory()
+          .first { $0.authority.workspace == authority.workspace }?
+          .worker
+        let report: [String: String] = [
+          "outcome": status.outcome?.rawValue ?? "",
+          "failure": status.failure.map { String(describing: $0) } ?? "",
+          "frozenMilliseconds": status.frozenMilliseconds.map(String.init)
+            ?? "", "proof": afterProof,
+          "retainedScreen": String(retainedScreen),
+          "server": (await client.welcome?.server)
+            .map { String(describing: $0) } ?? "",
+          "worker": movedWorker.map { String($0.pid) } ?? "",
+          "workerBuild": movedWorker?.build ?? "",
+        ]
+        try JSONEncoder().encode(report)
+          .write(
+            to: root.appendingPathComponent("migration.json"),
+            options: .atomic
+          )
+      }
       let check = root.appendingPathComponent("gateway-check")
       if FileManager.default.fileExists(atPath: check.path) {
         _ = try await control.inventory()

@@ -155,10 +155,11 @@ struct SavedOutputTests {
       ),
       to: pane
     )
+    // The rendered link text; the echoed command also contains the marker.
     let (revision, output) = try await waitForText(
       gateway,
       pane: pane,
-      contains: "done-marker"
+      contains: "link done-marker"
     )
     #expect(output.rows.count == SavedOutput.maxRows)
     #expect(!output.text.contains("line-0000"))
