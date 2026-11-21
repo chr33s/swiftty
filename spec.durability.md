@@ -3695,8 +3695,11 @@ Deviations and open items:
 - Automation actions deferred during a cut that ends in release are retired
   with the old worker; the candidate starts its own script runtime, the same
   volatile-state reset a gateway restart discloses (§5.1).
-- Both signed builds share one implementation, so cross-implementation schema
-  compatibility is enforced only by the checkpoint format number.
+- Both signed builds share one implementation. By decision (2026-11-21), no
+  cross-version checkpoint compatibility is promised: the checkpoint format
+  may change incompatibly between releases. A candidate that cannot decode a
+  checkpoint refuses it and the old worker resumes (MR7). Migration between
+  different releases is therefore best-effort rather than a release gate.
 - No user-facing command starts a planned replacement. Update orchestration
   (UA4) is the intended caller of `migrateWorkspace`.
 
