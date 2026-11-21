@@ -3,6 +3,14 @@ import Foundation
 import SSHIdentity
 import Testing
 
+/// Storage policies whose keys these tests can generate: a Secure Enclave
+/// identity is P-256 only and needs the hardware, so `generate(name:policy:)`
+/// (Ed25519 by default) refuses it before touching the secret store, and a
+/// test that waits for that store's read would wait forever.
+let softwareIdentityPolicies = IdentityStoragePolicy.allCases.filter {
+  $0 != .secureEnclave
+}
+
 actor SuspendedIdentitySecrets: IdentitySecretStore {
   let storage = InMemoryIdentitySecretStore()
   private var pauseRead = false
@@ -100,7 +108,7 @@ extension MainActorIntegrationTests {
       )
     }
 
-    @Test(arguments: [false, true], IdentityStoragePolicy.allCases)
+    @Test(arguments: [false, true], softwareIdentityPolicies)
     func cancelledCreationRetainsFailedCleanupUntilRelaunch(
       readFails: Bool,
       policy: IdentityStoragePolicy
@@ -208,7 +216,7 @@ extension MainActorIntegrationTests {
       )
     }
 
-    @Test(arguments: [false, true], IdentityStoragePolicy.allCases)
+    @Test(arguments: [false, true], softwareIdentityPolicies)
     func pendingCreationStaysWithItsOriginalAccount(
       roundTrip: Bool,
       policy: IdentityStoragePolicy

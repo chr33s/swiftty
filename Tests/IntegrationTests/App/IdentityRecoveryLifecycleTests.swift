@@ -42,7 +42,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     #expect(await defaultCloud.saveCount == 0)
   }
 
-  @Test(arguments: IdentityStoragePolicy.allCases)
+  @Test(arguments: softwareIdentityPolicies)
   func foregroundRefreshResumesKeysAfterUnlockWithoutEnablingSync(
     policy: IdentityStoragePolicy
   ) async throws {
