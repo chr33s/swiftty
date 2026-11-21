@@ -313,3 +313,48 @@ package struct GrowableBuffer<Element: BitwiseCopyable>: ~Copyable {
     paddedCount = -1
   }
 }
+
+// MARK: Checkpoint (spec.durability.md §6)
+
+extension GraphemeTable {
+  /// Every entry by id, so cells keep their glyph ids, plus the tail that
+  /// lets the next scalar join the last cluster in place.
+  package func checkpoint(into w: inout CheckpointWriter) {
+    w.int(entries.count)
+    for id in 0 ..< entries.count {
+      let entry = entries[id]
+      let start = Int(entry >> 32)
+      let count = Int(entry & 0xFFFF_FFFF)
+      w.int(count)
+      for i in start ..< start + count { w.u32(scalars[i]) }
+    }
+    w.int(compactionLimit)
+    w.u32(exclusiveTail)
+    w.u8(tailBreak.raw)
+    w.bool(tailBreakValid)
+  }
+
+  package mutating func restore(
+    from r: inout CheckpointReader
+  ) throws(CheckpointError) {
+    removeAll()
+    let count = try r.count(max: 1 << 24, minimumSize: 8)
+    for _ in 0 ..< count {
+      let n = try r.count(max: 1 << 16, minimumSize: 4)
+      let start = scalars.count
+      for _ in 0 ..< n { scalars.append(try r.u32()) }
+      entries.append(UInt64(start) << 32 | UInt64(n))
+    }
+    compactionLimit = try r.bounded(0 ... Int(Int32.max))
+    let tail = try r.u32()
+    guard tail == .max || Int(tail) < entries.count else {
+      throw CheckpointError("invalid grapheme tail")
+    }
+    exclusiveTail = tail
+    tailBreak = GraphemeBreak.State(raw: try r.u8())
+    tailBreakValid = try r.bool()
+  }
+
+  /// For validating cells against the table.
+  package var entryCount: Int { entries.count }
+}

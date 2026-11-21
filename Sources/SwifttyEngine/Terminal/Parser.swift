@@ -1057,3 +1057,84 @@ public struct Parser: ~Copyable {
     oscOverflow = false
   }
 }
+
+// MARK: Checkpoint (spec.durability.md §6)
+
+extension Parser {
+  /// Partial UTF-8, escape/control sequences and the bounded OSC
+  /// accumulator. The decode scratch is not state.
+  package func checkpoint(into w: inout CheckpointWriter) {
+    w.u8(state.rawValue)
+    w.u8(UInt8(csi.count))
+    for i in 0 ..< CSISequence.maxParams { w.u16(csi.params[i]) }
+    w.u32(csi.colonMask)
+    w.u8(csi.marker)
+    w.u8(csi.intermediate)
+    w.u8(csi.final)
+    w.u32(currentParam)
+    w.bool(hasParam)
+    w.bool(parameterOverflow)
+    w.u8(escIntermediate)
+    w.bool(controlModeLineStart)
+    w.u32(codepoint)
+    w.int(utf8Remaining)
+    w.u32(utf8Minimum)
+    w.data(Array(UnsafeBufferPointer(start: osc, count: oscCount)))
+    w.int(oscCommandStart)
+    w.bool(oscOverflow)
+  }
+
+  package mutating func restore(
+    from r: inout CheckpointReader
+  ) throws(CheckpointError) {
+    guard let state = State(rawValue: try r.u8()) else {
+      throw CheckpointError("invalid parser state")
+    }
+    var csi = CSISequence()
+    let count = Int(try r.u8())
+    guard count <= CSISequence.maxParams else {
+      throw CheckpointError("invalid parameter count")
+    }
+    csi.count = count
+    for i in 0 ..< CSISequence.maxParams { csi.params[i] = try r.u16() }
+    csi.colonMask = try r.u32()
+    csi.marker = try r.u8()
+    csi.intermediate = try r.u8()
+    csi.final = try r.u8()
+    let currentParam = try r.u32()
+    let hasParam = try r.bool()
+    let parameterOverflow = try r.bool()
+    let escIntermediate = try r.u8()
+    let controlModeLineStart = try r.bool()
+    let codepoint = try r.u32()
+    let utf8Remaining = try r.bounded(0 ... 3)
+    let utf8Minimum = try r.u32()
+    let payload = try r.data(max: Self.maxOSCBytes)
+    let oscCommandStart = try r.bounded(0 ... payload.count)
+    let oscOverflow = try r.bool()
+    if payload.count > oscCapacity {
+      let grown = UnsafeMutablePointer<UInt8>.allocate(capacity: payload.count)
+      osc.deallocate()
+      osc = grown
+      oscCapacity = payload.count
+    }
+    if !payload.isEmpty {
+      payload.withUnsafeBufferPointer {
+        osc.update(from: $0.baseAddress!, count: payload.count)
+      }
+    }
+    self.state = state
+    self.csi = csi
+    self.currentParam = currentParam
+    self.hasParam = hasParam
+    self.parameterOverflow = parameterOverflow
+    self.escIntermediate = escIntermediate
+    self.controlModeLineStart = controlModeLineStart
+    self.codepoint = codepoint
+    self.utf8Remaining = utf8Remaining
+    self.utf8Minimum = utf8Minimum
+    oscCount = payload.count
+    self.oscCommandStart = oscCommandStart
+    self.oscOverflow = oscOverflow
+  }
+}

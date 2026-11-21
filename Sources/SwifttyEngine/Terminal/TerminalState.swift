@@ -19,15 +19,15 @@ public struct TerminalState: ~Copyable {
   /// Position of the live primary cursor while its grid is inactive;
   /// independent of the application's DECSC saved cursor.
   var inactivePrimaryCursor = Cursor()
-  private var savedPrimaryModes: Modes = .initial
-  private var savedAlternateModes: Modes = .initial
+  var savedPrimaryModes: Modes = .initial
+  var savedAlternateModes: Modes = .initial
 
-  public private(set) var scrollTop = 0
-  public private(set) var scrollBottom: Int
+  public internal(set) var scrollTop = 0
+  public internal(set) var scrollBottom: Int
   /// DECSLRM left/right margins (only settable with DECLRMM).
-  public private(set) var scrollLeft = 0
-  public private(set) var scrollRight: Int
-  private var tabStops: [Bool]
+  public internal(set) var scrollLeft = 0
+  public internal(set) var scrollRight: Int
+  var tabStops: [Bool]
 
   /// How plain erases treat protected cells: only ISO protection (SPA)
   /// shields them; DEC protection (DECSCA) applies to DECSED/DECSEL.
@@ -37,7 +37,7 @@ public struct TerminalState: ~Copyable {
   public internal(set) var modes: Modes = .initial
   /// Identifies each new synchronized frame, even when a single parser
   /// batch ends one frame and begins the next.
-  package private(set) var synchronizedOutputGeneration: UInt64 = 0
+  package internal(set) var synchronizedOutputGeneration: UInt64 = 0
   public internal(set) var cursorStyle = CursorStyle.block
   public internal(set) var palette: Palette
   var defaultPalette: Palette
@@ -47,7 +47,7 @@ public struct TerminalState: ~Copyable {
   var titleChanged = false
   var directoryBytes: [UInt8] = []
   var directoryChanged = false
-  private var spareGraphemes = GraphemeTable()
+  var spareGraphemes = GraphemeTable()
 
   public var title: String { String(decoding: titleBytes, as: UTF8.self) }
 
@@ -106,8 +106,8 @@ public struct TerminalState: ~Copyable {
   public var events: [TerminalEvent] = []
 
   /// Kitty keyboard protocol flags stack (`CSI > flags u`); the top applies.
-  public private(set) var keyboardFlagStack: [UInt8] = []
-  private var inactiveKeyboardFlagStack: [UInt8] = []
+  public internal(set) var keyboardFlagStack: [UInt8] = []
+  var inactiveKeyboardFlagStack: [UInt8] = []
   public var keyboardFlags: UInt8 { keyboardFlagStack.last ?? 0 }
 
   /// OSC 8 links by id (1...`CellAttributes.maxLink`).

@@ -191,3 +191,106 @@ public struct ProgramStatusJournal: Sendable, Equatable {
   public let truncated: Bool
   public let snapshot: ProgramStatusSnapshot
 }
+
+// MARK: Checkpoint (spec.durability.md §6)
+
+extension ProgramStatusStore {
+  /// Records, bounds and revision. The journal must have been taken: an
+  /// untaken change is an unsettled external effect.
+  package func checkpoint(
+    into w: inout CheckpointWriter
+  ) throws(CheckpointError) {
+    guard journal.isEmpty, !journalTruncated else {
+      throw CheckpointError("program status journal not taken")
+    }
+    w.int(limit)
+    w.int(journalLimit)
+    w.u64(revision)
+    w.int(records.count)
+    for record in records {
+      w.string(record.id)
+      w.u8(record.state.checkpointTag)
+      w.bool(record.kind != nil)
+      if let kind = record.kind { w.u8(kind.checkpointTag) }
+      w.bool(record.progress != nil)
+      if let progress = record.progress { w.u8(progress) }
+      w.optionalString(record.app)
+      w.optionalString(record.title)
+      w.optionalString(record.message)
+      w.u64(record.revision)
+    }
+  }
+
+  package mutating func restore(
+    from r: inout CheckpointReader
+  ) throws(CheckpointError) {
+    limit = try r.bounded(1 ... Self.capacity)
+    journalLimit = try r.bounded(0 ... 1 << 20)
+    revision = try r.u64()
+    let count = try r.count(max: Self.capacity, minimumSize: 16)
+    var restored: [ProgramStatusRecord] = []
+    for _ in 0 ..< count {
+      let id = try r.string(max: 1 << 10)
+      let state = try ProgramStatusState(checkpointTag: try r.u8())
+      let kind =
+        try r.bool()
+        ? try ProgramStatusBlockedKind(checkpointTag: try r.u8()) : nil
+      let progress = try r.bool() ? try r.u8() : nil
+      restored.append(
+        ProgramStatusRecord(
+          id: id,
+          state: state,
+          kind: kind,
+          progress: progress,
+          app: try r.optionalString(max: 1 << 12),
+          title: try r.optionalString(max: 1 << 12),
+          message: try r.optionalString(max: 1 << 16),
+          revision: try r.u64()
+        )
+      )
+    }
+    records = restored
+    journal = []
+    journalTruncated = false
+  }
+}
+
+extension ProgramStatusState {
+  var checkpointTag: UInt8 {
+    switch self {
+    case .idle: 0
+    case .working: 1
+    case .done: 2
+    case .blocked: 3
+    case .error: 4
+    }
+  }
+  init(checkpointTag: UInt8) throws(CheckpointError) {
+    switch checkpointTag {
+    case 0: self = .idle
+    case 1: self = .working
+    case 2: self = .done
+    case 3: self = .blocked
+    case 4: self = .error
+    default: throw CheckpointError("invalid program status state")
+    }
+  }
+}
+
+extension ProgramStatusBlockedKind {
+  var checkpointTag: UInt8 {
+    switch self {
+    case .permission: 0
+    case .question: 1
+    case .auth: 2
+    }
+  }
+  init(checkpointTag: UInt8) throws(CheckpointError) {
+    switch checkpointTag {
+    case 0: self = .permission
+    case 1: self = .question
+    case 2: self = .auth
+    default: throw CheckpointError("invalid blocked kind")
+    }
+  }
+}

@@ -241,6 +241,32 @@ public enum KittyClipboard {
       }
     }
 
+    package func checkpoint(into w: inout CheckpointWriter) {
+      w.int(entries.count)
+      for entry in entries {
+        w.data(entry.pw)
+        w.bool(entry.read)
+        w.bool(entry.write)
+        w.bool(entry.oneTime)
+      }
+    }
+
+    package mutating func restore(
+      from r: inout CheckpointReader
+    ) throws(CheckpointError) {
+      let count = try r.count(max: maxGrants, minimumSize: 11)
+      var restored: [Entry] = []
+      for _ in 0 ..< count {
+        let pw = try r.data(max: maxPasswordLength)
+        var entry = Entry(pw: pw, oneTime: false)
+        entry.read = try r.bool()
+        entry.write = try r.bool()
+        entry.oneTime = try r.bool()
+        restored.append(entry)
+      }
+      entries = restored
+    }
+
     /// A one-time grant is consumed by any check, as kitty pops it.
     mutating func use(_ pw: [UInt8], _ direction: Direction) -> Bool {
       guard !pw.isEmpty, let i = entries.firstIndex(where: { $0.pw == pw })

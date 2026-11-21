@@ -751,3 +751,82 @@ public struct Grid: ~Copyable {
     }
   }
 }
+
+// MARK: Checkpoint (spec.durability.md §6)
+
+extension Grid {
+  /// Logical rows only: history oldest first, then the screen, each with
+  /// wrap, mark and extent. Stale cells are resolved first; storage
+  /// pools, chunk residency and compression are not state.
+  package mutating func checkpoint(into w: inout CheckpointWriter) {
+    resolveStaleRows()
+    w.int(columns)
+    w.int(rows)
+    w.int(storage.historyLimitBytes)
+    w.int(storage.maxHistoryRows)
+    w.int(storage.history.evicted)
+    w.int(storage.dropped)
+    w.int(storage.history.count)
+    for i in 0 ..< storage.history.count {
+      let id = storage.history.id(i)
+      storage.store.withRow(id) { cells in w.cells(cells) }
+      w.bool(storage.wrapped[Int(id)])
+      w.u8(storage.marks[Int(id)])
+      w.int(Int(storage.extents[Int(id)]))
+    }
+    for y in 0 ..< rows {
+      let p = Int(storage.rowMap[y])
+      w.cells(_unsafeCells(row: y))
+      w.bool(storage.wrapped[p])
+      w.u8(storage.marks[p])
+      w.int(Int(storage.extents[p]))
+    }
+  }
+
+  package static func restored(
+    from r: inout CheckpointReader,
+    maxColumns: Int = 4096,
+    maxRows: Int = 4096
+  ) throws(CheckpointError) -> Grid {
+    let columns = try r.bounded(1 ... maxColumns)
+    let rows = try r.bounded(1 ... maxRows)
+    let limitBytes = try r.bounded(0 ... Int(Int32.max))
+    let maxHistory = try r.bounded(0 ... 10_000_000)
+    let evicted = try r.bounded(0 ... Int.max / 2)
+    let dropped = try r.bounded(0 ... Int.max / 2)
+    var grid = Grid(
+      columns: columns,
+      rows: rows,
+      historyLimitBytes: limitBytes,
+      maxHistoryRows: maxHistory
+    )
+    let count = try r.count(max: grid.storage.history.capacity, minimumSize: 16)
+    for _ in 0 ..< count {
+      let cells = try r.cells(columns: columns)
+      let wrapped = try r.bool()
+      let marks = try r.u8()
+      let extent = try r.bounded(0 ... columns)
+      cells.withUnsafeBufferPointer {
+        grid.appendHistory($0, wrapped: wrapped, marks: marks)
+      }
+      let id = Int(grid.storage.history.id(grid.storage.history.count - 1))
+      grid.storage.extents[id] = Int32(extent)
+    }
+    grid.storage.history.restoreEvicted(evicted)
+    grid.storage.dropped = dropped
+    for y in 0 ..< rows {
+      let cells = try r.cells(columns: columns)
+      let wrapped = try r.bool()
+      let marks = try r.u8()
+      let extent = try r.bounded(0 ... columns)
+      let p = Int(grid.storage.rowMap[y])
+      let row = grid._unsafeRow(y)
+      for x in 0 ..< columns { row[x] = cells[x] }
+      grid.storage.wrapped[p] = wrapped
+      grid.storage.marks[p] = marks
+      grid.storage.extents[p] = Int32(extent)
+    }
+    grid._checkInvariants()
+    return grid
+  }
+}

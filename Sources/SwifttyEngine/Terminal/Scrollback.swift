@@ -54,3 +54,8 @@ struct Scrollback: ~Copyable {
     evicted = 0
   }
 }
+
+extension Scrollback {
+  /// Checkpoint import: absolute history addressing continues from here.
+  mutating func restoreEvicted(_ value: Int) { evicted = max(0, value) }
+}
