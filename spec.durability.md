@@ -3738,11 +3738,19 @@ unservable live workspace each deferred with selections unchanged; failed
 verification leading to rollback-gateway completion; an unrelated gateway
 leaving the barrier paused; and a `settling` pause resumed after updater loss.
 
-Open: the daemon cannot yet re-register a gateway agent itself. Rollback uses
-`InstallerRequiredReplacement`, which leaves admission paused until the
-installer acts. The trigger and the signed end-to-end run (stage, prepare,
-re-register and complete) therefore wait on installer integration (UA8).
-Both signed builds still share one implementation.
+The trigger is native control `prepareUpdate`. The running gateway derives its
+installation policy and signing identities from its own installed bundle,
+revalidates the staged candidate, runs `install` and replies `handedOver` or
+`deferred`. The installer side is `DurableInstallation.updateGateway`, used by
+`swiftty --durable-sessions update`. It unregisters the gateway agent, swaps
+the bundle and re-registers it, then waits for `installationStatus` to report
+that the update is no longer pending. If the successor leaves admission paused,
+the installer restores the retained bundle, which completes as a rollback.
+`DurableInstallationTests` covers updated, rolled-back and deferred updates
+with exact step order. The signed fixture run (§13.74) updated a live gateway
+from build 1 to build 2: the new gateway finished the plan and resumed
+admission, with the guardian, workspace and shell unchanged. Both signed builds
+still share one implementation.
 
 ### 13.74 Installer integration (UA8) — 2026-11-21
 
@@ -3805,6 +3813,8 @@ Evidence:
     reported as `sessions-ended:<old>:<new>`, then `running:<new>`.
   - Uninstall removes both agents and the record and leaves the legacy agent
     unregistered. Cleanup left no registrations or processes.
+- The same run updated the gateway through `prepareUpdate` and the
+  installer's swap (§13.73), keeping the guardian, workspace and shell.
 - An ad-hoc package with `SWIFTTY_DURABLE=1` built, signed and verified all
   three helpers. Their agent plists lint, and `--durable-sessions status`
   reports `notInstalled` without changing anything.

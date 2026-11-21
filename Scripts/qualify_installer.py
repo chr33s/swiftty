@@ -114,6 +114,31 @@ def qualify_installer(args, binary, launcher, *, run, bundle, wait_for):
         guardian_pid = job_pid(guardian_label)
         durable_shells = wait_for(lambda: need(descendants(guardian_pid)), "durable shell running")
         owned.update(durable_shells)
+
+        # An ordinary gateway update (UA4): the running gateway checks the
+        # staged candidate under the barrier and hands over; the installer
+        # swaps the bundle; the new gateway finishes. The session survives.
+        candidate = root / "Gateway-next.app"
+        bundle(candidate, gateway_label, 2, binary, launcher, args.identity,
+               probe_root=root, guardian_service=guardian_label,
+               gateway_daemon=args.bin_dir.resolve() / "swiftmux-gateway")
+        old_gateway = job_pid(gateway_label)
+        updated = run(str(installer / "Contents/MacOS/probe"), "durable-install", "update-gateway",
+                      legacy_label, str(legacy), str(guardian), str(gateway), gateway_label,
+                      str(record), "confirm", str(candidate), timeout=120).splitlines()[-1]
+        assert updated == "updated:2", updated
+        new_gateway = wait_for(lambda: need(job_pid(gateway_label),
+                                            lambda pid: pid not in (None, 0, old_gateway)),
+                               "updated gateway running")
+        owned.add(new_gateway)
+        assert job_pid(guardian_label) == guardian_pid and all(map(alive, durable_shells))
+        listed = json.loads(invoke(installer, "native-client", gateway_label, workspace, "list"))
+        assert any(item["workspace"].lower() == workspace.lower()
+                   and "available" in item["state"] for item in listed), listed
+        build_file = gateway / "Contents/Resources/gateway-build.json"
+        assert json.loads(build_file.read_text())["build"] == "2"
+        assert not (root / "Support" / "gateway-update.json").exists()
+        evidence["checks"].append("signed gateway update: the running gateway validates the staged candidate under the admission barrier and hands over; the installer swaps the bundle and re-registers; the new gateway verifies itself and resumes admission; guardian, workspace and shell are unchanged")
         assert install("maintain", "decline") == "declined:1"
         assert job_pid(guardian_label) == guardian_pid and all(map(alive, durable_shells))
         maintained = install("maintain", "confirm")

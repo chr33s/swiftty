@@ -66,6 +66,8 @@ def bundle(path, label, build, binary, launcher, identity, mode="serve", probe_r
             **({"ProbeGuardian": guardian_service} if guardian_service else {}),
             **({"ProbeWorkspace": workspace} if workspace else {}),
             **({"ProbeGatewayIdentifier": gateway_identifier} if gateway_identifier else {}),
+            **({"SwiftMuxSupportDirectory": str(probe_root / "Support")}
+               if gateway_daemon and probe_root else {}),
         }, file)
     if gateway_daemon:
         resources = contents / "Resources"

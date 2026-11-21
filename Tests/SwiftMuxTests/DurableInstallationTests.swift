@@ -14,7 +14,8 @@ struct DurableInstallationTests {
     let state = Mutex(
       (
         legacyWorkspaces: 0, guardianUp: false, gatewayUp: false,
-        incarnation: UUID(), durableWorkspaces: 0, failGateway: false
+        incarnation: UUID(), durableWorkspaces: 0, failGateway: false,
+        updatePending: false
       )
     )
     func note(_ entry: String) { log.withLock { $0.append(entry) } }
@@ -71,7 +72,8 @@ struct DurableInstallationTests {
         guard state.guardianUp, state.gatewayUp else { return nil }
         return GatewayInstallationStatus(
           guardianIncarnation: state.incarnation,
-          workspaces: state.durableWorkspaces
+          workspaces: state.durableWorkspaces,
+          updatePending: state.updatePending
         )
       }
     }
@@ -79,6 +81,95 @@ struct DurableInstallationTests {
       world.note("durable.endAll")
       world.state.withLock { $0.durableWorkspaces = 0 }
     }
+  }
+
+  /// The running gateway's side: hands over unless told to defer; the
+  /// candidate finishes only when `candidateFinishes`.
+  struct Updating: GatewayUpdating {
+    let world: World
+    let defers: Bool
+    func prepareUpdate(
+      _ request: GatewayUpdateRequest
+    ) async throws -> GatewayUpdateResult {
+      world.note("prepare")
+      if defers { return .deferred(MuxError(.incompatibleVersion, "no")) }
+      world.state.withLock { $0.updatePending = true }
+      return .handedOver(build: "2")
+    }
+  }
+
+  private func update(
+    _ world: World,
+    _ install: DurableInstallation,
+    defers: Bool = false,
+    candidateFinishes: Bool
+  ) async throws -> DurableInstallation.GatewayUpdate {
+    try await install.updateGateway(
+      GatewayUpdateRequest(
+        candidate: "/c",
+        workerBuild: nil,
+        workerProtocol: nil
+      ),
+      through: Updating(world: world, defers: defers),
+      agent: Agent(world: world, name: "gateway"),
+      install: {
+        world.note("swap")
+        if candidateFinishes {
+          world.state.withLock { $0.updatePending = false }
+        }
+        return {
+          world.note("restore")
+          world.state.withLock { $0.updatePending = false }
+        }
+      },
+      settle: .milliseconds(300)
+    )
+  }
+
+  @Test
+  func aGatewayUpdateSwapsAfterHandoverAndRollsBackIfUnfinished() async throws {
+    let world = World()
+    let dir = root()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let install = installer(world, dir)
+    _ = try await install.adopt(
+      from: Legacy(world: world),
+      confirm: confirming(world, true)
+    )
+    world.log.withLock { $0.removeAll() }
+    #expect(
+      try await update(world, install, candidateFinishes: true)
+        == .updated(build: "2")
+    )
+    #expect(
+      world.entries == [
+        "prepare", "gateway.unregister", "swap", "gateway.register",
+      ]
+    )
+    world.log.withLock { $0.removeAll() }
+    #expect(
+      try await update(world, install, candidateFinishes: false)
+        == .rolledBack(build: "2")
+    )
+    #expect(
+      world.entries == [
+        "prepare", "gateway.unregister", "swap", "gateway.register",
+        "gateway.unregister", "restore", "gateway.register",
+      ]
+    )
+    world.log.withLock { $0.removeAll() }
+    guard
+      case .deferred = try await update(
+        world,
+        install,
+        defers: true,
+        candidateFinishes: true
+      )
+    else {
+      Issue.record("incompatible update was not deferred")
+      return
+    }
+    #expect(world.entries == ["prepare"])
   }
 
   private func installer(_ world: World, _ root: URL) -> DurableInstallation {

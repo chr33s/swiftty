@@ -40,6 +40,29 @@ public enum GatewayControlCommand: Codable, Sendable, Equatable {
   /// Installer state (spec.durability.md §9): the guardian incarnation and
   /// every workspace it retains, available or not.
   case installationStatus
+  /// The ordinary update (§5.2): this gateway pauses, settles, checks the
+  /// staged candidate under the barrier and hands over to the installer.
+  case prepareUpdate(GatewayUpdateRequest)
+}
+
+public struct GatewayUpdateRequest: Codable, Sendable, Equatable {
+  /// The staged candidate bundle, revalidated by the gateway.
+  public let candidate: String
+  /// The worker build to select once the candidate runs, and its protocol.
+  public let workerBuild: String?
+  public let workerProtocol: Int?
+  public init(candidate: String, workerBuild: String?, workerProtocol: Int?) {
+    self.candidate = candidate
+    self.workerBuild = workerBuild
+    self.workerProtocol = workerProtocol
+  }
+}
+
+public enum GatewayUpdateResult: Codable, Sendable, Equatable {
+  /// Admission is paused in `replacing`; install `build` now.
+  case handedOver(build: String)
+  /// Selections unchanged, admission resumed.
+  case deferred(MuxError)
 }
 
 /// What an installer needs before guardian maintenance or uninstall.
@@ -48,9 +71,17 @@ public struct GatewayInstallationStatus: Codable, Sendable, Equatable {
   /// Running, unavailable and retained-exit workspaces; the empty-state
   /// barrier holds only when this is zero.
   public let workspaces: Int
-  public init(guardianIncarnation: UUID, workspaces: Int) {
+  /// Admission is paused for a gateway replacement the successor has not
+  /// finished (§5.2).
+  public let updatePending: Bool?
+  public init(
+    guardianIncarnation: UUID,
+    workspaces: Int,
+    updatePending: Bool? = nil
+  ) {
     self.guardianIncarnation = guardianIncarnation
     self.workspaces = workspaces
+    self.updatePending = updatePending
   }
 }
 
@@ -77,6 +108,7 @@ public enum GatewayControlReply: Codable, Sendable {
   case deletedSaved
   case previousOutput(SavedOutputPage)
   case installation(GatewayInstallationStatus)
+  case update(GatewayUpdateResult)
 }
 
 public struct GatewayRouteDescriptor: Codable, Sendable, Equatable {

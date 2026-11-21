@@ -278,6 +278,8 @@ package final class GatewayControlServer: @unchecked Sendable {
       return (.deletedSaved, nil)
     case .installationStatus:
       return (.installation(try await runtime.installationStatus()), nil)
+    case let .prepareUpdate(request):
+      return (.update(try await runtime.prepareUpdate(request)), nil)
     }
   }
 

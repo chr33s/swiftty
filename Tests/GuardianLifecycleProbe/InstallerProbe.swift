@@ -58,8 +58,9 @@ extension GuardianLifecycleProbe {
   /// `durable-install ACTION LEGACY-SERVICE LEGACY-APP GUARDIAN-APP
   /// GATEWAY-APP CONTROL-SERVICE RECORD confirm|decline`
   static func durableInstall(_ args: [String]) async throws {
-    guard args.count == 9,
-      ["adopt", "maintain", "uninstall", "startup"].contains(args[1]),
+    guard args.count >= 2, args.count == (args[1] == "update-gateway" ? 10 : 9),
+      ["adopt", "maintain", "uninstall", "startup", "update-gateway"]
+        .contains(args[1]),
       args[2].hasPrefix("com.chr33s.swiftty.durability-probe."),
       args[6].hasPrefix("com.chr33s.swiftty.durability-probe."),
       ["confirm", "decline"].contains(args[8])
@@ -99,6 +100,42 @@ extension GuardianLifecycleProbe {
       )
     case "uninstall":
       summary = describe(try await installer.uninstall(confirm: confirm))
+    case "update-gateway":
+      // Swap the staged candidate into the registered path; keep the
+      // previous bundle for rollback.
+      let current = URL(fileURLWithPath: args[5])
+      let candidate = URL(fileURLWithPath: args[9])
+      let previous = current.deletingLastPathComponent()
+        .appendingPathComponent("Gateway-previous.app")
+      let status = GatewayControlStatus(
+        controlService: args[6],
+        peerRequirement: try PeerSigningPolicy.requirementForCurrentProcess()
+      )
+      let result = try await installer.updateGateway(
+        GatewayUpdateRequest(
+          candidate: candidate.path,
+          workerBuild: nil,
+          workerProtocol: nil
+        ),
+        through: status,
+        agent: helper(args[5]),
+        install: {
+          let manager = FileManager.default
+          try manager.moveItem(at: current, to: previous)
+          try manager.moveItem(at: candidate, to: current)
+          return {
+            let failed = current.deletingLastPathComponent()
+              .appendingPathComponent("Gateway-failed.app")
+            try FileManager.default.moveItem(at: current, to: failed)
+            try FileManager.default.moveItem(at: previous, to: current)
+          }
+        }
+      )
+      switch result {
+      case let .updated(build): summary = "updated:\(build)"
+      case let .rolledBack(build): summary = "rolled-back:\(build)"
+      case let .deferred(error): summary = "deferred:\(error.code)"
+      }
     default:
       switch try await installer.startup() {
       case .notInstalled: summary = "not-installed"

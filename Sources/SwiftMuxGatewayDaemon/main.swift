@@ -42,7 +42,13 @@ do {
       )
       // Saved layouts (spec.durability.md §12.2): sealed records under the
       // user's SwiftMux support directory, keyed from the login keychain.
-      let support = FileManager.default.homeDirectoryForCurrentUser
+      // A signed bundle may pin another absolute root (qualification
+      // fixtures do, so they never touch the owner's real store).
+      let support =
+        (Bundle.main.object(forInfoDictionaryKey: "SwiftMuxSupportDirectory")
+        as? String)
+        .flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil }
+        ?? FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/SwiftMux")
       let identifier = Bundle.main.bundleIdentifier ?? "dev.chr33s.swiftmux"
       let saved = SavedLayoutService(
@@ -73,6 +79,16 @@ do {
         saved: saved
       )
       runtime = started
+      if runningGatewayBuild() != nil {
+        await started.setUpdateHandler(
+          try GatewayDaemonUpdate.handler(
+            supervisor: supervisor,
+            configuration: configuration,
+            teamRequirement: requirement,
+            plans: GatewayUpdatePlanStore(root: support)
+          )
+        )
+      }
       if let upgrade {
         // Capability B after the update: deferred per workspace on refusal.
         Task.detached { _ = await started.upgradeWorkspaces(to: upgrade) }

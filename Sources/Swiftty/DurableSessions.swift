@@ -162,6 +162,83 @@ enum DurableSessions {
     }
   }
 
+  /// An ordinary update from a newer app (spec.durability.md §5.2): stage
+  /// its gateway helper and worker build, let the running gateway check
+  /// them under the barrier, then swap the gateway bundle.
+  static func update(
+    _ installer: DurableInstallation
+  ) async throws -> DurableInstallation.GatewayUpdate {
+    guard isShipped, let support else {
+      throw MuxError(.notFound, "this app does not carry durable helpers")
+    }
+    guard
+      let requirement =
+        try GuardianPeerSigningPolicy.requirementForCurrentProcess()
+    else { throw MuxError(.unauthorized, "a team-signed app is required") }
+    let manager = FileManager.default
+    let helpers = support.appendingPathComponent("Helpers")
+    let current = helpers.appendingPathComponent(gatewayApp)
+    let candidate = helpers.appendingPathComponent(".candidate-\(gatewayApp)")
+    let previous = helpers.appendingPathComponent(".previous-\(gatewayApp)")
+    for stale in [candidate, previous]
+    where manager.fileExists(atPath: stale.path) {
+      try manager.removeItem(at: stale)
+    }
+    try manager.copyItem(
+      at: bundled.appendingPathComponent(gatewayApp),
+      to: candidate
+    )
+    try GuardianArtifactValidation.validateSignature(
+      candidate.path,
+      requirement: requirement
+    )
+    // The worker build ships with the app; the guardian revalidates it.
+    let registry = try GuardianBuildRegistry(
+      root: support.appendingPathComponent("Versions"),
+      peerRequirement: requirement
+    )
+    let worker = bundled.appendingPathComponent(workerApp)
+    let manifest = try JSONDecoder()
+      .decode(
+        GuardianBuildManifest.self,
+        from: Data(
+          contentsOf: worker.appendingPathComponent(
+            "Contents/Resources/build.json"
+          )
+        )
+      )
+    if !manager.fileExists(
+      atPath: support.appendingPathComponent("Versions/\(manifest.build)").path
+    ) {
+      try registry.install(bundle: worker, build: manifest.build)
+    }
+    let status = GatewayControlStatus(
+      controlService: gatewayControl,
+      peerRequirement: requirement
+    )
+    return try await installer.updateGateway(
+      GatewayUpdateRequest(
+        candidate: candidate.path,
+        workerBuild: manifest.build,
+        workerProtocol: manifest.workerProtocol
+      ),
+      through: status,
+      agent: HelperProcessAgent(
+        executable: current.appendingPathComponent(
+          "Contents/MacOS/swiftmux-gateway"
+        )
+      ),
+      install: {
+        try FileManager.default.moveItem(at: current, to: previous)
+        try FileManager.default.moveItem(at: candidate, to: current)
+        return {
+          try FileManager.default.removeItem(at: current)
+          try FileManager.default.moveItem(at: previous, to: current)
+        }
+      }
+    )
+  }
+
   /// The monolithic agent this app registered before the transition.
   struct Legacy: LegacyMux {
     private var service: SMAppService {
@@ -195,12 +272,12 @@ enum DurableSessions {
   /// Headless: without `--confirm`, live sessions are never ended.
   static func command(_ arguments: [String]) async -> Int32 {
     guard let action = arguments.first,
-      ["adopt", "maintain", "uninstall", "status"].contains(action),
+      ["adopt", "maintain", "uninstall", "status", "update"].contains(action),
       arguments.count <= 2, arguments.count == 1 || arguments[1] == "--confirm"
     else {
       FileHandle.standardError.write(
         Data(
-          "usage: swiftty --durable-sessions adopt|maintain|uninstall|status [--confirm]\n"
+          "usage: swiftty --durable-sessions adopt|maintain|uninstall|status|update [--confirm]\n"
             .utf8
         )
       )
@@ -221,6 +298,7 @@ enum DurableSessions {
           }
         )
       case "uninstall": print(try await installer.uninstall(confirm: confirm))
+      case "update": print(try await update(installer))
       default: print(try await installer.startup())
       }
       return 0

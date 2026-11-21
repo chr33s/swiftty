@@ -88,6 +88,7 @@ public actor DurableInstallation {
   private let guardian: any DurableAgent
   private let gateway: any DurableAgent
   private let status: any DurableStatus
+  var statusSource: any DurableStatus { status }
   private let record: URL
   private let settle: Duration
   private let poll: Duration
@@ -348,7 +349,7 @@ public struct GatewayControlStatus: DurableStatus {
     self.peerRequirement = peerRequirement
   }
 
-  private func connect() async throws -> MuxGatewayConnection {
+  func connect() async throws -> MuxGatewayConnection {
     let service = controlService
     return try await MuxGatewayConnection.connect(
       peerRequirement: peerRequirement,
@@ -374,5 +375,82 @@ public struct GatewayControlStatus: DurableStatus {
       await connection.close()
       throw error
     }
+  }
+}
+
+/// The installer's half of an ordinary gateway update (spec.durability.md
+/// §5.2): the running gateway checks the candidate under the barrier and
+/// hands over; the installer swaps the bundle and re-registers; the new
+/// gateway finishes. A candidate that does not finish is rolled back.
+public protocol GatewayUpdating: Sendable {
+  func prepareUpdate(
+    _ request: GatewayUpdateRequest
+  ) async throws -> GatewayUpdateResult
+}
+
+extension GatewayControlStatus: GatewayUpdating {
+  public func prepareUpdate(
+    _ request: GatewayUpdateRequest
+  ) async throws -> GatewayUpdateResult {
+    let connection = try await connect()
+    do {
+      let result = try await connection.prepareUpdate(request)
+      await connection.close()
+      return result
+    } catch {
+      await connection.close()
+      throw error
+    }
+  }
+}
+
+extension DurableInstallation {
+  public enum GatewayUpdate: Sendable, Equatable {
+    case updated(build: String)
+    /// Incompatible or unsettled: nothing was replaced.
+    case deferred(MuxError)
+    /// The candidate did not finish; the previous gateway was restored.
+    case rolledBack(build: String)
+  }
+
+  /// `install(candidate)` makes the candidate the registered bundle and
+  /// returns a closure that restores the previous one.
+  public func updateGateway(
+    _ request: GatewayUpdateRequest,
+    through gateway: any GatewayUpdating,
+    agent: any DurableAgent,
+    install: @Sendable () async throws -> @Sendable () async throws -> Void,
+    settle: Duration = .seconds(30)
+  ) async throws -> GatewayUpdate {
+    switch try await gateway.prepareUpdate(request) {
+    case let .deferred(error): return .deferred(error)
+    case let .handedOver(build):
+      try await agent.unregister()
+      let restore = try await install()
+      try await agent.register()
+      if try await finished(within: settle) { return .updated(build: build) }
+      // The successor left admission paused: restore the retained gateway,
+      // which finishes the update as a rollback.
+      try await agent.unregister()
+      try await restore()
+      try await agent.register()
+      guard try await finished(within: settle) else {
+        throw MuxError(.quiescing, "rollback gateway did not resume admission")
+      }
+      return .rolledBack(build: build)
+    }
+  }
+
+  private func finished(within settle: Duration) async throws -> Bool {
+    let deadline = ContinuousClock.now + settle
+    while ContinuousClock.now < deadline {
+      if let status = try? await statusSource.installation(),
+        status.updatePending == false
+      {
+        return true
+      }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    return false
   }
 }

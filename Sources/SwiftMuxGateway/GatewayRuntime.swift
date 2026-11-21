@@ -296,10 +296,34 @@ package actor GatewayRuntime {
     guard let incarnation = await supervisor.guardianIncarnation else {
       throw MuxError(.notAttached, "guardian identity unknown")
     }
+    let admission = try? await supervisor.admissionStatus()
     return GatewayInstallationStatus(
       guardianIncarnation: incarnation,
-      workspaces: inventory.count
+      workspaces: inventory.count,
+      updatePending: admission.map { $0.paused && $0.phase == .replacing }
     )
+  }
+
+  package typealias UpdateHandler =
+    @Sendable (GatewayUpdateRequest) async throws -> GatewayUpdateResult
+  private var updateHandler: UpdateHandler?
+
+  /// The daemon supplies how it validates candidates and owns update plans.
+  package func setUpdateHandler(_ handler: UpdateHandler?) {
+    updateHandler = handler
+  }
+
+  package func prepareUpdate(
+    _ request: GatewayUpdateRequest
+  ) async throws -> GatewayUpdateResult {
+    try checkOpen()
+    guard let updateHandler else {
+      throw MuxError(
+        .incompatibleVersion,
+        "this gateway cannot prepare updates"
+      )
+    }
+    return try await updateHandler(request)
   }
 
   /// After an update selects a new worker build (spec.durability.md §5.2):
