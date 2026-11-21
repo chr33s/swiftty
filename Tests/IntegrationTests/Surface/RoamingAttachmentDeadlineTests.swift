@@ -320,6 +320,50 @@ struct RoamingAttachmentDeadlineTests {
     func advance(_ duration: Duration) { instant.withLock { $0 += duration } }
   }
 
+  /// spec.roaming.md §9: an attempt whose handshake finished but that
+  /// hears no `Attached` ends after the progress wait, not `attachTimeout`,
+  /// and the first such retry starts without a backoff delay. Over shaped
+  /// QUIC, Network sometimes held a new connection's first stream data
+  /// until it closed, which cost a whole 15 s attach timeout.
+  @Test(arguments: [false, true])
+  func anAttemptWithoutAttachedIsRetriedAfterTheProgressWait(
+    keepsStalling: Bool
+  ) async throws {
+    let host = try FakeHost()
+    await host.set(withholdAttached: true)
+    let connector = FakeConnector(host: host)
+    let clock = Clock()
+    let client = RoamingClient(
+      bootstrapper: FakeBootstrapper(host: host),
+      connector: connector,
+      configuration: RoamingClientConfiguration(
+        attachTimeout: .seconds(10),
+        livenessTick: .seconds(30),
+        backoffJitter: 0,
+        attachProgressMinimum: .milliseconds(200)
+      ),
+      timing: clock.timing
+    )
+    try await client.start(.create(GridSize(columns: 20, rows: 4)))
+    try #require(await eventually { await host.attachCount == 1 })
+    if !keepsStalling { await host.set(withholdAttached: false) }
+    #expect(await eventually(.seconds(2)) { await connector.connectCount == 2 })
+    #expect(clock.sleeps.withLock { $0.contains(.milliseconds(200)) })
+    // The first stalled attempt is retried at once, not after a backoff.
+    #expect(!clock.sleeps.withLock { $0.contains(.milliseconds(500)) })
+    if keepsStalling {
+      // A second stall in a row backs off as any failed attempt does.
+      #expect(
+        await eventually(.seconds(3)) { await connector.connectCount == 3 }
+      )
+      #expect(clock.sleeps.withLock { $0.contains(.milliseconds(500)) })
+      #expect(await client.status.lastFailure == .attachTimedOut)
+    } else {
+      #expect(await eventually { await client.state == .active })
+    }
+    await client.close()
+  }
+
   @Test(arguments: [false, true])
   func blockedConnectIsBoundedAndLateConnectionIsClosed(
     cancel: Bool,

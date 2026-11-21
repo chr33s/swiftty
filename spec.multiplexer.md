@@ -810,6 +810,49 @@ Commit `70687e56` (SSH identities, saved passwords, Secure Enclave keys, roaming
 - *Secure Enclave signing on the shared event loop.* NIOSSH signs on the channel's loop, and a key that requires user presence blocks that thread for the length of the prompt. Connections authenticated by a Secure Enclave key, when the caller names no group, now use `SSHConnection.secureEnclaveEventLoopGroup`, a one-loop group of their own, so a prompt no longer stalls every other SSH and SFTP channel. The connect deadline is still scheduled on that loop and is checked when the prompt returns, so a prompt longer than the connect timeout still fails with `connectTimeout`; that remains open (todo.md), needs a device, and has no automated test.
 - *ECDSA import left a copy of the private scalar unwiped.* Left-padding replaced the stripped scalar buffer, and the `defer` wiped only the replacement. The padded scalar is now built in one buffer, which the `defer` wipes. Not observable from a test.
 
+### Shaped real-QUIC measurements — 2026-11-21
+
+`ShapedQUICTests` (release build, `Scripts/test-shaped-quic.sh`) ran twice over loopback QUIC shaped by `Scripts/quic-shaper.sh` on macOS 27.2.1. Measured profile: 101–102 ms median one-way delay; 38 and 39 of 40 probe datagrams arrived. Connection loss is a server close at the next opportunity, not at an exact acknowledgement boundary.
+
+**A20.** Passed both runs. Every installed screen matched the host's complete screen at a strictly increasing revision: 75 and 84 screens, 23 and 25 deltas applied, no full-screen requests, 4 and 3 connections. A client without `screenDeltas` received full screens only.
+
+**A22.** History copy across unfetched rows during output returned the host's grid text in both runs (66,053 bytes in 1.2 and 1.5 s), and an edit under the selection yielded `selectionChanged` with no text. **Typing during a 2 MiB copy misses the requirement:** the echo of one key arrived after 16.2 s and 17.7 s, when the copy itself finished after 17.1 s and 17.9 s. The requirement is about one chunk, which is roughly 0.4 s for a 48 KiB chunk at 1 Mbit/s. The in-process A22 test passes because it checks the order of records on the control stream, and over the impaired link the host's sends wait for delivery. Over QUIC, `sendControl` returns once the transport accepts the bytes under flow control, so the host can queue most of the copy in the transport before the key's acknowledgement and echoed screen. Open in todo.md; the shaped test asserts the bound and fails.
+
+*Cause (instrumented shaped run, same day).* The host's chunk sends were paced to the link: the last chunk was accepted 1.0 s before the client read it. The input acknowledgement was accepted 0.6 s after the key and read 2.0 s after it. The echoed screen, 223 bytes, was accepted at 0.10 s but read at 16.55 s, 1 ms after the last chunk. Network.framework sent the snapshot stream only once the control stream had nothing queued, so during a copy every screen waited for the whole copy. A smaller control-stream receive window on the client (128 KiB) changed nothing. *Fix:* the host holds each copy chunk while a screen awaits acknowledgement, at most `RoamingSession.copyScreenWait` (2 s), and releases it before the next capture (§7.5). Regression: `HostFrameTests` "copy chunks wait for the screens in flight". It fails without the hold: a chunk is sent while a screen is unacknowledged, and with acknowledgements withheld the copy is not slowed by the cap. Not yet re-measured over shaped QUIC.
+
+*After the fixes (shaped QUIC, same day).* With the screen hold alone, the echo arrived after 1.35 s and the input acknowledgement after 1.34 s. Both still waited behind the roughly 1 s of chunks Network.framework accepts before the client reads them. The host now also sends a `Ping` after each chunk and sends the next chunk only on the matching `Pong`, at most `RoamingSession.copyDeliveryWait` (2 s) later (spec.roaming.md §7.5). Regression: `HostFrameTests` "the next copy chunk waits for the client to read the last". It fails without the ping: a second chunk follows while the first is unread. The host previously rejected a client `Pong` as malformed; it now accepts one, and ignores any that answers no outstanding ping. Measured with both fixes: echo 0.85 s, input acknowledgement read 0.80 s after the key, history copy 4.2 s (66,053 bytes). The 2 MiB copy took 30.0 s instead of 17–18 s, one chunk per transmission time plus round trip. A window of two chunks would recover most of that throughput, but typing would then wait behind up to two chunks, against §7.5's one.
+
+**Recovery tail.** In each slow recovery the first connection's QUIC handshake finished in about 0.25 s, but the host's lifecycle log shows the client's streams (0 and control stream 4) arriving only when the client closed the connection, 15 s later at its attach deadline. Network.framework held the client's first stream data; why is not known. The client now abandons an attempt that has no `Attached` within four handshake durations of the handshake (at least 1.5 s, at most a third of the attach deadline) and retries the first such attempt at once (spec.roaming.md §9). Regression: `RoamingAttachmentDeadlineTests.anAttemptWithoutAttachedIsRetriedAfterTheProgressWait`. It fails without the wait, because the attempt then ends only at the attach deadline. Shaped runs with the change (100 recoveries each), timed from the reconnect attempt to an installed current screen:
+
+| Run | p50 | p95 | Max | Recoveries with 2 / 3 connections |
+|---|---:|---:|---:|---:|
+| Before (two runs) | 0.50 s | 16.5–16.7 s | 16.5–33.5 s | 5 / 0 |
+| 8× handshake, no cap | 0.50 s | 3.05 s | 13.6 s | 5 / 0 |
+| 4× handshake, capped | 0.51 s | 2.29 s | 3.22 s | 6 / 0 |
+| 4× handshake, capped | 0.54 s | 2.83 s | 5.04 s | 10 / 1 |
+
+The 3 s p95 target held in both runs of the final version. How often a first connection stalls varies between runs (5–11%). A handshake slowed by loss is QUIC's own retransmission and is unchanged: one recovery's handshake took 2.2 s.
+
+**`screenDeltas` cost** (zlib on both sides; bytes are snapshot records as the client received them, and client CPU is the median of 15 replays):
+
+| Workload | Deltas | Screens, run 1 / run 2 | Bytes/screen | Client CPU/screen |
+|---|---|---:|---:|---:|
+| 80×24 typing | off | 14 / 18 | 792 / 791 | 118 / 71 µs |
+| 80×24 typing | on | 14 / 15 | 284 / 284 | 79 / 135 µs |
+| 200×80 scrolling | off | 49 / 58 | 1,564 / 1,571 | 493 / 505 µs |
+| 200×80 scrolling | on | 48 / 58 | 681 / 602 | 604 / 597 µs |
+
+Deltas cut bytes per screen by 64% for typing and by 56–62% for scrolling, close to the in-process figures (59% and 70%). Client CPU per screen at 80×24 is too noisy at 14–18 screens to compare. At 200×80, deltas cost about 18–23% more CPU, as in-process.
+
+**Recovery target** (100 warm reattachments, timed from the reconnect attempt to an installed current 80×24 screen):
+
+| Run | p50 | p95 | Max | Recoveries needing a second connection |
+|---|---:|---:|---:|---:|
+| 1 | 0.50 s | 16.7 s | 33.5 s | not recorded |
+| 2 | 0.50 s | 1.75 s | 17.1 s | 1 of 100 |
+
+From the server's close, p50 was 1.15–1.18 s, which includes the client noticing the loss. The 3 s p95 target held in run 2 and missed in run 1. The tail is recoveries whose first connection attempt stalls for about 15 s (`attachTimeout`) before a second attempt succeeds at once; run 1's 16.7 s p95 and 33.5 s maximum match one and two such stalls. Open in todo.md.
+
 ## 12. Primary sources and evidence boundary
 
 Swiftty source below is pinned to `32a57d8945db68a397a58ae3cbe75e63372ea242`. Existing API/lifetime statements are source observations; the service, frame importer, presenter and shipping behavior are proposed changes. Apple documentation establishes intended API models; actual macOS 27 runtime behavior remains an acceptance gate.

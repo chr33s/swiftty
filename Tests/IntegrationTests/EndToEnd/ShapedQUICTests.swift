@@ -1,5 +1,5 @@
 #if os(macOS)
-import AppleTransport
+@testable import AppleTransport
 import Darwin
 import Foundation
 @testable import RoamingKit
@@ -259,11 +259,67 @@ struct ShapedQUICTests {
       let copied = finished - typed
       #expect(text == expected)
       #expect(expected.utf8.count > 2_000_000)
-      #expect(echo < copied, "the echo waited for the whole copy")
+      // spec.roaming.md A22: typing waits behind at most one chunk. At
+      // 1 Mbit/s a 48 KiB chunk takes about 0.4 s; allow two chunks plus a
+      // second for the round trip, the echoed screen and loss recovery.
+      let chunk = Double(ControlMessage.maxCopyChunkBytes * 8) / 1_000_000
+      let bound = Duration.seconds(2 * chunk + 1)
+      #expect(
+        echo <= bound,
+        "the echo took \(echo) (bound \(bound)); the copy took \(copied)"
+      )
       print(
         "shaped QUIC A22: echo during a \(expected.utf8.count)-byte copy "
           + "after \(echo); copy finished after \(copied)"
       )
+      // Where the time went: when the host's transport accepted each
+      // record, against when the client read it.
+      func isChunk(_ m: ControlMessage) -> Bool {
+        if case .copyChunk = m { true } else { false }
+      }
+      func isInputAck(_ m: ControlMessage) -> Bool {
+        if case .inputAck = m { true } else { false }
+      }
+      let sent = rig.hostSends.all
+      let read = rig.connector.controlTimes
+      func at(_ t: ContinuousClock.Instant?) -> String {
+        t.map { "\($0 - typed)" } ?? "none"
+      }
+      print(
+        "shaped QUIC A22 timeline (from the key): host accepted chunks "
+          + "\(at(sent.first { isChunk($0.1) }?.0)) to "
+          + "\(at(sent.last { isChunk($0.1) }?.0)), client read chunks "
+          + "\(at(read.first { isChunk($0.1) }?.0)) to "
+          + "\(at(read.last { isChunk($0.1) }?.0)); input ack accepted "
+          + "\(at(sent.last { isInputAck($0.1) }?.0)), read "
+          + "\(at(read.last { isInputAck($0.1) }?.0))"
+      )
+      // The key's acknowledgement, too, waits behind at most one chunk.
+      let inputAck = read.last { isInputAck($0.1) }.map { $0.0 - typed }
+      #expect(
+        inputAck.map { $0 <= bound } == true,
+        "the input acknowledgement was read after \(String(describing: inputAck))"
+      )
+      let window = typed - .seconds(1)
+      for (started, ended, bytes) in rig.hostSends.snapshots.withLock({ $0 })
+      where started > window {
+        print(
+          "shaped QUIC A22 timeline: host snapshot \(bytes) B started "
+            + "\(at(started)), returned \(at(ended))"
+        )
+      }
+      for r in rig.connector.received where r.at > window {
+        print(
+          "shaped QUIC A22 timeline: client read snapshot "
+            + "\(r.payload.count) B at \(at(r.at))"
+        )
+      }
+      for (t, frame) in zip(rig.installs.times, rig.installs.all)
+      where t > window {
+        let shows = (0 ..< frame.rows)
+          .contains { frame.line($0).hasPrefix("$ t") }
+        print("shaped QUIC A22 timeline: installed at \(at(t)) echo=\(shows)")
+      }
       try await rig.submit(.key(SemanticKey(.backspace)))
     }
   }
@@ -314,6 +370,8 @@ struct ShapedQUICTests {
       try await rig.shows("ready-2")
       var fromConnect: [Duration] = []
       var fromLoss: [Duration] = []
+      /// Per recovery: connection attempts, and the client's last failure.
+      var runs: [(total: Duration, attempts: Int, failure: String)] = []
       for attempt in 1 ... 100 {
         let connections = rig.connector.connections
         let installed = rig.installs.all.count
@@ -336,6 +394,33 @@ struct ShapedQUICTests {
         let now = ContinuousClock.now
         fromConnect.append(now - connected)
         fromLoss.append(now - lost)
+        if now - connected > .seconds(3) {
+          let attempts = rig.connector.attempts[connections...]
+          print(
+            "shaped QUIC recovery \(attempt) took \(now - connected) from "
+              + "the reconnect (times from the loss):"
+          )
+          for (n, a) in attempts.enumerated() {
+            print("  attempt \(n + 1): \(a.describe(from: lost))")
+            print("  attempt \(n + 1) client QUIC: \(a.quic.prefix(4000))")
+          }
+          for server in rig.serverConnections.list.withLock({ $0 })
+            .suffix(attempts.count)
+          {
+            let quic =
+              (server as? QUICRSTConnection)?.snapshotDiagnosticsForTesting
+              ?? "n/a"
+            print("  server QUIC: \(quic.prefix(4000))")
+          }
+        }
+        let status = await rig.client.status
+        runs.append(
+          (
+            now - connected, rig.connector.connections - connections,
+            [status.lastFailure.map { "\($0)" }, status.lastFailureDetail]
+              .compactMap { $0 }.joined(separator: ": ")
+          )
+        )
       }
       func p(_ samples: [Duration], _ q: Double) -> Duration {
         let sorted = samples.sorted()
@@ -349,6 +434,17 @@ struct ShapedQUICTests {
       )
       if p(fromConnect, 0.95) > .seconds(3) {
         print("shaped QUIC recovery: p95 misses the 3 s target")
+      }
+      let attempts = Dictionary(grouping: runs, by: \.attempts)
+        .mapValues(\.count).sorted { $0.key < $1.key }
+      print(
+        "shaped QUIC recovery: connection attempts per recovery \(attempts)"
+      )
+      for run in runs.sorted(by: { $0.total > $1.total }).prefix(8) {
+        print(
+          "shaped QUIC recovery slow run: \(run.total), \(run.attempts) "
+            + "attempts, last failure \(run.failure.isEmpty ? "none" : run.failure)"
+        )
       }
       // The same shell survived every reattachment and still answers.
       try await rig.run("echo after-$((50+50))")
@@ -365,6 +461,8 @@ struct ShapedQUICRig: RoamingTestRig {
   let registry: SessionRegistry
   let listener: QUICRSTListener
   let serverConnections: ConnectionLog
+  /// When each host control record's `sendControl` returned.
+  let hostSends: HostSendLog
   let connector: RecordingConnector
   let oracle: HostScreenOracle
   let installs: InstallLog
@@ -404,9 +502,10 @@ struct ShapedQUICRig: RoamingTestRig {
       launch: { shellLaunch() }
     )
     let connections = ConnectionLog()
+    let hostSends = HostSendLog()
     try await listener.start { connection in
       connections.list.withLock { $0.append(connection) }
-      registry.accept(connection)
+      registry.accept(HostSendLog.Connection(connection, log: hostSends))
     }
     let oracle = HostScreenOracle()
     let installs = InstallLog()
@@ -428,6 +527,7 @@ struct ShapedQUICRig: RoamingTestRig {
       registry: registry,
       listener: listener,
       serverConnections: connections,
+      hostSends: hostSends,
       connector: connector,
       oracle: oracle,
       installs: installs,
@@ -453,6 +553,7 @@ struct ShapedQUICRig: RoamingTestRig {
     registry: SessionRegistry,
     listener: QUICRSTListener,
     serverConnections: ConnectionLog,
+    hostSends: HostSendLog,
     connector: RecordingConnector,
     oracle: HostScreenOracle,
     installs: InstallLog,
@@ -461,6 +562,7 @@ struct ShapedQUICRig: RoamingTestRig {
     self.registry = registry
     self.listener = listener
     self.serverConnections = serverConnections
+    self.hostSends = hostSends
     self.connector = connector
     self.oracle = oracle
     self.installs = installs
@@ -475,13 +577,43 @@ final class RecordingConnector: RSTConnector, Sendable {
   struct Received: Sendable {
     var payload: [UInt8]
     var delta: Bool
+    var at = ContinuousClock.now
+  }
+
+  /// One `connect` call and what followed on its connection.
+  struct Attempt: Sendable {
+    var started = ContinuousClock.now
+    var handshake: ContinuousClock.Instant?
+    var connectError: String?
+    var attached: ContinuousClock.Instant?
+    var firstSnapshot: ContinuousClock.Instant?
+    var closed: ContinuousClock.Instant?
+    var closeError: String?
+    var connection: (any RSTConnection)?
+
+    /// Diagnostics of the QUIC connection, lifecycle log included.
+    var quic: String {
+      (connection as? QUICRSTConnection)?.snapshotDiagnosticsForTesting ?? "n/a"
+    }
+
+    func describe(from origin: ContinuousClock.Instant) -> String {
+      func at(_ t: ContinuousClock.Instant?) -> String {
+        t.map { "\($0 - origin)" } ?? "-"
+      }
+      return "started \(at(started)), handshake \(at(handshake))"
+        + (connectError.map { " (connect failed: \($0))" } ?? "")
+        + ", attached \(at(attached)), first screen \(at(firstSnapshot)), "
+        + "closed \(at(closed))" + (closeError.map { " (\($0))" } ?? "")
+    }
   }
 
   private struct State {
     var connections = 0
     var lastConnect: ContinuousClock.Instant?
+    var attempts: [Attempt] = []
     var received: [Received] = []
     var control: [ControlMessage] = []
+    var controlTimes: [(ContinuousClock.Instant, ControlMessage)] = []
   }
 
   private let inner = QUICGrantConnector()
@@ -495,14 +627,37 @@ final class RecordingConnector: RSTConnector, Sendable {
     state.withLock { $0.lastConnect }
   }
   var received: [Received] { state.withLock { $0.received } }
+  var attempts: [Attempt] { state.withLock { $0.attempts } }
   var controlMessages: [ControlMessage] { state.withLock { $0.control } }
+  var controlTimes: [(ContinuousClock.Instant, ControlMessage)] {
+    state.withLock { $0.controlTimes }
+  }
 
   func connect(to grant: BootstrapGrant) async throws -> any RSTConnection {
-    state.withLock {
+    let index = state.withLock {
       $0.connections += 1
       $0.lastConnect = .now
+      $0.attempts.append(Attempt())
+      return $0.attempts.count - 1
     }
-    return RecordingConnection(try await inner.connect(to: grant), owner: self)
+    do {
+      let connection = try await inner.connect(to: grant)
+      update(index) {
+        $0.handshake = .now
+        $0.connection = connection
+      }
+      return RecordingConnection(connection, owner: self, attempt: index)
+    } catch {
+      update(index) {
+        $0.handshake = .now
+        $0.connectError = "\(error)"
+      }
+      throw error
+    }
+  }
+
+  fileprivate func update(_ index: Int, _ body: (inout Attempt) -> Void) {
+    state.withLock { body(&$0.attempts[index]) }
   }
 
   fileprivate func strip(_ record: [UInt8]) -> [UInt8] {
@@ -529,36 +684,55 @@ final class RecordingConnector: RSTConnector, Sendable {
   }
 
   fileprivate func record(control messages: [ControlMessage]) {
-    state.withLock { $0.control.append(contentsOf: messages) }
+    let now = ContinuousClock.now
+    state.withLock {
+      $0.control.append(contentsOf: messages)
+      $0.controlTimes.append(contentsOf: messages.map { (now, $0) })
+    }
   }
 }
 
 private final class RecordingConnection: RSTConnection, Sendable {
   let inner: any RSTConnection
   let owner: RecordingConnector
+  let attempt: Int
 
-  init(_ inner: any RSTConnection, owner: RecordingConnector) {
+  init(_ inner: any RSTConnection, owner: RecordingConnector, attempt: Int) {
     self.inner = inner
     self.owner = owner
+    self.attempt = attempt
   }
 
   var isClosed: Bool { inner.isClosed }
 
   func start(_ handler: RSTConnectionHandler) {
     let owner = owner
+    let attempt = attempt
     let reader = Mutex(ControlRecordReader())
     inner.start(
       RSTConnectionHandler(
         onControl: { bytes in
           let messages = reader.withLock { (try? $0.append(bytes)) ?? [] }
+          if messages.contains(where: {
+            if case .attached = $0 { true } else { false }
+          }) {
+            owner.update(attempt) { $0.attached = $0.attached ?? .now }
+          }
           owner.record(control: messages)
           await handler.onControl(bytes)
         },
         onSnapshot: { payload in
+          owner.update(attempt) { $0.firstSnapshot = $0.firstSnapshot ?? .now }
           owner.record(snapshot: payload)
           await handler.onSnapshot(payload)
         },
-        onClosed: handler.onClosed
+        onClosed: { error in
+          owner.update(attempt) {
+            $0.closed = .now
+            $0.closeError = error.map { "\($0)" }
+          }
+          handler.onClosed(error)
+        }
       )
     )
   }
@@ -574,5 +748,54 @@ private final class RecordingConnection: RSTConnection, Sendable {
   func cancelSnapshot(stream id: UInt64) { inner.cancelSnapshot(stream: id) }
 
   func close() { inner.close() }
+}
+/// Times at which the host's `sendControl` calls returned (the transport
+/// accepted the record), by message.
+final class HostSendLog: Sendable {
+  private let entries = Mutex<[(ContinuousClock.Instant, ControlMessage)]>([])
+
+  var all: [(ContinuousClock.Instant, ControlMessage)] {
+    entries.withLock { $0 }
+  }
+
+  fileprivate func record(_ record: [UInt8]) {
+    var reader = ControlRecordReader()
+    guard let message = (try? reader.append(record))?.first else { return }
+    let now = ContinuousClock.now
+    entries.withLock { $0.append((now, message)) }
+  }
+
+  /// Forwards to the server's QUIC connection, logging control sends.
+  final class Connection: RSTConnection, Sendable {
+    let inner: any RSTConnection
+    let log: HostSendLog
+
+    init(_ inner: any RSTConnection, log: HostSendLog) {
+      self.inner = inner
+      self.log = log
+    }
+
+    var isClosed: Bool { inner.isClosed }
+    func start(_ handler: RSTConnectionHandler) { inner.start(handler) }
+    func sendControl(_ record: [UInt8]) async throws {
+      try await inner.sendControl(record)
+      log.record(record)
+    }
+    func sendSnapshot(_ payload: [UInt8], stream id: UInt64) async throws {
+      let started = ContinuousClock.now
+      defer {
+        let ended = ContinuousClock.now
+        log.snapshots.withLock { $0.append((started, ended, payload.count)) }
+      }
+      try await inner.sendSnapshot(payload, stream: id)
+    }
+    func cancelSnapshot(stream id: UInt64) { inner.cancelSnapshot(stream: id) }
+    func close() { inner.close() }
+  }
+
+  /// Each snapshot send: started, returned, bytes.
+  let snapshots = Mutex<
+    [(ContinuousClock.Instant, ContinuousClock.Instant, Int)]
+  >([])
 }
 #endif

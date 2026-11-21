@@ -31,6 +31,11 @@ struct HostFrameTests {
     let deltas = Atomic(0)
     let unresolved = Atomic(0)
     let bad = Atomic(0)
+    /// Withhold screen acknowledgements until `releaseAcks()`.
+    let holdAcks = Atomic(false)
+    /// Leave the host's pings unanswered.
+    let ignorePings = Atomic(false)
+    let heldAcks = Mutex<[ControlMessage]>([])
 
     init(_ registry: SessionRegistry) {
       let (client, server) = InMemoryRSTConnection.pair()
@@ -39,10 +44,15 @@ struct HostFrameTests {
       client.start(
         RSTConnectionHandler(
           onControl: { [self] bytes in
-            state.withLock { s in
-              if let messages = try? s.reader.append(bytes) {
-                s.messages += messages
-              }
+            let messages = state.withLock { s in
+              let messages = (try? s.reader.append(bytes)) ?? []
+              s.messages += messages
+              return messages
+            }
+            // As RoamingClient: every ping is answered.
+            guard !ignorePings.load(ordering: .acquiring) else { return }
+            for case let .ping(epoch, nonce) in messages {
+              try? await send(.pong(epoch: epoch, nonce: nonce))
             }
           },
           onSnapshot: { [self] bytes in await received(bytes) },
@@ -87,17 +97,41 @@ struct HostFrameTests {
       }
       // As RoamingClient: a refused delta is released by the request for
       // a complete screen, never acknowledged as a base.
-      try? await send(
+      let reply: ControlMessage =
         refused
-          ? .requestFullScreen(
-            epoch: header.attachmentEpoch,
-            screenRevision: header.screenRevision
-          )
-          : .screenAck(
-            epoch: header.attachmentEpoch,
-            screenRevision: header.screenRevision
-          )
-      )
+        ? .requestFullScreen(
+          epoch: header.attachmentEpoch,
+          screenRevision: header.screenRevision
+        )
+        : .screenAck(
+          epoch: header.attachmentEpoch,
+          screenRevision: header.screenRevision
+        )
+      if !refused, holdAcks.load(ordering: .acquiring) {
+        heldAcks.withLock { $0.append(reply) }
+        return
+      }
+      try? await send(reply)
+    }
+
+    func releaseAcks() async throws {
+      holdAcks.store(false, ordering: .releasing)
+      let acks = heldAcks.withLock { held in
+        let acks = held
+        held = []
+        return acks
+      }
+      for ack in acks { try await send(ack) }
+    }
+
+    func chunks(_ request: UInt64) -> Int {
+      state.withLock { s in
+        s.messages
+          .filter {
+            if case .copyChunk(_, request, _, _) = $0 { true } else { false }
+          }
+          .count
+      }
     }
 
     func send(_ message: ControlMessage) async throws {
@@ -357,6 +391,163 @@ struct HostFrameTests {
       _ = try await client.message("input acknowledged") {
         if case .inputAck(_, 3) = $0 { true } else { false }
       }
+    }
+  }
+
+  /// Over QUIC, queued control data delays snapshot streams, so a copy
+  /// chunk waits until the client has acknowledged the screens in flight
+  /// (spec.roaming.md §7.5). Without that, a large copy held the echo of
+  /// typing until the copy finished (spec.multiplexer.md §11, shaped QUIC).
+  @Test(arguments: [false, true])
+  func `copy chunks wait for the screens in flight`(
+    acksResume: Bool
+  ) async throws {
+    try await withRegistry { registry in
+      let grant = try await registry.create(
+        grid: GridSize(columns: 200, rows: 8)
+      )
+      let client = FrameClient(registry)
+      defer { client.connection.close() }
+      _ = try await client.attached(grant)
+      _ = try await client.frame("prompt") {
+        $0.lines.contains { $0.contains("$") }
+      }
+      // About three chunks of history.
+      try await client.send(
+        Self.input(
+          1,
+          .committedText(
+            "i=0; while [ $i -lt 700 ]; do printf '%0190d\\n' $i; i=$((i+1)); done; echo done-mark"
+          )
+        )
+      )
+      try await client.send(Self.input(2, .key(SemanticKey(.enter))))
+      let frame = try await client.frame("output") {
+        $0.lines.contains("done-mark")
+      }
+      let h = frame.history
+      let done = try #require(frame.lines.firstIndex(of: "done-mark"))
+      // A screen the client has received but not acknowledged.
+      client.holdAcks.store(true, ordering: .releasing)
+      try await client.send(Self.input(3, .committedText("echo held-$((3*3))")))
+      try await client.send(Self.input(4, .key(SemanticKey(.enter))))
+      _ = try await client.frame("held screen") { $0.lines.contains("held-9") }
+      let requested = ContinuousClock.now
+      try await client.send(
+        .copySelection(
+          .init(
+            attachmentEpoch: 1,
+            requestID: 9,
+            generation: h.generation,
+            alternateScreen: false,
+            startRow: UInt64(h.firstRow),
+            startColumn: 0,
+            endRow: UInt64(h.viewportTop + done),
+            endColumn: 199,
+            unit: .character,
+            screenRowVersions: []
+          )
+        )
+      )
+      try await Task.sleep(for: .milliseconds(800))
+      #expect(
+        client.chunks(9) == 0,
+        "a chunk overtook an unacknowledged screen"
+      )
+      if acksResume { try await client.releaseAcks() }
+      let result = try await client.message("copy result") {
+        if case .copyResult(_, 9, _, _) = $0 { true } else { false }
+      }
+      guard case let .copyResult(_, _, total, error) = result else { return }
+      #expect(error == nil)
+      #expect((total ?? 0) > 2 * ControlMessage.maxCopyChunkBytes)
+      #expect(client.chunks(9) > 2)
+      if !acksResume {
+        // Acknowledgements never came: every chunk waited out the cap.
+        #expect(
+          ContinuousClock.now - requested >= RoamingSession.copyScreenWait
+            * client.chunks(9)
+        )
+      }
+      try await client.releaseAcks()
+    }
+  }
+
+  /// spec.roaming.md §7.5: one chunk in flight. Each chunk is followed by
+  /// a ping, and the next waits for the pong that proves the client read
+  /// it; a transport accepting more than a chunk ahead (QUIC buffered about
+  /// a second's worth) otherwise put typing's acknowledgement behind it.
+  @Test
+  func `the next copy chunk waits for the client to read the last`()
+    async throws
+  {
+    try await withRegistry { registry in
+      let grant = try await registry.create(
+        grid: GridSize(columns: 200, rows: 8)
+      )
+      let client = FrameClient(registry)
+      defer { client.connection.close() }
+      _ = try await client.attached(grant)
+      _ = try await client.frame("prompt") {
+        $0.lines.contains { $0.contains("$") }
+      }
+      try await client.send(
+        Self.input(
+          1,
+          .committedText(
+            "i=0; while [ $i -lt 700 ]; do printf '%0190d\\n' $i; i=$((i+1)); done; echo done-mark"
+          )
+        )
+      )
+      try await client.send(Self.input(2, .key(SemanticKey(.enter))))
+      let frame = try await client.frame("output") {
+        $0.lines.contains("done-mark")
+      }
+      let h = frame.history
+      let done = try #require(frame.lines.firstIndex(of: "done-mark"))
+      client.ignorePings.store(true, ordering: .releasing)
+      try await client.send(
+        .copySelection(
+          .init(
+            attachmentEpoch: 1,
+            requestID: 5,
+            generation: h.generation,
+            alternateScreen: false,
+            startRow: UInt64(h.firstRow),
+            startColumn: 0,
+            endRow: UInt64(h.viewportTop + done),
+            endColumn: 199,
+            unit: .character,
+            screenRowVersions: []
+          )
+        )
+      )
+      _ = try await client.message("first chunk") {
+        if case .copyChunk(_, 5, 0, _) = $0 { true } else { false }
+      }
+      try await Task.sleep(for: .milliseconds(600))
+      #expect(
+        client.chunks(5) == 1,
+        "a chunk was sent before the last was read"
+      )
+      // The pong for the ping behind chunk 0 releases chunk 1 at once.
+      let ping = try await client.message("ping after the chunk") {
+        if case .ping = $0 { true } else { false }
+      }
+      guard case let .ping(epoch, nonce) = ping else { return }
+      client.ignorePings.store(false, ordering: .releasing)
+      let answered = ContinuousClock.now
+      try await client.send(.pong(epoch: epoch, nonce: nonce))
+      _ = try await client.message("second chunk") {
+        if case .copyChunk(_, 5, 1, _) = $0 { true } else { false }
+      }
+      #expect(ContinuousClock.now - answered < RoamingSession.copyDeliveryWait)
+      let result = try await client.message("copy result") {
+        if case .copyResult(_, 5, _, _) = $0 { true } else { false }
+      }
+      guard case let .copyResult(_, _, _, error) = result else { return }
+      #expect(error == nil)
+      #expect(client.chunks(5) > 2)
     }
   }
 

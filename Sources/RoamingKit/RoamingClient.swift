@@ -57,6 +57,8 @@ public actor RoamingClient {
     case unreachable(String)
     case closed
     case timedOut
+    /// Connected, but `Attached` did not arrive within the progress wait.
+    case stalled
     case rejected(RSTErrorCode)
     case protocolViolation
     case cancelled
@@ -127,6 +129,8 @@ public actor RoamingClient {
   private var bootstrapAttempt: DeadlineOperation<BootstrapResponse>?
   private var attachWaiter: CheckedContinuation<AttachOutcome, Never>?
   private var attachTimeoutTask: Task<Void, Never>?
+  /// Ends an attempt that hears no `Attached` soon after its handshake.
+  private var attachProgressTask: Task<Void, Never>?
   private var backoff: ReconnectBackoff
   private var random = SystemRandomNumberGenerator()
   private var failedAttempts = 0
@@ -502,6 +506,8 @@ public actor RoamingClient {
   private func connectLoop(delayFirst: Bool, id: UInt64) async {
     defer { if connectTaskID == id { connectTask = nil } }
     var delay = delayFirst
+    // A stalled attempt proved the path usable: retry once at once.
+    var retriedStall = false
     while !Task.isCancelled, connectTaskID == id, wantsConnection {
       if delay {
         let seconds = backoff.nextDelay(using: &random)
@@ -547,6 +553,15 @@ public actor RoamingClient {
         attemptFailed(.endpointUnreachable, detail: reason)
       case .closed: attemptFailed(.connectionLost)
       case .timedOut: attemptFailed(.attachTimedOut)
+      case .stalled:
+        attemptFailed(
+          .attachTimedOut,
+          detail: "no Attached after the handshake"
+        )
+        if !retriedStall {
+          retriedStall = true
+          delay = false
+        }
       case .protocolViolation: attemptFailed(.protocolViolation)
       }
     }
@@ -571,6 +586,7 @@ public actor RoamingClient {
     let deadline = timing.now() + configuration.attachTimeout
     let connector = connector
     let operations = connectorOperations
+    let connectStarted = timing.now()
     let conn: any RSTConnection
     do {
       conn = try await DeadlineOperation<any RSTConnection>(discard: {
@@ -592,11 +608,21 @@ public actor RoamingClient {
       conn.close()
       return .cancelled
     }
-    let timeout = deadline - timing.now()
+    let connected = timing.now()
+    let timeout = deadline - connected
     guard timeout > .zero else {
       conn.close()
       return .timedOut
     }
+    // Several handshake round trips without `Attached`: this connection
+    // is not carrying data, though its handshake proved the path usable.
+    // A handshake slowed by loss overstates the round trip, so the wait is
+    // also capped at a third of the attach timeout.
+    let minimum = configuration.attachProgressMinimum
+    let progress = min(
+      max(minimum, (connected - connectStarted) * 4),
+      max(minimum, configuration.attachTimeout / 3)
+    )
     adopt(conn)
     // The connector returns only after the authenticated handshake, so
     // the capability is sent to the pinned peer only.
@@ -619,6 +645,12 @@ public actor RoamingClient {
         do { try await timing.sleep(timeout) } catch { return }
         await self?.attachTimedOut(generation: attachGen)
       }
+      if progress < timeout {
+        attachProgressTask = Task { [weak self] in
+          do { try await timing.sleep(progress) } catch { return }
+          await self?.attachStalled(generation: attachGen)
+        }
+      }
     }
   }
 
@@ -627,9 +659,16 @@ public actor RoamingClient {
     finishAttach(.timedOut)
   }
 
+  private func attachStalled(generation: UInt64) {
+    guard generation == connectionGeneration, epoch == nil else { return }
+    finishAttach(.stalled)
+  }
+
   private func finishAttach(_ outcome: AttachOutcome) {
     attachTimeoutTask?.cancel()
     attachTimeoutTask = nil
+    attachProgressTask?.cancel()
+    attachProgressTask = nil
     attachDeadline = nil
     guard let waiter = attachWaiter else { return }
     attachWaiter = nil
@@ -1022,6 +1061,8 @@ public actor RoamingClient {
       return
     }
     epoch = attached.attachmentEpoch
+    attachProgressTask?.cancel()
+    attachProgressTask = nil
     hostFeatures = attached.features
     frameBases = []
     failCopy(CopyError(.staleEpoch))

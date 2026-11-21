@@ -48,6 +48,13 @@ public struct RoamingClientConfiguration: Sendable {
   /// Bound on queued outbound control records before the connection is
   /// treated as failed.
   public var maxOutboundRecords: Int
+  /// Least time to wait for `Attached` once the transport handshake has
+  /// finished. The wait is four handshake durations, at least this and at
+  /// most the larger of this and a third of `attachTimeout`. Over QUIC, Network can hold a new
+  /// connection's first stream data until the connection closes, so an
+  /// attempt that hears nothing is abandoned after this wait instead of
+  /// after `attachTimeout` (spec.roaming.md §9).
+  public var attachProgressMinimum: Duration
 
   /// `detachDeadline` unless configured otherwise.
   public static let defaultDetachDeadline: Duration = .seconds(2)
@@ -60,7 +67,8 @@ public struct RoamingClientConfiguration: Sendable {
     livenessTick: Duration = .milliseconds(250),
     tokenRefreshMargin: Duration = .seconds(60),
     backoffJitter: Double = 0.2,
-    maxOutboundRecords: Int = 512
+    maxOutboundRecords: Int = 512,
+    attachProgressMinimum: Duration = .milliseconds(1500)
   ) {
     self.initialGrid = initialGrid
     self.detachDeadline = detachDeadline
@@ -70,6 +78,7 @@ public struct RoamingClientConfiguration: Sendable {
     self.tokenRefreshMargin = tokenRefreshMargin
     self.backoffJitter = backoffJitter
     self.maxOutboundRecords = maxOutboundRecords
+    self.attachProgressMinimum = attachProgressMinimum
   }
 }
 

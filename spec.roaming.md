@@ -484,7 +484,7 @@ The host validates it on the session's ordered path and extracts text from its o
 Rules specific to RST/1:
 
 - At most one copy is in flight per attachment; a second request fails with `busy`.
-- The host queues the next chunk only after the previous one has been sent, so typing waits behind at most one chunk and a large copy never fills the control queue.
+- One chunk is in flight at a time. The host sends a `Ping` after each chunk and queues the next one only when the client's matching `Pong` arrives. The ordered control stream means the pong proves the chunk was read; the host waits at most 2 s for it. The host also queues no chunk while a screen awaits the client's acknowledgement, again waiting at most 2 s. Input acknowledgements and screens therefore wait behind at most one chunk, and a large copy never fills the control queue. Both waits matter over QUIC. Network.framework accepts about a second of control data before the client reads it, and it sends queued control-stream data ahead of a snapshot stream. Without the waits, a copy held every screen until it finished, and typing's acknowledgement waited behind a second of chunks. The cost is one round trip per chunk: over the recovery-target profile a 2 MiB copy took 30 s instead of 17–18 s.
 - A new attachment epoch cancels an unfinished copy. The client discards any partial text and never writes it to the pasteboard.
 - Copied text is terminal content. It follows §5.3's rule: never logged, put in analytics or kept in unprotected state.
 - Copy is read-only and needs no writer lease. Clients without a selection UI (tvOS, the watch companion) do not list the feature.
@@ -547,7 +547,7 @@ active -> background-detached -> attaching -> active
 any -> session-exited / session-lost / user-closed
 ```
 
-On applicable Wi-Fi/cellular or other network-path changes, allow the transport to migrate. If it fails, create a fresh QUIC connection, verify the pinned identity, and attach to the same session. Run at most one reconnect attempt at a time. Use jittered backoff: 0.5, 1, 2, 4, 8, then 15 seconds maximum.
+On applicable Wi-Fi/cellular or other network-path changes, allow the transport to migrate. If it fails, create a fresh QUIC connection, verify the pinned identity, and attach to the same session. Run at most one reconnect attempt at a time. Use jittered backoff: 0.5, 1, 2, 4, 8, then 15 seconds maximum. Connect, `Attached` and the first current screen share one 15 s attach deadline. Once the handshake finishes, the client also expects `Attached` within four handshake durations: at least 1.5 s, and at most the larger of 1.5 s and a third of the attach deadline. An attempt that hears nothing in that time is abandoned. The first such attempt in a reconnect sequence is retried at once, because its handshake showed the path works; later ones back off as usual. Over shaped QUIC, Network.framework sometimes held a new connection's first stream data until the connection closed, and each of those recoveries waited out the whole attach deadline.
 
 While foregrounded, send an application heartbeat every 20 seconds when otherwise idle. On pending input or a path-change probe, mark the connection stale after `max(2 seconds, 4 × measured RTT)` without response. Idle screen silence alone is not a failure.
 

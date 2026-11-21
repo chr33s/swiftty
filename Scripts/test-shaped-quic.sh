@@ -24,5 +24,11 @@ done
 
 export SWIFTTY_SHAPED_QUIC=1
 export SWIFTTY_SHAPED_QUIC_PORT="$port"
-exec Scripts/test-native.sh -c release --filter 'ShapedQUICTests' \
+# Filters are alternatives, so a caller's --filter (for example
+# 'recovery target') replaces the whole-suite default rather than adding to it.
+default_filter=(--filter 'ShapedQUICTests')
+for argument in ${arguments[@]+"${arguments[@]}"}; do
+  case "$argument" in --filter|--filter=*) default_filter=() ;; esac
+done
+exec Scripts/test-native.sh -c release ${default_filter[@]+"${default_filter[@]}"} \
   ${arguments[@]+"${arguments[@]}"}

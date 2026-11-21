@@ -116,21 +116,27 @@ None of these recurs on demand: on 2026-10-27 each was repeated 25–40 times wi
   full app UI and SSH bootstrap on tvOS and visionOS, physical devices, signing,
   and signed CloudKit/Keychain propagation. Preserve exact toolchain/platform
   evidence and distinguish disabled checks from executed tests.
-- [ ] Finish [A20 and A22](spec.roaming.md#13-acceptance-tests) over real QUIC:
-  packet-level loss and RTT at the recovery-target profile. The harness exists:
-  `sudo Scripts/quic-shaper.sh up` shapes loopback UDP on one port with
-  dummynet (100 ms each way, 5% loss per direction, about 2% reordered through a
-  slower parallel pipe, 1 Mbit/s per direction), and `Scripts/test-shaped-quic.sh`
-  runs `ShapedQUICTests` (A20 workload and feature stripping, A22 history copy,
-  edit under selection and typing during a 2 MiB copy, the `screenDeltas` bytes
-  and CPU report, and 100 timed warm recoveries against the 3 s p95 target). The
-  suite's first test measures the port and fails if it is not shaped. It has
-  run only on unshaped loopback (2026-11-21, all scenarios passing); run it
-  shaped (needs root), record the report in
-  [spec.multiplexer.md §11](spec.multiplexer.md#follow-up-review-and-measurements--2026-11-20),
-  then `sudo Scripts/quic-shaper.sh down`. Over QUIC, connection loss is a
-  server close at the next opportunity, not at an exact acknowledgement
-  boundary; the in-process impaired link keeps that coverage.
+- [ ] **Copy throughput over high-latency links:** since 2026-11-21 one
+  copy chunk is in flight at a time (ping/pong fence, spec.roaming.md §7.5),
+  which fixed typing over shaped QUIC: the echo arrives in 0.85 s and the input
+  acknowledgement in 0.80 s, where they took 16–18 s and 1.3–2.2 s. A 2 MiB
+  copy now takes 30 s instead of 17–18 s at 1 Mbit/s and 200 ms RTT, and one
+  chunk per round trip caps fast long links (2 MiB in about 4.3 s at 100 ms
+  RTT). Decide whether a two-chunk window, so typing waits behind up to two
+  chunks, is an acceptable change to §7.5's one-chunk rule.
+- [ ] **QUIC first-stream stall:** about 5–11% of shaped reconnects get a
+  connection whose handshake completes but whose first stream data
+  Network.framework holds until the connection closes (host lifecycle log:
+  streams 0 and 4 arrive only at close). The client now abandons such an
+  attempt after a short progress wait and retries at once (spec.roaming.md §9),
+  so the recovery p95 is 2.3–2.8 s against the 3 s target, down from 16.5 s.
+  The stall itself is unexplained. Reproduce it outside the app (two bare
+  NWConnectionGroups under `Scripts/quic-shaper.sh`) and report it to Apple if
+  it is Network.framework's.
+- [ ] Rerun the whole shaped suite after any change to copy, attach or QUIC
+  stream handling; it passed in full on 2026-11-21 with both fixes. Shaping
+  needs root: `sudo Scripts/quic-shaper.sh up`, `Scripts/test-shaped-quic.sh`,
+  then `sudo Scripts/quic-shaper.sh down`.
 - [ ] Run the OS-gated QUIC tests in CI: the `xcode-27` runner (macOS 27.0.1)
   skips the stream-reset and migration tests. The `network-framework-27-2` CI job
   runs both on a self-hosted runner with `SWIFTTY_REQUIRE_OS_GATED=1`, which makes

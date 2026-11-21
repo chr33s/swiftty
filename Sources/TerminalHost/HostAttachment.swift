@@ -74,6 +74,14 @@ final class HostAttachment: @unchecked Sendable {
   /// `RequestFullScreen` for any older refused delta.
   var lastFullScreenRevision: UInt64 = 0
   var copyInFlight = false
+  /// The next copy chunk, held while a screen awaits acknowledgement
+  /// (spec.roaming.md §7.5), and the token that matches its cap timer.
+  var heldCopyChunk: (@Sendable () -> Void)?
+  var heldCopyToken: UInt64 = 0
+  /// The ping sent after the last copy chunk, and the next chunk, sent
+  /// when the client's matching pong proves the chunk was read.
+  var copyFence: (nonce: UInt64, next: @Sendable () -> Void)?
+  var copyPingNonce: UInt64 = 0
 
   init(connection: any RSTConnection, registry: SessionRegistry) {
     self.connection = connection

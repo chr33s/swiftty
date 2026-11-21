@@ -908,6 +908,8 @@ public final class RoamingSession: @unchecked Sendable {
       }
       performLayout(action, request: id, for: a)
     case let .ping(_, nonce): a.send(.pong(epoch: a.epoch, nonce: nonce))
+    // The answer to a copy delivery ping (`sendCopy`); others are stale.
+    case let .pong(_, nonce): releaseCopyFence(a, nonce: nonce)
     case .detach:
       a.send(.detached(epoch: a.epoch))
       detachOnQueue(a)
@@ -1060,17 +1062,42 @@ public final class RoamingSession: @unchecked Sendable {
     )
   }
 
+  /// Longest a copy chunk waits for the client to acknowledge the screens
+  /// in flight, so a copy still finishes if acknowledgements stop.
+  static let copyScreenWait: Duration = .seconds(2)
+
   private func sendCopy(
     _ chunks: [String],
     index: Int,
     total: UInt64,
     request: UInt64,
     epoch: UInt64,
-    to a: HostAttachment
+    to a: HostAttachment,
+    waited: Bool = false
   ) {
     // A new epoch cancels the copy; its client discards partial text.
     guard a === attachment, a.isCurrent, a.epoch == epoch else {
       a.copyInFlight = false
+      return
+    }
+    // Over QUIC, Network sends queued control-stream data ahead of a
+    // snapshot stream, so a copy that kept the control stream full held
+    // every screen, the echo of typing included, until it finished. Each
+    // chunk waits until no screen awaits acknowledgement, at most
+    // `copyScreenWait`.
+    if index < chunks.count, !waited, !a.scheduler.streams.isEmpty {
+      holdCopyChunk(for: a) { [weak self] in
+        self?
+          .sendCopy(
+            chunks,
+            index: index,
+            total: total,
+            request: request,
+            epoch: epoch,
+            to: a,
+            waited: true
+          )
+      }
       return
     }
     guard index < chunks.count else {
@@ -1093,22 +1120,70 @@ public final class RoamingSession: @unchecked Sendable {
         text: chunks[index]
       )
     )
-    // One chunk in the control queue at a time: input and screen acks wait
-    // at most one chunk, and a large copy cannot overflow the byte limit.
-    a.whenControlIdle { [weak self] in
-      self?.queue
-        .async { [weak self] in
-          self?
-            .sendCopy(
-              chunks,
-              index: index + 1,
-              total: total,
-              request: request,
-              epoch: epoch,
-              to: a
-            )
-        }
+    // One chunk in flight at a time: input acknowledgements and screens
+    // wait behind at most one chunk, and a large copy cannot overflow the
+    // byte limit. A transport accepts far more than one chunk before the
+    // client reads it (QUIC: about a second's worth), so the next chunk
+    // waits for the client's pong to a ping sent after this one; the
+    // ordered control stream means the pong follows the chunk's arrival.
+    a.copyPingNonce &+= 1
+    let nonce = a.copyPingNonce
+    a.send(.ping(epoch: epoch, nonce: nonce))
+    a.copyFence = (
+      nonce,
+      { [weak self] in
+        self?
+          .sendCopy(
+            chunks,
+            index: index + 1,
+            total: total,
+            request: request,
+            epoch: epoch,
+            to: a
+          )
+      }
+    )
+    queue.asyncAfter(deadline: .now() + Self.copyDeliveryWait.dispatchInterval)
+    { [weak self, a] in self?.releaseCopyFence(a, nonce: nonce) }
+  }
+
+  /// Longest a copy waits for the pong that shows its last chunk arrived.
+  static let copyDeliveryWait: Duration = .seconds(2)
+
+  /// Sends the next copy chunk once the client answered `nonce`, or the
+  /// wait for it ran out. Stale or unknown pongs do nothing.
+  private func releaseCopyFence(_ a: HostAttachment, nonce: UInt64) {
+    guard let fence = a.copyFence, fence.nonce == nonce else { return }
+    a.copyFence = nil
+    fence.next()
+  }
+
+  /// Holds `chunk` until `releaseHeldCopyChunk` finds no screen in flight,
+  /// or `copyScreenWait` passes. Runs on the session queue.
+  private func holdCopyChunk(
+    for a: HostAttachment,
+    _ chunk: @escaping @Sendable () -> Void
+  ) {
+    a.heldCopyToken &+= 1
+    let token = a.heldCopyToken
+    a.heldCopyChunk = chunk
+    queue.asyncAfter(deadline: .now() + Self.copyScreenWait.dispatchInterval) {
+      [a] in
+      guard a.heldCopyToken == token, let held = a.heldCopyChunk else { return }
+      a.heldCopyChunk = nil
+      held()
     }
+  }
+
+  /// Sends a held copy chunk once every screen in flight is acknowledged
+  /// or has failed. Called before the next capture, so the chunk is queued
+  /// ahead of that screen and the screen waits behind at most one chunk.
+  private func releaseHeldCopyChunk(_ a: HostAttachment) {
+    guard a.scheduler.streams.isEmpty, let held = a.heldCopyChunk else {
+      return
+    }
+    a.heldCopyChunk = nil
+    held()
   }
 
   /// Splits on scalar boundaries into pieces whose JSON encoding fits
@@ -1483,6 +1558,7 @@ public final class RoamingSession: @unchecked Sendable {
   }
 
   private func pumpSnapshots(_ a: HostAttachment) {
+    releaseHeldCopyChunk(a)
     guard a === attachment, a.isCurrent, let pane = activePane else { return }
     pruneSnapshotWork()
     let now = ContinuousClock.now
@@ -1560,6 +1636,7 @@ public final class RoamingSession: @unchecked Sendable {
     guard wantsSnapshot(stream: stream, from: a) else { return }
     guard let screen else {
       a.scheduler.failed(stream: stream)
+      releaseHeldCopyChunk(a)
       return
     }
     if let exit, !a.exitNoticeSent {
@@ -1719,7 +1796,7 @@ public final class RoamingSession: @unchecked Sendable {
   {
     guard wantsSnapshot(stream: stream, from: a) else { return }
     a.scheduler.failed(stream: stream)
-    if retry { pumpSnapshots(a) }
+    if retry { pumpSnapshots(a) } else { releaseHeldCopyChunk(a) }
   }
 }
 

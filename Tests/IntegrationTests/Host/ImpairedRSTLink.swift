@@ -721,17 +721,21 @@ struct ObservingBootstrapper: RemoteBootstrapper {
 /// a display.
 final class InstallLog: PresentationSink {
   private let frames = Mutex<[PresentationFrame]>([])
+  private let installedAt = Mutex<[ContinuousClock.Instant]>([])
   let display: (any PresentationSink)?
 
   init(display: (any PresentationSink)? = nil) { self.display = display }
 
   func install(_ frame: PresentationFrame) -> Bool {
     frames.withLock { $0.append(frame) }
+    installedAt.withLock { $0.append(.now) }
     display?.install(frame)
     return true
   }
 
   var all: [PresentationFrame] { frames.withLock { $0 } }
+  /// When each frame in `all` was installed.
+  var times: [ContinuousClock.Instant] { installedAt.withLock { $0 } }
   var last: PresentationFrame? { frames.withLock { $0.last } }
   var lines: [String] {
     guard let last else { return [] }
