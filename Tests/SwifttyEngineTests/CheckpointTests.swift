@@ -18,29 +18,30 @@ struct CheckpointTests {
   /// Text, wide and combined clusters, colour, links, titles, cursor and
   /// margin movement, modes, charsets, prompts, kitty keyboard flags,
   /// saved cursors, the alternate screen and enough lines for history.
+  static let fragments: [String] = [
+    "plain text ", "wide 漢字 ", "e\u{301}\u{302} ", "👨‍👩‍👧 ", "🇳🇿 ",
+    "\u{1B}[1;31mred\u{1B}[0m ", "\u{1B}[38;2;10;20;30;48;5;200mrgb\u{1B}[m ",
+    "\u{1B}[4:3;58:2::1:2:3mcurly\u{1B}[0m ",
+    "\u{1B}]8;;https://example.invalid/a\u{07}link\u{1B}]8;;\u{07} ",
+    "\u{1B}]8;id=x;https://example.invalid/b\u{07}idlink\u{1B}]8;;\u{07} ",
+    "\u{1B}]8;id=x;https://example.invalid/b\u{07}again\u{1B}]8;;\u{07} ",
+    "\u{1B}]2;title here\u{07}", "\u{1B}]7;file://localhost/tmp\u{07}",
+    "\u{1B}[5;10H", "\u{1B}[2J", "\u{1B}[K", "\u{1B}[3;8r", "\u{1B}[r",
+    "\u{1B}[?6h", "\u{1B}[?6l", "\u{1B}[?7l", "\u{1B}[?7h", "\u{1B}[?25l",
+    "\u{1B}[?25h", "\u{1B}[4h", "\u{1B}[4l", "\u{1B}(0lqk\u{1B}(B ", "\u{1B}7",
+    "\u{1B}8", "\u{1B}H", "\u{1B}[3g", "\u{1B}[2 q",
+    "\u{1B}]133;A\u{07}$ \u{1B}]133;B\u{07}ls\r\n\u{1B}]133;C\u{07}",
+    "out\r\n\u{1B}]133;D;0\u{07}", "\u{1B}[>1u", "\u{1B}[<u", "\u{1B}[#{",
+    "\u{1B}[#}", "\u{1B}[22;0t", "\u{1B}[23;0t", "\u{1B}[?1049h",
+    "\u{1B}[?1049l", "\u{1B}[?2004h", "\u{1B}[?1004h", "\u{1B}[?1000h",
+    "\u{1B}[?1006h", "\u{1B}D", "\u{1B}M", "\u{1B}[2L", "\u{1B}[2M",
+    "\u{1B}[3@", "\u{1B}[2P", "\u{1B}[5X", "\t", "\r\n", "\r\n", "\r\n",
+    "line of output\r\n", "\u{1B}]4;1;rgb:12/34/56\u{07}",
+    "\u{1B}]10;rgb:ff/ee/dd\u{07}", "\u{1B}P$qm\u{1B}\\",
+  ]
+
   static func stream(seed: UInt64, pieces: Int = 400) -> [UInt8] {
     var random = Random(state: seed)
-    let fragments: [String] = [
-      "plain text ", "wide 漢字 ", "e\u{301}\u{302} ", "👨‍👩‍👧 ", "🇳🇿 ",
-      "\u{1B}[1;31mred\u{1B}[0m ", "\u{1B}[38;2;10;20;30;48;5;200mrgb\u{1B}[m ",
-      "\u{1B}[4:3;58:2::1:2:3mcurly\u{1B}[0m ",
-      "\u{1B}]8;;https://example.invalid/a\u{07}link\u{1B}]8;;\u{07} ",
-      "\u{1B}]8;id=x;https://example.invalid/b\u{07}idlink\u{1B}]8;;\u{07} ",
-      "\u{1B}]8;id=x;https://example.invalid/b\u{07}again\u{1B}]8;;\u{07} ",
-      "\u{1B}]2;title here\u{07}", "\u{1B}]7;file://localhost/tmp\u{07}",
-      "\u{1B}[5;10H", "\u{1B}[2J", "\u{1B}[K", "\u{1B}[3;8r", "\u{1B}[r",
-      "\u{1B}[?6h", "\u{1B}[?6l", "\u{1B}[?7l", "\u{1B}[?7h", "\u{1B}[?25l",
-      "\u{1B}[?25h", "\u{1B}[4h", "\u{1B}[4l", "\u{1B}(0lqk\u{1B}(B ",
-      "\u{1B}7", "\u{1B}8", "\u{1B}H", "\u{1B}[3g", "\u{1B}[2 q",
-      "\u{1B}]133;A\u{07}$ \u{1B}]133;B\u{07}ls\r\n\u{1B}]133;C\u{07}",
-      "out\r\n\u{1B}]133;D;0\u{07}", "\u{1B}[>1u", "\u{1B}[<u", "\u{1B}[#{",
-      "\u{1B}[#}", "\u{1B}[22;0t", "\u{1B}[23;0t", "\u{1B}[?1049h",
-      "\u{1B}[?1049l", "\u{1B}[?2004h", "\u{1B}[?1004h", "\u{1B}[?1000h",
-      "\u{1B}[?1006h", "\u{1B}D", "\u{1B}M", "\u{1B}[2L", "\u{1B}[2M",
-      "\u{1B}[3@", "\u{1B}[2P", "\u{1B}[5X", "\t", "\r\n", "\r\n", "\r\n",
-      "line of output\r\n", "\u{1B}]4;1;rgb:12/34/56\u{07}",
-      "\u{1B}]10;rgb:ff/ee/dd\u{07}", "\u{1B}P$qm\u{1B}\\",
-    ]
     var out: [UInt8] = []
     for _ in 0 ..< pieces {
       out.append(contentsOf: fragments[random.int(fragments.count)].utf8)

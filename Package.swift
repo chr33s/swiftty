@@ -471,7 +471,7 @@ let package = Package(
     ),
     .testTarget(
       name: "MuxAttentionTests",
-      dependencies: ["MuxAttention", "SwiftMuxProtocol"]
+      dependencies: ["MuxAttention", "SwiftMuxProtocol", "TestSupport"]
     ),
     .testTarget(
       name: "SwifttyAppTests",
