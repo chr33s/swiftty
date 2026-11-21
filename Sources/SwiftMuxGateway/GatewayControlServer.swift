@@ -266,6 +266,15 @@ package final class GatewayControlServer: @unchecked Sendable {
     case let .deleteSaved(id):
       try await runtime.deleteSaved(id)
       return (.deletedSaved, nil)
+    case let .previousOutput(id, pane, offset):
+      return (
+        .previousOutput(
+          try await runtime.previousOutput(id, pane: pane, offset: offset)
+        ), nil
+      )
+    case let .discardPreviousOutput(id, pane):
+      try await runtime.discardPreviousOutput(id, pane: pane)
+      return (.deletedSaved, nil)
     }
   }
 

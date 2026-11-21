@@ -1656,6 +1656,68 @@ final class PaneRuntime: @unchecked Sendable {
     if delta != 0 { state.scrollViewport(by: delta) }
   }
 
+  /// The newest main-screen rows for a saved layout (spec.durability.md
+  /// §12.2.5, C1), or nil when unchanged since `revision`. Refused while the
+  /// alternate screen is shown. The controller's viewport and search are
+  /// restored before returning; nothing reaches the PTY.
+  func exportSavedOutput(
+    ifChangedSince revision: UInt64?,
+    completion:
+      @escaping @Sendable (Result<(UInt64, SavedOutput?), MuxError>) -> Void
+  ) {
+    queue.async { [self] in
+      let current = changeCount
+      guard current != revision else {
+        return completion(.success((current, nil)))
+      }
+      guard !state.isAlternateScreen else {
+        return completion(
+          .failure(MuxError(.quiescing, "the alternate screen is shown"))
+        )
+      }
+      let saved = (state.viewportOffset, state.snapshotSearch())
+      defer { restore(offset: saved.0, search: saved.1) }
+      let rows = state.rows
+      let history = state.scrollbackCount
+      let wanted = min(history + rows, SavedOutput.maxRows)
+      // Absolute line of the first row kept; line `history` is the top of
+      // the live grid.
+      let first = history + rows - wanted
+      var builder = SavedOutputBuilder()
+      var next = first
+      let identity = FrameIdentity(
+        server: ServerInstanceID(),
+        attachment: AttachmentID(),
+        pane: id,
+        revision: 0,
+        layoutRevision: 0,
+        geometryGeneration: 0,
+        viewportRevision: 0
+      )
+      while next < history + rows {
+        // The viewport whose top row is `next`, clamped to the history.
+        let offset = max(0, history - next)
+        let delta = offset - state.viewportOffset
+        if delta != 0 { state.scrollViewport(by: delta) }
+        let top = history - state.viewportOffset
+        do {
+          let frame = try FrameExporter.frame(
+            from: state.captureOwnedScreen(),
+            identity: identity,
+            limits: limits
+          )
+          builder.append(frame, rows: (next - top) ..< rows)
+        } catch let error as MuxError {
+          return completion(.failure(error))
+        } catch {
+          return completion(.failure(MuxError(.resourceLimit, "\(error)")))
+        }
+        next = top + rows
+      }
+      completion(.success((current, builder.build())))
+    }
+  }
+
   /// Plain text of the visible screen (tests, diagnostics).
   func screenLines() -> [String] { queue.sync { state.screenLines } }
 

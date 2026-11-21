@@ -185,3 +185,25 @@ package struct SavedLayoutRecord: Codable, Sendable, Equatable {
     try template.validate(maxPanes: maxPanes)
   }
 }
+
+/// Reads a pane's saved output from its worker (C1): the revision and, when
+/// changed since the given one, the encoded rows.
+package typealias SavedOutputSource =
+  @Sendable (PaneID, UInt64?) async throws -> (revision: UInt64, bytes: Data?)
+
+extension SavedLayoutContent {
+  /// Pane to slot, in the same depth-first order the content uses.
+  package static func slots(_ state: SavedLayoutState) -> [PaneID: Int] {
+    var slots: [PaneID: Int] = [:]
+    func visit(_ node: LayoutNode) {
+      switch node {
+      case let .pane(id): if slots[id] == nil { slots[id] = slots.count }
+      case let .split(_, _, first, second):
+        visit(first)
+        visit(second)
+      }
+    }
+    for tab in state.graph?.tabs ?? [] { visit(tab.layout) }
+    return slots
+  }
+}

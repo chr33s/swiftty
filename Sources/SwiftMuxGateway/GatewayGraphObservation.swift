@@ -149,6 +149,42 @@ package actor GatewayGraphObservation {
     return state
   }
 
+  /// A pane's newest main-screen rows (C1), assembled from bounded pages;
+  /// nil bytes when unchanged since `revision`.
+  package func savedOutput(
+    pane: PaneID,
+    ifChangedSince revision: UInt64?
+  ) async throws -> (revision: UInt64, bytes: Data?) {
+    guard !closed,
+      await client.welcome?.features.contains(.savedLayoutMetadata) == true
+    else { throw MuxError(.incompatibleVersion, "no saved output support") }
+    var bytes = Data()
+    var offset = 0
+    var current: UInt64 = 0
+    repeat {
+      guard
+        case let .savedOutputPage(page) = try await client.execute(
+          .exportSavedOutput(
+            pane: pane,
+            ifChangedSince: offset == 0 ? revision : nil,
+            offset: offset
+          )
+        ), page.offset == offset, page.bytes.count <= SavedOutputPage.maxBytes,
+        page.total <= SavedOutput.maxBytes, offset == 0 || page.modified,
+        offset == 0 || page.revision == current
+      else { throw MuxError(.invalidRequest, "invalid saved output page") }
+      current = page.revision
+      guard page.modified else { return (current, nil) }
+      bytes.append(page.bytes)
+      offset += page.bytes.count
+      guard !page.bytes.isEmpty || offset >= page.total else {
+        throw MuxError(.invalidRequest, "empty saved output page")
+      }
+      if offset >= page.total { break }
+    } while true
+    return (current, bytes)
+  }
+
   package func close() async {
     closed = true
     graph = nil

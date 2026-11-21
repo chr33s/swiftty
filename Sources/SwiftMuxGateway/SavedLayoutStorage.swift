@@ -181,6 +181,8 @@ package protocol SavedLayoutKeyStore: Sendable {
   func lookup() -> SavedLayoutKeyLookup
   func create() throws -> SymmetricKey
   func delete() throws
+  /// Rotation: the old key is gone once this returns.
+  func replace(with key: SymmetricKey) throws
 }
 
 /// The user's login keychain. An item the signed gateway creates is
@@ -218,6 +220,16 @@ package struct LoginKeychainKeyStore: SavedLayoutKeyStore {
 
   package func create() throws -> SymmetricKey {
     let key = SymmetricKey(size: .bits256)
+    try store(key)
+    return key
+  }
+
+  package func replace(with key: SymmetricKey) throws {
+    try delete()
+    try store(key)
+  }
+
+  private func store(_ key: SymmetricKey) throws {
     var item = query
     item[kSecValueData as String] = key.withUnsafeBytes { Data($0) }
     item[kSecAttrLabel as String] = "Swiftty saved workspaces"
@@ -226,7 +238,6 @@ package struct LoginKeychainKeyStore: SavedLayoutKeyStore {
     guard status == errSecSuccess else {
       throw MuxError(.unauthorized, "cannot store saved layout key (\(status))")
     }
-    return key
   }
 
   package func delete() throws {
@@ -278,6 +289,15 @@ package final class MemoryKeyStore: SavedLayoutKeyStore {
       value.key = nil
     }
   }
+  package func replace(with key: SymmetricKey) throws {
+    try state.withLock { value in
+      if let reason = value.unavailable {
+        throw MuxError(.unauthorized, reason)
+      }
+      value.key = key
+    }
+  }
+  package var currentKey: SymmetricKey? { state.withLock { $0.key } }
 }
 
 // MARK: Files

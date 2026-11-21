@@ -477,6 +477,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         "Rename Workspace…",
         #selector(workspace.renameCurrentWorkspace(_:))
       ), .separator(),
+      item("Show Previous Output", #selector(workspace.showPreviousOutput(_:))),
+      item(
+        "Discard Previous Output",
+        #selector(workspace.discardPreviousOutput(_:))
+      ), .separator(),
       item("Close Window", #selector(NSWindow.performClose(_:)), key: "w"),
       item(
         "End Pane…",

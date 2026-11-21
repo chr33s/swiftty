@@ -557,4 +557,160 @@ struct SavedLayoutStoreTests {
     await service.reconcile(fixture.inventory()) { _ in }
     #expect(await service.recordIDs.count == 2)
   }
+
+  // MARK: C1
+
+  private func enableOutput(_ service: SavedLayoutService) async throws {
+    var policy = await service.currentPolicy
+    policy.saveOutput = true
+    _ = try await service.setPolicy(policy, expectedRevision: policy.revision)
+  }
+
+  @Test
+  func outputIsExportedSealedAndDroppedWithKeyRotation() async throws {
+    let fixture = try Fixture()
+    let service = await fixture.service()
+    try await enableOutput(service)
+    let id = WorkspaceID()
+    let state = Self.state(id)
+    let encoded = try SavedOutputTests.sample().encoded()
+    let calls = Mutex(0)
+    await service.observe(fixture.authority(id), state: state)
+    await service.setOutputSource(fixture.authority(id)) { _, revision in
+      calls.withLock { $0 += 1 }
+      // Unchanged after the first export of each pane.
+      return revision == nil ? (7, encoded) : (7, nil)
+    }
+    await service.exportOutputs()
+    try await waitFor {
+      (await service.list(fixture.inventory(), markOffered: false).workspaces
+        .first?
+        .hasOutput) == true
+    }
+    #expect(calls.withLock { $0 } == 3)
+    await service.exportOutputs()
+    #expect(calls.withLock { $0 } == 6)
+    // Output stays sealed: the plaintext never reaches the file.
+    let generation = try #require(try fixture.files.generations()[id]?.last)
+    let file = try fixture.files.read(id, generation: generation)
+    #expect(file.range(of: Data("SMXO".utf8)) == nil)
+    #expect(
+      (await fixture.service().list(fixture.inventory(), markOffered: false)
+        .workspaces.first?
+        .hasOutput) == true
+    )
+    let oldKey = try #require(fixture.keys.currentKey)
+    var off = await service.currentPolicy
+    off.saveOutput = false
+    _ = try await service.setPolicy(off, expectedRevision: off.revision)
+    #expect(
+      (await service.list(fixture.inventory(), markOffered: false).workspaces
+        .first?
+        .hasOutput) == false
+    )
+    #expect(fixture.keys.currentKey != oldKey)
+    #expect(try fixture.files.generations()[id]?.count == 1)
+    // Only the new key opens what is left.
+    let reloaded = await fixture.service()
+    #expect(await reloaded.record(id) != nil)
+  }
+
+  @Test
+  func previousOutputFollowsTheReopenedPanesUntilDiscarded() async throws {
+    let fixture = try Fixture()
+    let service = await fixture.service()
+    try await enableOutput(service)
+    let source = WorkspaceID()
+    let state = Self.state(source)
+    let encoded = try SavedOutputTests.sample().encoded()
+    await service.observe(fixture.authority(source), state: state)
+    await service.setOutputSource(fixture.authority(source)) { _, _ in
+      (1, encoded)
+    }
+    await service.exportOutputs()
+    try await waitFor {
+      (await service.list(fixture.inventory(), markOffered: false).workspaces
+        .first?
+        .hasOutput) == true
+    }
+    await service.observe(
+      fixture.authority(source),
+      state: Self.state(source, end: .ended(.retained))
+    )
+    // The reopened workspace's panes, by template slot.
+    let panes = (0 ..< 3).map { _ in PaneID() }
+    let (target, _) = try await service.reopen(
+      SavedReopenRequest(
+        record: source,
+        launch: LaunchSpec(
+          command: nil,
+          workingDirectory: nil,
+          environment: [:]
+        )
+      ),
+      inventory: fixture.inventory(incarnation: UUID())
+    ) { _, _ in
+      WorkspaceTemplateOutcome(
+        panes: [0: panes[0], 1: panes[1], 2: panes[2]],
+        failedSlots: [],
+        directoryFallbackSlots: []
+      )
+    }
+    var reopened = Self.state(target)
+    reopened.graph?.tabs[0].layout = .split(
+      axis: .leftRight,
+      ratio: 0.4,
+      first: .pane(panes[0]),
+      second: .pane(panes[1])
+    )
+    reopened.graph?.tabs[0].activePane = panes[0]
+    reopened.graph?.tabs[1].layout = .pane(panes[2])
+    reopened.graph?.tabs[1].activePane = panes[2]
+    await service.observe(fixture.authority(target), state: reopened)
+    let page = try await service.previousOutput(
+      target,
+      pane: panes[1],
+      offset: 0
+    )
+    #expect(try SavedOutput(decoding: page.bytes) == SavedOutputTests.sample())
+    // A pane that ends drops its previous output; discard drops the rest.
+    var shrunk = Self.state(target, panes: 1)
+    shrunk.graph?.tabs[0].layout = .pane(panes[0])
+    shrunk.graph?.tabs[0].activePane = panes[0]
+    shrunk.graph?.panes = [PaneSummary(id: panes[0], columns: 80, rows: 24)]
+    shrunk.panes = [
+      SavedPaneMetadata(
+        pane: panes[0],
+        launch: .loginShell,
+        localDirectory: nil
+      )
+    ]
+    await service.observe(fixture.authority(target), state: shrunk)
+    await #expect(throws: MuxError.self) {
+      try await service.previousOutput(target, pane: panes[1], offset: 0)
+    }
+    _ = try await service.previousOutput(target, pane: panes[0], offset: 0)
+    await service.discardPreviousOutput(target, pane: nil)
+    await #expect(throws: MuxError.self) {
+      try await service.previousOutput(target, pane: panes[0], offset: 0)
+    }
+  }
+
+  @Test
+  func optedOutWorkspacesAreNeverExported() async throws {
+    let fixture = try Fixture()
+    let service = await fixture.service()
+    try await enableOutput(service)
+    let id = WorkspaceID()
+    var state = Self.state(id)
+    state.outputOptOut = true
+    let calls = Mutex(0)
+    await service.observe(fixture.authority(id), state: state)
+    await service.setOutputSource(fixture.authority(id)) { _, _ in
+      calls.withLock { $0 += 1 }
+      return (1, Data())
+    }
+    await service.exportOutputs()
+    #expect(calls.withLock { $0 } == 0)
+  }
 }

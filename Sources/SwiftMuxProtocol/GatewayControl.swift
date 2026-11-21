@@ -33,6 +33,10 @@ public enum GatewayControlCommand: Codable, Sendable, Equatable {
   case setSavedPolicy(SavedLayoutPolicy, expectedRevision: UInt64)
   /// Nil deletes every record and the key.
   case deleteSaved(WorkspaceID?)
+  /// C1: output carried into a reopened workspace's pane, in pages.
+  case previousOutput(WorkspaceID, pane: PaneID, offset: Int)
+  /// Nil pane discards every pane's previous output.
+  case discardPreviousOutput(WorkspaceID, pane: PaneID?)
 }
 
 public enum GatewayControlEvent: Codable, Sendable {
@@ -56,6 +60,7 @@ public enum GatewayControlReply: Codable, Sendable {
   case reopened(WorkspaceID, WorkspaceTemplateOutcome)
   case savedPolicy(SavedLayoutPolicy)
   case deletedSaved
+  case previousOutput(SavedOutputPage)
 }
 
 public struct GatewayRouteDescriptor: Codable, Sendable, Equatable {

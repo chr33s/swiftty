@@ -57,6 +57,8 @@ public actor MuxService {
   var pendingEndDisposition: SavedLayoutDisposition?
   /// Template creations whose launches have not all settled.
   var templateCreations: [UUID: TemplateCreation] = [:]
+  /// One saved-output snapshot being paged to the gateway (C1).
+  var savedOutputExport: SavedOutputExport?
   var gatewayPeerPID: Int32?
   var pendingHistoryBytes = 0
   /// Latest frontend theme, applied to every pane and to new ones.
@@ -541,6 +543,18 @@ public actor MuxService {
         )
       }
       reply(.success(.savedLayoutState(takeSavedLayoutState(workspace))))
+    case let .exportSavedOutput(pane, revision, offset):
+      guard gatewayGraphWorkspace(client) != nil else {
+        return fail(
+          MuxError(.unauthorized, "saved output requires the current gateway")
+        )
+      }
+      exportSavedOutput(
+        pane: pane,
+        ifChangedSince: revision,
+        offset: offset,
+        reply: reply
+      )
     case let .observeWorkspaces(on):
       client.observesWorkspaces = on
       reply(.success(.workspaces(summaries)))
@@ -1045,8 +1059,8 @@ public actor MuxService {
       .endWorkspace, .renameWorkspace, .detachActive, .endAllWorkspaces,
       .attach, .detach, .switchWorkspace, .quiesce, .setTheme, .takeover,
       .observeWorkspaces, .observeWorkspaceGraph, .savedLayoutState,
-      .subscribeAutomation, .subscribeInbox, .inbox, .locateAttention,
-      .markSeen, .snooze, .markReviewed:
+      .exportSavedOutput, .subscribeAutomation, .subscribeInbox, .inbox,
+      .locateAttention, .markSeen, .snooze, .markReviewed:
       ok()  // handled by `handle`
     }
   }

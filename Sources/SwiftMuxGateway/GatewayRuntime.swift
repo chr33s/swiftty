@@ -68,7 +68,10 @@ package actor GatewayRuntime {
           state: { authority, state in
             await saved.observe(authority, state: state)
           },
-          lost: { id in await saved.workerLost(id) }
+          lost: { id in await saved.workerLost(id) },
+          output: { authority, source in
+            await saved.setOutputSource(authority, source)
+          }
         )
       }
       try await discovery.refresh()
@@ -305,6 +308,24 @@ package actor GatewayRuntime {
   package func deleteSaved(_ id: WorkspaceID?) async throws {
     try checkOpen()
     try await savedService().deleteSaved(id)
+  }
+
+  package func previousOutput(
+    _ id: WorkspaceID,
+    pane: PaneID,
+    offset: Int
+  ) async throws -> SavedOutputPage {
+    try checkOpen()
+    return try await savedService()
+      .previousOutput(id, pane: pane, offset: offset)
+  }
+
+  package func discardPreviousOutput(
+    _ id: WorkspaceID,
+    pane: PaneID?
+  ) async throws {
+    try checkOpen()
+    try await savedService().discardPreviousOutput(id, pane: pane)
   }
 
   private static func reconcileSaved(

@@ -202,8 +202,10 @@ validation, lifecycle and reply provenance.
 
 [spec.durability.md](spec.durability.md) proposes session survival across
 app/gateway updates and restarts, followed by planned live worker replacement.
-Exact worker-crash recovery is a deferred extension; saved layouts after reboot
-are Capability C (spec.durability.md §12.2). A separate `swiftmux-gateway` executable now composes native control,
+Exact worker-crash recovery is a deferred extension. Saved layouts after reboot
+are Capability C (spec.durability.md §12.2): with the durable gateway,
+`swmux --gateway-service NAME saved` lists them, `restore` reopens one with
+fresh shells, and the app offers them in Open Workspace and at launch. A separate `swiftmux-gateway` executable now composes native control,
 continuous discovery and worker routing for the durable topology. It requires
 explicit launchd service arguments and team signing; the app installer does not
 yet register or select it. The behavior below describes the current production

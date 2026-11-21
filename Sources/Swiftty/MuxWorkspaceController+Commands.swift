@@ -33,6 +33,40 @@ extension MuxWorkspaceController {
   @objc
   func renameCurrentWorkspace(_ sender: Any?) { beginRenamingWorkspace() }
 
+  /// Shows the active pane's saved output, read-only (§12.2.8).
+  @objc
+  func showPreviousOutput(_ sender: Any?) {
+    guard let gateway, let id = attachedWorkspace, let pane = activePane else {
+      return
+    }
+    let font = NSFont.monospacedSystemFont(
+      ofSize: CGFloat(config.fontSize),
+      weight: .regular
+    )
+    let title = "Previous Output — \(window?.title ?? "")"
+    Task { @MainActor [weak self] in
+      do {
+        let output = try await gateway.previousOutput(id, pane: pane)
+        let viewer = SavedOutputViewer(output: output, title: title, font: font)
+        self?.previousOutputViewers.append(viewer)
+        viewer.showWindow(nil)
+      } catch {
+        let alert = NSAlert(error: error)
+        alert.messageText = "No previous output for this pane"
+        alert.runModal()
+      }
+    }
+  }
+
+  @objc
+  func discardPreviousOutput(_ sender: Any?) {
+    guard let gateway, let id = attachedWorkspace else { return }
+    offersPreviousOutput = false
+    for viewer in previousOutputViewers { viewer.close() }
+    previousOutputViewers.removeAll()
+    Task { try? await gateway.discardPreviousOutput(id, pane: nil) }
+  }
+
   @objc
   func selectNextTab(_ sender: Any?) { cycleTab(1) }
 
@@ -79,6 +113,9 @@ extension MuxWorkspaceController {
       return false
     }
     switch item.action {
+    case #selector(showPreviousOutput(_:)),
+      #selector(discardPreviousOutput(_:)):
+      return offersPreviousOutput && gateway != nil
     case #selector(selectNextTab(_:)), #selector(selectPreviousTab(_:)):
       return ws.tabs.count > 1
     case #selector(focusPaneInDirection(_:)):

@@ -587,7 +587,7 @@ When Reopen at launch is set to ask, the launch flow in spec.md (*Startup and di
 
 #### 12.2.8 Viewing saved output (C1)
 
-A reopened pane whose workspace record holds previous output for its slot shows **Show Previous Output** in its header. The frontend requests that section from the gateway in pages of at most 192 KiB. It renders the rows in a read-only viewer through the shared frame import and Metal renderer, with literal search and copy. Saved rows carry no link targets, and the viewer opens no links. Nothing in the viewer reaches the pane's PTY, parser, history, search index, JavaScript filters, OSC handling or inbox.
+For a reopened workspace, **Workspace › Show Previous Output** opens the active pane's previous output, and **Workspace › Discard Previous Output** removes it. The frontend requests the output by pane from the gateway in pages of at most 192 KiB. It renders the rows as read-only styled text (an AppKit text view with automatic link and data detection off), with literal Find and Copy. Saved rows carry no link targets, and the viewer opens no links. Nothing in the viewer reaches the pane's PTY, parser, history, search index, JavaScript filters, OSC handling or inbox.
 
 The frontend releases the rows when the pane ends or the viewer is closed. The gateway removes the previous output from the record when the user chooses **Discard Previous Output**, when the pane ends, or when Save output is turned off.
 
@@ -3532,3 +3532,48 @@ gateway selections, publish/roll back registration, apply the worker selection
 only after readiness and resume admission in the correct outcome. Installer/UI
 integration, required-feature compatibility and planned worker replacement
 remain outstanding.
+
+### 13.70 Rebase, barrier phase and saved layouts (C0, C1) — 2026-11-21
+
+The branch was rebased onto `main` (`ee79a797`). `PaneRuntime` keeps the
+guardian process abstraction and absorbs main's split-out frame, delta and
+live-selection changes. Feature and capability bits added on both sides were
+renumbered (`workspaceGraph` 11, `inboxAcknowledgementTokens` 12 for service
+features; client `inboxAcknowledgementTokens` 6). The native relay strips
+`binaryFrames` and `frameDeltas` from hello and welcome, because it decodes
+every record to account credit; relayed frontends receive JSON full frames.
+
+The admission barrier records `settling` or `replacing` (§5.2). The guardian
+resumes a settling pause when its settlement deadline expires or a new gateway
+binds; `GatewaySupervisor.beginGatewayReplacement` enters `replacing`.
+
+Capability C is implemented as specified in §12.2, with these concrete choices:
+
+- Workers advertise `savedLayoutMetadata`: `savedLayoutState`,
+  `newWorkspaceFromTemplate`, End dispositions, `setOutputOptOut` and the paged
+  `exportSavedOutput`. The engine exposes `workingDirectoryHost`; only local
+  OSC 7 directories feed splits and saved layouts. The launcher's existing
+  `W chdir` warning reaches the worker as `directoryFallback` through the
+  guardian's spawn result.
+- The worker keeps an ended workspace's disposition in `savedLayoutState`
+  until End and Forget retire the empty worker, so the guardian stays free of
+  saved-layout state.
+- The gateway store is `SavedLayoutService` with `SavedLayoutFiles`,
+  `SavedLayoutSeal` (AES-256-GCM, CryptoKit) and `LoginKeychainKeyStore`.
+  Policy lives in `saved-policy.json`; listing, reopening, policy, deletion and
+  previous output are native gateway control commands.
+- `swmux --gateway-service NAME` gains `restore` and `saved`. The app lists
+  saved layouts in Open Workspace, offers or reopens them at launch by policy,
+  labels reopened windows, and adds Terminal Service › Saved Workspaces… and
+  Workspace › Show/Discard Previous Output.
+
+```sh
+swift test --filter 'SavedLayoutWorkerTests|SavedLayoutStoreTests|SavedLayoutGatewayTests|SavedOutputTests|GatewayCreationTests|GatewayUpdateBarrierTests|GuardianGatewayTests|GuardianBuildRegistryTests'
+Scripts/test-native.sh --filter 'WorkspaceCoordinatorTests|SavedOutputViewerTests'
+Scripts/test-native.sh
+```
+
+Not yet exercised: a reopen through a real guardian-created worker (the
+end-to-end test covers saving across a guardian loss and listing as Saved;
+template creation is covered at the worker and with a fake guardian), the
+login keychain on a signed build, and RS3's logout ordering on a real session.

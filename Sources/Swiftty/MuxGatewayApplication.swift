@@ -186,6 +186,7 @@ final class MuxGatewayApplication {
       takeover: nil
     )
     window.showsReopenedNotice = true
+    window.offersPreviousOutput = true
     return window
   }
 

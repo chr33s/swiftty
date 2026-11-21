@@ -47,6 +47,8 @@ package actor SavedLayoutService {
     package var writeInterval: Duration = .seconds(5)
     package var writesPerSecond = 2
     package var maxBackoff: Duration = .seconds(300)
+    /// C1: how often changed output is exported from live workspaces.
+    package var outputInterval: Duration = .seconds(60)
     package init() {}
   }
 
@@ -61,6 +63,10 @@ package actor SavedLayoutService {
   private struct Loaded {
     var record: SavedLayoutRecord
     var generations: [UInt64]
+    /// C1 sections by slot: this workspace's output, and output carried
+    /// over from the record it was reopened from.
+    var outputs: [Int: Data] = [:]
+    var previous: [Int: Data] = [:]
   }
 
   private struct Live {
@@ -77,6 +83,15 @@ package actor SavedLayoutService {
     var notSavedSince: Date?
     /// `exited` waiting out the hold before the record is deleted.
     var exitedAt: ContinuousClock.Instant?
+    /// Pane to slot, for the content last observed.
+    var slots: [PaneID: Int] = [:]
+    var source: SavedOutputSource?
+    var outputRevisions: [PaneID: UInt64] = [:]
+    var outputs: [Int: Data] = [:]
+    /// Carried output by pane; a pane that ends drops its own.
+    var previous: [PaneID: Data] = [:]
+    /// The record's previous output has been mapped onto panes.
+    var previousMapped = false
   }
 
   private let files: SavedLayoutFiles
@@ -105,6 +120,9 @@ package actor SavedLayoutService {
   private var incarnation: UUID?
   private var stopping = false
   private var started = false
+  /// Output carried from a reopened record to its new workspace, by pane.
+  private var carry: [WorkspaceID: [PaneID: Data]] = [:]
+  private var outputTimer: Task<Void, Never>?
 
   package init(
     files: SavedLayoutFiles,
@@ -120,7 +138,10 @@ package actor SavedLayoutService {
     self.limits = limits
   }
 
-  deinit { timer?.cancel() }
+  deinit {
+    timer?.cancel()
+    outputTimer?.cancel()
+  }
 
   package func setRetire(
     _ value: @escaping @Sendable (GuardianAuthority) async -> Void
@@ -198,7 +219,7 @@ package actor SavedLayoutService {
     unreadable = []
     let generations = (try? files.generations()) ?? [:]
     for (id, list) in generations {
-      var loaded: SavedLayoutRecord?
+      var loaded: Loaded?
       var readable: [UInt64] = []
       for generation in list.reversed() {
         do {
@@ -212,10 +233,14 @@ package actor SavedLayoutService {
           if policyReadable { files.quarantine(id, generation: generation) }
         }
       }
-      if let loaded {
+      if var loaded {
         newer.remove(id)
-        records[id] = Loaded(record: loaded, generations: readable.sorted())
-        nextStoreSequence = max(nextStoreSequence, loaded.storeSequence + 1)
+        loaded.generations = readable.sorted()
+        records[id] = loaded
+        nextStoreSequence = max(
+          nextStoreSequence,
+          loaded.record.storeSequence + 1
+        )
       } else if !newer.contains(id) {
         unreadable.insert(id)
       }
@@ -226,7 +251,7 @@ package actor SavedLayoutService {
     _ id: WorkspaceID,
     generation: UInt64,
     key: SymmetricKey
-  ) throws -> SavedLayoutRecord {
+  ) throws -> Loaded {
     let sections = try SavedLayoutSeal.open(
       try files.read(id, generation: generation),
       workspace: id,
@@ -241,7 +266,26 @@ package actor SavedLayoutService {
       throw MuxError(.invalidRequest, "saved layout record identity mismatch")
     }
     try record.validate(maxPanes: limits.maxPanes)
-    return record
+    var loaded = Loaded(record: record, generations: [generation])
+    for section in sections where section.kind != .record {
+      // Slot, then the at-rest rows; both are validated before use.
+      guard section.bytes.count > 2 else {
+        throw MuxError(.invalidRequest, "empty saved output section")
+      }
+      let start = section.bytes.startIndex
+      let slot = Int(section.bytes[start]) << 8 | Int(section.bytes[start + 1])
+      let body = section.bytes.subdata(in: start + 2 ..< section.bytes.endIndex)
+      guard slot < record.content.paneCount else {
+        throw MuxError(.invalidRequest, "saved output slot out of range")
+      }
+      _ = try SavedOutput(decoding: body)
+      if section.kind == .output {
+        loaded.outputs[slot] = body
+      } else {
+        loaded.previous[slot] = body
+      }
+    }
+    return loaded
   }
 
   // MARK: Observation
@@ -254,7 +298,11 @@ package actor SavedLayoutService {
     // A rediscovered workspace compares against its record, not nothing.
     var entry =
       live[id]
-      ?? Live(authority: authority, content: records[id]?.record.content)
+      ?? Live(
+        authority: authority,
+        content: records[id]?.record.content,
+        outputs: records[id]?.outputs ?? [:]
+      )
     entry.authority = authority
     if let end = state.end {
       live[id] = entry
@@ -267,6 +315,26 @@ package actor SavedLayoutService {
     }
     let changed = entry.content != content
     entry.content = content
+    entry.slots = SavedLayoutContent.slots(state)
+    if !entry.previousMapped {
+      entry.previousMapped = true
+      let panes = Dictionary(
+        entry.slots.map { ($0.value, $0.key) },
+        uniquingKeysWith: { first, _ in first }
+      )
+      for (slot, bytes) in records[id]?.previous ?? [:] {
+        if let pane = panes[slot] { entry.previous[pane] = bytes }
+      }
+    }
+    if let carried = carry.removeValue(forKey: id) {
+      // Output from the record this workspace was reopened from (§12.2.8).
+      entry.previous.merge(carried) { _, new in new }
+      entry.pending = true
+    }
+    // A pane that ended takes its previous output with it.
+    let before = entry.previous.count
+    entry.previous = entry.previous.filter { entry.slots[$0.key] != nil }
+    if entry.previous.count != before { entry.pending = true }
     entry.layoutRevision = state.graph?.layoutRevision ?? entry.layoutRevision
     if changed || records[id] == nil {
       entry.pending = true
@@ -296,6 +364,8 @@ package actor SavedLayoutService {
   /// SIGTERM: one pass writing command-caused changes only.
   package func shutdown() {
     guard !stopping else { return }
+    outputTimer?.cancel()
+    outputTimer = nil
     guardianLost()
     for id in Array(live.keys) where live[id]?.pending == true { write(id) }
     stopping = true
@@ -390,7 +460,18 @@ package actor SavedLayoutService {
     live[id] = entry
     let revision = entry.layoutRevision
     let incarnation = entry.authority.incarnation
-    let ok = persist(id, content: content) { record in
+    let previous = Dictionary(
+      entry.previous.compactMap { pane, bytes in
+        entry.slots[pane].map { ($0, bytes) }
+      },
+      uniquingKeysWith: { first, _ in first }
+    )
+    let ok = persist(
+      id,
+      content: content,
+      outputs: entry.outputs,
+      previous: previous
+    ) { record in
       record.content = content
       record.layoutRevision = revision
       record.incarnation = incarnation
@@ -420,6 +501,8 @@ package actor SavedLayoutService {
   private func persist(
     _ id: WorkspaceID,
     content: SavedLayoutContent? = nil,
+    outputs newOutputs: [Int: Data]? = nil,
+    previous newPrevious: [Int: Data]? = nil,
     _ change: (inout SavedLayoutRecord) -> Void
   ) -> Bool {
     let revision = policy.revision
@@ -450,17 +533,40 @@ package actor SavedLayoutService {
     record.generation = generation
     record.storeSequence = nextStoreSequence
     record.savedAt = Date()
+    // Output is kept only while the policy and the workspace allow it.
+    let keepsOutput = policy.saveOutput && !record.content.outputOptOut
+    let outputs = keepsOutput ? (newOutputs ?? previous?.outputs ?? [:]) : [:]
+    let carried = keepsOutput ? (newPrevious ?? previous?.previous ?? [:]) : [:]
     do {
       let body = try SavedLayoutSeal.encode(record)
       guard body.count <= limits.layoutBytes else {
         throw MuxError(.resourceLimit, "saved layout exceeds its bound")
+      }
+      var sections = [SavedLayoutSection(kind: .record, bytes: body)]
+      for (kind, values) in [
+        (SavedLayoutSection.Kind.output, outputs), (.previousOutput, carried),
+      ] {
+        for (slot, bytes) in values.sorted(by: { $0.key < $1.key })
+        where slot < record.content.paneCount {
+          var section = Data([UInt8(slot >> 8), UInt8(slot & 0xFF)])
+          section.append(bytes)
+          sections.append(SavedLayoutSection(kind: kind, bytes: section))
+        }
+      }
+      let size = sections.reduce(64) { $0 + $1.bytes.count }
+      if files.totalBytes() + size > limits.storeBytes {
+        trimOutput(keeping: id)
+      }
+      if files.totalBytes() + size > limits.storeBytes, sections.count > 1 {
+        // Never drop layout: keep this write to its record section.
+        sections = [sections[0]]
       }
       guard
         files.totalBytes() + body.count + 64 <= limits.storeBytes
           || previous != nil
       else { throw MuxError(.resourceLimit, "saved layout store is full") }
       let sealed = try SavedLayoutSeal.seal(
-        [SavedLayoutSection(kind: .record, bytes: body)],
+        sections,
         workspace: id,
         generation: generation,
         key: key
@@ -476,11 +582,31 @@ package actor SavedLayoutService {
     while generations.count > 2 {
       files.remove(id, generation: generations.removeFirst())
     }
-    records[id] = Loaded(record: record, generations: generations)
+    records[id] = Loaded(
+      record: record,
+      generations: generations,
+      outputs: outputs,
+      previous: carried
+    )
     newer.remove(id)
     unreadable.remove(id)
     evict()
     return true
+  }
+
+  /// Over the store bound: output of Saved records goes first, oldest
+  /// store sequence first (§12.2.9).
+  private func trimOutput(keeping id: WorkspaceID) {
+    let candidates = records.values
+      .filter {
+        $0.record.workspace != id && live[$0.record.workspace] == nil
+          && !($0.outputs.isEmpty && $0.previous.isEmpty)
+      }
+      .sorted { $0.record.storeSequence < $1.record.storeSequence }
+    for loaded in candidates {
+      guard files.totalBytes() > limits.storeBytes * 3 / 4 else { return }
+      persist(loaded.record.workspace, outputs: [:], previous: [:]) { _ in }
+    }
   }
 
   private func delete(_ id: WorkspaceID) {
@@ -499,6 +625,146 @@ package actor SavedLayoutService {
     for loaded in saved.prefix(saved.count - limits.savedRecords) {
       delete(loaded.record.workspace)
     }
+  }
+
+  // MARK: Saved output (C1)
+
+  /// The worker connection that can export a workspace's output; nil when
+  /// its observation ends.
+  package func setOutputSource(
+    _ authority: GuardianAuthority,
+    _ source: SavedOutputSource?
+  ) {
+    let id = authority.workspace
+    if source == nil {
+      live[id]?.source = nil
+      return
+    }
+    var entry =
+      live[id]
+      ?? Live(
+        authority: authority,
+        content: records[id]?.record.content,
+        outputs: records[id]?.outputs ?? [:]
+      )
+    entry.source = source
+    live[id] = entry
+    scheduleOutput()
+  }
+
+  private func scheduleOutput() {
+    guard outputTimer == nil, !stopping else { return }
+    let interval = timing.outputInterval
+    outputTimer = Task { [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(for: interval)
+        guard !Task.isCancelled else { return }
+        await self?.exportOutputs()
+      }
+    }
+  }
+
+  /// One export pass; a policy change while it runs drops its results.
+  package func exportOutputs() async {
+    guard started, !stopping, policyReadable, policy.saveLayout,
+      policy.saveOutput
+    else { return }
+    let revision = policy.revision
+    for id in Array(live.keys) {
+      guard let entry = live[id], let source = entry.source,
+        let content = entry.content, !content.outputOptOut
+      else { continue }
+      var changed: [Int: Data] = [:]
+      var revisions: [PaneID: UInt64] = [:]
+      for (pane, slot) in entry.slots {
+        do {
+          let result = try await source(pane, entry.outputRevisions[pane])
+          revisions[pane] = result.revision
+          if let bytes = result.bytes { changed[slot] = bytes }
+        } catch {
+          // Alternate screen, a frozen workspace or a lost worker: keep
+          // the previous output section.
+          continue
+        }
+      }
+      guard policy.revision == revision, policy.saveOutput,
+        var current = live[id]
+      else { return }
+      for (pane, value) in revisions { current.outputRevisions[pane] = value }
+      if !changed.isEmpty {
+        for (slot, bytes) in changed { current.outputs[slot] = bytes }
+        current.pending = true
+      }
+      live[id] = current
+    }
+    pump()
+  }
+
+  /// The output carried into a reopened workspace's pane, in pages.
+  package func previousOutput(
+    _ id: WorkspaceID,
+    pane: PaneID,
+    offset: Int
+  ) throws -> SavedOutputPage {
+    guard let bytes = live[id]?.previous[pane] else {
+      throw MuxError(.notFound, "no previous output for this pane")
+    }
+    guard offset >= 0, offset < max(1, bytes.count) else {
+      throw MuxError(.invalidRequest, "invalid previous output offset")
+    }
+    let end = min(bytes.count, offset + SavedOutputPage.maxBytes)
+    return SavedOutputPage(
+      revision: 0,
+      modified: true,
+      total: bytes.count,
+      offset: offset,
+      bytes: bytes.subdata(
+        in: bytes.startIndex + offset ..< bytes.startIndex + end
+      )
+    )
+  }
+
+  /// Discard Previous Output, or a pane's end. Nil discards every pane's.
+  package func discardPreviousOutput(_ id: WorkspaceID, pane: PaneID?) {
+    guard var entry = live[id] else { return }
+    if let pane {
+      entry.previous.removeValue(forKey: pane)
+    } else {
+      entry.previous = [:]
+    }
+    let previous = Dictionary(
+      entry.previous.compactMap { pane, bytes in
+        entry.slots[pane].map { ($0, bytes) }
+      },
+      uniquingKeysWith: { first, _ in first }
+    )
+    live[id] = entry
+    persist(id, previous: previous) { _ in }
+  }
+
+  /// Save output turned off: every record is rewritten without output under
+  /// a new key, and the old generations and key go (§12.2.2).
+  private func dropOutputAndRotateKey() throws {
+    // Refuse before rewriting anything if the keychain cannot take a key.
+    guard case .found = keys.lookup() else {
+      throw MuxError(.unauthorized, "the saved layout key is unavailable")
+    }
+    let newKey = SymmetricKey(size: .bits256)
+    key = newKey
+    for id in Array(live.keys) {
+      live[id]?.outputs = [:]
+      live[id]?.previous = [:]
+    }
+    carry = [:]
+    for id in Array(records.keys) {
+      let old = records[id]?.generations ?? []
+      guard persist(id, outputs: [:], previous: [:], { _ in }) else { continue }
+      for generation in old { files.remove(id, generation: generation) }
+      if let latest = records[id]?.generations.last {
+        records[id]?.generations = [latest]
+      }
+    }
+    try keys.replace(with: newKey)
   }
 
   // MARK: Gateway-issued End
@@ -608,7 +874,7 @@ package actor SavedLayoutService {
           tabCount: record.content.tabs.count,
           paneCount: record.content.paneCount,
           commands: record.content.commandSlots,
-          hasOutput: false
+          hasOutput: !loaded.outputs.isEmpty || !loaded.previous.isEmpty
         )
       )
     }
@@ -687,8 +953,16 @@ package actor SavedLayoutService {
     guard persist(id, { $0.reopeningAs = target }) else {
       throw MuxError(.resourceLimit, "cannot record the reopen; not started")
     }
+    let outputs = records[id]?.outputs ?? [:]
     do {
       let outcome = try await create(target, template)
+      if policy.saveOutput, !outputs.isEmpty {
+        var carried: [PaneID: Data] = [:]
+        for (slot, pane) in outcome.panes {
+          if let bytes = outputs[slot] { carried[pane] = bytes }
+        }
+        carry[target] = carried
+      }
       delete(id)
       return (target, outcome)
     } catch let error as MuxError where error.code == .connectionLost {
@@ -715,6 +989,11 @@ package actor SavedLayoutService {
     var next = value
     next.revision = max(policy.revision, expectedRevision) + 1
     let wasSaving = policy.saveLayout
+    if policy.saveOutput, !next.saveOutput, next.saveLayout, key != nil {
+      // Allow the rewrite, then publish the new policy.
+      policy.saveOutput = false
+      try dropOutputAndRotateKey()
+    }
     if !next.saveLayout {
       // Records and key go before the change is acknowledged.
       try files.removeEverything()

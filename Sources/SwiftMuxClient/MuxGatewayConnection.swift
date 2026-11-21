@@ -201,6 +201,40 @@ public actor MuxGatewayConnection {
     return value
   }
 
+  /// The output carried into a reopened workspace's pane (C1), decoded.
+  public func previousOutput(
+    _ workspace: WorkspaceID,
+    pane: PaneID
+  ) async throws -> SavedOutput {
+    var bytes = Data()
+    var offset = 0
+    repeat {
+      guard
+        case let .previousOutput(page) = try await request(
+          .previousOutput(workspace, pane: pane, offset: offset)
+        )
+      else { throw MuxError(.invalidRequest, "unexpected output response") }
+      bytes.append(page.bytes)
+      offset += page.bytes.count
+      guard !page.bytes.isEmpty || offset >= page.total else {
+        throw MuxError(.invalidRequest, "empty previous output page")
+      }
+      if offset >= page.total { break }
+    } while true
+    return try SavedOutput(decoding: bytes)
+  }
+
+  public func discardPreviousOutput(
+    _ workspace: WorkspaceID,
+    pane: PaneID?
+  ) async throws {
+    guard
+      case .deletedSaved = try await request(
+        .discardPreviousOutput(workspace, pane: pane)
+      )
+    else { throw MuxError(.invalidRequest, "unexpected discard response") }
+  }
+
   /// Nil deletes every saved record and the key.
   public func deleteSaved(_ id: WorkspaceID?) async throws {
     guard case .deletedSaved = try await request(.deleteSaved(id)) else {
@@ -251,7 +285,8 @@ public actor MuxGatewayConnection {
       return try MuxConnection.commandPayloadBytes(
         .newWorkspace(NewWorkspaceRequest(launch: request.launch))
       ) + request.runCommandSlots.count * 8
-    case .listWorkspaces, .savedWorkspaces, .setSavedPolicy, .deleteSaved:
+    case .listWorkspaces, .savedWorkspaces, .setSavedPolicy, .deleteSaved,
+      .previousOutput, .discardPreviousOutput:
       return 256
     }
   }

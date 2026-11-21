@@ -695,6 +695,10 @@ public enum MuxCommand: Codable, Sendable, Equatable {
   /// Internal gateway saving (`savedLayoutMetadata`): the graph with pane
   /// launches, local directories and the causes since the last read.
   case savedLayoutState
+  /// Internal gateway saving (C1): one page of a pane's newest main-screen
+  /// rows. Offset 0 takes a new snapshot unless unchanged since the
+  /// revision; later offsets read that snapshot. Replies `savedOutputPage`.
+  case exportSavedOutput(pane: PaneID, ifChangedSince: UInt64?, offset: Int)
   case subscribeInbox(Bool)
   /// Local native automation UI; events only follow an explicit subscription.
   case subscribeAutomation(Bool)
@@ -771,8 +775,8 @@ public enum MuxCommand: Codable, Sendable, Equatable {
       .setSubscriptions, .setViewport, .scroll, .searchStep, .endSearch,
       .clearScreen, .resetTerminal, .link, .commandOutput, .setTheme,
       .observeWorkspaces, .observeWorkspaceGraph, .savedLayoutState,
-      .subscribeAutomation, .subscribeInbox, .inbox, .locateAttention,
-      .markSeen, .snooze, .markReviewed, .clipboardReadResult,
+      .exportSavedOutput, .subscribeAutomation, .subscribeInbox, .inbox,
+      .locateAttention, .markSeen, .snooze, .markReviewed, .clipboardReadResult,
       .clipboardWriteResult, .copySelection:
       true
     default: false
@@ -796,9 +800,9 @@ public enum MuxCommand: Codable, Sendable, Equatable {
     case .status, .listWorkspaces, .newWorkspace, .endWorkspace,
       .renameWorkspace, .detachActive, .endAllWorkspaces, .quiesce, .attach,
       .setTheme, .takeover, .observeWorkspaces, .observeWorkspaceGraph,
-      .savedLayoutState, .newWorkspaceFromTemplate, .subscribeAutomation,
-      .subscribeInbox, .inbox, .locateAttention, .markSeen, .snooze,
-      .markReviewed:
+      .savedLayoutState, .exportSavedOutput, .newWorkspaceFromTemplate,
+      .subscribeAutomation, .subscribeInbox, .inbox, .locateAttention,
+      .markSeen, .snooze, .markReviewed:
       false
     default: true
     }
@@ -882,6 +886,7 @@ public enum MuxReply: Codable, Sendable, Equatable {
   case created(WorkspaceSnapshot)
   case createdFromTemplate(WorkspaceSnapshot, WorkspaceTemplateOutcome)
   case savedLayoutState(SavedLayoutState)
+  case savedOutputPage(SavedOutputPage)
   case attached(attachment: AttachmentID, workspace: WorkspaceSnapshot)
   case layout(WorkspaceSnapshot)
   case pane(PaneID)

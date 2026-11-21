@@ -97,6 +97,9 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   /// Shown until the first input (spec.durability.md §12.2.7).
   static let reopenedNotice =
     "Reopened from saved layout — earlier processes ended"
+  /// The reopened workspace may carry previous output (C1).
+  var offersPreviousOutput = false
+  var previousOutputViewers: [SavedOutputViewer] = []
   /// Set when this window shows a reopened saved layout.
   var showsReopenedNotice = false {
     didSet {

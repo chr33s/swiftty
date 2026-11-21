@@ -6,6 +6,15 @@ import SwiftMuxXPC
 // The worker never stores a record; it reports what one needs and builds a
 // reopened workspace with fresh processes.
 
+/// A saved-output snapshot held for paging; released after its last page,
+/// on a new snapshot, or after 10 idle seconds.
+struct SavedOutputExport: Sendable {
+  var pane: PaneID
+  var revision: UInt64
+  var bytes: Data
+  var touched: ContinuousClock.Instant
+}
+
 /// Launches of one template, settled on the service queue.
 struct TemplateCreation {
   var started: [Int: PaneID] = [:]
@@ -49,6 +58,104 @@ extension MuxService {
     )
     savedLayoutCauses = []
     return state
+  }
+
+  func exportSavedOutput(
+    pane: PaneID,
+    ifChangedSince revision: UInt64?,
+    offset: Int,
+    reply: @escaping Reply
+  ) {
+    guard !quiescing else {
+      return reply(.failure(MuxError(.quiescing, "workspace is frozen")))
+    }
+    guard let record = panes[pane], !record.detachedFromLayout,
+      locate(pane: pane) != nil
+    else { return reply(.failure(MuxError(.notFound, "pane"))) }
+    @Sendable
+    func page(_ export: SavedOutputExport, from offset: Int) -> MuxReply {
+      let end = min(export.bytes.count, offset + SavedOutputPage.maxBytes)
+      return .savedOutputPage(
+        SavedOutputPage(
+          revision: export.revision,
+          modified: true,
+          total: export.bytes.count,
+          offset: offset,
+          bytes: export.bytes.subdata(
+            in: export.bytes.startIndex + offset ..< export.bytes.startIndex
+              + end
+          )
+        )
+      )
+    }
+    if offset > 0 {
+      guard var export = savedOutputExport, export.pane == pane,
+        offset < export.bytes.count
+      else {
+        return reply(
+          .failure(MuxError(.staleRevision, "saved output snapshot is gone"))
+        )
+      }
+      export.touched = .now
+      let value = page(export, from: offset)
+      if offset + SavedOutputPage.maxBytes >= export.bytes.count {
+        savedOutputExport = nil
+      } else {
+        savedOutputExport = export
+      }
+      return reply(.success(value))
+    }
+    record.runtime.exportSavedOutput(ifChangedSince: revision) {
+      [weak self] result in
+      self?
+        .onQueue { service in
+          switch result {
+          case let .failure(error): reply(.failure(error))
+          case let .success((current, nil)):
+            reply(
+              .success(
+                .savedOutputPage(
+                  SavedOutputPage(
+                    revision: current,
+                    modified: false,
+                    total: 0,
+                    offset: 0,
+                    bytes: Data()
+                  )
+                )
+              )
+            )
+          case let .success((current, output?)):
+            do {
+              let export = SavedOutputExport(
+                pane: pane,
+                revision: current,
+                bytes: try output.encoded(),
+                touched: .now
+              )
+              service.savedOutputExport =
+                export.bytes.count > SavedOutputPage.maxBytes ? export : nil
+              reply(.success(page(export, from: 0)))
+              service.expireSavedOutputExport(after: .seconds(10))
+            } catch {
+              reply(.failure(error as? MuxError ?? MuxError(.resourceLimit)))
+            }
+          }
+        }
+    }
+  }
+
+  private func expireSavedOutputExport(after delay: Duration) {
+    Task { [weak self] in
+      try? await Task.sleep(for: delay)
+      await self?.dropIdleSavedOutputExport(idle: delay)
+    }
+  }
+
+  private func dropIdleSavedOutputExport(idle: Duration) {
+    if let export = savedOutputExport, export.touched + idle <= .now {
+      savedOutputExport = nil
+    }
   }
 
   /// Called when the workspace leaves the graph. The first reason wins.

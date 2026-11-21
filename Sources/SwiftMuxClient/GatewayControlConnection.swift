@@ -25,6 +25,7 @@ package final class GatewayControlConnection: @unchecked Sendable {
     case reopened(WorkspaceID, WorkspaceTemplateOutcome)
     case savedPolicy(SavedLayoutPolicy)
     case deletedSaved
+    case previousOutput(SavedOutputPage)
   }
 
   private struct Pending {
@@ -114,7 +115,8 @@ package final class GatewayControlConnection: @unchecked Sendable {
         _ = try MuxConnection.commandPayloadBytes(
           .newWorkspace(NewWorkspaceRequest(launch: request.launch))
         )
-      case .listWorkspaces, .savedWorkspaces, .setSavedPolicy, .deleteSaved:
+      case .listWorkspaces, .savedWorkspaces, .setSavedPolicy, .deleteSaved,
+        .previousOutput, .discardPreviousOutput:
         break
       }
       let request = GatewayControlRequest.command(
@@ -260,7 +262,12 @@ package final class GatewayControlConnection: @unchecked Sendable {
       && value.saveLayout == policy.saveLayout
       && value.saveOutput == policy.saveOutput:
       return .savedPolicy(value)
-    case (.deleteSaved, .deletedSaved): return .deletedSaved
+    case (.deleteSaved, .deletedSaved), (.discardPreviousOutput, .deletedSaved):
+      return .deletedSaved
+    case let (.previousOutput(_, _, offset), .previousOutput(page))
+    where page.offset == offset && page.bytes.count <= SavedOutputPage.maxBytes
+      && page.total <= SavedOutput.maxBytes:
+      return .previousOutput(page)
     default: return nil
     }
   }

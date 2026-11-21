@@ -39,6 +39,8 @@ package actor GatewayWorkspaceDirectory {
   private var onSavedLayout:
     (@Sendable (GuardianAuthority, SavedLayoutState) async -> Void)?
   private var onObservationLost: (@Sendable (WorkspaceID) async -> Void)?
+  private var onOutputSource:
+    (@Sendable (GuardianAuthority, SavedOutputSource?) async -> Void)?
   private var entries: [WorkspaceID: Entry] = [:]
   private var tasks: [UUID: Task<Void, Never>] = [:]
   private var opening = 0
@@ -65,10 +67,13 @@ package actor GatewayWorkspaceDirectory {
   package func setSavedLayoutHooks(
     state:
       @escaping @Sendable (GuardianAuthority, SavedLayoutState) async -> Void,
-    lost: @escaping @Sendable (WorkspaceID) async -> Void
+    lost: @escaping @Sendable (WorkspaceID) async -> Void,
+    output: (@Sendable (GuardianAuthority, SavedOutputSource?) async -> Void)? =
+      nil
   ) {
     onSavedLayout = state
     onObservationLost = lost
+    onOutputSource = output
   }
 
   package var records: [Record] {
@@ -293,6 +298,16 @@ package actor GatewayWorkspaceDirectory {
         if let state = try? await graphObservation.savedLayoutState() {
           await self?.savedLayout(id, token: token, state: state)
         }
+        await self?
+          .outputSource(
+            authority,
+            source: { pane, revision in
+              try await graphObservation.savedOutput(
+                pane: pane,
+                ifChangedSince: revision
+              )
+            }
+          )
         guard
           await self?.opened(id, token: token, summary: summary, graph: graph)
             == true
@@ -331,6 +346,7 @@ package actor GatewayWorkspaceDirectory {
         } catch {
           await self?.observationFailed(id, token: token, error: error)
         }
+        await self?.outputSource(authority, source: nil)
         await observation.close()
         await graphObservation.close()
         await self?.taskFinished(token)
@@ -396,6 +412,14 @@ package actor GatewayWorkspaceDirectory {
       // Separate ordered streams may briefly straddle creation or removal.
       entries[id]?.state = .discovering
     }
+  }
+
+  private func outputSource(
+    _ authority: GuardianAuthority,
+    source: SavedOutputSource?
+  ) async {
+    guard let hook = onOutputSource else { return }
+    await hook(authority, source)
   }
 
   private func savedLayout(
