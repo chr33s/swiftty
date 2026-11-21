@@ -225,7 +225,17 @@ final class RoamingAppUITests: XCTestCase {
     replaceText(in: element("host.address"), with: server.host)
     replaceText(in: element("host.port"), with: server.port)
     replaceText(in: element("host.username"), with: server.user)
-    press(element("host.save"))
+    let save = element("host.save")
+    #if os(iOS) && !targetEnvironment(macCatalyst)
+    // On a device the form sheet moves while the keyboard animates, and a
+    // tap that arrives mid-move misses Save. Let it settle first.
+    dismissKeyboard()
+    #endif
+    press(save)
+    // A missed tap leaves the form open; a saved host closes it.
+    if !hostRow(nickname).waitForExistence(timeout: 5), save.exists {
+      press(save)
+    }
     XCTAssertTrue(
       hostRow(nickname).waitForExistence(timeout: 10),
       "host not saved"
@@ -399,6 +409,20 @@ final class RoamingAppUITests: XCTestCase {
 
   /// A click on macOS (synthesized taps do not focus fields there), a tap
   /// elsewhere.
+  #if os(iOS) && !targetEnvironment(macCatalyst)
+  /// Hides the on-screen keyboard (iPad has a key for it) and waits for it
+  /// to leave. A phone keyboard, or one off screen (a simulator with a
+  /// hardware keyboard reports it below the display), is left alone.
+  private func dismissKeyboard() {
+    let keyboard = app.keyboards.firstMatch
+    guard keyboard.exists else { return }
+    let hide = keyboard.buttons["Hide keyboard"]
+    guard hide.exists, hide.isHittable else { return }
+    hide.tap()
+    _ = keyboard.waitForNonExistence(timeout: 3)
+  }
+  #endif
+
   private func press(_ element: XCUIElement) {
     #if os(macOS) || targetEnvironment(macCatalyst)
     // Rows can report not hittable while a sheet finishes closing.
