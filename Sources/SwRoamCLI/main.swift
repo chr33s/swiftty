@@ -145,8 +145,8 @@ func credential(_ options: Options) -> SSHCredential {
       fail("no passphrase")
     }
     do {
-      return try OpenSSHKeyImporter.decode(data, passphrase: passphrase)
-        .secret.credential
+      return try OpenSSHKeyImporter.decode(data, passphrase: passphrase).secret
+        .credential
     } catch { fail("\(path): \(error)") }
   } catch { fail("\(path): \(error) (Ed25519 and ECDSA keys are supported)") }
 }

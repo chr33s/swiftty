@@ -148,9 +148,10 @@ struct ConfigTests {
     let depth = 120
     let open = "{\"x\":" + String(repeating: "[", count: depth)
     let close = String(repeating: "]", count: depth) + "}"
-    let values = (ConfigLoader.maxFileBytes - open.utf8.count - close.utf8.count) / 2
-    let deep = open + Array(repeating: "0", count: values).joined(separator: ",")
-      + close
+    let values =
+      (ConfigLoader.maxFileBytes - open.utf8.count - close.utf8.count) / 2
+    let deep =
+      open + Array(repeating: "0", count: values).joined(separator: ",") + close
     let started = ContinuousClock.now
     #expect(throws: ConfigError.self) { try ConfigLoader.decode(deep) }
     #expect(ContinuousClock.now - started < .seconds(5))

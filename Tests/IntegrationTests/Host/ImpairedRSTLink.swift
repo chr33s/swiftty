@@ -742,7 +742,7 @@ final class InstallLog: PresentationSink {
 // MARK: Driving a client through the link
 
 /// A registry, an impaired link and a real `RoamingClient`.
-struct ImpairedRoamingRig {
+struct ImpairedRoamingRig: RoamingTestRig {
   let registry: SessionRegistry
   let link: ImpairedLink
   let connector: ImpairedConnector
@@ -776,6 +776,27 @@ struct ImpairedRoamingRig {
     )
   }
 
+  var label: String { "seed \(link.seed)" }
+
+  func loseConnection(at point: ImpairedLink.KillPoint) { link.killAt(point) }
+}
+
+/// A real `RoamingClient` attached to a registry through some transport
+/// (the impaired in-process link, or shaped QUIC), with the host's screen
+/// oracle and a log of every installed screen.
+protocol RoamingTestRig {
+  var registry: SessionRegistry { get }
+  var oracle: HostScreenOracle { get }
+  var installs: InstallLog { get }
+  var client: RoamingClient { get }
+  /// Identifies the run in failure messages.
+  var label: String { get }
+  /// Loses the connection at `point`: exactly there on the impaired link;
+  /// as soon as possible on a transport that cannot place it.
+  func loseConnection(at point: ImpairedLink.KillPoint)
+}
+
+extension RoamingTestRig {
   func start(_ grid: GridSize) async throws {
     try await client.start(.create(grid))
     try await active()
@@ -836,10 +857,7 @@ struct ImpairedRoamingRig {
     switch oracle.assign(installed) {
     case let .success(revisions): return revisions
     case let .failure(failure):
-      Issue.record(
-        "seed \(link.seed): \(failure)",
-        sourceLocation: sourceLocation
-      )
+      Issue.record("\(label): \(failure)", sourceLocation: sourceLocation)
       return []
     }
   }

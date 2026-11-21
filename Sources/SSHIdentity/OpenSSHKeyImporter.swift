@@ -216,7 +216,9 @@ public enum OpenSSHKeyImporter {
       .inspection
     }
     return OpenSSHKeyInspection(
-      algorithm: SSHPublicKeyFormat.keyType(openSSHPublicKey: envelope.publicKey),
+      algorithm: SSHPublicKeyFormat.keyType(
+        openSSHPublicKey: envelope.publicKey
+      ),
       fingerprint: SSHPublicKeyFormat.fingerprint(
         openSSHPublicKey: envelope.publicKey
       ) ?? "",
@@ -414,8 +416,7 @@ public enum OpenSSHKeyImporter {
     guard input.count <= maxInputBytes else { throw .inputTooLarge }
     guard let text = String(data: input, encoding: .utf8) else { return nil }
     let first = text.split(whereSeparator: \.isNewline)
-      .map { $0.trimmingCharacters(in: .whitespaces) }
-      .first { !$0.isEmpty }
+      .map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty }
     let label: String
     switch first {
     case "-----BEGIN EC PRIVATE KEY-----": label = "PEM EC"
@@ -530,10 +531,12 @@ extension OpenSSHKeyImporter {
       case .ecdsaP384: 48
       default: 66
       }
-    var raw = Array(scalar.drop { $0 == 0 })
+    let significant = scalar.drop { $0 == 0 }
+    guard significant.count <= size else { throw .malformed }
+    // One buffer, filled in place, so the defer wipes every copy.
+    var raw = [UInt8](repeating: 0, count: size)
     defer { raw.resetBytes() }
-    guard raw.count <= size else { throw .malformed }
-    raw = [UInt8](repeating: 0, count: size - raw.count) + raw
+    raw.replaceSubrange((size - significant.count)..., with: significant)
     let key: SSHSigningKey
     let derivedPoint: [UInt8]
     do {

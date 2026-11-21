@@ -90,7 +90,8 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     defer { try? FileManager.default.removeItem(at: directory) }
     let key = IdentitySecret(.init())
     let secrets = SuspendedIdentitySecrets()
-    let legacy = InMemoryLegacyKeySource(keys: ["phone": key.ed25519PrivateKey!])
+    let legacy = InMemoryLegacyKeySource(keys: ["phone": key.ed25519PrivateKey!]
+    )
     let model = app(secrets: secrets, legacy: legacy)
     await select("account-a", in: model)
     let host = legacyHost("A")

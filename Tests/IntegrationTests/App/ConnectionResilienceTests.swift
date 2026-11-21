@@ -49,10 +49,11 @@ struct ConnectionResilienceTests {
     )
     #expect(clamped.attemptsPerBurst == 10)
     #expect(clamped.probeInterval == 15)
-    let partial = try JSONDecoder().decode(
-      ConnectionResilienceSettings.self,
-      from: Data(#"{"forceIPv4":true}"#.utf8)
-    )
+    let partial = try JSONDecoder()
+      .decode(
+        ConnectionResilienceSettings.self,
+        from: Data(#"{"forceIPv4":true}"#.utf8)
+      )
     #expect(partial.forceIPv4)
     #expect(partial.autoReconnect)
     #expect(partial.keepalive == .standard)

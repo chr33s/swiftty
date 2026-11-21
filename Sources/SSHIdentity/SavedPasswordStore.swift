@@ -43,9 +43,10 @@ public struct SavedPassword: Sendable, Equatable, CustomStringConvertible,
   }
 
   var payload: Data? {
-    try? JSONEncoder().encode(
-      Payload(host: host, port: port, username: username, password: password)
-    )
+    try? JSONEncoder()
+      .encode(
+        Payload(host: host, port: port, username: username, password: password)
+      )
   }
 
   init?(payload: Data) {
@@ -81,9 +82,7 @@ public actor InMemorySavedPasswordStore: SavedPasswordStore {
 
   public init() {}
 
-  public func read(
-    host id: UUID
-  ) throws(IdentitySecretError) -> SavedPassword {
+  public func read(host id: UUID) throws(IdentitySecretError) -> SavedPassword {
     guard let item = items[id] else { throw .notFound }
     return item
   }
@@ -129,9 +128,7 @@ public actor KeychainSavedPasswordStore: SavedPasswordStore {
     return query
   }
 
-  public func read(
-    host id: UUID
-  ) throws(IdentitySecretError) -> SavedPassword {
+  public func read(host id: UUID) throws(IdentitySecretError) -> SavedPassword {
     var read = query(id)
     read[kSecReturnData as String] = true
     read[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -151,7 +148,10 @@ public actor KeychainSavedPasswordStore: SavedPasswordStore {
   ) throws(IdentitySecretError) {
     guard let payload = password.payload else { throw .malformed }
     let update: [String: Any] = [kSecValueData as String: payload]
-    var status = SecItemUpdate(query(id) as CFDictionary, update as CFDictionary)
+    var status = SecItemUpdate(
+      query(id) as CFDictionary,
+      update as CFDictionary
+    )
     if status == errSecItemNotFound {
       var add = query(id)
       add[kSecValueData as String] = payload

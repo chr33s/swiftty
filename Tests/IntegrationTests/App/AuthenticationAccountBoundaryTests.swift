@@ -31,7 +31,10 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     let endpoint =
       bootstrap
       ? try await model.ssh.bootstrapEndpoint(for: host)
-      : model.ssh.endpoint(for: host, credential: .ed25519(original.ed25519PrivateKey!))
+      : model.ssh.endpoint(
+        for: host,
+        credential: .ed25519(original.ed25519PrivateKey!)
+      )
     await select("account-b", in: model)
     let replacement = IdentitySecret(.init())
     #expect(
@@ -188,9 +191,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
         Issue.record("Unexpected credential");
         return
       }
-      #expect(
-        IdentitySecret(key).publicKeyLine == identity.publicKey
-      )
+      #expect(IdentitySecret(key).publicKeyLine == identity.publicKey)
     } else {
       await #expect(throws: SSHAccessError.self) { _ = try await resolve() }
     }
@@ -228,9 +229,7 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
       Issue.record("Unexpected credential");
       return
     }
-    #expect(
-      IdentitySecret(key).publicKeyLine == identity.publicKey
-    )
+    #expect(IdentitySecret(key).publicKeyLine == identity.publicKey)
     await #expect(throws: SSHAccessError.self) { _ = try await resolve() }
   }
 

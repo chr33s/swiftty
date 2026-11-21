@@ -435,8 +435,8 @@ extension MuxNativeTests {
     let zoom = try #require(window.standardWindowButton(.zoomButton))
     #expect(collapsed.minX > zoom.convert(zoom.bounds, to: nil).maxX)
     #expect(
-      controls.bounds.width
-        == 2 * MuxSidebarControls.buttonSize + MuxSidebarControls.spacing
+      controls.bounds.width == 2 * MuxSidebarControls.buttonSize
+        + MuxSidebarControls.spacing
     )
     for b in [controls.inboxButton, controls.toggleButton] {
       #expect(receivesClicks(b, in: window))

@@ -37,9 +37,7 @@ struct IdentityResolverTests {
     let other = Curve25519.Signing.PrivateKey()
     try await store.add(IdentitySecret(other), id: UUID(), policy: .deviceOnly)
     let resolved = try await IdentityResolver(secrets: store).resolve(identity)
-    #expect(
-      resolved.publicKeyLine == IdentitySecret(key).publicKeyLine
-    )
+    #expect(resolved.publicKeyLine == IdentitySecret(key).publicKeyLine)
   }
 
   @Test
@@ -119,9 +117,7 @@ struct IdentityResolverTests {
       )
     }
     let kept = try await store.read(id: id, policy: .deviceOnly)
-    #expect(
-      kept.publicKeyLine == IdentitySecret(first).publicKeyLine
-    )
+    #expect(kept.publicKeyLine == IdentitySecret(first).publicKeyLine)
     // Policies are separate namespaces.
     await #expect(throws: IdentitySecretError.notFound) {
       try await store.read(id: id, policy: .iCloudKeychain)

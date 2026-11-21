@@ -218,13 +218,7 @@ struct MigrationTests {
   /// listener's behavior, so it only runs where that behavior exists.
   @Test(
     .enabled(
-      if: ProcessInfo.processInfo.isOperatingSystemAtLeast(
-        OperatingSystemVersion(
-          majorVersion: 27,
-          minorVersion: 2,
-          patchVersion: 0
-        )
-      ),
+      if: runsNetworkFramework272Tests,
       "Network framework before macOS 27.2 does not deliver migrated traffic"
     )
   )

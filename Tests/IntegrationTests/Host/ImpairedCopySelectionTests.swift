@@ -50,7 +50,7 @@ struct ImpairedCopySelectionTests {
   /// The newest installed frame with the absolute row of the line equal
   /// to `line`.
   static func frame(
-    _ rig: ImpairedRoamingRig,
+    _ rig: some RoamingTestRig,
     showing line: String,
     where predicate: @escaping @Sendable ([String]) -> Bool = { _ in true }
   ) async throws -> (PaneFrame, row: Int) {
@@ -73,7 +73,7 @@ struct ImpairedCopySelectionTests {
 
   static func expectFailure(
     _ code: RSTErrorCode,
-    _ rig: ImpairedRoamingRig,
+    _ rig: some RoamingTestRig,
     _ request: CopySelectionRequest,
     sourceLocation: SourceLocation = #_sourceLocation
   ) async throws {
@@ -83,13 +83,13 @@ struct ImpairedCopySelectionTests {
       let copied =
         "\(text.utf8.count) bytes: \(text.prefix(80).debugDescription)"
       Issue.record(
-        "seed \(rig.link.seed): expected \(code), copied \(copied)",
+        "\(rig.label): expected \(code), copied \(copied)",
         sourceLocation: sourceLocation
       )
     } catch let error as RoamingClient.CopyError {
       #expect(
         error.code == code,
-        "seed \(rig.link.seed)",
+        "\(rig.label)",
         sourceLocation: sourceLocation
       )
     }

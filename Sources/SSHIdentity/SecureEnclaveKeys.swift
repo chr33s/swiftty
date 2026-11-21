@@ -44,9 +44,7 @@ public enum SecureEnclaveKeys {
       )
     else { throw .accessControl }
     do {
-      let key = try SecureEnclave.P256.Signing.PrivateKey(
-        accessControl: access
-      )
+      let key = try SecureEnclave.P256.Signing.PrivateKey(accessControl: access)
       return IdentitySecret(key: .secureEnclaveP256(key))
     } catch { throw .generationFailed }
     #else

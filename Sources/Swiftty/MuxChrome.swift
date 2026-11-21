@@ -852,8 +852,8 @@ final class MuxPaneContainer: NSView {
     layer.borderColor = NSColor.separatorColor.cgColor
     layer.backgroundColor =
       showsHeader
-      ? (cardBackground ?? NSColor.labelColor.withAlphaComponent(0.04))
-        .cgColor : nil
+      ? (cardBackground ?? NSColor.labelColor.withAlphaComponent(0.04)).cgColor
+      : nil
   }
 
   @available(*, unavailable)

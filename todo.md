@@ -92,8 +92,16 @@ None of these recurs on demand: on 2026-10-27 each was repeated 25–40 times wi
 
 - [ ] Continue review of current source/app files. Geometry and physical-history
   reviews remain deferred under the recorded scope exclusions. Everything merged
-  through 2026-11-20 has now had one pass; its fixes are recorded in
-  [spec.multiplexer.md §11](spec.multiplexer.md#follow-up-review-and-measurements--2026-11-20).
+  through 2026-11-21 (`70687e56`) has now had one pass; its fixes are recorded in
+  [spec.multiplexer.md §11](spec.multiplexer.md#follow-up-review--2026-11-21).
+- [ ] **Secure Enclave prompt and the connect deadline:** a Secure Enclave key
+  that requires user presence signs on its connection's event loop, where the
+  connect deadline is also scheduled. Since 2026-11-21 these connections use a
+  one-loop group of their own, so other channels no longer stall, but a prompt
+  longer than `connectTimeout` (20 s) still fails the connection after it
+  returns, and the roaming start path prompts twice (probe, then bootstrap).
+  Sign off the loop, or exclude prompt time from the deadline, and verify on a
+  device (SE-02).
 
 ## Platform and release validation
 
@@ -109,16 +117,27 @@ None of these recurs on demand: on 2026-10-27 each was repeated 25–40 times wi
   and signed CloudKit/Keychain propagation. Preserve exact toolchain/platform
   evidence and distinguish disabled checks from executed tests.
 - [ ] Finish [A20 and A22](spec.roaming.md#13-acceptance-tests) over real QUIC:
-  packet-level loss and RTT at the recovery-target profile. The in-process
-  impaired link covers stream delay, reordering, reset and stale arrival,
-  duplicated control records, kills at acknowledgement boundaries and mid-copy,
-  stripped features, and a base refused naturally by the client's retention.
-  The `screenDeltas` bytes and CPU report
-  ([spec.multiplexer.md §11](spec.multiplexer.md#follow-up-review-and-measurements--2026-11-20))
-  was measured on that in-process path; repeat it over shaped real QUIC when
-  the profile exists. It needs a network shaper (`dnctl`/`pfctl`, root).
-- [ ] Run the OS-gated QUIC reset test in CI: the `xcode-27` runner (macOS
-  27.0.1) skips it, so it executes only locally on 27.2+.
+  packet-level loss and RTT at the recovery-target profile. The harness exists:
+  `sudo Scripts/quic-shaper.sh up` shapes loopback UDP on one port with
+  dummynet (100 ms each way, 5% loss per direction, about 2% reordered through a
+  slower parallel pipe, 1 Mbit/s per direction), and `Scripts/test-shaped-quic.sh`
+  runs `ShapedQUICTests` (A20 workload and feature stripping, A22 history copy,
+  edit under selection and typing during a 2 MiB copy, the `screenDeltas` bytes
+  and CPU report, and 100 timed warm recoveries against the 3 s p95 target). The
+  suite's first test measures the port and fails if it is not shaped. It has
+  run only on unshaped loopback (2026-11-21, all scenarios passing); run it
+  shaped (needs root), record the report in
+  [spec.multiplexer.md §11](spec.multiplexer.md#follow-up-review-and-measurements--2026-11-20),
+  then `sudo Scripts/quic-shaper.sh down`. Over QUIC, connection loss is a
+  server close at the next opportunity, not at an exact acknowledgement
+  boundary; the in-process impaired link keeps that coverage.
+- [ ] Run the OS-gated QUIC tests in CI: the `xcode-27` runner (macOS 27.0.1)
+  skips the stream-reset and migration tests. The `network-framework-27-2` CI job
+  runs both on a self-hosted runner with `SWIFTTY_REQUIRE_OS_GATED=1`, which makes
+  them run (and fail) rather than skip. It is inert until a macOS 27.2+ arm64
+  runner labelled `macos-27-2` is registered and the repository variable
+  `MACOS_27_2_RUNNER` is `true`. Both tests pass locally on 27.2.1 through that
+  job's command.
 
 ## Terminal feature follow-ups
 

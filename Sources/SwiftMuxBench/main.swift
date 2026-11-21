@@ -280,7 +280,7 @@ func frameStages(columns: Int, rows: Int) throws -> [(String, Double)] {
     "capture", "export", "stamp", "encode", "decode+validate", "import",
     "import (validated)",
   ]
-    .map { ($0, percentile(times[$0] ?? [], 0.95)) }
+  .map { ($0, percentile(times[$0] ?? [], 0.95)) }
 }
 
 /// `copySelection` text extraction over a pane's whole history at the

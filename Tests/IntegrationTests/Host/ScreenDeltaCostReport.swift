@@ -15,7 +15,9 @@ import Testing
 @Suite(
   .serialized,
   .timeLimit(.minutes(10)),
-  .enabled(if: ProcessInfo.processInfo.environment["SWIFTTY_DELTA_REPORT"] != nil)
+  .enabled(
+    if: ProcessInfo.processInfo.environment["SWIFTTY_DELTA_REPORT"] != nil
+  )
 )
 struct ScreenDeltaCostReport {
   enum Workload: String, CaseIterable, Sendable {
@@ -29,14 +31,13 @@ struct ScreenDeltaCostReport {
       }
     }
 
-    func run(_ rig: ImpairedRoamingRig) async throws {
+    func run(_ rig: some RoamingTestRig) async throws {
       switch self {
       case .typing80x24:
         // A prompt-level line typed one key at a time, three times.
         for round in 1 ... 3 {
-          for ch in "echo the quick brown fox jumps over the lazy dog \(round)" {
-            try await rig.submit(.text(String(ch)))
-          }
+          for ch in "echo the quick brown fox jumps over the lazy dog \(round)"
+          { try await rig.submit(.text(String(ch))) }
           try await rig.submit(.key(SemanticKey(.enter)))
           try await rig.shows("lazy dog \(round)")
         }
@@ -134,8 +135,7 @@ struct ScreenDeltaCostReport {
               delta,
               to: base,
               limits: SnapshotFrame.frameLimits
-            ),
-            let decoded = RoamingClient.screen(frame, header: header)
+            ), let decoded = RoamingClient.screen(frame, header: header)
           else { continue }
           // RST/1 frames carry their revision in the record header.
           if let frame = decoded.paneFrame {

@@ -5,8 +5,7 @@ import NIOSSH
 /// Public-key algorithms Swiftty can authenticate with
 /// (spec.ssh-identity.md §13.1). RSA is absent because SwiftNIO SSH has no
 /// RSA client keys; it is refused, never approximated.
-public enum SSHKeyAlgorithm: String, Hashable, Sendable, Codable, CaseIterable
-{
+public enum SSHKeyAlgorithm: String, Hashable, Sendable, Codable, CaseIterable {
   case ed25519 = "ssh-ed25519"
   case ecdsaP256 = "ecdsa-sha2-nistp256"
   case ecdsaP384 = "ecdsa-sha2-nistp384"
@@ -64,8 +63,7 @@ public enum SSHSigningKey: Sendable, CustomStringConvertible,
     case .ed25519: .ed25519
     case .p256: .ecdsaP256
     case .p384: .ecdsaP384
-    case .p521: .ecdsaP521
-    #if canImport(Darwin)
+    case .p521: .ecdsaP521 #if canImport(Darwin)
     case .secureEnclaveP256: .ecdsaP256
     #endif
     }
@@ -93,8 +91,7 @@ public enum SSHSigningKey: Sendable, CustomStringConvertible,
     case let .ed25519(key): NIOSSHPrivateKey(ed25519Key: key)
     case let .p256(key): NIOSSHPrivateKey(p256Key: key)
     case let .p384(key): NIOSSHPrivateKey(p384Key: key)
-    case let .p521(key): NIOSSHPrivateKey(p521Key: key)
-    #if canImport(Darwin)
+    case let .p521(key): NIOSSHPrivateKey(p521Key: key) #if canImport(Darwin)
     case let .secureEnclaveP256(key):
       NIOSSHPrivateKey(secureEnclaveP256Key: key)
     #endif

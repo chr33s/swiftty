@@ -307,8 +307,8 @@ public actor KeychainIdentitySecretStore: IdentitySecretStore {
     var result: CFTypeRef?
     let status = SecItemCopyMatching(read as CFDictionary, &result)
     guard status == errSecSuccess else { throw Self.error(status) }
-    guard let data = result as? Data, let secret = IdentitySecret(payload: data),
-      secret.matches(policy)
+    guard let data = result as? Data,
+      let secret = IdentitySecret(payload: data), secret.matches(policy)
     else { throw .malformed }
     return secret
   }

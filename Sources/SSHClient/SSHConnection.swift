@@ -257,6 +257,20 @@ public final class SSHConnection: Sendable {
     #endif
   }
 
+  /// The group for connections authenticated by a Secure Enclave key when
+  /// the caller names none. NIOSSH signs on the channel's event loop, and a
+  /// key that requires user presence blocks that thread until Face ID,
+  /// Touch ID or the passcode finishes. One loop of its own keeps the
+  /// prompt from stalling every other SSH and SFTP channel on the shared
+  /// default group.
+  public static let secureEnclaveEventLoopGroup: any EventLoopGroup = {
+    #if canImport(Network)
+    NIOTSEventLoopGroup(loopCount: 1)
+    #else
+    MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    #endif
+  }()
+
   /// Connects, verifies the host key against `trustStore` (asking
   /// `trustDecider` about unknown keys) and only then authenticates.
   ///
@@ -313,6 +327,16 @@ public final class SSHConnection: Sendable {
     }
   }
 
+  static func defaultGroup(for credential: SSHCredential?) -> any EventLoopGroup
+  {
+    #if canImport(Darwin)
+    if case .publicKey(.secureEnclaveP256)? = credential {
+      return secureEnclaveEventLoopGroup
+    }
+    #endif
+    return defaultEventLoopGroup
+  }
+
   private enum Outcome {
     case connected(SSHConnection)
     /// Host key verified; no credential offered, connection closed.
@@ -333,7 +357,7 @@ public final class SSHConnection: Sendable {
       throw SSHClientError.invalidConfiguration("username")
     }
     try Task.checkCancellation()
-    let loop = (eventLoopGroup ?? defaultEventLoopGroup).next()
+    let loop = (eventLoopGroup ?? defaultGroup(for: credential)).next()
     let timeout = TimeAmount(clamping: configuration.connectTimeout)
     let attempt = ConnectionAttempt(deadline: .now() + timeout)
     let timer = loop.scheduleTask(deadline: attempt.deadline) {

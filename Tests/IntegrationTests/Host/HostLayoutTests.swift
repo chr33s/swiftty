@@ -91,7 +91,9 @@ struct HostLayoutTests {
       let second = try #require(
         try await layout(client, "two panes") {
           $0.activeTabLayout?.panes.count == 2
-        }.activeTabLayout?.activePane
+        }
+        .activeTabLayout?
+        .activePane
       )
       _ = try await client.snapshot("second prompt") {
         screenText($0).contains("$") && !$0.textLines.contains("a-199")

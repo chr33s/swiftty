@@ -97,7 +97,9 @@ struct PresentationSelectionTests {
   /// the frame then ends when it comes back into view.
   @Test
   func `a reattachment's new row versions end the selection`() {
-    let fresh = Dictionary(uniqueKeysWithValues: (0 ..< 20).map { ($0, UInt64(7)) })
+    let fresh = Dictionary(
+      uniqueKeysWithValues: (0 ..< 20).map { ($0, UInt64(7)) }
+    )
     let s = TerminalSession(presentationColumns: 10, rows: 4)
     #expect(s.installPresentation(Self.window(top: 10)))
     Self.select(s, from: 1, to: 2)
@@ -216,12 +218,18 @@ struct PresentationSelectionTests {
     let keys = (10 ..< 14).map { [UInt64(3), 0, UInt64($0), 1, 1] }
     #expect(
       selection.place(in: keys, columns: 10)
-        == .shown(anchor: .init(row: 0, column: 2), head: .init(row: 2, column: 5))
+        == .shown(
+          anchor: .init(row: 0, column: 2),
+          head: .init(row: 2, column: 5)
+        )
     )
     selection.rectangle = false
     #expect(
       selection.place(in: keys, columns: 10)
-        == .shown(anchor: .init(row: 0, column: 0), head: .init(row: 2, column: 5))
+        == .shown(
+          anchor: .init(row: 0, column: 0),
+          head: .init(row: 2, column: 5)
+        )
     )
   }
 

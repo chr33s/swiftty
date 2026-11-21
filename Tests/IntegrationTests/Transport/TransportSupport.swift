@@ -155,4 +155,18 @@ func snapshotPayload(bodyLength: Int, fill: UInt8) -> [UInt8] {
   out += [UInt8](repeating: fill, count: bodyLength)
   return out
 }
+
+/// Network framework behavior these tests assert first ships in macOS 27.2:
+/// a stream reset leaves the connection open, and a migrated client's traffic
+/// reaches the same connection. Earlier releases skip the tests unless
+/// `SWIFTTY_REQUIRE_OS_GATED=1` is set, which runs them regardless so a CI job
+/// that must execute them fails instead of skipping.
+let runsNetworkFramework272Tests: Bool = {
+  if ProcessInfo.processInfo.environment["SWIFTTY_REQUIRE_OS_GATED"] == "1" {
+    return true
+  }
+  return ProcessInfo.processInfo.isOperatingSystemAtLeast(
+    OperatingSystemVersion(majorVersion: 27, minorVersion: 2, patchVersion: 0)
+  )
+}()
 #endif

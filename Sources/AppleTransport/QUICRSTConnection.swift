@@ -371,9 +371,8 @@ public final class QUICRSTConnection: RSTConnection, RSTPathEvents {
     if owed { releaseSnapshotCredit() }
   }
 
-  func setInboundActionForTesting(
-    _ body: (@Sendable () -> InboundTestAction)?
-  ) {
+  func setInboundActionForTesting(_ body: (@Sendable () -> InboundTestAction)?)
+  {
     let previous = state.withLock { s in
       let previous = s.inboundActionForTesting
       s.inboundActionForTesting = body

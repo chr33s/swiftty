@@ -19,7 +19,7 @@ struct ImpairedScreenDeltaTests {
   /// `predicate`: a reattachment can drop a request (a history window
   /// belongs to its attachment).
   static func until(
-    _ rig: ImpairedRoamingRig,
+    _ rig: some RoamingTestRig,
     _ what: String,
     request: () async throws -> Void,
     where predicate: @escaping (PresentationFrame) -> Bool
@@ -32,14 +32,13 @@ struct ImpairedScreenDeltaTests {
       }
       if shown != nil { return }
     }
-    Issue.record("seed \(rig.link.seed): never showed \(what)")
+    Issue.record("\(rig.label): never showed \(what)")
     throw HostTestTimeout(what: what)
   }
 
   /// Typing, scrolling, a progress bar, history moves, an alternate screen
   /// and resizes, with two forced kills at acknowledgement boundaries.
-  static func workload(_ rig: ImpairedRoamingRig) async throws {
-    let link = rig.link
+  static func workload(_ rig: some RoamingTestRig) async throws {
     // Typing, one key at a time.
     for ch in "echo key-$((6*7))" { try await rig.submit(.text(String(ch))) }
     try await rig.submit(.key(SemanticKey(.enter)))
@@ -47,7 +46,7 @@ struct ImpairedScreenDeltaTests {
 
     // Full-screen scrolling, fast then line by line. Lose the connection
     // just after the client acknowledges a screen.
-    link.killAt(.screenAck(afterForward: true))
+    rig.loseConnection(at: .screenAck(afterForward: true))
     try await rig.run("seq 1 500; echo scroll-$((2+3))")
     try await rig.shows("scroll-5")
     try await rig.run(
@@ -58,7 +57,7 @@ struct ImpairedScreenDeltaTests {
 
     // A carriage-return progress bar. Lose the connection just before the
     // client hears an input acknowledgement.
-    link.killAt(.inputAck(afterForward: false))
+    rig.loseConnection(at: .inputAck(afterForward: false))
     try await rig.run(
       "i=0; while [ $i -lt 50 ]; do i=$((i+1)); printf '\\rprogress %d/50' "
         + "$i; sleep 0.01; done; echo; echo bar-$((4+5))"
@@ -225,7 +224,8 @@ struct ImpairedScreenDeltaTests {
   /// that aged base; the client refuses it once, full screens answer, and
   /// deltas resume.
   @Test
-  func `a base aged out of the client's retention recovers through a full screen`()
+  func
+    `a base aged out of the client's retention recovers through a full screen`()
     async throws
   {
     try await withRegistry { registry in
@@ -258,17 +258,19 @@ struct ImpairedScreenDeltaTests {
         after.requestedFull - before.requestedFull == 1,
         "\(after) from \(before); \(Array(link.snapshots[mark...]))"
       )
-      let fulls = link.snapshots[mark...].filter {
-        !$0.delta && ($0.fate == .delivered || $0.fate == .lateAfterCancel)
-      }
+      let fulls = link.snapshots[mark...]
+        .filter {
+          !$0.delta && ($0.fate == .delivered || $0.fate == .lateAfterCancel)
+        }
       // The host has no base until the replacement is acknowledged, so
       // output in that interval is also sent whole; then deltas resume.
       #expect(!fulls.isEmpty)
       let lastFull = try #require(fulls.last?.revision)
       #expect(
-        link.snapshots[mark...].contains {
-          $0.delta && $0.revision > lastFull && $0.fate == .delivered
-        },
+        link.snapshots[mark...]
+          .contains {
+            $0.delta && $0.revision > lastFull && $0.fate == .delivered
+          },
         "full screens \(fulls.map(\.revision))"
       )
       #expect(after.applied > before.applied)

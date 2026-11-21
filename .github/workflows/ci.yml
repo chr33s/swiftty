@@ -52,6 +52,31 @@ jobs:
       - name: Check roaming client layering
         if: matrix.configuration == 'debug'
         run: Scripts/check-layering.sh
+  network-framework-27-2:
+    # Network framework behavior that first ships in macOS 27.2 (a stream reset
+    # leaves the QUIC connection open; migrated client traffic reaches the same
+    # connection). The GitHub xcode-27 image runs 27.0.1, where these tests
+    # skip, so they run on a self-hosted runner labelled macos-27-2. Set the
+    # repository variable MACOS_27_2_RUNNER=true once one is registered;
+    # SWIFTTY_REQUIRE_OS_GATED=1 makes the tests run (and fail) rather than skip.
+    if: vars.MACOS_27_2_RUNNER == 'true'
+    runs-on: [self-hosted, macOS, ARM64, macos-27-2]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-macos
+      - name: Require macOS 27.2 or newer
+        run: |
+          version="$(sw_vers -productVersion)"
+          test "$(printf '%s\n%s\n' "$version" 27.2 | sort -V | head -1)" = 27.2 ||
+            { echo "::error::runner is macOS $version; these tests need 27.2+"; exit 1; }
+      - name: Test OS-gated QUIC behavior
+        env:
+          SWIFTTY_REQUIRE_OS_GATED: "1"
+        run: >-
+          Scripts/test-native.sh --disable-automatic-resolution -c release
+          --filter 'reset partial stream is never delivered'
+          --filter 'traffic reaches the same connection after its address changes'
   shell-baseline:
     runs-on: xcode-27
     steps:

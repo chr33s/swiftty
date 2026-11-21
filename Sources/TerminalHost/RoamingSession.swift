@@ -1502,7 +1502,9 @@ public final class RoamingSession: @unchecked Sendable {
       if let cancel { a.connection.cancelSnapshot(stream: cancel) }
       screenRevision += 1
       let stamp = stamp(epoch: a.epoch)
-      let window = a.historyTop.map { (top: $0, generation: a.historyGeneration) }
+      let window = a.historyTop.map {
+        (top: $0, generation: a.historyGeneration)
+      }
       a.nextStreamID += 1
       let stream = a.nextStreamID
       a.scheduler.started(stream: stream, revision: stamp.screenRevision)

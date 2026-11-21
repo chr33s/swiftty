@@ -1194,13 +1194,7 @@ struct QUICTransportTests {
   /// application error. 27.2 resets only the stream, as this test requires.
   @Test(
     .enabled(
-      if: ProcessInfo.processInfo.isOperatingSystemAtLeast(
-        OperatingSystemVersion(
-          majorVersion: 27,
-          minorVersion: 2,
-          patchVersion: 0
-        )
-      ),
+      if: runsNetworkFramework272Tests,
       "Network framework before macOS 27.2 aborts the connection on stream reset"
     ),
     arguments: [

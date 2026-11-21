@@ -22,7 +22,9 @@ extension MainActorIntegrationTests.IdentityAccountBoundaryTests {
     let legacyKey = IdentitySecret(.init())
     let model = app(
       secrets: secrets,
-      legacy: InMemoryLegacyKeySource(keys: ["phone": legacyKey.ed25519PrivateKey!])
+      legacy: InMemoryLegacyKeySource(keys: [
+        "phone": legacyKey.ed25519PrivateKey!
+      ])
     )
     await select("account-a", in: model)
     let identity = try await model.identityStore.generate(

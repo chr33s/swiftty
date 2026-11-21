@@ -176,7 +176,9 @@ public struct SSHIdentityMetadata: Hashable, Sendable, Codable, Identifiable {
   }
 
   /// The parsed algorithm, if supported.
-  public var keyAlgorithm: SSHKeyAlgorithm? { SSHKeyAlgorithm(rawValue: algorithm) }
+  public var keyAlgorithm: SSHKeyAlgorithm? {
+    SSHKeyAlgorithm(rawValue: algorithm)
+  }
 
   /// Picker and list label: `Ed25519`, `ECDSA P-256`, or
   /// `P-256 · Secure Enclave`.
@@ -200,10 +202,11 @@ public struct SSHIdentityMetadata: Hashable, Sendable, Codable, Identifiable {
     guard storage != .secureEnclave || algorithm == .ecdsaP256 else {
       throw .unsupportedAlgorithm
     }
-    guard SSHKeyAlgorithm(canonicalPublicKeyLine: publicKey) == algorithm
-    else { throw .invalidPublicKey }
-    guard SSHPublicKeyFormat.fingerprint(openSSHPublicKey: publicKey)
-      == fingerprint
+    guard SSHKeyAlgorithm(canonicalPublicKeyLine: publicKey) == algorithm else {
+      throw .invalidPublicKey
+    }
+    guard
+      SSHPublicKeyFormat.fingerprint(openSSHPublicKey: publicKey) == fingerprint
     else { throw .fingerprintMismatch }
   }
 

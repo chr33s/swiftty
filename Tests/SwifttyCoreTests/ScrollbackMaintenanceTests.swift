@@ -160,9 +160,8 @@ struct ScrollbackMaintenanceTests {
     DispatchQueue.global().async(group: group) { leaving.cancel() }
     #expect(clock.entered.wait(timeout: .now() + 2) == .success)
     // Meanwhile another owner's activity arms a new deadline.
-    DispatchQueue.global().async(group: group) {
-      staying.noteActivity(generation: 2)
-    }
+    DispatchQueue.global()
+      .async(group: group) { staying.noteActivity(generation: 2) }
     usleep(100_000)
     clock.proceed.signal()
     #expect(group.wait(timeout: .now() + 2) == .success)

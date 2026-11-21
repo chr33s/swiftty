@@ -103,8 +103,17 @@ extension SSHConnection {
   /// Any answer, including a refusal, proves the server is still reading
   /// this connection. Sends nothing to a running shell and has no effect
   /// on it.
+  ///
+  /// The caller's cancellation does not reach the probe, which stays
+  /// bounded by `timeout`: abandoning a channel open that the server has
+  /// not answered closes the whole connection (`withSessionChannel`), so a
+  /// cancelled health check would otherwise end a healthy shell.
   public func probe(timeout: Duration = .seconds(10)) async -> SSHHealth {
     guard isActive else { return .closed }
+    return await Task { await self.uncancellableProbe(timeout: timeout) }.value
+  }
+
+  private func uncancellableProbe(timeout: Duration) async -> SSHHealth {
     do {
       try await withSessionChannel(
         timeout: timeout,
@@ -113,9 +122,7 @@ extension SSHConnection {
         operation: { child, _ in child.close(promise: nil) }
       )
       return .responsive
-    } catch SSHClientError.channelRequestRejected {
-      return .responsive
-    } catch {
+    } catch SSHClientError.channelRequestRejected { return .responsive } catch {
       return isActive ? .unresponsive : .closed
     }
   }

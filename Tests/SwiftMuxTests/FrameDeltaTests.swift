@@ -593,24 +593,25 @@ private final class AttachingPeer: Sendable {
             )
           ]
         case let .request(id, .attach):
-          replies = [
-            .reply(
-              id: id,
-              result: .success(
-                .attached(
-                  attachment: attachment,
-                  workspace: WorkspaceSnapshot(
-                    id: WorkspaceID(),
-                    name: "peer",
-                    tabs: [],
-                    activeTab: TabID(),
-                    panes: [],
-                    layoutRevision: 1
+          replies =
+            [
+              .reply(
+                id: id,
+                result: .success(
+                  .attached(
+                    attachment: attachment,
+                    workspace: WorkspaceSnapshot(
+                      id: WorkspaceID(),
+                      name: "peer",
+                      tabs: [],
+                      activeTab: TabID(),
+                      panes: [],
+                      layoutRevision: 1
+                    )
                   )
                 )
               )
-            )
-          ] + after.map { ServerMessage.event($0) }
+            ] + after.map { ServerMessage.event($0) }
         case let .frameAck(_, revision, _):
           self.acknowledged.withLock { $0.append(revision) }
         default: return

@@ -801,6 +801,15 @@ Deltas cut bytes per screen by 59% (typing) and 70% (scrolling). They cost 16–
 - *JSONC configuration.* The source index records positions only to depth 8 (every configuration key lies within depth 5), and unknown keys are checked in stored-offset order. A deeply nested 1 MiB file had taken about 30 s and 1.5 GB before it was rejected.
 - *`bindKey`.* A shortcut's key is named by its unshifted character, so `cmd+shift+1` matches ⌘⇧1, and the `+` key is named `plus`.
 
+### Follow-up review — 2026-11-21
+
+Commit `70687e56` (SSH identities, saved passwords, Secure Enclave keys, roaming layout, connection resilience) had one review pass. SavedPasswordStore, IdentitySecretStore, SecureEnclaveKeys, IdentityResolver, the ECDSA/PEM importer paths, QUIC stream-credit settlement, RemoteLayout, the roaming history window, MuxConnection validation, the workspace chrome and recovery scheduling were found clean.
+
+**Defects fixed in this review:**
+- *A cancelled health probe closed a healthy SSH connection.* `SSHConnection.probe` ran in its caller's task. The app cancels its health task on backgrounding and on every inactive-to-active transition (Control Center, a banner, a system alert). A probe whose channel open the server had not yet answered then aborted, and abandoning an unanswered open closes the parent connection, so recovery replaced the user's running shell. The probe now runs in its own task, bounded only by its timeout. Regression: `SSHResilienceTests.aCancelledProbeLeavesTheConnectionOpen` fails without the fix (connection closed, result not `.responsive`).
+- *Secure Enclave signing on the shared event loop.* NIOSSH signs on the channel's loop, and a key that requires user presence blocks that thread for the length of the prompt. Connections authenticated by a Secure Enclave key, when the caller names no group, now use `SSHConnection.secureEnclaveEventLoopGroup`, a one-loop group of their own, so a prompt no longer stalls every other SSH and SFTP channel. The connect deadline is still scheduled on that loop and is checked when the prompt returns, so a prompt longer than the connect timeout still fails with `connectTimeout`; that remains open (todo.md), needs a device, and has no automated test.
+- *ECDSA import left a copy of the private scalar unwiped.* Left-padding replaced the stripped scalar buffer, and the `defer` wiped only the replacement. The padded scalar is now built in one buffer, which the `defer` wipes. Not observable from a test.
+
 ## 12. Primary sources and evidence boundary
 
 Swiftty source below is pinned to `32a57d8945db68a397a58ae3cbe75e63372ea242`. Existing API/lifetime statements are source observations; the service, frame importer, presenter and shipping behavior are proposed changes. Apple documentation establishes intended API models; actual macOS 27 runtime behavior remains an acceptance gate.

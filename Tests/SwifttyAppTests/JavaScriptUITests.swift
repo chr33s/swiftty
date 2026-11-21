@@ -35,8 +35,12 @@ extension MuxNativeTests {
       return MuxWorkspaceController.automationShortcut(event)
     }
     // ANSI key codes: 18 is the 1 key, 33 the [ key.
-    #expect(try shortcut("!", "!", keyCode: 18, [.command, .shift]) == "1+cmd+shift")
-    #expect(try shortcut("{", "{", keyCode: 33, [.command, .shift]) == "[+cmd+shift")
+    #expect(
+      try shortcut("!", "!", keyCode: 18, [.command, .shift]) == "1+cmd+shift"
+    )
+    #expect(
+      try shortcut("{", "{", keyCode: 33, [.command, .shift]) == "[+cmd+shift"
+    )
     #expect(try shortcut("k", "k", keyCode: 40, [.command]) == "cmd+k")
     #expect(MuxWorkspaceController.shortcutKeyName("+") == "plus")
   }

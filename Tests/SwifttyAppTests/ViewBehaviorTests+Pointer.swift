@@ -25,7 +25,8 @@ extension ViewBehaviorTests {
   ) throws {
     // One line per wheel unit (the default multiplier is 3).
     let view = try makeView(
-      configuration: Configuration.configured([("mouse-scroll-multiplier", "1")])
+      configuration: Configuration.configured([("mouse-scroll-multiplier", "1")]
+      )
     )
     view.session.resize(columns: 10, rows: 2)
     view.session.feed(Array("row0\r\nrow1\r\nrow2\r\nrow3".utf8))
@@ -479,7 +480,8 @@ extension ViewBehaviorTests {
     _ vertical: Int32
   ) throws {
     let view = try makeView(
-      configuration: Configuration.configured([("mouse-scroll-multiplier", "1")])
+      configuration: Configuration.configured([("mouse-scroll-multiplier", "1")]
+      )
     )
     let writes = Mutex<[[UInt8]]>([])
     view.session.onWrite = { bytes in writes.withLock { $0.append(bytes) } }

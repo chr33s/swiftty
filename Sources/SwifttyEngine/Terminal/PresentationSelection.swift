@@ -134,8 +134,7 @@ public struct PresentationSelection: Sendable, Equatable {
       ? Cell(
         row: count - 1,
         column: rectangle ? min(end.column, lastColumn) : lastColumn
-      )
-      : Cell(row: end.row - top, column: end.column)
+      ) : Cell(row: end.row - top, column: end.column)
     return .shown(
       anchor: anchorFirst ? first : last,
       head: anchorFirst ? last : first

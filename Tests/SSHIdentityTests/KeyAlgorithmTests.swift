@@ -26,8 +26,7 @@ struct KeyAlgorithmTests {
   }
 
   @Test(arguments: [
-    ("ecdsa256", SSHKeyAlgorithm.ecdsaP256),
-    ("ecdsa384", .ecdsaP384),
+    ("ecdsa256", SSHKeyAlgorithm.ecdsaP256), ("ecdsa384", .ecdsaP384),
     ("ecdsa521", .ecdsaP521),
   ])
   func importsOpenSSHECDSAKeys(name: String, algorithm: SSHKeyAlgorithm) throws
@@ -93,8 +92,10 @@ struct KeyAlgorithmTests {
       let restored = try #require(IdentitySecret(payload: secret.payload))
       #expect(restored.publicKeyLine == secret.publicKeyLine)
       #expect(restored.key.algorithm == algorithm)
-      #expect(SSHKeyAlgorithm(canonicalPublicKeyLine: secret.publicKeyLine)
-        == algorithm)
+      #expect(
+        SSHKeyAlgorithm(canonicalPublicKeyLine: secret.publicKeyLine)
+          == algorithm
+      )
     }
     // Unknown formats and curves are refused, not guessed.
     #expect(IdentitySecret(payload: Data([9, 1, 2])) == nil)
@@ -210,7 +211,9 @@ struct KeyAlgorithmTests {
       revision: LogicalRevision(counter: 1, deviceID: device)
     )
     let resolver = IdentityResolver(secrets: InMemoryIdentitySecretStore())
-    #expect(await resolver.availability(of: metadata) == .unavailableOnThisDevice)
+    #expect(
+      await resolver.availability(of: metadata) == .unavailableOnThisDevice
+    )
   }
 
   @Test
