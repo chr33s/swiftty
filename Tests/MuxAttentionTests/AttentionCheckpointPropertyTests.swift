@@ -273,42 +273,30 @@ struct AttentionCheckpointPropertyTests {
     #expect(failure == nil, "\(failure?.description ?? "")")
   }
 
-  /// Known issue: `Snapshot` holds dictionaries keyed by `PaneID`,
-  /// `OccurrenceID` and `AttentionSource`. `JSONEncoder` writes those as
-  /// arrays in hash-table order, which `.sortedKeys` does not sort and
-  /// which is seeded per instance, so a restored inbox usually writes its
-  /// `panes`/`entries` in another order. Intermittent: two equal tables can
-  /// still iterate alike.
-  static let unsortedTables =
-    "attention checkpoint encodes non-string-keyed dictionaries unsorted"
-
+  /// `Snapshot`'s tables keyed by `PaneID`, `OccurrenceID` and
+  /// `AttentionSource` are written in key order; hash order (which
+  /// `.sortedKeys` does not touch) differs per instance.
   @Test
   func checkpointBytesSurviveARestore() {
-    withKnownIssue(Comment(rawValue: Self.unsortedTables), isIntermittent: true)
-    {
-      let failure = Property.check(
-        seeds: Property.seeds(150),
-        generate: Self.generate,
-        shrink: { Property.shrinkList($0) },
-        property: Self.canonicalBytes
-      )
-      #expect(failure == nil, "\(failure?.description ?? "")")
-    }
+    let failure = Property.check(
+      seeds: Property.seeds(150),
+      generate: Self.generate,
+      shrink: { Property.shrinkList($0) },
+      property: Self.canonicalBytes
+    )
+    #expect(failure == nil, "\(failure?.description ?? "")")
   }
 
   /// Seed 1 shrinks to one report on each of two panes.
   @Test(arguments: [UInt64(1)])
   func checkpointBytesRegression(seed: UInt64) {
-    withKnownIssue(Comment(rawValue: Self.unsortedTables), isIntermittent: true)
-    {
-      let failure = Property.check(
-        seeds: [seed],
-        generate: Self.generate,
-        shrink: { Property.shrinkList($0) },
-        property: Self.canonicalBytes
-      )
-      #expect(failure == nil, "\(failure?.description ?? "")")
-    }
+    let failure = Property.check(
+      seeds: [seed],
+      generate: Self.generate,
+      shrink: { Property.shrinkList($0) },
+      property: Self.canonicalBytes
+    )
+    #expect(failure == nil, "\(failure?.description ?? "")")
   }
 
   /// Static analogue of the two-pane counterexample, with all three panes
@@ -317,8 +305,10 @@ struct AttentionCheckpointPropertyTests {
   func threePanesCheckpointCanonically() throws {
     let ops: [Op] = (0 ..< 3)
       .map { .report(pane: $0, path: 1, state: .working, text: 1) }
-    let violation = try Self.canonicalBytes(ops)
-    withKnownIssue(Comment(rawValue: Self.unsortedTables), isIntermittent: true)
-    { #expect(violation == nil, "\(violation ?? "")") }
+    // Hash order varies per instance; repeat so a regression shows.
+    for _ in 0 ..< 20 {
+      let violation = try Self.canonicalBytes(ops)
+      #expect(violation == nil, "\(violation ?? "")")
+    }
   }
 }

@@ -82,6 +82,45 @@ public struct AttentionInbox: Sendable {
     var openResult: [AttentionSource: OccurrenceID]
     var history: [OccurrenceID]
     var nextSequence: UInt64
+
+    /// Canonical bytes: tables are written in key order (`sortedKeys`
+    /// orders only string keys; these tables would follow hash order,
+    /// which differs per instance). Decoding is synthesized.
+    func encode(to encoder: any Encoder) throws {
+      var c = encoder.container(keyedBy: CodingKeys.self)
+      try c.encode(serviceEpoch, forKey: .serviceEpoch)
+      try c.encode(revision, forKey: .revision)
+      try c.encode(textBytes, forKey: .textBytes)
+      try c.encode(SortedTable(panes), forKey: .panes)
+      try c.encode(SortedTable(entries), forKey: .entries)
+      try c.encode(SortedTable(openFailure), forKey: .openFailure)
+      try c.encode(SortedTable(openResult), forKey: .openResult)
+      try c.encode(history, forKey: .history)
+      try c.encode(nextSequence, forKey: .nextSequence)
+    }
+  }
+
+  /// A table in the flat `[key, value, …]` form a dictionary with
+  /// non-string keys encodes to, ordered by each key's encoding.
+  private struct SortedTable<Key: Codable & Hashable, Value: Codable>: Encodable
+  {
+    let table: [Key: Value]
+    init(_ table: [Key: Value]) { self.table = table }
+
+    func encode(to encoder: any Encoder) throws {
+      let keys = JSONEncoder()
+      keys.outputFormatting = [.sortedKeys]
+      let ordered =
+        try table.map { entry in
+          (try keys.encode(entry.key), entry.key, entry.value)
+        }
+        .sorted { $0.0.lexicographicallyPrecedes($1.0) }
+      var container = encoder.unkeyedContainer()
+      for (_, key, value) in ordered {
+        try container.encode(key)
+        try container.encode(value)
+      }
+    }
   }
 
   /// Items, records and occurrence bookkeeping. Pending change notices

@@ -1063,25 +1063,46 @@ public struct Parser: ~Copyable {
 extension Parser {
   /// Partial UTF-8, escape/control sequences and the bounded OSC
   /// accumulator. The decode scratch is not state.
+  /// Canonical: a field the current state cannot read is written as its
+  /// reset value, so the bytes depend on the stream, not on how it was
+  /// chunked (spec.durability.md MR2). Each such field is reset on entry
+  /// to the states that read it.
   package func checkpoint(into w: inout CheckpointWriter) {
     w.u8(state.rawValue)
-    w.u8(UInt8(csi.count))
-    for i in 0 ..< CSISequence.maxParams { w.u16(csi.params[i]) }
-    w.u32(csi.colonMask)
-    w.u8(csi.marker)
-    w.u8(csi.intermediate)
-    w.u8(csi.final)
-    w.u32(currentParam)
-    w.bool(hasParam)
-    w.bool(parameterOverflow)
-    w.u8(escIntermediate)
-    w.bool(controlModeLineStart)
-    w.u32(codepoint)
+    // Sequence fields are read only inside CSI and DCS, which every entry
+    // reaches through `enterCSI`; `params` beyond `count` are never read.
+    let sequence: Bool
+    switch state {
+    case .ground, .escape, .escapeIntermediate, .oscString, .stringIgnore:
+      sequence = false
+    default: sequence = true
+    }
+    let live = sequence ? csi : CSISequence()
+    w.u8(UInt8(live.count))
+    for i in 0 ..< CSISequence.maxParams {
+      w.u16(i < live.count ? live.params[i] : 0)
+    }
+    w.u32(live.colonMask)
+    w.u8(live.marker)
+    w.u8(live.intermediate)
+    w.u8(live.final)
+    w.u32(sequence ? currentParam : 0)
+    w.bool(sequence && hasParam)
+    w.bool(sequence && parameterOverflow)
+    w.u8(state == .escapeIntermediate ? escIntermediate : 0)
+    // Entering control mode starts a line.
+    w.bool(
+      state == .controlMode || state == .controlModeEscape
+        ? controlModeLineStart : true
+    )
+    // A finished scalar leaves its decoding fields behind.
+    w.u32(utf8Remaining > 0 ? codepoint : 0)
     w.int(utf8Remaining)
-    w.u32(utf8Minimum)
-    w.data(Array(UnsafeBufferPointer(start: osc, count: oscCount)))
-    w.int(oscCommandStart)
-    w.bool(oscOverflow)
+    w.u32(utf8Remaining > 0 ? utf8Minimum : 0)
+    let body = state == .oscString
+    w.data(body ? Array(UnsafeBufferPointer(start: osc, count: oscCount)) : [])
+    w.int(body ? oscCommandStart : 0)
+    w.bool(body && oscOverflow)
   }
 
   package mutating func restore(

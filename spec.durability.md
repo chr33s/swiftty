@@ -3847,3 +3847,23 @@ was mutation-checked: reverting it fails its test.
 | Maintenance or a gateway swap that failed left no service | Agents are re-registered after a failure; swaps leave the previous bundle in place when they fail | `aFailedMaintenanceBringsTheAgentsBack`, `aFailedGatewaySwapReregistersTheRetainedGateway` |
 | An invalid selected or rollback build stopped the guardian | Unusable builds and unreadable selection metadata are set aside and reported (`unusable`, `selectionProblem`). Neither restores a selection | `invalidSelectionCannotRestoreAuthority` (new contract) |
 | Four atomic-write helpers each made different durability guarantees | `AtomicFile.write`: write every byte, order with a barrier, rename, flush the directory | `atomicFilesReplaceWholeAndLeaveNoTemporaries` |
+
+### 13.76 Canonical checkpoints — 2026-11-21
+
+The property tests (`Tests/Support/Property.swift`) found two checkpoints that
+were not canonical (MR2). Both are fixed, and the property and regression
+tests that recorded them as known issues are now ordinary tests.
+
+- **Engine.** The bytes depended on how the stream was split into reads. The
+  parser now writes every field its state cannot read as its reset value:
+  sequence fields outside CSI/DCS, `escIntermediate` outside an escape
+  intermediate, UTF-8 decoding fields after a finished scalar, the OSC body
+  outside OSC, and the control-mode line flag outside control mode. The
+  grapheme tail's break state is a cache, so it is never written; the next
+  join recomputes it from the cluster.
+- **Attention.** Tables keyed by `PaneID`, `OccurrenceID` and
+  `AttentionSource` followed hash order, which differs per instance. They are
+  now written in key order, in the same flat format, so decoding is unchanged.
+
+Migration was not affected: the guardian's digest covers the bytes it
+received.

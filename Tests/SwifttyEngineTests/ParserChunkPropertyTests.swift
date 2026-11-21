@@ -152,27 +152,19 @@ struct ParserChunkPropertyTests {
     #expect(failure == nil, "\(failure?.description ?? "")")
   }
 
-  /// Known issue: the checkpoint encodes parser and grapheme fields that
-  /// are dead or cached, and their values depend on read boundaries:
-  /// `Parser.codepoint`/`utf8Minimum` once `utf8Remaining == 0`,
-  /// `Parser.escIntermediate` after its sequence ended, and
-  /// `GraphemeTable.tailBreakValid`.
-  static let deadFields =
-    "checkpoint encodes chunk-dependent dead parser and grapheme fields"
-
-  /// Intermittent only because a replayed `PROPERTY_SEED` may generate a
-  /// stream that never leaves those fields stale.
+  /// Checkpoint bytes are canonical: fields the parser state cannot read
+  /// (`codepoint`/`utf8Minimum` after a scalar, `escIntermediate` after its
+  /// sequence) and the grapheme tail's break cache are not carried, so the
+  /// bytes do not depend on read boundaries.
   @Test
   func chunkingKeepsTheCanonicalCheckpoint() {
-    withKnownIssue(Comment(rawValue: Self.deadFields), isIntermittent: true) {
-      let failure = Property.check(
-        seeds: Property.seeds(60),
-        generate: Self.generate,
-        shrink: Self.shrink,
-        property: { try Self.check($0, canonical: true) }
-      )
-      #expect(failure == nil, "\(failure?.description ?? "")")
-    }
+    let failure = Property.check(
+      seeds: Property.seeds(60),
+      generate: Self.generate,
+      shrink: Self.shrink,
+      property: { try Self.check($0, canonical: true) }
+    )
+    #expect(failure == nil, "\(failure?.description ?? "")")
   }
 
   /// The minimal counterexamples, fed whole and byte by byte: a UTF-8
@@ -183,8 +175,6 @@ struct ParserChunkPropertyTests {
     let whole = try Self.outcome(bytes) { _ in bytes.count }
     let single = try Self.outcome(bytes) { _ in 1 }
     #expect(Self.difference(whole, single, canonical: false).isEmpty)
-    withKnownIssue(Comment(rawValue: Self.deadFields)) {
-      #expect(whole.checkpoint == single.checkpoint)
-    }
+    #expect(whole.checkpoint == single.checkpoint)
   }
 }

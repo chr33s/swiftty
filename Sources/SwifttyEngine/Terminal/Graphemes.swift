@@ -330,8 +330,11 @@ extension GraphemeTable {
     }
     w.int(compactionLimit)
     w.u32(exclusiveTail)
-    w.u8(tailBreak.raw)
-    w.bool(tailBreakValid)
+    // The tail's break state is a cache: without it the next join
+    // recomputes the state from the cluster's scalars. Whether it is
+    // filled depends on read chunking, so a checkpoint never carries it.
+    w.u8(GraphemeBreak.State().raw)
+    w.bool(false)
   }
 
   package mutating func restore(
