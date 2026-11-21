@@ -25,6 +25,11 @@ package final class GuardianServer: @unchecked Sendable {
   var resultBytes = 0
   var admissionPaused = false
   var admissionRevision: UInt64 = 0
+  /// Set while paused (spec.durability.md §5.2).
+  var admissionPhase: GuardianAdmissionPhase?
+  /// Bounds `settling`; the guardian resumes admission on expiry.
+  let admissionSettlementTimeout: TimeInterval
+  var admissionSettlementTimer: DispatchSourceTimer?
   var workerSelectionPending = false
   var pendingLaunches = 0
   struct PendingWorker {
@@ -115,11 +120,17 @@ package final class GuardianServer: @unchecked Sendable {
     limits: MuxLimits = .standard,
     peerRequirement: String?,
     progressTimeout: TimeInterval = 5,
+    admissionSettlementTimeout: TimeInterval = 30,
     buildSelectionQueue: DispatchQueue = .global(qos: .utility)
   ) throws(MuxError) {
     try limits.validateForService()
     guard progressTimeout.isFinite, progressTimeout > 0, progressTimeout <= 5
     else { throw MuxError(.invalidRequest, "invalid worker progress timeout") }
+    guard admissionSettlementTimeout.isFinite, admissionSettlementTimeout > 0,
+      admissionSettlementTimeout <= 30
+    else {
+      throw MuxError(.invalidRequest, "invalid admission settlement deadline")
+    }
     guard limits.readTurnBytes > 0,
       limits.readTurnBytes <= GuardianWire.outputChunkLimit
     else {
@@ -131,6 +142,7 @@ package final class GuardianServer: @unchecked Sendable {
     self.limits = limits
     self.peerRequirement = peerRequirement
     self.progressTimeout = progressTimeout
+    self.admissionSettlementTimeout = admissionSettlementTimeout
     self.buildSelectionQueue = buildSelectionQueue
     launcher = PaneLauncher(
       launcherPath: launcherPath,
@@ -196,6 +208,8 @@ package final class GuardianServer: @unchecked Sendable {
         revokeWriter(workspace)
         publishGatewayBinding(workspace)
       }
+      // A new gateway did not start a settling update and cannot finish it.
+      resumeSettlingAdmission()
     }
   }
 

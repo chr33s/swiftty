@@ -111,10 +111,81 @@ struct GatewayUpdateBarrierTests {
         Issue.record("starting worker passed deadline")
       } catch let error as MuxError { #expect(error.code == .quiescing) }
     }
-    #expect(try await inspection.admissionStatus().paused)
+    // A replacement gateway did not start a settling update: it resumes.
+    #expect(
+      try await inspection.admissionStatus().paused == (mode != "gateway")
+    )
     #expect(guardian.inventory().count == 1)
     await inspection.close()
     await supervisor.close()
+  }
+
+  @Test(arguments: ["deadline", "gateway", "replacing"])
+  func settlingPauseResumesWithoutItsUpdater(mode: String) async throws {
+    let guardian = try GuardianServer(
+      launcherPath: launcherPath(),
+      peerRequirement: nil,
+      admissionSettlementTimeout: mode == "deadline" ? 0.1 : 30
+    )
+    let control = GuardianGatewayServer(
+      guardian: guardian,
+      peerRequirement: nil
+    )
+    let endpoint = control.listenAnonymously()
+    defer {
+      control.close()
+      let stopped = DispatchSemaphore(value: 0)
+      guardian.shutdown { stopped.signal() }
+      #expect(waitFor(stopped, seconds: 5))
+    }
+    let updater = try await GatewaySupervisor.connect(
+      peerRequirement: nil,
+      channel: { .connect(endpoint: endpoint, queue: $0) }
+    )
+    var status = try await updater.setAdmissionPaused(true, expectedRevision: 0)
+    #expect(status.phase == .settling)
+    if mode == "replacing" {
+      status = try await updater.beginGatewayReplacement(
+        expectedRevision: status.revision
+      )
+      #expect(status.phase == .replacing && status.paused)
+      do {
+        _ = try await updater.beginGatewayReplacement(
+          expectedRevision: status.revision
+        )
+        Issue.record("replacing barrier advanced twice")
+      } catch let error as MuxError { #expect(error.code == .invalidRequest) }
+    }
+    let paused = status.revision
+    switch mode {
+    case "deadline":
+      try await Task.sleep(for: .milliseconds(400))
+      let after = try await updater.admissionStatus()
+      #expect(!after.paused && after.phase == nil)
+      #expect(after.revision == paused + 1)
+      await updater.close()
+    default:
+      // The updater disappears; its successor binds.
+      await updater.close()
+      let successor = try await GatewaySupervisor.connect(
+        peerRequirement: nil,
+        channel: { .connect(endpoint: endpoint, queue: $0) }
+      )
+      let after = try await successor.admissionStatus()
+      if mode == "replacing" {
+        // Only an explicit, verified resume ends a replacing barrier.
+        #expect(after.paused && after.phase == .replacing)
+        #expect(after.revision == paused)
+        let resumed = try await successor.setAdmissionPaused(
+          false,
+          expectedRevision: after.revision
+        )
+        #expect(!resumed.paused && resumed.phase == nil)
+      } else {
+        #expect(!after.paused && after.revision == paused + 1)
+      }
+      await successor.close()
+    }
   }
 
   @Test

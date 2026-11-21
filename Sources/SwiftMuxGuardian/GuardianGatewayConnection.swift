@@ -13,6 +13,7 @@ package final class GuardianGatewayConnection: @unchecked Sendable {
     package let gateway: UUID
     package let supportsEnsureWriter: Bool
     package let supportsAdmissionControl: Bool
+    package let supportsAdmissionPhase: Bool
     package let supportsWorkerSelection: Bool
   }
 
@@ -109,6 +110,20 @@ package final class GuardianGatewayConnection: @unchecked Sendable {
       return true
     }
     switch command {
+    case .advanceAdmissionPhase:
+      guard identity.supportsAdmissionPhase else {
+        completion(
+          .success(
+            .rejected(
+              MuxError(
+                .incompatibleVersion,
+                "guardian does not record the admission phase"
+              )
+            )
+          )
+        )
+        return true
+      }
     case .admissionStatus, .setAdmissionPaused:
       guard identity.supportsAdmissionControl else {
         completion(
@@ -172,7 +187,8 @@ package final class GuardianGatewayConnection: @unchecked Sendable {
       gateway,
       supportsEnsureWriter,
       supportsAdmissionControl,
-      supportsWorkerSelection
+      supportsWorkerSelection,
+      supportsAdmissionPhase
     ):
       guard identity == nil, endpoint == nil else {
         invalidResponse();
@@ -185,6 +201,7 @@ package final class GuardianGatewayConnection: @unchecked Sendable {
         gateway: gateway,
         supportsEnsureWriter: supportsEnsureWriter == true,
         supportsAdmissionControl: supportsAdmissionControl == true,
+        supportsAdmissionPhase: supportsAdmissionPhase == true,
         supportsWorkerSelection: supportsWorkerSelection == true
       )
       identity = value
@@ -261,6 +278,12 @@ package final class GuardianGatewayConnection: @unchecked Sendable {
     case let (.setAdmissionPaused(paused, expectedRevision), .admission(status)):
       guard status.pendingWorkers >= 0, status.selectionPending != true,
         status.paused == paused, expectedRevision < UInt64.max,
+        status.revision == expectedRevision + 1
+      else { return nil }
+      return .admission(status)
+    case let (.advanceAdmissionPhase(expectedRevision), .admission(status)):
+      guard status.paused, status.phase == .replacing,
+        status.pendingWorkers >= 0, expectedRevision < UInt64.max,
         status.revision == expectedRevision + 1
       else { return nil }
       return .admission(status)

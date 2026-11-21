@@ -118,28 +118,35 @@ struct GuardianGatewayTests {
       Issue.record("paused admission succeeded")
     } catch let error as MuxError { #expect(error.code == .quiescing) }
     #expect(guardian.inventory().count == 1)
+    #expect(paused.phase == .settling)
+    // Only a barrier in `replacing` outlives its gateway (§5.2).
+    guard
+      case let .admission(replacing) =
+        try first.command(.advanceAdmissionPhase(expectedRevision: 1)).0
+    else { throw MuxError(.invalidRequest, "missing replacing phase") }
+    #expect(replacing.revision == 2 && replacing.phase == .replacing)
     let second = try Gateway(endpoint)
     defer { second.channel.cancel() }
     guard
       case let .admission(inherited) = try second.command(.admissionStatus).0
     else { throw MuxError(.invalidRequest, "missing inherited barrier") }
-    #expect(inherited == paused)
+    #expect(inherited == replacing)
     do {
       _ = try guardian.setAdmissionPaused(
         false,
-        expectedRevision: 1,
+        expectedRevision: 2,
         gateway: first.identity
       )
       Issue.record("old gateway resumed admission")
     } catch let error as MuxError { #expect(error.code == .staleAttachment) }
     guard
       case let .admission(reasserted) =
-        try second.command(.setAdmissionPaused(true, expectedRevision: 1)).0
+        try second.command(.setAdmissionPaused(true, expectedRevision: 2)).0
     else { throw MuxError(.invalidRequest, "missing reasserted pause") }
-    #expect(reasserted.revision == 2)
+    #expect(reasserted.revision == 3 && reasserted.phase == .replacing)
     guard
       case let .rejected(stale) =
-        try second.command(.setAdmissionPaused(false, expectedRevision: 1)).0
+        try second.command(.setAdmissionPaused(false, expectedRevision: 2)).0
     else { throw MuxError(.invalidRequest, "stale resume accepted") }
     #expect(stale.code == .staleRevision)
     let authority = try #require(guardian.inventory().first?.authority)
@@ -148,11 +155,12 @@ struct GuardianGatewayTests {
     }
     guard
       case let .admission(resumed) =
-        try second.command(.setAdmissionPaused(false, expectedRevision: 2)).0
+        try second.command(.setAdmissionPaused(false, expectedRevision: 3)).0
     else { throw MuxError(.invalidRequest, "missing resumed status") }
     #expect(
-      !resumed.paused && resumed.revision == 3 && resumed.pendingWorkers == 0
+      !resumed.paused && resumed.revision == 4 && resumed.pendingWorkers == 0
     )
+    #expect(resumed.phase == nil)
     _ = try guardian.provisionWorker(workspace: WorkspaceID(), pid: getpid())
   }
 
@@ -513,7 +521,7 @@ struct GuardianGatewayTests {
           .encode(GuardianGatewayRequest.hello(version: GuardianWire.version))
       )
       guard
-        case let .welcome(incarnation, gateway, _, _, _) = try inbox.next().0
+        case let .welcome(incarnation, gateway, _, _, _, _) = try inbox.next().0
       else { throw MuxError(.unauthorized, "gateway admission failed") }
       self.incarnation = incarnation
       identity = gateway

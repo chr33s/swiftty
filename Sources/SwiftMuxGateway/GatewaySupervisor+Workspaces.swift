@@ -55,6 +55,22 @@ extension GatewaySupervisor {
     return status
   }
 
+  /// Call immediately before replacing the gateway (spec.durability.md §5.2,
+  /// step 4). From then on, neither the settlement deadline nor a new gateway
+  /// resumes admission; the successor must verify and resume explicitly.
+  package func beginGatewayReplacement(
+    expectedRevision: UInt64
+  ) async throws -> GuardianAdmissionStatus {
+    guard
+      case let .admission(status) = try await request(
+        .advanceAdmissionPhase(expectedRevision: expectedRevision)
+      )
+    else {
+      throw MuxError(.invalidRequest, "missing admission acknowledgement")
+    }
+    return status
+  }
+
   package func inventory() async throws -> [GuardianWorkspaceInventory] {
     guard case let .inventory(items) = try await request(.inventory) else {
       throw MuxError(.invalidRequest, "missing guardian inventory")

@@ -2,12 +2,22 @@ import Dispatch
 import Foundation
 import SwiftMuxProtocol
 
+/// Update barrier phase (spec.durability.md §5.2). `settling` lasts until
+/// the updater begins replacing the gateway; only `replacing` survives the
+/// settlement deadline and gateway replacement.
+package enum GuardianAdmissionPhase: String, Codable, Equatable, Sendable {
+  case settling
+  case replacing
+}
+
 package struct GuardianAdmissionStatus: Codable, Equatable, Sendable {
   package let paused: Bool
   package let revision: UInt64
   package let pendingWorkers: Int
   /// Absent on guardians predating serialized worker selection.
   package var selectionPending: Bool? = nil
+  /// Present while paused, on guardians that record the barrier phase.
+  package var phase: GuardianAdmissionPhase? = nil
 }
 
 extension GuardianServer {
@@ -21,7 +31,10 @@ extension GuardianServer {
   }
 
   /// Every accepted set advances the revision, including reasserting a pause.
-  /// Gateway loss never clears this barrier or implies installation success.
+  /// Pausing starts `settling`, which the guardian resumes itself when the
+  /// settlement deadline expires or a new gateway binds; a reasserted pause
+  /// keeps its phase and deadline. Gateway loss never clears `replacing` or
+  /// implies installation success.
   package func setAdmissionPaused(
     _ paused: Bool,
     expectedRevision: UInt64,
@@ -39,9 +52,74 @@ extension GuardianServer {
         throw MuxError(.resourceLimit, "admission revisions exhausted")
       }
       admissionRevision += 1
+      if paused, !admissionPaused {
+        admissionPhase = .settling
+        armAdmissionSettlement()
+      } else if !paused {
+        admissionPhase = nil
+        admissionSettlementTimer?.cancel()
+        admissionSettlementTimer = nil
+      }
       admissionPaused = paused
       return currentAdmissionStatus()
     }
+  }
+
+  /// The updater begins gateway replacement: the barrier no longer expires.
+  package func advanceAdmissionPhase(
+    expectedRevision: UInt64,
+    gateway identity: UUID
+  ) throws -> GuardianAdmissionStatus {
+    try queue.sync {
+      try requireAdmissionGateway(identity)
+      guard admissionRevision == expectedRevision else {
+        throw MuxError(.staleRevision, "admission barrier changed")
+      }
+      guard admissionPaused, admissionPhase == .settling else {
+        throw MuxError(.invalidRequest, "admission is not settling")
+      }
+      guard admissionRevision < UInt64.max else {
+        throw MuxError(.resourceLimit, "admission revisions exhausted")
+      }
+      admissionRevision += 1
+      admissionPhase = .replacing
+      admissionSettlementTimer?.cancel()
+      admissionSettlementTimer = nil
+      return currentAdmissionStatus()
+    }
+  }
+
+  private func armAdmissionSettlement(after delay: TimeInterval? = nil) {
+    dispatchPrecondition(condition: .onQueue(queue))
+    admissionSettlementTimer?.cancel()
+    let timer = DispatchSource.makeTimerSource(queue: queue)
+    timer.schedule(deadline: .now() + (delay ?? admissionSettlementTimeout))
+    timer.setEventHandler { [weak self] in
+      guard let self else { return }
+      admissionSettlementTimer = nil
+      guard admissionPaused, admissionPhase == .settling else { return }
+      // Never resume under a selection publication; retry shortly after.
+      guard !workerSelectionPending else {
+        armAdmissionSettlement(after: 1)
+        return
+      }
+      resumeSettlingAdmission()
+    }
+    admissionSettlementTimer = timer
+    timer.resume()
+  }
+
+  /// Defers a settling update with the unchanged selections.
+  func resumeSettlingAdmission() {
+    dispatchPrecondition(condition: .onQueue(queue))
+    guard admissionPaused, admissionPhase == .settling, !workerSelectionPending,
+      admissionRevision < UInt64.max
+    else { return }
+    admissionRevision += 1
+    admissionPaused = false
+    admissionPhase = nil
+    admissionSettlementTimer?.cancel()
+    admissionSettlementTimer = nil
   }
 
   /// Reserve the barrier before filesystem work, then publish off the I/O queue.
@@ -147,7 +225,8 @@ extension GuardianServer {
       pendingWorkers: pendingWorkers.count
         + workspaces.values
         .filter { $0.token != nil && !$0.unavailable && !$0.ending }.count,
-      selectionPending: workerSelectionPending
+      selectionPending: workerSelectionPending,
+      phase: admissionPaused ? admissionPhase : nil
     )
   }
 }

@@ -21,6 +21,8 @@ package enum GuardianGatewayCommand: Codable, Equatable, Sendable {
   case clearWorkerRollback(expectedRevision: UInt64)
   case admissionStatus
   case setAdmissionPaused(Bool, expectedRevision: UInt64)
+  /// Settling → replacing (spec.durability.md §5.2).
+  case advanceAdmissionPhase(expectedRevision: UInt64)
   case create(workspace: WorkspaceID)
   case endpoint(workspace: WorkspaceID)
   case grantWriter(workspace: WorkspaceID)
@@ -35,7 +37,8 @@ package enum GuardianGatewayEvent: Codable, Sendable {
     gateway: UUID,
     supportsEnsureWriter: Bool? = nil,
     supportsAdmissionControl: Bool? = nil,
-    supportsWorkerSelection: Bool? = nil
+    supportsWorkerSelection: Bool? = nil,
+    supportsAdmissionPhase: Bool? = nil
   )
   case result(sequence: UInt64, value: GuardianGatewayResult)
   case refused(MuxError)

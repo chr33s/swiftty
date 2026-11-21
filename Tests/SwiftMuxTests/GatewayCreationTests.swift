@@ -340,7 +340,8 @@ struct GatewayCreationTests {
           ends.withLock { $0 += 1 }
           result = .rejected(.init(.invalidRequest))
         case .grantWriter, .ensureWriter, .admissionStatus, .setAdmissionPaused,
-          .workerSelection, .selectWorkerBuild, .clearWorkerRollback:
+          .advanceAdmissionPhase, .workerSelection, .selectWorkerBuild,
+          .clearWorkerRollback:
           result = .rejected(.init(.invalidRequest))
         }
         let data = try! JSONEncoder()

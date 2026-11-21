@@ -123,7 +123,8 @@ package final class GuardianGatewayServer: @unchecked Sendable {
           gateway: identity,
           supportsEnsureWriter: true,
           supportsAdmissionControl: true,
-          supportsWorkerSelection: buildRegistry != nil
+          supportsWorkerSelection: buildRegistry != nil,
+          supportsAdmissionPhase: true
         ),
         to: peer
       )
@@ -220,6 +221,13 @@ package final class GuardianGatewayServer: @unchecked Sendable {
         result = .admission(
           try guardian.setAdmissionPaused(
             paused,
+            expectedRevision: expectedRevision,
+            gateway: identity
+          )
+        )
+      case let .advanceAdmissionPhase(expectedRevision):
+        result = .admission(
+          try guardian.advanceAdmissionPhase(
             expectedRevision: expectedRevision,
             gateway: identity
           )
