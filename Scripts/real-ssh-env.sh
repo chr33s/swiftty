@@ -5,6 +5,10 @@
 #   Scripts/real-ssh-env.sh start [state-dir]   # prints the env file path
 #   Scripts/real-ssh-env.sh stop  <state-dir>
 # Set RST_REAL_SSH_CONFIGURATION=release for optimized host products (default: debug).
+# With RST_PUBLIC_HOST (serving physical devices) the agent is signed with
+# RST_REAL_SSH_SIGN_IDENTITY (default: the first Developer ID Application
+# identity in the keychain; "-" keeps the ad-hoc signature), so the macOS
+# firewall admits it as signed software.
 #
 # `start` brings up, and leaves running in the background:
 #  - a real SwiftMux service with roaming (`swiftmux-agent --roaming-config`) on this Mac (QUIC on 127.0.0.1:<quic port>);
@@ -135,6 +139,23 @@ if [ -n "$public_host" ]; then
   bind_address=0.0.0.0; advertised=$public_host; relay_bind=0.0.0.0
 else
   bind_address=127.0.0.1; advertised=127.0.0.1; relay_bind=127.0.0.1
+fi
+# The firewall can refuse LAN connections to a rebuilt ad-hoc binary while
+# still listing its path as allowed (devices then never reach QUIC; SSH
+# through the relay still works). Loopback is never filtered.
+if [ -n "$public_host" ]; then
+  sign_identity=${RST_REAL_SSH_SIGN_IDENTITY-}
+  if [ -z "$sign_identity" ]; then
+    sign_identity=$(security find-identity -v -p codesigning 2>/dev/null \
+      | sed -n 's/^.*"\(Developer ID Application: .*\)"$/\1/p' | head -1)
+  fi
+  if [ -z "$sign_identity" ]; then
+    echo "warning: no Developer ID Application identity; the firewall may refuse devices" >&2
+  elif [ "$sign_identity" != "-" ]; then
+    codesign --force --sign "$sign_identity" --timestamp=none "$host_bin" \
+      >"$workspace/sign.log" 2>&1 \
+      || fail "cannot sign $host_bin; see $workspace/sign.log"
+  fi
 fi
 python3 -I - "$bind_address" "$advertised" "$quic_port" "$workspace/state" <<'PY' >"$workspace/config.json"
 import json, sys
