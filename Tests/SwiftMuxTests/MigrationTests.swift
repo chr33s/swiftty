@@ -170,7 +170,8 @@ struct MigrationTests {
   private static func start(
     _ rig: Rig,
     oldFault: Fault? = nil,
-    remainOnExit: Bool = false
+    remainOnExit: Bool = false,
+    rows: Int = rows
   ) async throws -> Started {
     let token = try rig.guardian.provisionWorker(
       workspace: rig.workspace,
@@ -210,7 +211,7 @@ struct MigrationTests {
     )
     await bootstrap.close()
     let client = try await attach(runtime, rig.workspace)
-    let pane = try await show(client, rig.workspace)
+    let pane = try await show(client, rig.workspace, rows: rows)
     try await client.send(
       .text("export MARK=kept-$((40+2)); echo pid-$$-ready\r"),
       to: pane
@@ -233,7 +234,8 @@ struct MigrationTests {
 
   private static func show(
     _ client: MuxConnection,
-    _ workspace: WorkspaceID
+    _ workspace: WorkspaceID,
+    rows: Int = rows
   ) async throws -> PaneID {
     try await client.attachAndShow(.id(workspace), columns: columns, rows: rows)
       .tabs[0].activePane
@@ -1038,12 +1040,13 @@ struct MigrationTests {
   func aReplyPressureStallAtTheCutAbortsByTheDeadline() async throws {
     let rig = try Rig(frozenTimeout: 0.5)
     defer { rig.close() }
-    let started = try await Self.start(rig)
+    let started = try await Self.start(rig, rows: 12)
     let pane = started.pane
     try await started.client.send(
       .text(
         "sh -c 'echo flooder-$$-up; stty raw -echo; i=0; "
-          + "while [ $i -lt 20000 ]; do printf \"\\033[c\"; i=$((i+1)); done'\r"
+          + "while [ $i -lt 20000 ]; do printf \"\\033[c\"; i=$((i+1)); done; "
+          + "exec sleep 60'\r"
       ),
       to: pane
     )
@@ -1054,6 +1057,7 @@ struct MigrationTests {
       frame.lines.first { $0.hasPrefix("flooder-") && $0.hasSuffix("-up") }
     )
     let flooder = try #require(Int32(line.split(separator: "-")[1]))
+    defer { kill(flooder, SIGKILL) }
     // Let the reply backlog build.
     try await Self.waitUntil("reply pressure") {
       rig.guardian.pendingReplyBytesForTesting(rig.workspace) > 0
@@ -1070,7 +1074,7 @@ struct MigrationTests {
     #expect(!rig.retired.withLock { $0 })
     await started.client.close()
     let next = try await Self.attach(started.runtime, rig.workspace)
-    #expect(try await Self.show(next, rig.workspace) == pane)
+    #expect(try await Self.show(next, rig.workspace, rows: 12) == pane)
     kill(flooder, SIGKILL)
     await next.close()
     await started.runtime.close()

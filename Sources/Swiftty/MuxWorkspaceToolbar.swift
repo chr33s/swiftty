@@ -284,10 +284,18 @@ final class MuxSidebarControls: NSView {
 
   override func layout() {
     super.layout()
-    // The toolbar places the controls after the window controls; where it
-    // did does not depend on their width, so this settles in one pass.
-    guard window != nil, let viewer = superview else { return }
-    let x = viewer.convert(NSPoint.zero, to: nil).x
+    // The toolbar places the controls after the window controls; measure our
+    // own origin (and any trailing overhang on the toggle button) once the
+    // toolbar item viewer is at least as wide as us, so any viewer padding
+    // between macOS versions is accounted for.
+    guard window != nil, let viewer = superview,
+      bounds.width <= viewer.bounds.width + 0.5
+    else { return }
+    let trailingOffset =
+      toggleButton.bounds.width > 0
+      ? toggleButton.convert(toggleButton.bounds, to: self).maxX - bounds.maxX
+      : 0
+    let x = convert(NSPoint.zero, to: nil).x + trailingOffset
     guard placedX.map({ abs($0 - x) > 0.5 }) ?? true else { return }
     placedX = x
     fit()

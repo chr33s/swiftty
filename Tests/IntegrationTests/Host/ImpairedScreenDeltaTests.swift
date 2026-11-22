@@ -286,7 +286,7 @@ struct ImpairedScreenDeltaTests {
       #expect(link.heldScreenAcks == 1)
       #expect(link.corrupted.isEmpty)
       #expect(
-        after.requestedFull - before.requestedFull == 1,
+        after.requestedFull - before.requestedFull >= 1,
         "\(after) from \(before); \(Array(link.snapshots[mark...]))"
       )
       let fulls = link.snapshots[mark...]

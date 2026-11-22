@@ -169,9 +169,11 @@ struct ParserChunkPropertyTests {
 
   /// The minimal counterexamples, fed whole and byte by byte: a UTF-8
   /// scalar, a combining mark, and a designation followed by a CSI.
-  @Test(arguments: ["漢", "e\u{301}", "\u{1B}(B\u{1B}[?25l"])
-  func minimalCheckpointCounterexamples(_ text: String) throws {
-    let bytes = Array(text.utf8)
+  @Test(
+    arguments: ["漢", "e\u{301}", "\u{1B}(B\u{1B}[?25l"].map(TestFixture.init)
+  )
+  func minimalCheckpointCounterexamples(_ text: TestFixture<String>) throws {
+    let bytes = Array(text.value.utf8)
     let whole = try Self.outcome(bytes) { _ in bytes.count }
     let single = try Self.outcome(bytes) { _ in 1 }
     #expect(Self.difference(whole, single, canonical: false).isEmpty)

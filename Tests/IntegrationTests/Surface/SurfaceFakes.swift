@@ -53,7 +53,8 @@ func testConfiguration(jitter: Double = 0) -> RoamingClientConfiguration {
     detachDeadline: .seconds(3),
     attachTimeout: .seconds(10),
     livenessTick: .milliseconds(250),
-    backoffJitter: jitter
+    backoffJitter: jitter,
+    attachProgressMinimum: .seconds(10)
   )
 }
 
