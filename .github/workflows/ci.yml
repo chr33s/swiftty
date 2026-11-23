@@ -28,12 +28,21 @@ jobs:
           test-tools: "true"
       - name: Test
         shell: bash
+        env:
+          # A crashed bundle otherwise ends with only "Trace/BPT trap: 5".
+          SWIFT_BACKTRACE: enable=yes,interactive=no,color=no
         run: |
           case '${{ matrix.configuration }}' in
             debug) Scripts/test-native.sh --disable-automatic-resolution ;;
             release) Scripts/test-native.sh --disable-automatic-resolution -c release ;;
             internal-checks) Scripts/test-native.sh --disable-automatic-resolution -Xswiftc -DSWIFTTY_INTERNAL_CHECKS ;;
           esac
+      - name: Show test host crash reports
+        # libdispatch and XPC misuse traps print nothing; the report has the stack.
+        if: failure()
+        run: |
+          find "$HOME/Library/Logs/DiagnosticReports" -name 'host-*.ips' \
+            -mmin -120 -print -exec cat {} \; 2>/dev/null || true
       - name: Build production products
         if: matrix.configuration == 'release'
         run: swift build --disable-automatic-resolution -c release
