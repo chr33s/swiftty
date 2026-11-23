@@ -80,6 +80,7 @@ extension MuxWorkspaceController {
   }
 
   func windowDidBecomeKey(_ notification: Notification) {
+    placeWindowControls()
     automationFocusedPane = nil
     updateAutomationFocus()
   }

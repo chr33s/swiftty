@@ -854,6 +854,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   /// (collapsed) the header of the top-left pane, clear of the window
   /// controls; tabs on top show none.
   func placeSidebarControls() {
+    placeWindowControls()
     let controls = workspaceToolbar.sidebarControls
     let headers = containers.values.map(\.header)
     // The top-left pane is found from laid-out frames.
@@ -885,6 +886,19 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     }
     target.header.setAccessory(controls, inset: windowControlsInset(target))
   }
+
+  /// Tabs on the left: the window controls centre on the pane headers'
+  /// row (the card's margin plus half a header), which the sidebar's top
+  /// row centres on in turn. On top, the toolbar places them.
+  func placeWindowControls() {
+    guard tabPosition == .left, let window else { return }
+    MuxWindowControls.center(window, at: windowControlsCenter)
+  }
+
+  /// Where the window controls centre below the top edge, tabs on the left.
+  static let windowControlsCenter =
+    cardMargin + MuxPaneContainer.headerHeight / 2
+  var windowControlsCenter: CGFloat { Self.windowControlsCenter }
 
   /// How far a pane's header must leave room for the window controls over
   /// its leading edge; none in full screen, where they hide.
