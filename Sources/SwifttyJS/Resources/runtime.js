@@ -5,6 +5,25 @@
   delete globalThis.__environment;
   const filters = {};
   const listeners = {command: [], directory: [], status: []};
+  // Lifecycle hooks: `swiftty.events.<method>` -> listener list.
+  const hooks = {
+    onTitleChanged: 'title', onBell: 'bell', onNotification: 'notification',
+    onProgressChanged: 'progress', onProcessExited: 'exit',
+    onWorkspaceCreated: 'workspaceCreated', onWorkspaceClosed: 'workspaceClosed',
+    onWorkspaceRenamed: 'workspaceRenamed', onLayoutChanged: 'layout',
+    onTabCreated: 'tabCreated', onTabClosed: 'tabClosed',
+    onTabRenamed: 'tabRenamed', onActiveTabChanged: 'activeTab',
+    onPaneCreated: 'paneCreated', onPaneClosed: 'paneClosed',
+    onClientAttached: 'clientAttached', onClientDetached: 'clientDetached',
+    onClientConnected: 'clientConnected', onClientDisconnected: 'clientDisconnected',
+    onForegroundProcessChanged: 'foreground', onClipboardWritten: 'clipboard',
+    onClientChanged: 'clientChanged', onClientConnectionChanged: 'clientConnection',
+    onAdmissionChanged: 'admission', onConfigurationChanged: 'configuration',
+    onHostsChanged: 'hosts', onTailscaleStatusChanged: 'tailscale'
+  };
+  const subscribe = __subscribe;
+  delete globalThis.__subscribe;
+  for (const event of Object.values(hooks)) listeners[event] = [];
   const keys = new Map();
   const items = new Map();
   const host = __host;
@@ -107,6 +126,8 @@
       onStatusChanged(fn) { listeners.status.push(callback(fn)); },
       onCommandFinished(fn) { listeners.command.push(callback(fn)); },
       onDirectoryChanged(fn) { listeners.directory.push(callback(fn)); },
+      ...Object.fromEntries(Object.entries(hooks).map(([method, event]) =>
+        [method, fn => { listeners[event].push(callback(fn)); subscribe(event); }])),
       bindKey(key, fn) {
         const normalized = shortcut(key);
         keys.set(normalized, callback(fn));
@@ -130,6 +151,9 @@
       try { fn(...args); } catch (error) { emit({kind: 'error', text: String(error)}); }
     }
   });
+  globalThis.__event = (event, json, id) => {
+    if (listeners[event]?.length) globalThis.__emit(event, JSON.parse(json), id);
+  };
   globalThis.__status = (json, id) => globalThis.__emit("status", [JSON.parse(json)], id);
   globalThis.__key = (key, id) => inPane(id, () => {
     const fn = keys.get(shortcut(key));

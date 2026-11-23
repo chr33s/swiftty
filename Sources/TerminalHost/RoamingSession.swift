@@ -174,6 +174,8 @@ public final class RoamingSession: @unchecked Sendable {
   private var activePane: PaneID?
   private var exitStatus: Int32?
   private var terminated = false
+  /// The state last reported to scripts (owner queue).
+  private var reportedState: State?
   private var writerFailed = false
   private var columns: Int
   private var rows: Int
@@ -323,6 +325,7 @@ public final class RoamingSession: @unchecked Sendable {
       $0.state = .terminated
       $0.isAttached = false
     }
+    reportState()
     if let a = attachment {
       a.isCurrent = false
       a.closeAfterFlush()
@@ -666,6 +669,20 @@ public final class RoamingSession: @unchecked Sendable {
       s.lastActivity = now
       s.lastActivityWall = wall
     }
+    reportState()
+  }
+
+  /// Tells scripts when a device's connection is lost (`detached`) or
+  /// restored (`attached`), and when the session exits or ends.
+  private func reportState() {
+    let state = statusBox.withLock { $0.state }
+    guard state != reportedState else { return }
+    reportedState = state
+    service.roamingSessionChanged(
+      id.description,
+      workspace: workspace,
+      state: state.rawValue
+    )
   }
 
   // MARK: Service events (owner queue)
@@ -741,6 +758,7 @@ public final class RoamingSession: @unchecked Sendable {
           s.exitStatus = nil
           s.exitedAt = nil
         }
+        reportState()
       }
       contentChanged()
     } else if let status = summary?.exitStatus, exitStatus == nil {
@@ -832,6 +850,7 @@ public final class RoamingSession: @unchecked Sendable {
       s.exitStatus = status
       s.exitedAt = now
     }
+    reportState()
     contentChanged()
   }
 

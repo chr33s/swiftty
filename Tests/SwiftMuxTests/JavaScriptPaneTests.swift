@@ -374,3 +374,235 @@ extension JavaScriptPaneTests {
     }
   }
 }
+
+extension JavaScriptPaneTests {
+  @Test
+  func lifecycleEventsFollowTheWorkspaceGraph() async throws {
+    let javascript = JavaScriptRuntime()
+    try javascript.evaluate(
+      """
+      const log = [];
+      const hooks = ['ClientConnected', 'WorkspaceCreated', 'TabCreated',
+        'PaneCreated', 'ActiveTabChanged', 'ProcessExited', 'PaneClosed',
+        'TabClosed', 'WorkspaceClosed', 'ClientDisconnected'];
+      for (const hook of hooks) {
+        swiftty.events['on' + hook]((...args) => {
+          let pane = '';
+          if (hook === 'PaneCreated' || hook === 'ProcessExited') {
+            pane = '@' + (swiftty.currentPane.id === (args[0]?.paneId ?? exited) ? 'source' : 'other');
+          }
+          log.push(hook + pane + (hook === 'ProcessExited' ? ':' + args[0] : ''));
+        });
+      }
+      let exited = '';
+      swiftty.events.onPaneCreated(e => { exited = e.paneId; });
+      swiftty.filter.onStdout(s => s === '\\u0001log' ? log.join(',') : s);
+      """
+    )
+    var configuration = MuxServiceConfiguration(
+      launcherPath: try launcherPath()
+    )
+    configuration.javaScriptRuntime = javascript
+    let harness = try Harness(configuration: configuration)
+    func log() -> String {
+      String(
+        decoding: javascript.filter(Data("\u{1}log".utf8), stream: .stdout),
+        as: UTF8.self
+      )
+    }
+    func waitFor(_ suffix: String) async throws {
+      let deadline = ContinuousClock.now + .seconds(5)
+      while !log().hasSuffix(suffix), ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+      }
+    }
+    try await RuntimeFixture.withCleanup {
+      let connection = try await harness.connect(.control)
+      let request = NewWorkspaceRequest(
+        launch: LaunchSpec(command: ["/bin/sh", "-c", "read x; exit 3"])
+      )
+      guard
+        case let .created(workspace) = try await connection.execute(
+          .newWorkspace(request)
+        )
+      else {
+        Issue.record("Missing workspace")
+        return
+      }
+      try await waitFor("ActiveTabChanged")
+      #expect(
+        log()
+          == "ClientConnected,WorkspaceCreated,TabCreated,PaneCreated@source,ActiveTabChanged"
+      )
+      let pane = try #require(
+        await harness.service.runtime(workspace.tabs[0].activePane)
+      )
+      try #require(pane.reserve(1))
+      pane.write(.text("\n"), estimate: 1)
+      try await waitFor("WorkspaceClosed")
+      #expect(
+        log()
+          .hasSuffix(
+            "ProcessExited@source:3,PaneClosed,TabClosed,WorkspaceClosed"
+          )
+      )
+      await connection.close()
+      try await waitFor("ClientDisconnected")
+      #expect(log().hasSuffix("WorkspaceClosed,ClientDisconnected"))
+    } cleanup: {
+      await retire(harness.service)
+    }
+  }
+}
+
+extension JavaScriptPaneTests {
+  /// A script runtime whose `log` is read back through a stdout filter.
+  private func recordingRuntime(_ hooks: [String]) throws -> JavaScriptRuntime {
+    let javascript = JavaScriptRuntime()
+    let names = hooks.map { "'\($0)'" }.joined(separator: ",")
+    try javascript.evaluate(
+      """
+      const log = [];
+      for (const hook of [\(names)]) {
+        swiftty.events['on' + hook]((...args) => log.push(hook + ':' + JSON.stringify(args)));
+      }
+      swiftty.filter.onStdout(s => s === '\\u0001log' ? log.join('\\n') : s);
+      """
+    )
+    return javascript
+  }
+
+  private func log(_ javascript: JavaScriptRuntime) -> [String] {
+    String(
+      decoding: javascript.filter(Data("\u{1}log".utf8), stream: .stdout),
+      as: UTF8.self
+    )
+    .split(separator: "\n").map(String.init)
+  }
+
+  private func waitFor(
+    _ javascript: JavaScriptRuntime,
+    _ predicate: ([String]) -> Bool
+  ) async throws {
+    let deadline = ContinuousClock.now + .seconds(5)
+    while !predicate(log(javascript)), ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+  }
+
+  @Test
+  func foregroundChangesFollowExecWithoutOutput() async throws {
+    let javascript = try recordingRuntime(["ForegroundProcessChanged"])
+    var configuration = MuxServiceConfiguration(
+      launcherPath: try launcherPath()
+    )
+    configuration.javaScriptRuntime = javascript
+    let harness = try Harness(configuration: configuration)
+    try await RuntimeFixture.withCleanup {
+      let connection = try await harness.connect(.control)
+      let request = NewWorkspaceRequest(
+        launch: LaunchSpec(command: [
+          "/bin/sh", "-c", "echo ready; read x; exec /bin/sleep 2",
+        ])
+      )
+      guard
+        case let .created(workspace) = try await connection.execute(
+          .newWorkspace(request)
+        )
+      else {
+        Issue.record("Missing workspace")
+        return
+      }
+      try await waitFor(javascript) { !$0.isEmpty }
+      let first = log(javascript)
+      #expect(first.count == 1)
+      #expect(first.first?.contains(#""generation":"1""#) == true)
+      // At a prompt the pane's own program is the foreground.
+      #expect(first.first?.contains(#""ancestors":[]"#) == true)
+      #expect(first.first?.contains(#""name":"bash""#) == true)
+      let pane = try #require(
+        await harness.service.runtime(workspace.tabs[0].activePane)
+      )
+      try #require(pane.reserve(1))
+      pane.write(.text("\n"), estimate: 1)
+      // The echo is the last output: only the trailing read can see exec.
+      try await waitFor(javascript) { $0.count >= 2 }
+      let second = try #require(log(javascript).dropFirst().first)
+      #expect(second.contains(#""name":"sleep""#))
+      #expect(second.contains(#""generation":"2""#))
+      await connection.close()
+    } cleanup: {
+      await retire(harness.service)
+    }
+  }
+
+  @Test
+  func admissionAndRoamingStateReachScripts() async throws {
+    let javascript = try recordingRuntime([
+      "AdmissionChanged", "ClientConnectionChanged",
+    ])
+    var configuration = MuxServiceConfiguration(
+      launcherPath: try launcherPath()
+    )
+    configuration.javaScriptRuntime = javascript
+    let harness = try Harness(configuration: configuration)
+    let workspace = WorkspaceID()
+    harness.service.roamingSessionChanged(
+      "session",
+      workspace: workspace,
+      state: "detached"
+    )
+    try await waitFor(javascript) { $0.count == 1 }
+    await retire(harness.service)
+    try await waitFor(javascript) { $0.count == 2 }
+    #expect(
+      log(javascript) == [
+        #"ClientConnectionChanged:[{"sessionId":"session","state":"detached","workspaceId":"\#(workspace)"}]"#,
+        #"AdmissionChanged:[{"accepting":false,"reason":"update"}]"#,
+      ]
+    )
+  }
+
+  @Test
+  func tailscaleAddressesAreRecognizedByRange() {
+    func check(_ text: String, family: Int32) -> String? {
+      if family == AF_INET {
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        inet_pton(AF_INET, text, &address.sin_addr)
+        return withUnsafeMutablePointer(to: &address) {
+          $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            AutomationMonitors.tailscaleAddress($0)
+          }
+        }
+      }
+      var address = sockaddr_in6()
+      address.sin6_family = sa_family_t(AF_INET6)
+      inet_pton(AF_INET6, text, &address.sin6_addr)
+      return withUnsafeMutablePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+          AutomationMonitors.tailscaleAddress($0)
+        }
+      }
+    }
+    #expect(check("100.101.2.3", family: AF_INET) == "100.101.2.3")
+    #expect(check("100.128.0.1", family: AF_INET) == nil)
+    #expect(check("192.168.1.8", family: AF_INET) == nil)
+    #expect(check("fd7a:115c:a1e0::1", family: AF_INET6) == "fd7a:115c:a1e0::1")
+    #expect(check("fd00::1", family: AF_INET6) == nil)
+  }
+
+  @Test
+  func configurationDigestTracksContents() throws {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString + ".jsonc"
+    )
+    defer { try? FileManager.default.removeItem(at: url) }
+    #expect(AutomationMonitors.digest(url) == "")
+    try Data("{}".utf8).write(to: url)
+    let first = AutomationMonitors.digest(url)
+    #expect(first.count == 64)
+    try Data("{ }".utf8).write(to: url)
+    #expect(AutomationMonitors.digest(url) != first)
+  }
+}

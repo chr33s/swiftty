@@ -12,6 +12,8 @@ extension MuxService {
       service.exitRequested = true
       service.onExitReady = ready
       service.quiescing = true
+      service.automation.monitors?.stop()
+      service.scheduleAutomationTopology()
       service.endAllEpoch &+= 1
       // Exit is not a user's End: a saved layout stays reopenable.
       for id in service.workspaces.map(\.id) {

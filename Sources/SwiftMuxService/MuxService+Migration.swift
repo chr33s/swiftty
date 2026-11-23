@@ -104,6 +104,7 @@ extension MuxService {
         service.retiringPanes.isEmpty, service.savedOutputExport == nil
       else { return completion(MuxError(.quiescing, "work in flight")) }
       service.migrationFrozen = true
+      service.scheduleAutomationTopology()
       // Settle before the cut: deliver pending inbox changes and stop the
       // snooze timer, so nothing changes the exported state afterwards.
       if service.attention.inbox.hasPendingUpdate { service.flushInbox() }
@@ -162,6 +163,7 @@ extension MuxService {
   nonisolated func thawMigration(completion: @escaping @Sendable () -> Void) {
     onQueue { service in
       service.migrationFrozen = false
+      service.scheduleAutomationTopology()
       service.attentionChanged()
       service.automation.runtime?.setPollingPaused(false)
       let deferred = service.automation.frozen

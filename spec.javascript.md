@@ -104,7 +104,7 @@ complete public signatures. The root `swiftty` object exposes:
 | `filter` | Register stdin and stdout filters. |
 | `ui` | Update native badges, tab icons, notifications, and status items. |
 | `currentPane` | Obtain a pane handle for the current callback or focused pane. |
-| `events` | Register shell, program-status, and keyboard callbacks. |
+| `events` | Register shell, terminal, workspace, client, program-status, and keyboard callbacks. |
 | `env(key, defaultValue?)` | Read the runtime environment, with an optional fallback. |
 | `jsonc.parse(text)` / `jsonc.read(path)` | Parse JSONC data with the shared configuration parser. |
 
@@ -232,14 +232,87 @@ assumed successful exit.
 `events.onDirectoryChanged(callback)` supplies the path from validated OSC 7
 file URLs.
 
-### 4.2 Keyboard shortcuts
+### 4.2 Terminal events
+
+These run with `currentPane` bound to the source pane, after stdout filtering
+and terminal parsing. Program-supplied text is sanitized for display and is
+plain data.
+
+| Hook | Source | Arguments |
+| --- | --- | --- |
+| `onTitleChanged` | OSC 0/2 | `(title)` |
+| `onBell` | BEL | none |
+| `onNotification` | OSC 9, OSC 777;notify | `(title, body)` |
+| `onProgressChanged` | OSC 9;4 | `({state, percent?})`; `state` is `removed`, `set`, `error`, `indeterminate` or `paused` |
+| `onProcessExited` | pane program exit | `(exitCode)`; a signal reports `128 + signal`, an uncollected status `-1` |
+| `onForegroundProcessChanged` | kernel foreground process group | `({generation, foreground, ancestors})` |
+| `onClipboardWritten` | kitty OSC 5522 write the frontend completed | `(text)`, the `text/plain` content |
+
+`onProcessExited` concerns the program the pane started (usually the shell),
+not each command; `onCommandFinished` reports commands.
+
+The foreground group is read from the pane program's `e_tpgid` with
+`proc_pidinfo`, so no descriptor is opened and nothing is signalled. Reads
+happen only while a listener exists, at most every 250 ms, after output plus
+one trailing read, so a command forked after its echo is still seen. A change is
+a different foreground pid or name (an `exec` keeps the pid) or ancestor chain; `foreground` carries `pid`,
+`name` and `cwd`, and `ancestors` run from its parent up to the pane's
+program (empty at a prompt or for a group outside that tree). OSC 52 writes are
+refused inside the mux, so only completed kitty clipboard writes are reported.
+
+### 4.3 Workspace and client events
+
+The service diffs its workspace graph once per turn, so a mutation made in
+several steps reports only its final state. Within one diff, events are ordered:
+admission; clients connected; then for each workspace, created or renamed, tabs created or
+renamed, panes created, active tab, layout revision, and clients attached; then
+detachments, panes closed, tabs closed and workspaces closed; then clients
+changed and clients disconnected. Workspaces that exist when `config.js` loads are reported as
+created once.
+
+| Hook | Payload |
+| --- | --- |
+| `onWorkspaceCreated` / `onWorkspaceRenamed` | `{workspaceId, name}` |
+| `onWorkspaceClosed` | `{workspaceId}` |
+| `onLayoutChanged` | `{workspaceId, revision}`; `revision` is a decimal UInt64 string |
+| `onTabCreated` / `onTabRenamed` | `{workspaceId, tabId, name}` |
+| `onTabClosed` / `onActiveTabChanged` | `{workspaceId, tabId}` |
+| `onPaneCreated` / `onPaneClosed` | `{workspaceId, tabId, paneId}` |
+| `onClientAttached` | `{workspaceId, clientId, role, frontend}`; `role` is `controller` (the lease holder) or `observer` |
+| `onClientDetached` | `{workspaceId, clientId, role}` |
+| `onClientConnected` | `{clientId, frontend, build, remote}`, after the handshake |
+| `onClientDisconnected` | `{clientId}` |
+| `onClientChanged` | `{clientId, frontend, build, remote, workspaceId, role}`, when a connected client's attachment changes; `null` fields when it holds none |
+| `onClientConnectionChanged` | `{sessionId, workspaceId, state}`, a roaming session's state: `detached` is a lost device connection, `attached` a restored one |
+| `onAdmissionChanged` | `{accepting, reason}`; `reason` is `update` or `migration` while new workspaces and panes are refused |
+
+### 4.4 Environment events
+
+These start their monitor only once a script registers a listener (checked at
+each workspace diff), and report through the same service runtime.
+
+| Hook | Source | Payload |
+| --- | --- | --- |
+| `onConfigurationChanged` | the settings file (`ConfigDiscovery`), polled every 2 s | `{generation, hash, path}`; `hash` is SHA-256 hex, empty when the file is missing or over 1 MiB |
+| `onHostsChanged` | Bonjour browse of `_swiftty._tcp` | `{hosts: [{name}], hash}`, sorted and sanitized names |
+| `onTailscaleStatusChanged` | `NWPathMonitor` updates, then `utun` interfaces with a 100.64.0.0/10 or fd7a:115c:a1e0::/48 address | `{running, addresses}` |
+
+Hosts and Tailscale report their first observed state; configuration reports
+only changes after the first read. Browsing for hosts may prompt for local
+network access the first time.
+
+`onPaneCreated` binds `currentPane` to the new pane; actions for a pane that is
+still launching are queued until it starts. Every other workspace and client
+hook leaves `currentPane` as the focused pane.
+
+### 4.5 Keyboard shortcuts
 
 `events.bindKey(shortcut, callback)` registers an automation shortcut, such as
 `"cmd+k"` or `"cmd+shift+d"`. A key is named by its unshifted character
 (`"cmd+shift+1"`, not `"cmd+shift+!"`); the `+` key is `plus`. The native client dispatches matching shortcuts
 through the service, with `currentPane` scoped to their source pane.
 
-### 4.3 Callback failures
+### 4.6 Callback failures
 
 Evaluation and callback errors are logged. One throwing event listener does not
 prevent other listeners from receiving the event. Filter failures preserve the

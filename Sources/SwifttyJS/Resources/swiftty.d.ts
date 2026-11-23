@@ -93,6 +93,59 @@ export type ProgramStatusChange = StatusChangeSource & (
   | { type: "sync"; records: ProgramStatus[] }
 );
 
+/** OSC 9;4 progress. `removed` clears it; `percent` is 0–100 when given. */
+export interface ProgressReport {
+  state: "removed" | "set" | "error" | "indeterminate" | "paused";
+  percent?: number;
+}
+
+export interface WorkspaceEvent { workspaceId: string; }
+export interface NamedWorkspaceEvent extends WorkspaceEvent { name: string; }
+export interface LayoutEvent extends WorkspaceEvent {
+  /** Decimal UInt64 layout revision. */
+  revision: string;
+}
+export interface TabEvent extends WorkspaceEvent { tabId: string; }
+export interface NamedTabEvent extends TabEvent { name: string; }
+export interface PaneEvent extends TabEvent { paneId: string; }
+export type AttachmentRole = "controller" | "observer";
+export interface AttachmentEvent extends WorkspaceEvent {
+  clientId: string;
+  role: AttachmentRole;
+}
+export interface ProcessInfo {
+  pid: number;
+  name: string;
+  /** Only the foreground process reports its working directory. */
+  cwd?: string;
+}
+export interface ForegroundProcessChange {
+  /** Decimal UInt64; increases with each change in this pane. */
+  generation: string;
+  /** Null when the pane has no readable foreground process group. */
+  foreground: ProcessInfo | null;
+  /** The foreground process's parents, up to the pane's own program. */
+  ancestors: ProcessInfo[];
+}
+export interface ClientState extends ClientConnection {
+  /** The client's current attachment; null when it holds none. */
+  workspaceId: string | null;
+  role: AttachmentRole | null;
+}
+export interface RoamingConnectionChange {
+  sessionId: string;
+  workspaceId: string;
+  /** `detached` is a lost connection; `attached` is one restored. */
+  state: "reserved" | "attached" | "detached" | "exited" | "terminated";
+}
+export interface ClientConnection {
+  clientId: string;
+  frontend: "terminal" | "native" | "control";
+  build: string;
+  /** Bridged from the roaming transport rather than local XPC. */
+  remote: boolean;
+}
+
 export interface LifecycleHooks {
   /**
    * Validated OSC 7501 status changes, including clear, eviction and reset.
@@ -106,6 +159,68 @@ export interface LifecycleHooks {
 
   /** Triggered when the current working directory changes via OSC 7 */
   onDirectoryChanged(callback: (newPath: string) => void): void;
+
+  // Pane events: currentPane is the source pane.
+
+  /** The pane's title changed (OSC 0/2), as sanitized for display. */
+  onTitleChanged(callback: (title: string) => void): void;
+
+  /** The pane rang the bell (BEL). */
+  onBell(callback: () => void): void;
+
+  /** The program asked for a desktop notification (OSC 9 / OSC 777;notify). */
+  onNotification(callback: (title: string, body: string) => void): void;
+
+  /** The program reported progress (OSC 9;4). */
+  onProgressChanged(callback: (progress: ProgressReport) => void): void;
+
+  /**
+   * The pane's program exited. `exitCode` is 128 + signal when a signal
+   * ended it, and -1 when the status was not collected.
+   */
+  onProcessExited(callback: (exitCode: number) => void): void;
+
+  /** The pane's foreground process changed (checked at most every 250 ms). */
+  onForegroundProcessChanged(callback: (change: ForegroundProcessChange) => void): void;
+
+  /** The frontend completed a program's clipboard write (kitty OSC 5522). */
+  onClipboardWritten(callback: (text: string) => void): void;
+
+  // Workspace events. Existing workspaces are reported as created once,
+  // after config.js loads. A paneCreated callback has currentPane bound to it.
+
+  onWorkspaceCreated(callback: (event: NamedWorkspaceEvent) => void): void;
+  onWorkspaceClosed(callback: (event: WorkspaceEvent) => void): void;
+  onWorkspaceRenamed(callback: (event: NamedWorkspaceEvent) => void): void;
+  /** Any layout change: tabs, splits, zoom, focus or exit. */
+  onLayoutChanged(callback: (event: LayoutEvent) => void): void;
+  onTabCreated(callback: (event: NamedTabEvent) => void): void;
+  onTabClosed(callback: (event: TabEvent) => void): void;
+  onTabRenamed(callback: (event: NamedTabEvent) => void): void;
+  onActiveTabChanged(callback: (event: TabEvent) => void): void;
+  onPaneCreated(callback: (event: PaneEvent) => void): void;
+  onPaneClosed(callback: (event: PaneEvent) => void): void;
+  /** A client took the lease (controller) or began observing a workspace. */
+  onClientAttached(callback: (event: AttachmentEvent & { frontend: string }) => void): void;
+  onClientDetached(callback: (event: AttachmentEvent) => void): void;
+  /** A roaming device's connection to its session was lost or restored. */
+  onClientConnectionChanged(callback: (change: RoamingConnectionChange) => void): void;
+
+  // Service events.
+
+  /** A client completed its handshake with the service. */
+  onClientConnected(callback: (client: ClientConnection) => void): void;
+  onClientDisconnected(callback: (client: { clientId: string }) => void): void;
+  /** A connected client's attachment (workspace or role) changed. */
+  onClientChanged(callback: (client: ClientState) => void): void;
+  /** Whether the service accepts new workspaces, tabs and panes. */
+  onAdmissionChanged(callback: (change: { accepting: boolean; reason: "update" | "migration" | null }) => void): void;
+  /** The settings file's contents changed on disk (polled every 2 s). */
+  onConfigurationChanged(callback: (change: { generation: string; hash: string; path: string }) => void): void;
+  /** Swiftty Macs advertising Connect a Device on the local network. */
+  onHostsChanged(callback: (change: { hosts: { name: string }[]; hash: string }) => void): void;
+  /** Tailscale's tunnel came up, went down, or changed address. */
+  onTailscaleStatusChanged(callback: (status: { running: boolean; addresses: string[] }) => void): void;
 
   /** Bind a keyboard shortcut to an automation routine */
   bindKey(shortcut: string, callback: () => void): void;

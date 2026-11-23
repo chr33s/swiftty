@@ -32,6 +32,7 @@ extension MuxService {
     viewers[ws.id] = list
     clientViewers[client.id] = ws.id
     idleWork?.cancel()
+    scheduleAutomationTopology()
     var snap = snapshot(ws)
     snap.attachmentRole = .observer
     return .attached(attachment: viewer.attachment, workspace: snap)
@@ -51,6 +52,7 @@ extension MuxService {
     if viewers[wsID]?.isEmpty == true { viewers[wsID] = nil }
     tearDown(viewer)
     if notify { send(.event(.detached(reason: reason)), to: client) }
+    scheduleAutomationTopology()
   }
 
   func releaseViewers(in wsID: WorkspaceID, reason: String) {
@@ -58,6 +60,7 @@ extension MuxService {
       tearDown(viewer)
       send(.event(.detached(reason: reason)), to: viewer.client)
     }
+    scheduleAutomationTopology()
   }
 
   /// Releases what a viewer already removed from `viewers` held: its frame

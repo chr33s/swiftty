@@ -1,5 +1,6 @@
 import Foundation
 import JavaScriptCore
+import Synchronization
 
 /// All JavaScript values, including callbacks, stay on one private queue.
 /// Hosts exchange only strings and bytes with the VM.
@@ -24,6 +25,9 @@ public final class JavaScriptRuntime: @unchecked Sendable {
   private let onAction: @Sendable (JavaScriptAction) -> Void
   private let queueKey = DispatchSpecificKey<Bool>()
   private var timer: DispatchSourceTimer?
+  /// Events with at least one listener, readable from any thread so hosts
+  /// can skip work (polling, monitors) nobody observes.
+  private let subscribed = Subscriptions()
   private var pollingPaused = false
 
   public struct ScriptError: Error, Sendable, CustomStringConvertible {
@@ -65,6 +69,11 @@ public final class JavaScriptRuntime: @unchecked Sendable {
       }
       let identifier: @convention(block) () -> String = { UUID().uuidString }
       context.setObject(host, forKeyedSubscript: "__host" as NSString)
+      let subscribed = subscribed
+      let subscribe: @convention(block) (String) -> Void = { name in
+        _ = subscribed.names.withLock { $0.insert(name) }
+      }
+      context.setObject(subscribe, forKeyedSubscript: "__subscribe" as NSString)
       context.setObject(
         identifier,
         forKeyedSubscript: "__identifier" as NSString
@@ -214,6 +223,24 @@ public final class JavaScriptRuntime: @unchecked Sendable {
     }
   }
 
+  /// Whether a script registered a listener for `name`.
+  public func listens(to name: JavaScriptEvent.Name) -> Bool {
+    subscribed.names.withLock { $0.contains(name.rawValue) }
+  }
+
+  /// Delivers a lifecycle event. Pane events pass their source `pane`,
+  /// which `currentPane` names while listeners run.
+  public func emit(_ event: JavaScriptEvent, pane: String? = nil) {
+    _ = queue.sync {
+      bounded {
+        _ = context.objectForKeyedSubscript("__event")?
+          .call(withArguments: [
+            event.name.rawValue, event.arguments, pane as Any? ?? NSNull(),
+          ])
+      }
+    }
+  }
+
   public func handleKey(_ shortcut: String, pane: String? = nil) -> Bool {
     queue.sync {
       var handled = false
@@ -281,4 +308,8 @@ public final class JavaScriptRuntime: @unchecked Sendable {
       Unmanaged.passUnretained(self).toOpaque()
     )
   }
+}
+
+private final class Subscriptions: Sendable {
+  let names = Mutex<Set<String>>([])
 }

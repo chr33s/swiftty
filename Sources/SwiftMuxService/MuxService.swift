@@ -232,7 +232,10 @@ public actor MuxService {
       quiesceOwner = nil
       // A lost updater cannot leave admission frozen. Process shutdown
       // remains irreversible even if its former update owner disconnects.
-      if !exitRequested { quiescing = false }
+      if !exitRequested {
+        quiescing = false
+        scheduleAutomationTopology()
+      }
     }
     attention.unsubscribe(id)
     automation.subscribers.remove(id)
@@ -248,6 +251,7 @@ public actor MuxService {
     } else if clientViewers[id] != nil {
       releaseViewer(id, notify: false, reason: "connection lost: \(reason)")
     }
+    scheduleAutomationTopology()
     checkIdle()
   }
 
@@ -403,6 +407,7 @@ public actor MuxService {
       return
     }
     client.hello = hello
+    scheduleAutomationTopology()
     send(
       .welcome(
         Welcome(
@@ -889,6 +894,7 @@ public actor MuxService {
   /// Sends the workspace list to metadata observers once the current turn
   /// is done, so a change made in several steps (a teardown) sends one.
   func publishWorkspaces() {
+    scheduleAutomationTopology()
     guard !workspacesPublishScheduled,
       clients.values.contains(where: {
         $0.observesWorkspaces || $0.observesWorkspaceGraph
@@ -1486,6 +1492,8 @@ public actor MuxService {
         )
       }
       panes[id]?.exitStatus = status
+      automationRuntime?
+        .emit(.processExited(exitCode: status), pane: id.description)
       if let client {
         send(
           .event(.paneExited(id, status: status, truncated: forced)),

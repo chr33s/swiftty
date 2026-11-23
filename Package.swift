@@ -164,7 +164,8 @@ let package = Package(
       name: "SwiftMuxService",
       dependencies: [
         "SwifttyEngine", "SwiftMuxProtocol", "SwiftMuxXPC", "SwiftMuxExport",
-        "MuxAttention", "SwifttyJS", "SwiftMuxGuardian",
+        "MuxAttention", "SwifttyJS", "SwiftMuxGuardian", "SwifttyConfig",
+        "HostConnection",
       ]
     ),
     // The one PTY owner: local XPC and, when configured, roaming RST/1.

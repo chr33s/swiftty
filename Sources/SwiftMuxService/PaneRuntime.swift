@@ -27,7 +27,12 @@ enum PaneEvent: Sendable {
 }
 
 /// Events gathered off the parse path, shared with the emulator's hooks.
-final class PendingPaneEvents: Sendable { let events = Mutex<[PaneEvent]>([]) }
+final class PendingPaneEvents: Sendable {
+  let events = Mutex<[PaneEvent]>([])
+  /// Plain-text contents of clipboard writes awaiting the frontend's
+  /// answer, reported to scripts only once the write succeeds.
+  let clipboardTexts = Mutex<[UInt64: String]>([:])
+}
 
 /// A pane's authoritative terminal and queue-owned process adapter. The default
 /// GuardianPTY adapter owns descriptors, process lifecycle and byte-writer
@@ -142,6 +147,12 @@ final class PaneRuntime: @unchecked Sendable {
   let currentViewport = Atomic<UInt64>(0)
   /// New on creation and on every full reset (RIS).
   private var terminalEpoch = TerminalEpochID()
+  /// Foreground process reporting, on `queue`; only while a script listens.
+  private var foregroundKey: [String]?
+  private var foregroundGeneration: UInt64 = 0
+  private var lastForegroundCheck: DispatchTime?
+  private var foregroundCheckScheduled = false
+  static let foregroundInterval: DispatchTimeInterval = .milliseconds(250)
   /// Clipboard requests the emulator deferred during a parse, emitted
   /// with the batch's other events.
   private let clipboardRequests = PendingPaneEvents()
@@ -232,7 +243,18 @@ final class PaneRuntime: @unchecked Sendable {
       }
       return .deferred
     }
+    let recordsClipboard = javaScriptRuntime != nil
     state.kittyClipboardWriter = { [id] request in
+      if recordsClipboard,
+        let text = request.contents.first(where: {
+          $0.mime.hasPrefix("text/plain")
+        })
+      {
+        requests.clipboardTexts.withLock { texts in
+          if texts.count >= 16 { texts.removeAll() }
+          texts[request.token] = String(decoding: text.data, as: UTF8.self)
+        }
+      }
       requests.events.withLock {
         $0.append(
           .clipboardWrite(
@@ -420,8 +442,24 @@ final class PaneRuntime: @unchecked Sendable {
       switch event {
       case let .title(raw):
         // Cleaned once here for every client's chrome.
-        onEvent?(.title(DisplayText.sanitize(raw)))
-      case .bell: onEvent?(.bell)
+        let title = DisplayText.sanitize(raw)
+        onEvent?(.title(title))
+        javaScriptRuntime?.emit(.titleChanged(title), pane: id.description)
+      case .bell:
+        onEvent?(.bell)
+        javaScriptRuntime?.emit(.bell, pane: id.description)
+      case let .notification(title, body):
+        javaScriptRuntime?
+          .emit(
+            .notification(
+              title: DisplayText.sanitize(title),
+              body: DisplayText.sanitize(body)
+            ),
+            pane: id.description
+          )
+      case let .progress(state, percent):
+        javaScriptRuntime?
+          .emit(.progress(state: state, percent: percent), pane: id.description)
       case let .workingDirectory(d):
         onEvent?(
           .workingDirectory(
@@ -440,7 +478,44 @@ final class PaneRuntime: @unchecked Sendable {
     for request in requests { onEvent?(request) }
     _ = state.takeDamage()
     noteScrollbackActivity()
+    checkForeground(afterOutput: true)
     noteChange()
+  }
+
+  /// At most one kernel read per interval. Output also schedules one
+  /// trailing read, which sees a command the shell forks after echoing it
+  /// or a prompt drawn before the kernel updates the foreground group.
+  private func checkForeground(afterOutput: Bool) {
+    guard let javaScriptRuntime, javaScriptRuntime.listens(to: .foreground),
+      !process.finished, process.pid > 0
+    else { return }
+    let now = DispatchTime.now()
+    let due = lastForegroundCheck.map { now >= $0 + Self.foregroundInterval }
+    if due ?? true {
+      lastForegroundCheck = now
+      let report = ForegroundProcess.report(root: process.pid)
+      if report.key != foregroundKey {
+        foregroundKey = report.key
+        foregroundGeneration &+= 1
+        javaScriptRuntime.emit(
+          .foregroundProcessChanged(
+            generation: foregroundGeneration,
+            foreground: report.foreground,
+            ancestors: report.ancestors
+          ),
+          pane: id.description
+        )
+      }
+      guard afterOutput else { return }
+    }
+    guard !foregroundCheckScheduled else { return }
+    foregroundCheckScheduled = true
+    queue.asyncAfter(deadline: .now() + Self.foregroundInterval) {
+      [weak self] in
+      guard let self else { return }
+      foregroundCheckScheduled = false
+      checkForeground(afterOutput: false)
+    }
   }
 
   /// One activity record per batch; storage work never changes
@@ -1238,6 +1313,12 @@ final class PaneRuntime: @unchecked Sendable {
         }
       state.completeKittyClipboardWrite(token, with: answer)
       _ = enqueueReplies()
+      let text = clipboardRequests.clipboardTexts.withLock {
+        $0.removeValue(forKey: token)
+      }
+      if case .success = result, let text {
+        javaScriptRuntime?.emit(.clipboardWritten(text), pane: id.description)
+      }
     }
   }
 
