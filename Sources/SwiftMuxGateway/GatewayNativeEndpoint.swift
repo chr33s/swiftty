@@ -136,9 +136,10 @@ package final class GatewayNativeEndpoint: @unchecked Sendable {
           if endpoint == nil { try? await Task.sleep(for: .milliseconds(20)) }
         }
         guard let self else { return }
+        let resolved = endpoint
         self.queue.async {
           for relay in live {
-            if let endpoint {
+            if let endpoint = resolved {
               relay.rebind(to: endpoint)
             } else {
               relay.close(MuxError(.connectionLost, "replacement unreachable"))

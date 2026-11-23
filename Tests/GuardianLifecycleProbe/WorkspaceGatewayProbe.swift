@@ -177,7 +177,7 @@ extension GuardianLifecycleProbe {
       .id(authority.workspace),
       role: .controller
     )
-    var client = opened.connection
+    let client = opened.connection
     guard await client.welcome?.server == server else {
       throw MuxError(
         .serverInstanceChanged,

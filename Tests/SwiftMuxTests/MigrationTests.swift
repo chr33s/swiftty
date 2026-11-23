@@ -627,7 +627,7 @@ struct MigrationTests {
           pid: getpid()
         )
         let host = try rig.host(token: token, candidate: status.transaction)
-        Task {
+        _ = Task {
           while !(try rig.guardian.migrationStatusForTesting(status.transaction)
             .candidateConnected)
           { try await Task.sleep(for: .milliseconds(5)) }

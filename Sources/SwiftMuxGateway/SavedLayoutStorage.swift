@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import LocalAuthentication
 import Security
 import SwiftMuxProtocol
 import Synchronization
@@ -242,7 +243,7 @@ package struct LoginKeychainKeyStore: SavedLayoutKeyStore {
     var request = query
     request[kSecReturnData as String] = true
     request[kSecMatchLimit as String] = kSecMatchLimitOne
-    request[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+    request[kSecUseAuthenticationContext as String] = Self.nonInteractive()
     var result: CFTypeRef?
     let status = SecItemCopyMatching(request as CFDictionary, &result)
     switch status {
@@ -269,11 +270,18 @@ package struct LoginKeychainKeyStore: SavedLayoutKeyStore {
 
   private func store(_ key: SymmetricKey) throws { try store(key, in: query) }
 
+  /// Fails instead of prompting when an item would need user authentication.
+  private static func nonInteractive() -> LAContext {
+    let context = LAContext()
+    context.interactionNotAllowed = true
+    return context
+  }
+
   private func store(_ key: SymmetricKey, in query: [String: Any]) throws {
     var item = query
     item[kSecValueData as String] = key.withUnsafeBytes { Data($0) }
     item[kSecAttrLabel as String] = "Swiftty saved workspaces"
-    item[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+    item[kSecUseAuthenticationContext as String] = Self.nonInteractive()
     let status = SecItemAdd(item as CFDictionary, nil)
     guard status == errSecSuccess else {
       throw MuxError(.unauthorized, "cannot store saved layout key (\(status))")

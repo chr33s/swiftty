@@ -79,7 +79,7 @@ struct OwnedFD: ~Copyable {
     }
     // Out of any originally closed standard slot: a stage's stdin or stdout
     // wiring would overwrite it before the launcher reads it.
-    return try duplicate(fd)
+    return try owner.withDescriptor { try duplicate($0) }
   }
 
   /// Called only by the launch owner, which serializes pipe creation and spawn.

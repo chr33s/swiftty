@@ -39,11 +39,15 @@ extension GuardianServer {
     // Only one challenge is outstanding. The next challenge does not extend
     // the deadline: failure is detected within five seconds of last progress.
     let epoch = workspace.progressEpoch
+    // Workspace is queue-confined and not Sendable: re-resolve it on the queue.
+    let id = workspace.authority.workspace
+    let identity = ObjectIdentifier(workspace)
     queue.asyncAfter(deadline: .now() + min(1, progressTimeout / 2)) {
-      [weak self, weak workspace] in
-      guard let self, let workspace, workspace.progressEpoch == epoch else {
-        return
-      }
+      [weak self] in
+      guard let self, let workspace = self.workspaces[id],
+        ObjectIdentifier(workspace) == identity,
+        workspace.progressEpoch == epoch
+      else { return }
       self.issueProgressProbe(workspace)
     }
   }

@@ -170,7 +170,7 @@ struct GuardianEndpointTests {
     #expect(
       second.instance == first.instance && second.authority == first.authority
     )
-    queue.sync {
+    _ = queue.sync {
       #expect(throws: MuxError.self) {
         try worker.publishEndpoint(
           service.endpoint,

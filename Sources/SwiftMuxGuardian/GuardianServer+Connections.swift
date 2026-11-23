@@ -325,10 +325,7 @@ extension GuardianServer {
         for value in group.panes.values { value.runtime.flush() }
       }
       checkMigrationCut(workspace)
-    case .hello, .migrationHello, .migrationFrozen, .migrationChunk,
-      .migrationRefused, .migrationImported, .migrationActivated,
-      .migrationResumed:
-      break
+    case .hello, .migrationHello, .migrationImported, .migrationActivated: break
     }
   }
 
