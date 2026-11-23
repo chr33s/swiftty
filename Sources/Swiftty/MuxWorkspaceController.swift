@@ -55,6 +55,9 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   let automationStatus = JavaScriptStatusBar()
   var automationKeys: Set<String> = []
   var automationTabIcons: [TabID: String] = [:]
+  /// Icon names scripts chose per pane (`ui.setPaneIcon`), from the
+  /// local table only.
+  var automationPaneIcons: [PaneID: String] = [:]
   var automationFocusedPane: PaneID?
   var automationNotify: @MainActor (String, String) -> Void =
     JavaScriptNotifications.deliver
@@ -488,6 +491,11 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     case let .title(pane, title):
       displayState.titles[pane] = DisplayText.sanitize(title)
       refreshChrome()
+    case let .program(pane, program):
+      let program = ProgramName.sanitize(program)
+      guard displayState.programs[pane] != program else { return }
+      displayState.programs[pane] = program
+      refreshChrome()
     case let .bell(pane):
       guard !detached else { return }
       NSSound.beep()
@@ -597,8 +605,16 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     where displayState.titles[pane.id] == nil || !pane.title.isEmpty {
       displayState.titles[pane.id] = DisplayText.sanitize(pane.title)
     }
+    for pane in ws.panes where pane.program != nil {
+      displayState.programs[pane.id] = pane.program.flatMap(
+        ProgramName.sanitize
+      )
+    }
     let known = Set(ws.panes.map(\.id))
     displayState.titles = displayState.titles.filter { known.contains($0.key) }
+    displayState.programs = displayState.programs.filter {
+      known.contains($0.key)
+    }
     displayState.activity.formIntersection(known)
     guard let tab = ws.activeTabSnapshot else {
       refreshChrome()
@@ -649,6 +665,15 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     displayState.titles[pane].flatMap(\.nonEmpty) ?? "shell"
   }
 
+  /// The pane's icon: a script's choice, else from its program and title.
+  func icon(of pane: PaneID) -> MuxIcon {
+    MuxIcons.icon(
+      title: title(of: pane),
+      program: displayState.programs[pane],
+      override: automationPaneIcons[pane]
+    )
+  }
+
   /// Tab strip, pane headers and window title from the current snapshot.
   func refreshChrome() {
     guard !detached, let ws = workspace else { return }
@@ -657,7 +682,8 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
         let name = DisplayText.sanitize(tab.name)
         // Service default names are numbers; show the program instead.
         let automatic = name.isEmpty || name.allSatisfy(\.isNumber)
-        let label = automatic ? title(of: tab.activePane) : name
+        let label =
+          automatic ? MuxIcons.displayTitle(title(of: tab.activePane)) : name
         let panes = tab.layout.panes.count
         let detail = [
           automatic ? nil : title(of: tab.activePane),
@@ -668,7 +694,10 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
           id: tab.id,
           title: [automationTabIcons[tab.id], label].compactMap { $0 }
             .filter { !$0.isEmpty }.joined(separator: " "),
-          symbol: MuxIcons.symbol(for: title(of: tab.activePane)),
+          // The active pane's program in front, then the next pane's.
+          icons: ([tab.activePane]
+            + tab.layout.panes.filter { $0 != tab.activePane }.prefix(1))
+            .map(icon(of:)),
           isActive: tab.id == ws.activeTab,
           hasActivity: tab.id != ws.activeTab
             && tab.layout.panes.contains(where: activity.contains),
@@ -689,7 +718,8 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
           isActive: id == tab.activePane,
           hasActivity: activity.contains(id),
           isZoomed: tab.zoomedPane == id,
-          hasExited: ws.pane(id)?.exitStatus != nil
+          hasExited: ws.pane(id)?.exitStatus != nil,
+          icon: icon(of: id)
         )
       )
     }

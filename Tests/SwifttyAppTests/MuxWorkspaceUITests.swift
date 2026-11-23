@@ -192,13 +192,21 @@ extension MuxNativeTests {
     #expect(await until { c.title(of: first) == "snake game" })
     let item = try #require(c.tabStrip.buttons.first?.item)
     #expect(item.title == "snake game")
-    #expect(item.symbol == "gamecontroller")
+    #expect(item.icons.map(\.symbol) == ["gamecontroller"])
     #expect(c.tabStrip.buttons.first?.accessibilityLabel() == "snake game")
     // The window names the workspace, then what its active pane shows.
     let workspace = DisplayText.workspaceName(try #require(c.workspace?.name))
     #expect(c.window?.title == "\(workspace) — snake game")
     c.split(.leftRight)
     #expect(await until { c.views.count == 2 })
+    // A split tab shows both panes' icons, the active (new) pane's first.
+    #expect(
+      await until {
+        c.tabStrip.buttons.first?.item?.icons.map(\.symbol) == [
+          "terminal", "gamecontroller",
+        ]
+      }
+    )
     let container = try #require(c.containers[first])
     #expect(container.showsHeader)
     #expect(container.header.state.title == "snake game")

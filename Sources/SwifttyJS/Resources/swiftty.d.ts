@@ -44,6 +44,13 @@ export interface UIController {
   /** Set the active tab title icon or text */
   setTabIcon(icon: string): void;
 
+  /**
+   * Pick the source pane's program icon by name from Swiftty's built-in
+   * set ("git", "claude", "python", "terminal", ...); an empty string or
+   * an unknown name returns it to automatic detection.
+   */
+  setPaneIcon(name: string): void;
+
   /** Display a native macOS system notification */
   notify(title: string, message: string): void;
 

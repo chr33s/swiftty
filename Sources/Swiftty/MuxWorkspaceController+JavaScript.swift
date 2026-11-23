@@ -18,6 +18,12 @@ extension MuxWorkspaceController {
       // Subscription replay includes tabs in workspaces we may show later.
       automationTabIcons[tab] = action.text
       refreshChrome()
+    case .paneIcon:
+      guard let raw = action.id, let pane = PaneID(raw) else { return }
+      let name = action.text.flatMap { $0.isEmpty ? nil : $0 }
+      guard automationPaneIcons[pane] != name else { return }
+      automationPaneIcons[pane] = name
+      refreshChrome()
     case .notification:
       automationNotify(action.title ?? "Swiftty", action.text ?? "")
     case .keybinding:

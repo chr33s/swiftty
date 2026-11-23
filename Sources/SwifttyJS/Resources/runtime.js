@@ -78,6 +78,7 @@
     ui: {
       setBadge(text) { emit({kind: 'badge', text: String(text)}); },
       setTabIcon(text) { emit({kind: 'tabIcon', pane: activePane, text: String(text)}); },
+      setPaneIcon(name) { emit({kind: 'paneIcon', pane: activePane, text: String(name)}); },
       notify(title, text) { emit({kind: 'notification', title: String(title), text: String(text)}); },
       registerStatusItem(id, options) {
         id = String(id);

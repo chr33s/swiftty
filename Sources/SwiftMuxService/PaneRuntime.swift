@@ -12,6 +12,8 @@ import Synchronization
 /// Events a pane reports to the service, on the pane queue.
 enum PaneEvent: Sendable {
   case title(String)
+  /// The foreground program changed (`ProgramName`; empty when unknown).
+  case program(String)
   case bell
   /// `local` is false for a directory on another host (OSC 7 over SSH).
   case workingDirectory(String, local: Bool)
@@ -25,6 +27,9 @@ enum PaneEvent: Sendable {
   case clipboardRead(MuxClipboardRead)
   case clipboardWrite(MuxClipboardWrite)
 }
+
+/// The shell's running command's program, set from the emulator's hooks.
+final class ShellProgram: Sendable { let name = Mutex<String?>(nil) }
 
 /// Events gathered off the parse path, shared with the emulator's hooks.
 final class PendingPaneEvents: Sendable { let events = Mutex<[PaneEvent]>([]) }
@@ -145,6 +150,15 @@ final class PaneRuntime: @unchecked Sendable {
   /// Clipboard requests the emulator deferred during a parse, emitted
   /// with the batch's other events.
   private let clipboardRequests = PendingPaneEvents()
+  /// The program of the command line the shell is running (OSC 133 C to
+  /// D), which names what runs on the far side of an `ssh`.
+  private let shellProgram = ShellProgram()
+  /// The foreground program last reported (`onEvent(.program)`).
+  private var program = ""
+  private var programCheckPending = false
+  /// How long after output the foreground program is read: coalesces a
+  /// burst, and lets a command the shell just started exec first.
+  static let programCheckDelay: DispatchTimeInterval = .milliseconds(250)
   /// Status changes journaled per publish; past it the inbox resyncs
   /// from the records (intermediate transitions are then lost).
   static let statusJournalLimit = 4096
@@ -195,14 +209,18 @@ final class PaneRuntime: @unchecked Sendable {
       scrollbackLimitBytes: historyBytes,
       scrollbackLimitRows: limits.historyRowsPerPane,
     )
-    if let javaScriptRuntime {
-      state.onShellCommandFinished = { command, code in
-        javaScriptRuntime.commandFinished(
+    let shellProgram = shellProgram
+    state.onShellCommandStarted = { command in
+      shellProgram.name.withLock { $0 = ProgramName.command(command) }
+    }
+    state.onShellCommandFinished = { command, code in
+      shellProgram.name.withLock { $0 = nil }
+      javaScriptRuntime?
+        .commandFinished(
           command: command,
           exitCode: code ?? -1,
           pane: id.description
         )
-      }
     }
     // The inner identity matches the TERM panes run under; enhanced
     // keyboard reporting and clipboard writes are not offered.
@@ -359,6 +377,7 @@ final class PaneRuntime: @unchecked Sendable {
       try restoredParser.restore(from: &reader)
       try reader.finish()
       restored.onShellCommandFinished = state.onShellCommandFinished
+      restored.onShellCommandStarted = state.onShellCommandStarted
       restored.kittyClipboardReader = state.kittyClipboardReader
       restored.kittyClipboardWriter = state.kittyClipboardWriter
       restored.setScrollbackCompression(state.scrollbackCompression.requested)
@@ -408,8 +427,38 @@ final class PaneRuntime: @unchecked Sendable {
     return true
   }
 
+  /// Reads the foreground program a moment after output, reporting it
+  /// when it changed. Pane queue.
+  private func scheduleProgramCheck() {
+    guard !programCheckPending else { return }
+    programCheckPending = true
+    queue.asyncAfter(deadline: .now() + Self.programCheckDelay) { [weak self] in
+      guard let self else { return }
+      programCheckPending = false
+      let current = currentProgram()
+      guard current != program else { return }
+      program = current
+      onEvent?(.program(current))
+    }
+  }
+
+  /// The pane's foreground program; behind `ssh` and the like, the
+  /// remote shell's command when it marks one (OSC 133).
+  func currentProgram() -> String {
+    guard let local = ForegroundProgram.name(session: process.pid) else {
+      return ""
+    }
+    if ProgramName.remoteShells.contains(local),
+      let remote = shellProgram.name.withLock({ $0 })
+    {
+      return remote
+    }
+    return local
+  }
+
   /// Flushes replies and events, then notifies the service once.
   private func publish() {
+    scheduleProgramCheck()
     state.refreshSearchIfNeeded()
     _ = enqueueReplies()
     publishStatus()

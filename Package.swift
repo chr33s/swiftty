@@ -135,7 +135,8 @@ let package = Package(
         "MuxNavigation", "MuxNavigationSMX", "HostConnection", "SwifttyJS",
         "SwiftMuxGuardian",
       ],
-      resources: [.process("Localizable.xcstrings")]
+      // BrandIcons: developer-icons logos (MIT), Scripts/fetch-brand-icons.sh.
+      resources: [.process("Localizable.xcstrings"), .copy("BrandIcons")]
     ),
     // SwiftMux (spec.multiplexer.md): shared messages, engine bridge,
     // service, PTY launcher, client connection and frontends.

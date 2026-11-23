@@ -398,7 +398,8 @@ public final class TerminalClient {
       }
       redraw()
     case .bell: tty.write("\u{07}")
-    case .activity, .ready: break
+    // Not requested (`paneProgram`): this frontend shows no icons.
+    case .activity, .ready, .program: break
     case let .detached(reason): finish(.detached(reason), detach: false)
     case let .paste(_, state):
       if state != .completed { show("paste \(state.rawValue)") }
