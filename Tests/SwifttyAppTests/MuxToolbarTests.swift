@@ -315,16 +315,21 @@ extension MuxNativeTests {
     #expect(c.tabStrip.isVertical)
     #expect(c.tabStrip.superview === c.tabSidebar)
     #expect(toolbar.tabs.view == nil)
-    #expect(
-      toolbar.toolbar.items.map(\.itemIdentifier) == [
-        MuxWorkspaceToolbar.sidebarItem, .flexibleSpace,
-      ]
-    )
+    // The toolbar hides; the sidebar and the panes reach the window's top
+    // edge, under its transparent titlebar.
+    #expect(toolbar.toolbar.items.isEmpty && !toolbar.toolbar.isVisible)
+    #expect(window.styleMask.contains(.fullSizeContentView))
+    #expect(window.titlebarAppearsTransparent)
     #expect(window.titleVisibility == .hidden)
     // The sidebar sits beside the panes, which show in a rounded card;
     // rows stack top down, full width.
     let sidebar = c.tabSidebar.convert(c.tabSidebar.bounds, to: nil)
     let panes = c.layoutView.convert(c.layoutView.bounds, to: nil)
+    let frame = try #require(window.contentView).bounds
+    #expect(abs(sidebar.maxY - frame.maxY) < 1)
+    #expect(
+      abs(frame.maxY - panes.maxY - MuxWorkspaceController.cardMargin) < 1
+    )
     #expect(abs(sidebar.maxX - panes.minX) < 1)
     #expect(c.panesInCard)
     #expect(c.layoutView.layer?.cornerRadius == MuxPaneContainer.cornerRadius)
@@ -358,6 +363,7 @@ extension MuxNativeTests {
     #expect(!c.tabStrip.isVertical)
     #expect(toolbar.tabs.view === c.tabStrip)
     #expect(c.tabSidebar.isHidden)
+    #expect(toolbar.toolbar.isVisible)
     #expect(
       toolbar.toolbar.items.map(\.itemIdentifier) == [
         MuxWorkspaceToolbar.tabsItem, .flexibleSpace,
@@ -387,18 +393,23 @@ extension MuxNativeTests {
     configuration.tabPosition = .left
     c.apply(configuration)
     try await settle(window)
-    // Expanded: the inbox, New Tab and the toggle end at the sidebar's
-    // trailing edge, and clicks there reach them (the toolbar measured the
-    // controls at their final width).
+    // Expanded: the sidebar's top row holds the toggle after the window
+    // controls, and the inbox and New Tab at its trailing edge; clicks
+    // there reach them.
     #expect(!controls.newTabButton.isHidden)
+    #expect(controls.isDescendant(of: c.tabSidebar))
     let toggle = controls.toggleButton.convert(
       controls.toggleButton.bounds,
       to: nil
     )
+    let zoom = try #require(window.standardWindowButton(.zoomButton))
+    #expect(toggle.minX > zoom.convert(zoom.bounds, to: nil).maxX)
+    let newTabRect = controls.newTabButton.convert(
+      controls.newTabButton.bounds,
+      to: nil
+    )
     #expect(
-      abs(
-        toggle.maxX - (MuxTabSidebar.width - MuxSidebarControls.trailingInset)
-      ) < 2
+      abs(newTabRect.maxX - (MuxTabSidebar.width - MuxTabSidebar.rowInset)) < 2
     )
     for b in [
       controls.inboxButton, controls.newTabButton, controls.toggleButton,
@@ -412,9 +423,9 @@ extension MuxNativeTests {
       NSApp.sendAction(newTab, to: controls.newTabButton.target, from: nil)
     )
     #expect(await until { c.workspace?.tabs.count == 3 })
-    // Collapsed: the sidebar and New Tab hide; the inbox and the toggle
-    // sit beside the window controls and the card takes the sidebar's
-    // place.
+    // Collapsed: the sidebar and New Tab hide; the toggle and the inbox
+    // move to the top-left pane's header, clear of the window controls,
+    // and the card takes the sidebar's place.
     let action = try #require(controls.toggleButton.action)
     #expect(
       NSApp.sendAction(action, to: controls.toggleButton.target, from: nil)
@@ -424,15 +435,17 @@ extension MuxNativeTests {
     #expect(c.sidebarCollapsed)
     #expect(c.tabSidebar.isHidden && !c.showsTabStrip)
     try await settle(window)
-    // The inbox (nothing else opens it) and the toggle show, beside the
-    // window controls.
+    // The toggle and the inbox (nothing else opens it) show.
     #expect(controls.newTabButton.isHidden)
     #expect(!controls.inboxButton.isHidden && !controls.toggleButton.isHidden)
-    let collapsed = controls.inboxButton.convert(
-      controls.inboxButton.bounds,
+    let header = try #require(
+      c.containers.values.first { $0.header.accessory === controls }?.header
+    )
+    #expect(controls.superview === header)
+    let collapsed = controls.toggleButton.convert(
+      controls.toggleButton.bounds,
       to: nil
     )
-    let zoom = try #require(window.standardWindowButton(.zoomButton))
     #expect(collapsed.minX > zoom.convert(zoom.bounds, to: nil).maxX)
     #expect(
       controls.bounds.width == 2 * MuxSidebarControls.buttonSize
@@ -457,6 +470,8 @@ extension MuxNativeTests {
     window.contentView?.superview?.layoutSubtreeIfNeeded()
     #expect(!c.sidebarCollapsed && c.showsTabStrip)
     #expect(!controls.newTabButton.isHidden && !controls.inboxButton.isHidden)
+    #expect(controls.isDescendant(of: c.tabSidebar))
+    #expect(header.accessory == nil)
     let reopened = c.layoutView.convert(c.layoutView.bounds, to: nil)
     #expect(abs(reopened.minX - MuxTabSidebar.width) < 1)
     try await settle(window)

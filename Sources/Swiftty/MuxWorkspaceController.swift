@@ -41,6 +41,10 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   /// Where the tab strip shows now: the toolbar or the sidebar.
   private(set) var tabPosition = TabPosition.top
   private var panesAtEdge: NSLayoutConstraint!
+  /// The panes start below the toolbar (tabs on top) or at the window's
+  /// top edge, under its transparent titlebar (tabs on the left).
+  private var panesBelowToolbar: NSLayoutConstraint?
+  private var panesAtTop: NSLayoutConstraint!
   private var panesBesideSidebar: NSLayoutConstraint!
   private var panesTrailing: NSLayoutConstraint!
   private var panesBottom: NSLayoutConstraint!
@@ -166,9 +170,11 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     panesBottom = layoutView.bottomAnchor.constraint(
       equalTo: automationStatus.topAnchor
     )
+    // The window's layout guide is reachable only once the content is in
+    // the window: `applyTitlebar` makes the constraint to it.
+    panesAtTop = layoutView.topAnchor.constraint(equalTo: content.topAnchor)
     NSLayoutConstraint.activate([
-      layoutView.topAnchor.constraint(equalTo: content.topAnchor), panesAtEdge,
-      panesTrailing, panesBottom,
+      panesAtTop, panesAtEdge, panesTrailing, panesBottom,
       tabSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
       tabSidebar.topAnchor.constraint(equalTo: content.topAnchor),
       tabSidebar.bottomAnchor.constraint(equalTo: automationStatus.topAnchor),
@@ -182,12 +188,12 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     TerminalWindowBackground.apply(
       to: window,
       content: content,
-      configuration: configuration
+      configuration: configuration,
+      underTitlebar: true
     )
     workspaceToolbar.onClick = { [weak self] in self?.toggleInbox() }
     workspaceToolbar.onNewTab = { [weak self] in self?.newTab() }
     workspaceToolbar.onToggleSidebar = { [weak self] in self?.toggleSidebar() }
-    workspaceToolbar.sidebarControls.sidebarWidth = MuxTabSidebar.width
     window.toolbar = workspaceToolbar.toolbar
     window.toolbarStyle = .unified
     window.titleVisibility = .hidden
@@ -609,7 +615,9 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     guard let tab = ws.activeTabSnapshot else { return }
     let split = tab.layout.panes.count > 1
     for (id, container) in containers {
-      container.showsHeader = split
+      // Tabs on the left show every pane as a card with its header, which
+      // holds the sidebar controls while the sidebar is collapsed.
+      container.showsHeader = split || tabPosition == .left
       container.update(
         MuxPaneHeaderState(
           title: title(of: id),
@@ -628,6 +636,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
       .filter { !$0.isEmpty }.joined(separator: " ")
     updateAutomationFocus()
     showsTabs(ws.tabs.count > 1)
+    placeSidebarControls()
   }
 
   /// A one-tab workspace shows its title, not a strip with one choice.
@@ -672,6 +681,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     toolbar.show(position)
     let moved = tabPosition != position
     tabPosition = position
+    applyTitlebar()
     layoutPanes()
     showsTabs((workspace?.tabs.count ?? 0) > 1)
     if moved {
@@ -680,8 +690,38 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     }
   }
 
+  /// Tabs on the left hide the toolbar and run the content up under a
+  /// transparent titlebar: the sidebar and the panes reach the top edge,
+  /// the window controls over them. On top, the toolbar holds the tabs and
+  /// the content starts below it.
+  func applyTitlebar() {
+    guard let window else { return }
+    let left = tabPosition == .left
+    let glass = window.contentView is NSGlassEffectView
+    if left || glass {
+      window.styleMask.insert(.fullSizeContentView)
+    } else {
+      window.styleMask.remove(.fullSizeContentView)
+    }
+    window.titlebarAppearsTransparent = left || glass
+    workspaceToolbar.toolbar.isVisible = !left
+    // The window controls move with the titlebar's height.
+    tabSidebar.needsUpdateConstraints = true
+    if panesBelowToolbar == nil, workspaceContent.window === window,
+      let guide = window.contentLayoutGuide as? NSLayoutGuide
+    {
+      panesBelowToolbar = layoutView.topAnchor.constraint(
+        equalTo: guide.topAnchor
+      )
+    }
+    let below = left ? nil : panesBelowToolbar
+    panesBelowToolbar?.isActive = false
+    panesAtTop.isActive = below == nil
+    below?.isActive = true
+  }
+
   /// Hides or shows the sidebar (tabs on the left). Hidden, New Tab goes
-  /// too; the inbox and the toggle sit beside the window controls.
+  /// too; the toggle and the inbox move to the top-left pane's header.
   @objc
   func toggleSidebar(_ sender: Any? = nil) {
     guard tabPosition == .left else { return }
@@ -708,8 +748,62 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     }
     panesTrailing.constant = -margin
     panesBottom.constant = -margin
+    panesAtTop.constant = left ? margin : 0
     layoutView.isCard = left
     layoutView.needsLayout = true
+    refreshChrome()
+    placeSidebarControls()
+  }
+
+  /// Puts the sidebar controls where they show: the sidebar's top row, or
+  /// (collapsed) the header of the top-left pane, clear of the window
+  /// controls; tabs on top show none.
+  func placeSidebarControls() {
+    let controls = workspaceToolbar.sidebarControls
+    let headers = containers.values.map(\.header)
+    // The top-left pane is found from laid-out frames.
+    if tabPosition == .left, sidebarCollapsed {
+      layoutView.layoutSubtreeIfNeeded()
+    }
+    guard tabPosition == .left else {
+      for h in headers where h.accessory === controls { h.setAccessory(nil) }
+      controls.removeFromSuperview()
+      return
+    }
+    guard sidebarCollapsed else {
+      for h in headers where h.accessory === controls { h.setAccessory(nil) }
+      tabSidebar.showControls(controls)
+      return
+    }
+    // Highest top edge, then leftmost (AppKit's y runs up).
+    let shown = containers.values.filter {
+      !$0.isHidden && $0.showsHeader && $0.superview === layoutView
+    }
+    guard
+      let target = shown.min(by: {
+        abs($0.frame.maxY - $1.frame.maxY) > 1
+          ? $0.frame.maxY > $1.frame.maxY : $0.frame.minX < $1.frame.minX
+      })
+    else { return }
+    for h in headers where h !== target.header && h.accessory === controls {
+      h.setAccessory(nil)
+    }
+    target.header.setAccessory(controls, inset: windowControlsInset(target))
+  }
+
+  /// How far a pane's header must leave room for the window controls over
+  /// its leading edge; none in full screen, where they hide.
+  private func windowControlsInset(_ container: MuxPaneContainer) -> CGFloat {
+    guard let window, !window.styleMask.contains(.fullScreen),
+      let zoom = window.standardWindowButton(.zoomButton), !zoom.isHidden,
+      zoom.window === window, container.window === window
+    else { return 0 }
+    let buttons = zoom.convert(zoom.bounds, to: nil)
+    let header = container.header.convert(container.header.bounds, to: nil)
+    guard buttons.minY < header.maxY, buttons.maxX > header.minX else {
+      return 0
+    }
+    return (buttons.maxX - header.minX).rounded(.up)
   }
 
   /// Whether the panes show in a rounded card (tests).
@@ -1556,11 +1650,14 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
         searchBar?.field.currentEditor() === window.firstResponder
         ? searchBar?.field : window.firstResponder as? NSView
       let selection = (focused as? NSControl)?.currentEditor()?.selectedRange
-      if TerminalWindowBackground.apply(
+      let moved = TerminalWindowBackground.apply(
         to: window,
         content: workspaceContent,
-        configuration: configuration
-      ), let focused {
+        configuration: configuration,
+        underTitlebar: true
+      )
+      applyTitlebar()
+      if moved, let focused {
         window.makeFirstResponder(focused)
         if let selection, let control = focused as? NSControl {
           control.currentEditor()?.selectedRange = selection
@@ -1633,6 +1730,23 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   /// The last failed inbox command: shown inline while the popover is
   /// open, otherwise kept for the next time it opens.
   var inboxMessage: String?
+
+  // The window controls come and go with full screen, and the top-left
+  // pane changes with the window's size: the sidebar controls follow.
+  func windowDidResize(_ notification: Notification) {
+    tabSidebar.needsUpdateConstraints = true
+    placeSidebarControls()
+  }
+
+  func windowDidEnterFullScreen(_ notification: Notification) {
+    tabSidebar.needsUpdateConstraints = true
+    placeSidebarControls()
+  }
+
+  func windowDidExitFullScreen(_ notification: Notification) {
+    tabSidebar.needsUpdateConstraints = true
+    placeSidebarControls()
+  }
 
   func windowWillClose(_ notification: Notification) {
     closeRequested = true

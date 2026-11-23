@@ -3,12 +3,15 @@ import SwifttyCore
 
 @MainActor
 package enum TerminalWindowBackground {
-  /// Returns whether the content was reparented.
+  /// Returns whether the content was reparented. `underTitlebar` content
+  /// fills the glass to the window's top edge and places its own views
+  /// clear of the titlebar; otherwise it starts below it.
   @discardableResult
   package static func apply(
     to window: NSWindow,
     content: NSView,
-    configuration: Configuration
+    configuration: Configuration,
+    underTitlebar: Bool = false
   ) -> Bool {
     let windowFrame = window.frame
     let translucent = configuration.backgroundOpacity < 1
@@ -32,7 +35,14 @@ package enum TerminalWindowBackground {
       host.addSubview(content)
       content.translatesAutoresizingMaskIntoConstraints = false
       window.contentView = glass
-      if let guide = window.contentLayoutGuide as? NSLayoutGuide {
+      if underTitlebar {
+        NSLayoutConstraint.activate([
+          content.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+          content.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+          content.topAnchor.constraint(equalTo: host.topAnchor),
+          content.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+        ])
+      } else if let guide = window.contentLayoutGuide as? NSLayoutGuide {
         NSLayoutConstraint.activate([
           content.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
           content.trailingAnchor.constraint(equalTo: guide.trailingAnchor),

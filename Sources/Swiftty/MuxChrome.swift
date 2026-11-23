@@ -343,22 +343,105 @@ private final class FlippedClipView: NSClipView {
 }
 
 /// The column beside the panes that holds the tab strip when
-/// `window.tabs` is left. It draws nothing of its own: the window shows
-/// through, and the panes beside it sit in a rounded card.
+/// `window.tabs` is left. It reaches the window's top edge (the toolbar
+/// hides): its top row holds the sidebar controls, after the window
+/// controls, and the tabs fill the rest. It draws nothing of its own: the
+/// window shows through.
 @MainActor
 final class MuxTabSidebar: NSView {
   static let width: CGFloat = 220
+  /// The top row's least height, and its edge insets.
+  static let rowHeight: CGFloat = 40
+  static let rowInset: CGFloat = 10
+  /// Beside the window controls the row centres on them, at least as tall
+  /// as its buttons.
+  static let controlsHeight: CGFloat = 28
+  private let row = NSView()
+  private var rowLeading: NSLayoutConstraint!
+  private var rowHeightConstraint: NSLayoutConstraint!
 
-  /// Shows `strip` filling the column.
+  override init(frame: NSRect) {
+    super.init(frame: frame)
+    row.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(row)
+    rowLeading = row.leadingAnchor.constraint(
+      equalTo: leadingAnchor,
+      constant: Self.rowInset
+    )
+    rowHeightConstraint = row.heightAnchor.constraint(
+      equalToConstant: Self.rowHeight
+    )
+    NSLayoutConstraint.activate([
+      rowLeading, rowHeightConstraint,
+      row.topAnchor.constraint(equalTo: topAnchor),
+      row.trailingAnchor.constraint(
+        equalTo: trailingAnchor,
+        constant: -Self.rowInset
+      ),
+    ])
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError() }
+
+  /// Shows `strip` filling the column below the top row.
   func host(_ strip: NSView) {
     strip.translatesAutoresizingMaskIntoConstraints = false
     addSubview(strip)
     NSLayoutConstraint.activate([
       strip.leadingAnchor.constraint(equalTo: leadingAnchor),
       strip.trailingAnchor.constraint(equalTo: trailingAnchor),
-      strip.topAnchor.constraint(equalTo: topAnchor),
+      strip.topAnchor.constraint(equalTo: row.bottomAnchor),
       strip.bottomAnchor.constraint(equalTo: bottomAnchor),
     ])
+  }
+
+  /// Shows the sidebar controls across the top row.
+  func showControls(_ controls: NSView) {
+    guard controls.superview !== row else { return }
+    controls.removeFromSuperview()
+    controls.translatesAutoresizingMaskIntoConstraints = false
+    row.addSubview(controls)
+    NSLayoutConstraint.activate([
+      controls.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+      controls.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+      controls.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+    ])
+  }
+
+  override var mouseDownCanMoveWindow: Bool { true }
+
+  // The row's constraints change in the constraint pass, not in layout.
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    needsUpdateConstraints = true
+  }
+
+  override func setFrameSize(_ newSize: NSSize) {
+    super.setFrameSize(newSize)
+    needsUpdateConstraints = true
+  }
+
+  /// The row starts after the window controls and centres on them; in
+  /// full screen (they hide) it starts at the edge.
+  override func updateConstraints() {
+    defer { super.updateConstraints() }
+    var leading = Self.rowInset
+    var height = Self.rowHeight
+    if let window, !window.styleMask.contains(.fullScreen),
+      let zoom = window.standardWindowButton(.zoomButton), !zoom.isHidden,
+      zoom.window === window
+    {
+      let buttons = zoom.convert(zoom.bounds, to: self)
+      leading = max(leading, buttons.maxX + 12)
+      height = max(Self.controlsHeight, 2 * (bounds.maxY - buttons.midY))
+    }
+    if abs(rowLeading.constant - leading) > 0.5 {
+      rowLeading.constant = leading
+    }
+    if abs(rowHeightConstraint.constant - height) > 0.5 {
+      rowHeightConstraint.constant = height
+    }
   }
 }
 
@@ -555,15 +638,12 @@ final class MuxTabButton: NSView, NSTextFieldDelegate {
   private func applyMetrics() {
     let height = isVertical ? Self.columnHeight : Self.rowHeight
     badgeLeading.constant = isVertical ? 5 : 4
-    badgeSize.constant = isVertical ? 22 : 20
+    badgeSize.constant = 20
     labelLeading.constant = isVertical ? 9 : 8
     closeTrailing.constant = isVertical ? -8 : -8
     glass.cornerRadius = height / 2
     layer?.cornerRadius = height / 2
-    badge.icon.symbolConfiguration = .init(
-      pointSize: isVertical ? 11 : 10,
-      weight: .medium
-    )
+    badge.icon.symbolConfiguration = .init(pointSize: 10, weight: .medium)
     closeButton.symbolConfiguration = .init(pointSize: 10, weight: .semibold)
   }
 
@@ -577,7 +657,7 @@ final class MuxTabButton: NSView, NSTextFieldDelegate {
     badge.isActive = active
     // The active pill reads lighter, edged by a hairline.
     glass.tintColor = NSColor.white.withAlphaComponent(active ? 0.14 : 0.03)
-    layer?.borderWidth = active && !isVertical ? 1 : 0
+    layer?.borderWidth = active ? 1 : 0
     layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
     // A row always reads as a pill; a column shows glass on its active row.
     glass.isHidden = isVertical && !active
@@ -899,6 +979,37 @@ final class MuxPaneContainer: NSView {
     needsLayout = true
   }
 
+  /// The whole card, terminal included, reveals the header's actions.
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    for area in trackingAreas where area.owner === self {
+      removeTrackingArea(area)
+    }
+    addTrackingArea(
+      NSTrackingArea(
+        rect: .zero,
+        options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+        owner: self
+      )
+    )
+  }
+
+  // Only the card's own area counts: a terminal's tracking events may
+  // come up the responder chain.
+  override func mouseEntered(with event: NSEvent) {
+    guard event.trackingArea?.owner === self else {
+      return super.mouseEntered(with: event)
+    }
+    header.isHovered = true
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    guard event.trackingArea?.owner === self else {
+      return super.mouseExited(with: event)
+    }
+    header.isHovered = false
+  }
+
   func update(_ state: MuxPaneHeaderState) {
     header.state = state
     setAccessibilityLabel(
@@ -919,8 +1030,16 @@ final class MuxPaneHeader: NSView {
   private let dot = MuxActivityDot()
   private let buttons = NSStackView()
   private(set) var actionButtons: [Action: NSButton] = [:]
-  private var hovered = false {
-    didSet { if hovered != oldValue { refreshActions() } }
+  private var iconLeading: NSLayoutConstraint!
+  private var accessoryConstraints: [NSLayoutConstraint] = []
+  /// Shown before the icon: the sidebar controls while the sidebar is
+  /// collapsed, on the top-left pane.
+  private(set) weak var accessory: NSView?
+  /// Room left before the accessory (the window controls over this pane).
+  private(set) var accessoryInset: CGFloat = 0
+  /// The pointer is over the pane; its card tracks this for the header.
+  var isHovered = false {
+    didSet { if isHovered != oldValue { refreshActions() } }
   }
 
   var state = MuxPaneHeaderState(
@@ -939,7 +1058,6 @@ final class MuxPaneHeader: NSView {
       icon.contentTintColor = label.textColor
       icon.image = MuxIcons.image(MuxIcons.symbol(for: state.title), "")
       dot.isHidden = !state.hasActivity
-      refreshActions()
       actionButtons[.zoom]?.image = MuxIcons.image(
         state.isZoomed
           ? "arrow.down.right.and.arrow.up.left"
@@ -985,9 +1103,12 @@ final class MuxPaneHeader: NSView {
       buttons.addArrangedSubview(b)
     }
     for v in [icon, label, dot, buttons] as [NSView] { addSubview(v) }
+    iconLeading = icon.leadingAnchor.constraint(
+      equalTo: leadingAnchor,
+      constant: 12
+    )
     NSLayoutConstraint.activate([
-      icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-      icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+      iconLeading, icon.centerYAnchor.constraint(equalTo: centerYAnchor),
       icon.widthAnchor.constraint(equalToConstant: 16),
       label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 7),
       label.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -1009,33 +1130,51 @@ final class MuxPaneHeader: NSView {
   @available(*, unavailable)
   required init?(coder: NSCoder) { fatalError() }
 
-  /// The actions show on the active pane and the one under the pointer;
-  /// elsewhere they keep their place (and stay reachable by accessibility)
-  /// but draw nothing.
-  private func refreshActions() {
-    buttons.alphaValue = state.isActive || hovered ? 1 : 0
+  /// Shows `view` before the icon, `inset` points in; nil removes the
+  /// accessory this header shows.
+  func setAccessory(_ view: NSView?, inset: CGFloat = 0) {
+    guard view !== accessory || inset != accessoryInset else { return }
+    NSLayoutConstraint.deactivate(accessoryConstraints)
+    accessoryConstraints = []
+    if let old = accessory, old !== view, old.superview === self {
+      old.removeFromSuperview()
+    }
+    accessory = view
+    accessoryInset = inset
+    iconLeading.isActive = false
+    if let view {
+      if view.superview !== self {
+        view.removeFromSuperview()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(view)
+      }
+      iconLeading = icon.leadingAnchor.constraint(
+        equalTo: view.trailingAnchor,
+        constant: 8
+      )
+      accessoryConstraints = [
+        view.leadingAnchor.constraint(
+          equalTo: leadingAnchor,
+          constant: 6 + inset
+        ), view.centerYAnchor.constraint(equalTo: centerYAnchor),
+      ]
+      NSLayoutConstraint.activate(accessoryConstraints)
+    } else {
+      iconLeading = icon.leadingAnchor.constraint(
+        equalTo: leadingAnchor,
+        constant: 12
+      )
+    }
+    iconLeading.isActive = true
   }
+
+  /// The actions show only on the pane under the pointer; elsewhere they
+  /// keep their place (and stay reachable by accessibility) but draw
+  /// nothing.
+  private func refreshActions() { buttons.alphaValue = isHovered ? 1 : 0 }
 
   /// Whether the actions draw (tests).
   var showsActions: Bool { buttons.alphaValue > 0 }
-
-  override func updateTrackingAreas() {
-    super.updateTrackingAreas()
-    for area in trackingAreas where area.owner === self {
-      removeTrackingArea(area)
-    }
-    addTrackingArea(
-      NSTrackingArea(
-        rect: .zero,
-        options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-        owner: self
-      )
-    )
-  }
-
-  override func mouseEntered(with event: NSEvent) { hovered = true }
-
-  override func mouseExited(with event: NSEvent) { hovered = false }
 
   @objc
   private func clicked(_ sender: NSButton) {
