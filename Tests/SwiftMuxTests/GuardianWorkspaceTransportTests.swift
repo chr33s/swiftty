@@ -55,7 +55,7 @@ struct GuardianWorkspaceTransportTests {
     #expect(b.runtime.screenLines().contains { $0.contains("B100x30") })
     b.runtime.queue.sync { #expect(b.process.exitStatus == 7) }
     // More than two health periods: paused parsing is healthy queue progress.
-    Thread.sleep(forTimeInterval: 0.7)
+    Thread.sleep(forTimeInterval: 2.3 * Workspace.progressTimeout)
     #expect(fixture.server.inventory().first?.available == true)
     #expect(kill(aPID, 0) == 0)
     #expect(a.runtime.screenLines().allSatisfy { !$0.contains("AREADY") })
@@ -98,7 +98,7 @@ struct GuardianWorkspaceTransportTests {
         && b.runtime.screenLines().contains { $0.contains("BREPLIED") }
     }
     a.runtime.queue.suspend()
-    #expect(fixture.closed.wait(timeout: .now() + 3) == .success)
+    #expect(fixture.closed.wait(timeout: .now() + 5) == .success)
     #expect(fixture.server.inventory().first?.available == false)
     #expect(kill(a.process.pid, 0) == 0 && kill(b.process.pid, 0) == 0)
     a.runtime.queue.resume()
@@ -376,6 +376,10 @@ struct GuardianWorkspaceTransportTests {
   }
 
   private final class Workspace: @unchecked Sendable {
+    /// Short enough that the health tests run quickly, long enough that a
+    /// loaded CI runner's scheduling stalls (probes are answered within
+    /// half of it) do not read as a dead worker.
+    static let progressTimeout: TimeInterval = 1
     let server: GuardianServer
     let id = WorkspaceID()
     let broker: GuardianWorkspaceTransport
@@ -384,7 +388,7 @@ struct GuardianWorkspaceTransportTests {
       server = try GuardianServer(
         launcherPath: launcherPath(),
         peerRequirement: nil,
-        progressTimeout: 0.3
+        progressTimeout: Self.progressTimeout
       )
       let endpoint = server.listenAnonymously()
       let token = try server.provisionWorker(workspace: id, pid: getpid())

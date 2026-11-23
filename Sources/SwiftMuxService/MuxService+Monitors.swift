@@ -194,7 +194,7 @@ final class AutomationMonitors: @unchecked Sendable {
         guard host & 0xFFC0_0000 == 0x6440_0000,
           inet_ntop(AF_INET, &value, &buffer, socklen_t(buffer.count)) != nil
         else { return nil }
-        return String(cString: buffer)
+        return Self.string(buffer)
       }
     case AF_INET6:
       return address.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) {
@@ -206,9 +206,17 @@ final class AutomationMonitors: @unchecked Sendable {
         guard matches,
           inet_ntop(AF_INET6, &value, &buffer, socklen_t(buffer.count)) != nil
         else { return nil }
-        return String(cString: buffer)
+        return Self.string(buffer)
       }
     default: return nil
     }
+  }
+
+  /// A NUL-terminated C buffer as UTF-8 text, up to its first NUL.
+  private static func string(_ buffer: [CChar]) -> String {
+    String(
+      decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
+      as: UTF8.self
+    )
   }
 }
