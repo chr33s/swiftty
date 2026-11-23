@@ -7,9 +7,9 @@ import SwiftMuxProtocol
 @MainActor
 final class MuxLayoutView: NSView {
   /// The gap between pane cards, which is also the draggable divider.
-  static let divider = 10
+  static let divider = 5
   /// Space around the cards of a split tab.
-  static let margin = 10
+  static let margin = 5
 
   /// The area panes are laid out in, in layout coordinates (y down).
   static func area(

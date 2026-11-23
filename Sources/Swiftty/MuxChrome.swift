@@ -1105,7 +1105,7 @@ final class MuxPaneContainer: NSView {
   static let headerHeight: CGFloat = 34
   static let cornerRadius: CGFloat = 10
   /// Space between the card's edge and its terminal (sides and bottom).
-  static let cardInset: CGFloat = 8
+  static let cardInset: CGFloat = 4
   let paneView: MuxPaneView
   let header = MuxPaneHeader()
   /// The terminal's background, which a card shows around its terminal so

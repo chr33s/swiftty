@@ -50,8 +50,9 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   private var panesBottom: NSLayoutConstraint!
   /// The sidebar is hidden by its toggle (tabs on the left only).
   private(set) var sidebarCollapsed = false
-  /// Space around the panes' card when tabs show on the left.
-  static let cardMargin: CGFloat = 8
+  /// Space around the panes' card when tabs show on the left: the same
+  /// as the gap between split panes, so the window's padding is even.
+  static let cardMargin = CGFloat(MuxLayoutView.divider)
   let automationStatus = JavaScriptStatusBar()
   var automationKeys: Set<String> = []
   var automationTabIcons: [TabID: String] = [:]
