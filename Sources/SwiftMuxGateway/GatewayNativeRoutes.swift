@@ -22,6 +22,8 @@ package actor GatewayNativeRoutes {
   private let admission: GatewayNativeAdmission
   private var routes: [WorkspaceID: Route] = [:]
   private var busy = false
+  /// Selections queued behind an in-flight reconcile or selection.
+  private var waiters: [CheckedContinuation<Void, Never>] = []
   private var closed = false
 
   package init(
@@ -48,8 +50,9 @@ package actor GatewayNativeRoutes {
     for selector: WorkspaceSelector,
     expectedAuthority: GuardianAuthority? = nil
   ) async throws -> SMXEndpoint {
-    try begin()
-    defer { busy = false }
+    // A selection waits out a background reconcile rather than failing.
+    try await acquire()
+    defer { release() }
     try await prune()
     let authority = try await directory.nativeAuthority(for: selector)
     try checkOpen()
@@ -128,12 +131,13 @@ package actor GatewayNativeRoutes {
   /// Retirement disconnects frontend transports, never guardian-owned processes.
   package func reconcile() async throws {
     try begin()
-    defer { busy = false }
+    defer { release() }
     try await prune()
   }
 
   package func close() async {
     closed = true
+    wakeWaiters()
     // Keep entries until cancelled so a concurrent close also drains them.
     for route in Array(routes.values) { await route.listener.close() }
     routes.removeAll()
@@ -145,6 +149,27 @@ package actor GatewayNativeRoutes {
       throw MuxError(.quiescing, "native routes are reconciling")
     }
     busy = true
+  }
+
+  private func acquire() async throws {
+    try checkOpen()
+    while busy {
+      await withCheckedContinuation { waiters.append($0) }
+      try checkOpen()
+    }
+    busy = true
+  }
+
+  private func release() {
+    busy = false
+    wakeWaiters()
+  }
+
+  /// Woken waiters re-check `busy`, so waking all of them is safe.
+  private func wakeWaiters() {
+    let pending = waiters
+    waiters.removeAll()
+    for waiter in pending { waiter.resume() }
   }
 
   private func checkOpen() throws {

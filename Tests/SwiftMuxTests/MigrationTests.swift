@@ -557,9 +557,17 @@ struct MigrationTests {
     let pane = started.pane
     let server = await client.welcome?.server
     let file = NSTemporaryDirectory() + "migration-live-\(UUID().uuidString)"
-    defer { try? FileManager.default.removeItem(atPath: file) }
+    let gate = file + ".gate"
+    defer {
+      try? FileManager.default.removeItem(atPath: file)
+      try? FileManager.default.removeItem(atPath: gate)
+    }
+    /// The shell blocks opening the gate FIFO, not on a timer, so the paste
+    /// stays queued in the guardian until the test has observed it and
+    /// migrated; opening the write end releases it.
+    #expect(mkfifo(gate, 0o600) == 0)
     try await client.send(
-      .text("stty -echo; sleep 1; cat > \(file)\r"),
+      .text("stty -echo; read _ < \(gate); cat > \(file)\r"),
       to: pane
     )
     try await Task.sleep(for: .milliseconds(200))
@@ -570,7 +578,11 @@ struct MigrationTests {
       .joined(separator: "\r") + "\r"
     let state = try await client.paste(text, to: pane)
     #expect(state == .completed)
-    #expect(rig.guardian.pendingInputBytesForTesting(rig.workspace) > 0)
+    /// A completed paste is still in flight to the guardian; wait for it to
+    /// queue there (the gated reader keeps it from draining).
+    try await Self.waitUntil("queued paste") {
+      rig.guardian.pendingInputBytesForTesting(rig.workspace) > 0
+    }
     let status = try await started.runtime.migrateWorkspace(
       .id(rig.workspace),
       started: rig.candidate()
@@ -579,6 +591,9 @@ struct MigrationTests {
       status.outcome == .released,
       "\(String(describing: status.failure))"
     )
+    let writer = open(gate, O_WRONLY | O_NONBLOCK)
+    #expect(writer >= 0, "the shell is not waiting on the gate")
+    if writer >= 0 { close(writer) }
     /// Input refused while the relay moves is never written; send again.
     func type(_ text: String) async throws {
       let deadline = ContinuousClock.now + .seconds(10)
