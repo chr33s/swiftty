@@ -106,11 +106,7 @@ extension MuxService {
   ) {
     queue.async {
       self.assumeIsolated { service in
-        guard let workspace = service.workspaces.first(where: { $0.id == id }),
-          !workspace.wasAttachedLocally
-        else { return completion(false) }
-        service.endWorkspace(id)
-        completion(true)
+        completion(service.endIfNeverUsedLocally(id))
       }
     }
   }
@@ -124,15 +120,28 @@ extension MuxService {
   ) {
     queue.async {
       self.assumeIsolated { service in
-        guard let workspace = service.workspaces.first(where: { $0.id == id }),
-          !workspace.allPanes.isEmpty,
-          workspace.allPanes.allSatisfy({ service.panes[$0]?.exitStatus != nil }
-          )
-        else { return completion(false) }
-        service.endWorkspace(id)
-        completion(true)
+        completion(service.endIfAllPanesExited(id))
       }
     }
+  }
+
+  /// Ends `id` unless a local frontend ever attached to it.
+  func endIfNeverUsedLocally(_ id: WorkspaceID) -> Bool {
+    guard let workspace = workspaces.first(where: { $0.id == id }),
+      !workspace.wasAttachedLocally
+    else { return false }
+    endWorkspace(id)
+    return true
+  }
+
+  /// Ends `id` only while it has panes and every one has exited.
+  func endIfAllPanesExited(_ id: WorkspaceID) -> Bool {
+    guard let workspace = workspaces.first(where: { $0.id == id }),
+      !workspace.allPanes.isEmpty,
+      workspace.allPanes.allSatisfy({ panes[$0]?.exitStatus != nil })
+    else { return false }
+    endWorkspace(id)
+    return true
   }
 
   /// Runs `body` in `pane`'s order with its authoritative terminal

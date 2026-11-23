@@ -65,10 +65,9 @@ public struct RSTFrameHeader: Hashable, Sendable {
   }
 }
 
-/// One decoded screen stream: a legacy snapshot, or with `paneFrames` a
-/// complete frame or a delta, each with its envelope.
+/// One decoded screen stream: a complete frame or a delta, each with its
+/// envelope.
 public enum ScreenRecord: Sendable {
-  case snapshot(ScreenSnapshot)
   case frame(PaneFrame, RSTFrameHeader)
   case delta(FrameDelta, RSTFrameHeader)
 }
@@ -119,9 +118,6 @@ extension SnapshotFrame {
     guard let header = try header(bytes, limits: limits) else {
       throw .truncated
     }
-    guard header.encoding.isFrame else {
-      return .snapshot(try decode(bytes, limits: limits))
-    }
     let total = headerLength + header.encodedLength
     guard bytes.count >= total else { throw .truncated }
     guard bytes.count == total else { throw .trailingData }
@@ -170,8 +166,10 @@ extension SnapshotFrame {
     drop: FrameDropTarget?,
     modes: SupportedViewModes
   ) throws(FramingError) {
+    // `mouseTracking` alone tells a `mouseWheel` client to send wheel
+    // notches; motion and paste-event modes stay host-side.
     let mouse: SupportedViewModes = [
-      .mouseTracking, .mouseButtonMotion, .mouseAnyMotion, .kittyPasteEvents,
+      .mouseButtonMotion, .mouseAnyMotion, .kittyPasteEvents,
     ]
     guard title.utf8.count <= RSTLimits.maxTitleBytes, search == nil,
       drop == nil, modes.isDisjoint(with: mouse)

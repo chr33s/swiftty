@@ -230,10 +230,9 @@ struct RoamingNegotiatedLimitsTests {
     await f.connector.release()
   }
 
-  @Test(arguments: 0 ..< 3, [SnapshotFrame.Encoding.zlib, .plain])
+  @Test(arguments: 0 ..< 3)
   func snapshotBoundsAreCheckedBeforePresentationOrAcknowledgment(
-    _ bound: Int,
-    encoding: SnapshotFrame.Encoding
+    _ bound: Int
   ) async throws {
     let f = try RoamingFixture()
     try await RuntimeFixture.withCleanup {
@@ -242,10 +241,7 @@ struct RoamingNegotiatedLimitsTests {
       limits.maxRows = 4
       // Compression size can vary across encodings of the same snapshot.
       // Derive the ceiling from the exact bytes delivered to the client.
-      let initial = try SnapshotFrame.encode(
-        await f.host.snapshotForTesting(),
-        encoding: encoding
-      )
+      let initial = try rstFrameRecord(await f.host.snapshotForTesting())
       let initialHeader = try #require(try SnapshotFrame.header(initial))
       if bound == 1 {
         limits.maxSnapshotEncodedBytes = initialHeader.encodedLength
@@ -272,7 +268,7 @@ struct RoamingNegotiatedLimitsTests {
       }
       snapshot.attachmentEpoch = try #require(await f.host.currentEpoch)
       snapshot.screenRevision = 10
-      let rejected = try SnapshotFrame.encode(snapshot, encoding: encoding)
+      let rejected = try rstFrameRecord(snapshot)
       if bound != 0 {
         let larger = try #require(try SnapshotFrame.header(rejected))
         #expect(larger.encodedLength > initialHeader.encodedLength)
@@ -292,16 +288,13 @@ struct RoamingNegotiatedLimitsTests {
     }
   }
 
-  @Test(arguments: [SnapshotFrame.Encoding.zlib, .plain])
-  func initialSnapshotOneByteOverEncodedLimitIsNotPresentedOrAcknowledged(
-    encoding: SnapshotFrame.Encoding
-  ) async throws {
+  @Test
+  func initialSnapshotOneByteOverEncodedLimitIsNotPresentedOrAcknowledged()
+    async throws
+  {
     let f = try RoamingFixture()
     try await RuntimeFixture.withCleanup {
-      let payload = try SnapshotFrame.encode(
-        await f.host.snapshotForTesting(),
-        encoding: encoding
-      )
+      let payload = try rstFrameRecord(await f.host.snapshotForTesting())
       let header = try #require(try SnapshotFrame.header(payload))
       try #require(header.encodedLength > 0)
       var limits = NegotiatedLimits()

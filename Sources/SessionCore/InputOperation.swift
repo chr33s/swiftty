@@ -149,6 +149,53 @@ public struct SemanticKey: Hashable, Sendable, Codable {
   }
 }
 
+/// Which way a wheel notch turns. `up` reveals older content.
+public enum SemanticWheelDirection: String, Hashable, Sendable, Codable {
+  case up, down, left, right
+}
+
+/// One mouse-wheel notch at a viewport cell, sent only to hosts whose
+/// `Attached` lists `mouseWheel`. The host reports it only while the
+/// program enabled mouse reporting, with its own encoding modes.
+public struct SemanticWheel: Hashable, Sendable, Codable {
+  public var direction: SemanticWheelDirection
+  /// Zero-based viewport cell.
+  public var column: Int
+  public var row: Int
+  public var modifiers: SemanticModifiers
+
+  public init(
+    _ direction: SemanticWheelDirection,
+    column: Int,
+    row: Int,
+    modifiers: SemanticModifiers = []
+  ) {
+    self.direction = direction
+    self.column = column
+    self.row = row
+    self.modifiers = modifiers
+  }
+
+  enum CodingKeys: String, CodingKey { case direction, column, row, modifiers }
+
+  public init(from decoder: any Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    direction = try c.decode(SemanticWheelDirection.self, forKey: .direction)
+    column = try c.decode(Int.self, forKey: .column)
+    row = try c.decode(Int.self, forKey: .row)
+    modifiers =
+      try c.decodeIfPresent(SemanticModifiers.self, forKey: .modifiers) ?? []
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var c = encoder.container(keyedBy: CodingKeys.self)
+    try c.encode(direction, forKey: .direction)
+    try c.encode(column, forKey: .column)
+    try c.encode(row, forKey: .row)
+    if !modifiers.isEmpty { try c.encode(modifiers, forKey: .modifiers) }
+  }
+}
+
 /// One ordered client operation (spec §8). The host encodes it once with
 /// its authoritative terminal modes.
 public enum InputOperation: Hashable, Sendable, Codable {
@@ -156,9 +203,11 @@ public enum InputOperation: Hashable, Sendable, Codable {
   case key(SemanticKey)
   case paste(String)
   case resize(columns: Int, rows: Int, resizeRevision: UInt64)
+  /// Needs `mouseWheel`.
+  case wheel(SemanticWheel)
 
   enum CodingKeys: String, CodingKey {
-    case op, text, key, columns, rows, resizeRevision
+    case op, text, key, columns, rows, resizeRevision, wheel
   }
 
   /// Upper bound on the bytes this operation can generate at the host,
@@ -170,6 +219,8 @@ public enum InputOperation: Hashable, Sendable, Codable {
     case let .committedText(text): text.utf8.count
     // Kitty keyboard encodings stay well under this.
     case .key: 64
+    // An SGR report at the largest grid: `ESC [ < 64 ; 200 ; 80 M`.
+    case .wheel: 32
     case .resize: 0
     }
   }
@@ -179,12 +230,13 @@ public enum InputOperation: Hashable, Sendable, Codable {
     switch self {
     case let .paste(text), let .committedText(text): text.utf8.count + 16
     case .key: 32
-    case .resize: 24
+    case .resize, .wheel: 24
     }
   }
 
   public enum ValidationError: Error, Equatable {
     case empty, pasteTooLarge, textTooLarge, gridOutOfRange, invalidKey
+    case invalidWheel
   }
 
   public func validate() throws(ValidationError) {
@@ -209,6 +261,11 @@ public enum InputOperation: Hashable, Sendable, Codable {
       guard (1 ... RSTLimits.maxColumns).contains(columns),
         (1 ... RSTLimits.maxRows).contains(rows)
       else { throw .gridOutOfRange }
+    case let .wheel(wheel):
+      guard (0 ..< RSTLimits.maxColumns).contains(wheel.column),
+        (0 ..< RSTLimits.maxRows).contains(wheel.row),
+        wheel.modifiers.isSubset(of: [.shift, .alt, .control])
+      else { throw .invalidWheel }
     }
   }
 
@@ -226,6 +283,8 @@ public enum InputOperation: Hashable, Sendable, Codable {
         resizeRevision: try c.decode(WireUInt64.self, forKey: .resizeRevision)
           .value
       )
+    case "wheel":
+      self = .wheel(try c.decode(SemanticWheel.self, forKey: .wheel))
     default:
       throw DecodingError.dataCorruptedError(
         forKey: .op,
@@ -252,6 +311,9 @@ public enum InputOperation: Hashable, Sendable, Codable {
       try c.encode(columns, forKey: .columns)
       try c.encode(rows, forKey: .rows)
       try c.encode(WireUInt64(revision), forKey: .resizeRevision)
+    case let .wheel(wheel):
+      try c.encode("wheel", forKey: .op)
+      try c.encode(wheel, forKey: .wheel)
     }
   }
 }

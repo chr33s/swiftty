@@ -552,30 +552,38 @@ struct HostFrameTests {
   }
 
   @Test
-  func `screens beyond the mux frame budgets still export`() throws {
-    var state = TerminalState(columns: 200, rows: 80)
+  func `worker frames are clipped to the rst grid with placeholder graphemes`()
+    throws
+  {
+    var state = TerminalState(columns: 210, rows: 82)
     var parser = Parser()
-    // A distinct truecolor background per cell, and an over-long cluster.
-    var text = ""
-    for y in 0 ..< 80 {
-      for x in 0 ..< 200 { text += "\u{1B}[48;2;\(y);\(x);7mx" }
-    }
-    text += "\u{1B}[0m\u{1B}[1;1He" + String(repeating: "\u{301}", count: 40)
+    let text = "e" + String(repeating: "\u{301}", count: 80) + "\u{1B}[1;209H中"
     let bytes = Array(text.utf8)
     bytes.withUnsafeBufferPointer {
       parser.consume(Span(_unsafeElements: $0), into: &state)
     }
-    let exported = ScreenExporter.frame(
-      state,
-      stamp: ScreenExporter.Stamp(sessionID: .random()),
-      versions: RowVersionBox()
+    var limits = MuxLimits.standard
+    limits.maxGraphemeScalars = 128
+    let worker = try FrameExporter.frame(
+      from: state.captureOwnedWindow(top: nil),
+      identity: .unbound,
+      limits: limits
     )
-    let (frame, _) = try #require(exported)
-    #expect(frame.styles.count > 4096)
-    let wire = try SnapshotFrame.encode(
-      frame: [UInt8](SMXB.encode(frame, envelope: .rst(Data())))
+    let (frame, header) = try #require(
+      ScreenExporter.frame(
+        from: worker,
+        stamp: ScreenExporter.Stamp(sessionID: .random(), screenRevision: 4)
+      )
     )
-    _ = wire
+    #expect(frame.grid.columns == RSTLimits.maxColumns)
+    #expect(frame.grid.rows == RSTLimits.maxRows)
+    #expect(frame.identity == header.frameIdentity)
+    #expect(frame.graphemes.isEmpty)
+    #expect(
+      frame.grid.glyph(at: 0)
+        == RSTLimits.graphemePlaceholder.unicodeScalars.first!.value
+    )
+    try FrameValidator.validate(frame, limits: SnapshotFrame.frameLimits)
   }
 }
 #endif

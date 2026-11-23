@@ -214,11 +214,14 @@ public struct ServiceFeatures: OptionSet, Codable, Sendable, Equatable {
   /// `savedLayoutState`, `newWorkspaceFromTemplate` and End dispositions
   /// on a workspace-scoped worker (spec.durability.md §12.2).
   public static let savedLayoutMetadata = ServiceFeatures(rawValue: 1 << 13)
+  /// `endWorkspaceIfUnused` and `roamingSessionChanged`, for a roaming
+  /// host outside the service (a durable gateway).
+  public static let roamingControl = ServiceFeatures(rawValue: 1 << 14)
 
   public static let supported: ServiceFeatures = [
     .mouseReporting, .historyJumps, .terminalControl, .shellIntegration,
     .keypadKeys, .kittyClipboard, .dropTargets, .javaScript, .binaryFrames,
-    .frameDeltas, .liveSelection, .inboxAcknowledgementTokens,
+    .frameDeltas, .liveSelection, .inboxAcknowledgementTokens, .roamingControl,
   ]
 }
 
@@ -681,6 +684,14 @@ public enum MuxCommand: Codable, Sendable, Equatable {
     disposition: SavedLayoutDisposition? = nil
   )
   case renameWorkspace(WorkspaceSelector, name: String)
+  /// Ends a workspace a roaming host created, but only while it is still
+  /// unused: every pane exited (`onlyIfExited`), or no local frontend ever
+  /// attached. Checked in service order; `notFound` when it was kept.
+  /// Local control clients only (`roamingControl`).
+  case endWorkspaceIfUnused(WorkspaceID, onlyIfExited: Bool)
+  /// A device's roaming session changed state, for automation scripts.
+  /// Local control clients only (`roamingControl`).
+  case roamingSessionChanged(id: String, workspace: WorkspaceID, state: String)
   /// Releases the current interactive lease, whoever holds it.
   case detachActive
   /// Quiesce, then end every workspace and report the empty barrier.
@@ -835,7 +846,8 @@ public enum MuxCommand: Codable, Sendable, Equatable {
       .setTheme, .takeover, .observeWorkspaces, .observeWorkspaceGraph,
       .savedLayoutState, .exportSavedOutput, .newWorkspaceFromTemplate,
       .subscribeAutomation, .subscribeInbox, .inbox, .locateAttention,
-      .markSeen, .snooze, .markReviewed, .resumeAttachment:
+      .markSeen, .snooze, .markReviewed, .resumeAttachment,
+      .endWorkspaceIfUnused, .roamingSessionChanged:
       false
     default: true
     }

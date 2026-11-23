@@ -62,8 +62,6 @@ final class HostAttachment: @unchecked Sendable {
   let clientFeatures = Mutex(RSTFeatures())
   /// Additions both sides listed (spec.roaming.md §5.3).
   var features: RSTFeatures = []
-  /// Row versions of this attachment's frames and copies.
-  let rowVersions = RowVersionBox()
   /// Baselines of submitted frames by screen revision, until acknowledged.
   var submittedBaselines: [UInt64: FrameBaseline] = [:]
   /// The last acknowledged frame: the base of the next delta (§7.4).

@@ -15,8 +15,12 @@ description = "Build SwifttyCore and the app (debug)"
 run = "swift build"
 
 [tasks.restart]
-description = "Restart SwifttyMux agent (launchctl)"
-run = "launchctl kickstart -k gui/$(id -u)/com.chr33s.swiftty.swiftmux"
+description = "Restart the SwiftMux gateway; running sessions survive"
+run = "Scripts/restart-swiftmux.sh"
+
+[tasks.restart-guardian]
+description = "Restart the SwiftMux guardian; ends every running session"
+run = "/Applications/Swiftty.app/Contents/MacOS/swiftty --durable-sessions maintain --confirm"
 
 [tasks.release]
 description = "Build everything (release)"

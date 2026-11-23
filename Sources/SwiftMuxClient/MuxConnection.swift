@@ -324,11 +324,28 @@ public actor MuxConnection {
     )
   }
 
+  /// Connects to an in-process forwarding listener
+  /// (`MuxService.listenForwarding`) as a frontend that authenticated
+  /// `forwardedTransport` itself.
+  package static func connect(
+    endpoint: SMXEndpoint,
+    frontend: FrontendKind,
+    forwardedTransport: LeaseHolder.Transport
+  ) async throws -> MuxConnection {
+    try await connect(
+      endpoint: endpoint,
+      frontend: frontend,
+      forwardedTransport: forwardedTransport,
+      beforeHandshakeTimeoutForTesting: nil
+    )
+  }
+
   package static func connect(
     endpoint: SMXEndpoint,
     frontend: FrontendKind,
     terminalProfile: String? = nil,
     capabilities: ClientCapabilities = .supported,
+    forwardedTransport: LeaseHolder.Transport? = nil,
     beforeHandshakeTimeoutForTesting: (@Sendable () async -> Void)?,
     beforeReturnForTesting: (@Sendable (MuxConnection) async throws -> Void)? =
       nil
@@ -345,6 +362,7 @@ public actor MuxConnection {
       frontend,
       terminalProfile,
       capabilities: capabilities,
+      forwardedTransport: forwardedTransport,
       beforeHandshakeTimeoutForTesting: beforeHandshakeTimeoutForTesting,
       beforeReturnForTesting: beforeReturnForTesting
     )

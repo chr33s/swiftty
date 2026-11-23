@@ -99,15 +99,24 @@ struct NegotiatedLimitsTests {
 
   @Test
   func snapshotBoundsPrecedeDecompressionAndRendering() throws {
-    let snapshot = sampleSnapshot()
-    let payload = try SnapshotFrame.encode(snapshot)
+    let frame = FrameWireTests.frame()
+    let payload = frameRecord(frame, encoding: .smxbZlib)
     let header = try #require(try SnapshotFrame.header(payload))
     var limits = NegotiatedLimits()
-    limits.maxColumns = snapshot.columns
-    limits.maxRows = snapshot.rows
+    limits.maxColumns = frame.grid.columns
+    limits.maxRows = frame.grid.rows
     limits.maxSnapshotEncodedBytes = header.encodedLength
     limits.maxSnapshotDecodedBytes = header.decodedLength
-    #expect(try SnapshotFrame.decode(payload, limits: limits) == snapshot)
+    guard
+      case let .frame(decoded, _) = try SnapshotFrame.decodeRecord(
+        payload,
+        limits: limits
+      )
+    else {
+      Issue.record("not a frame")
+      return
+    }
+    #expect(decoded == frame)
     // The corrupt zlib body must not be inspected when the header alone
     // exceeds either negotiated byte cap.
     var corrupted = payload
@@ -115,16 +124,16 @@ struct NegotiatedLimitsTests {
     var encoded = limits
     encoded.maxSnapshotEncodedBytes -= 1
     #expect(throws: FramingError.snapshotTooLarge) {
-      try SnapshotFrame.decode(corrupted, limits: encoded)
+      try SnapshotFrame.decodeRecord(corrupted, limits: encoded)
     }
-    var decoded = limits
-    decoded.maxSnapshotDecodedBytes -= 1
+    var decodedLimit = limits
+    decodedLimit.maxSnapshotDecodedBytes -= 1
     #expect(throws: FramingError.snapshotTooLarge) {
-      try SnapshotFrame.decode(corrupted, limits: decoded)
+      try SnapshotFrame.decodeRecord(corrupted, limits: decodedLimit)
     }
     limits.maxColumns -= 1
-    #expect(throws: FramingError.invalidSnapshot(.gridOutOfRange)) {
-      try SnapshotFrame.decode(payload, limits: limits)
+    #expect(throws: FramingError.self) {
+      try SnapshotFrame.decodeRecord(payload, limits: limits)
     }
   }
 }

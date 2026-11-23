@@ -27,7 +27,7 @@ final class SnapshotReceiver: Sendable {
         onSnapshot: { [weak self] bytes in
           guard let self else { return }
           do {
-            let screen = try SnapshotFrame.decode(bytes)
+            let screen = try decodeScreen(bytes)
             screens.withLock { $0.append(screen) }
           } catch { Issue.record(error) }
         },
@@ -57,13 +57,13 @@ struct HostSnapshotEncodingTests {
           id: grant.sessionID,
           service: registry.service,
           grid: grant.initialGrid,
-          snapshotEncoder: { screen in
+          screenEncoder: { screen, record in
             let attempt = attempts.withLock {
               $0 += 1
               return $0
             }
             if attempt <= failures { throw FramingError.snapshotTooLarge }
-            return try SnapshotFrame.encode(screen)
+            return record
           }
         )
         defer { _ = session.retire(when: { _ in true }) }
@@ -127,7 +127,7 @@ struct HostSnapshotEncodingTests {
           id: grant.sessionID,
           service: registry.service,
           grid: grant.initialGrid,
-          snapshotEncoder: { screen in
+          screenEncoder: { screen, record in
             let attempt = attempts.withLock {
               $0 += 1
               return $0
@@ -139,7 +139,7 @@ struct HostSnapshotEncodingTests {
               }
               if fails { throw FramingError.snapshotTooLarge }
             }
-            return try SnapshotFrame.encode(screen)
+            return record
           }
         )
         defer { _ = session.retire(when: { _ in true }) }

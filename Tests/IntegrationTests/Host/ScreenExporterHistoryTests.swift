@@ -1,88 +1,67 @@
 #if os(macOS)
-import ScreenProtocol
-import SessionCore
-import SwifttyCore
+import SwiftMuxProtocol
 @testable import TerminalHost
 import Testing
 
-/// History windows exported for one RST/1 attachment (`historyViewport`).
+/// History windows for one RST/1 attachment (`historyViewport`), moved
+/// over a worker frame's history metadata.
 struct ScreenExporterHistoryTests {
-  let session = SessionID(bytes: Array(repeating: 7, count: 16))!
+  /// Rows 0 ..< 47 are history; the live screen starts at row 47.
+  let history = HistoryWindow(
+    generation: 3,
+    firstRow: 0,
+    availableRows: 51,
+    viewportTop: 47,
+    viewportOffset: 0,
+    scrollbackRows: 47
+  )
 
-  func terminal() -> TerminalSession {
-    let terminal = TerminalSession(columns: 20, rows: 4)
-    var text = ""
-    for i in 0 ..< 50 { text += "line-\(i)\r\n" }
-    text += "prompt$ "
-    terminal.feed(Array(text.utf8))
-    return terminal
+  func top(
+    from: Int?,
+    generation: UInt64 = 3,
+    moving lines: Int,
+    alternate: Bool = false
+  ) -> Int? {
+    ScreenExporter.historyTop(
+      history,
+      alternateScreen: alternate,
+      from: from,
+      generation: generation,
+      moving: lines
+    )
+    .top
   }
 
   @Test
   func `windows clamp to history and return to live output`() {
-    let t = terminal()
-    t.withState { state in
-      let first = state.firstAbsoluteRow
-      let live = first + state.scrollbackCount
-      #expect(ScreenExporter.historyTop(state, from: nil, moving: 0) == nil)
-      #expect(
-        ScreenExporter.historyTop(state, from: nil, moving: 5) == live - 5
-      )
-      #expect(
-        ScreenExporter.historyTop(state, from: live - 5, moving: -5) == nil
-      )
-      #expect(
-        ScreenExporter.historyTop(state, from: live - 5, moving: -99) == nil
-      )
-      #expect(
-        ScreenExporter.historyTop(state, from: nil, moving: 10_000) == first
-      )
-      #expect(
-        ScreenExporter.historyTop(state, from: nil, moving: .max) == first
-      )
-      #expect(ScreenExporter.historyTop(state, from: nil, moving: .min) == nil)
-    }
+    #expect(top(from: nil, moving: 0) == nil)
+    #expect(top(from: nil, moving: 5) == 42)
+    #expect(top(from: 42, moving: -5) == nil)
+    #expect(top(from: 42, moving: -99) == nil)
+    #expect(top(from: nil, moving: 10_000) == 0)
+    #expect(top(from: nil, moving: .max) == 0)
+    #expect(top(from: nil, moving: .min) == nil)
   }
 
   @Test
-  func `a window shows history without moving the terminal's viewport`() throws
-  {
-    let t = terminal()
-    let (live, window, offset) = t.withState { state in
-      let top = ScreenExporter.historyTop(state, from: nil, moving: 10)
-      return (
-        ScreenExporter.export(state, stamp: .init(sessionID: session)),
-        ScreenExporter.export(
-          state,
-          stamp: .init(sessionID: session),
-          historyTop: top
-        ), state.viewportOffset
+  func `a window from other row numbering starts again from live output`() {
+    #expect(top(from: 10, generation: 2, moving: 5) == 42)
+    #expect(
+      ScreenExporter.historyTop(
+        history,
+        alternateScreen: false,
+        from: 10,
+        generation: 2,
+        moving: 5
       )
-    }
-    try window.validate()
-    #expect(offset == 0)
-    #expect(live.textLines.last?.hasPrefix("prompt$") == true)
-    #expect(live.cursor.visible)
-    // Ten lines back from the live screen: line-37 … line-40.
-    #expect(window.textLines == ["line-37", "line-38", "line-39", "line-40"])
-    #expect(!window.cursor.visible)
-    let decoded = try SnapshotFrame.decode(SnapshotFrame.encode(window))
-    #expect(decoded == window)
+      .generation == 3
+    )
   }
 
   @Test
   func `the alternate screen has no history window`() {
-    let t = terminal()
-    t.feed(Array("\u{1B}[?1049h\u{1B}[HALT".utf8))
-    t.withState { state in
-      #expect(ScreenExporter.historyTop(state, from: nil, moving: 5) == nil)
-      let shot = ScreenExporter.export(
-        state,
-        stamp: .init(sessionID: session),
-        historyTop: 3
-      )
-      #expect(shot.textLines.first == "ALT")
-    }
+    #expect(top(from: nil, moving: 5, alternate: true) == nil)
+    #expect(top(from: 10, moving: 5, alternate: true) == nil)
   }
 }
 #endif

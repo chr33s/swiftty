@@ -1060,6 +1060,12 @@ public actor RoamingClient {
       finishAttach(.protocolViolation)
       return
     }
+    // Screens are shared frames and scrolling is wheel input; a host
+    // without either cannot serve this client.
+    guard RSTFeatures.required.isSubset(of: attached.features) else {
+      finishAttach(.rejected(.unsupported))
+      return
+    }
     epoch = attached.attachmentEpoch
     attachProgressTask?.cancel()
     attachProgressTask = nil
@@ -1209,8 +1215,8 @@ public actor RoamingClient {
     }
   }
 
-  /// Any screen record: legacy snapshots and complete frames are mapped
-  /// here, off the actor; a delta is applied on the actor to its base.
+  /// Complete frames are mapped here, off the actor; a delta is applied on
+  /// the actor to its base. Legacy snapshots are not accepted.
   nonisolated static func decodeRecord(
     _ bytes: [UInt8],
     limits: NegotiatedLimits = NegotiatedLimits()
@@ -1218,13 +1224,6 @@ public actor RoamingClient {
     guard let record = try? SnapshotFrame.decodeRecord(bytes, limits: limits)
     else { return nil }
     switch record {
-    case let .snapshot(snapshot):
-      return .screen(
-        DecodedScreen(
-          snapshot: snapshot,
-          frame: PresentationMapper.map(snapshot)
-        )
-      )
     case let .frame(frame, header):
       return screen(frame, header: header).map { .screen($0) }
     case let .delta(delta, header): return .delta(delta, header)
@@ -1398,19 +1397,6 @@ public actor RoamingClient {
     guard let current = copy else { return }
     copy = nil
     current.waiter.resume(throwing: error)
-  }
-
-  nonisolated static func decode(
-    _ bytes: [UInt8],
-    limits: NegotiatedLimits = NegotiatedLimits()
-  ) -> DecodedScreen? {
-    guard let snapshot = try? SnapshotFrame.decode(bytes, limits: limits) else {
-      return nil
-    }
-    return DecodedScreen(
-      snapshot: snapshot,
-      frame: PresentationMapper.map(snapshot)
-    )
   }
 
   // MARK: Input

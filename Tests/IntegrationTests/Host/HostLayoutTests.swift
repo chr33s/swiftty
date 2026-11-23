@@ -52,7 +52,10 @@ struct HostLayoutTests {
         grid: GridSize(columns: 40, rows: 8)
       )
       let client = TestClient(registry)
-      _ = try await client.attached(grant, features: [.layoutControl])
+      _ = try await client.attached(
+        grant,
+        features: RSTFeatures.required.union(.layoutControl)
+      )
       let first = try #require(
         try await layout(client, "initial layout").activeTabLayout?.activePane
       )
@@ -135,7 +138,7 @@ struct HostLayoutTests {
       let client = TestClient(registry)
       let attached = try await client.attached(
         grant,
-        features: [.layoutControl]
+        features: RSTFeatures.required.union(.layoutControl)
       )
       #expect(attached.features.contains(.layoutControl))
       let initial = try await layout(client, "initial layout")

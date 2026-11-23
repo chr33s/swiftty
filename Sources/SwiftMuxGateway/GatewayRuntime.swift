@@ -1,3 +1,5 @@
+import Foundation
+import SwiftMuxClient
 import SwiftMuxGuardian
 import SwiftMuxProtocol
 import SwiftMuxXPC
@@ -11,6 +13,7 @@ package actor GatewayRuntime {
   private let creator: GatewayWorkspaceCreator
   /// Saved layouts (spec.durability.md §12.2); nil disables them.
   private let saved: SavedLayoutService?
+  private let peerRequirement: String?
   private var monitor: Task<Void, Never>?
   private var closed = false
   package private(set) var failure: MuxError?
@@ -20,13 +23,15 @@ package actor GatewayRuntime {
     directory: GatewayWorkspaceDirectory,
     routes: GatewayNativeRoutes,
     creator: GatewayWorkspaceCreator,
-    saved: SavedLayoutService?
+    saved: SavedLayoutService?,
+    peerRequirement: String?
   ) {
     self.supervisor = supervisor
     self.directory = directory
     self.routes = routes
     self.creator = creator
     self.saved = saved
+    self.peerRequirement = peerRequirement
   }
 
   /// Takes ownership of the supervisor. Initial inventory must succeed; worker
@@ -84,7 +89,8 @@ package actor GatewayRuntime {
           supervisor: supervisor,
           peerRequirement: peerRequirement
         ),
-        saved: saved
+        saved: saved,
+        peerRequirement: peerRequirement
       )
       await runtime.startMonitor(interval: pollInterval)
       do { try Task.checkCancellation() } catch {
@@ -212,6 +218,46 @@ package actor GatewayRuntime {
         server: worker.instance
       ), endpoint
     )
+  }
+
+  /// The guardian incarnation: stable across gateway restarts, new when
+  /// the guardian (and with it every session) restarts.
+  package var guardianIncarnation: UUID? {
+    get async { await supervisor.guardianIncarnation }
+  }
+
+  /// A direct SMX connection to `workspace`'s worker for an in-process
+  /// frontend of this gateway (the roaming host). `transport` is the
+  /// ingress the gateway authenticated, so a `.remote` client gets the
+  /// worker's remote restrictions. A controller first gets the gateway's
+  /// writer grant; the worker still enforces leases.
+  package func connectWorker(
+    for workspace: WorkspaceID,
+    role: AttachmentRole,
+    frontend: FrontendKind,
+    transport: LeaseHolder.Transport
+  ) async throws -> MuxConnection {
+    try checkOpen()
+    let authority = try await directory.nativeAuthority(for: .id(workspace))
+    if role == .controller { try await supervisor.ensureWriter(authority) }
+    try checkOpen()
+    return try await supervisor.connectWorker(
+      authority,
+      peerRequirement: peerRequirement,
+      frontend: frontend,
+      forwardedTransport: transport
+    )
+  }
+
+  /// Workspaces with a known summary, most recently known first; a worker
+  /// still discovering reports its last summary rather than disappearing.
+  package var summaries: [WorkspaceSummary] {
+    get async {
+      await directory.records.compactMap { record in
+        if case let .available(summary) = record.state { return summary }
+        return record.lastKnownSummary
+      }
+    }
   }
 
   package func createWorkspace(

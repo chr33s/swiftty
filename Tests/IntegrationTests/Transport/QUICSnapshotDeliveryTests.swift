@@ -31,7 +31,7 @@ extension QUICTransportTests {
         },
         onSnapshot: { bytes in
           do {
-            let snapshot = try SnapshotFrame.decode(bytes)
+            let snapshot = try decodeScreen(bytes)
             store.withLock { _ = $0.install(snapshot) }
             received.withLock { $0.append(snapshot.screenRevision) }
           } catch { Issue.record(error) }
@@ -57,7 +57,7 @@ extension QUICTransportTests {
       )
       screen.attachmentEpoch = 1
       screen.screenRevision = revision
-      return try SnapshotFrame.encode(screen)
+      return try rstFrameRecord(screen)
     }
 
     // Independent streams may complete in any revision order. The first

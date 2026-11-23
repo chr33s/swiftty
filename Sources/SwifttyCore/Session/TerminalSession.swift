@@ -105,7 +105,8 @@ public final class TerminalSession: @unchecked Sendable {
 
   /// Receives semantic `.text`, `.key` (press and repeat) and `.paste`
   /// input instead of encoding it (presentation mode), on `queue`, in
-  /// order. Mouse, focus and raw bytes are dropped. Accepted input retains
+  /// order, with wheel presses. Other mouse input, focus and raw bytes
+  /// are dropped. Accepted input retains
   /// the handler present at submission, so rebinding cannot redirect queued
   /// input to a replacement attachment.
   public var semanticInputHandler: (@Sendable (TerminalInput) -> Void)? {
@@ -453,7 +454,8 @@ public final class TerminalSession: @unchecked Sendable {
   }
 
   /// Encodes input with the current modes and writes it to the program.
-  /// In presentation mode routes `.text`, `.key` and `.paste` to
+  /// In presentation mode routes `.text`, `.key`, `.paste` and wheel
+  /// presses to
   /// `semanticInputHandler` instead and never reaches `onWrite`.
   /// Standalone PTY input has no admission limit. Frontends needing bounded
   /// input and refusal feedback should use `TerminalSurface.LocalPTYBackend`.
@@ -552,6 +554,9 @@ public final class TerminalSession: @unchecked Sendable {
       switch input {
       case let .key(event) where event.action == .release: return
       case .text, .key, .paste:
+        guard let handler = callbacks.semanticInput else { return }
+        queue.async { handler(input) }
+      case let .mouse(event) where event.action == .press && event.isWheel:
         guard let handler = callbacks.semanticInput else { return }
         queue.async { handler(input) }
       case .mouse, .focus, .bytes: return

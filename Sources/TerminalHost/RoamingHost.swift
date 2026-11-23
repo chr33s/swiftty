@@ -97,6 +97,46 @@ public final class RoamingHost: Sendable {
     launch: @escaping @Sendable () -> LaunchSpec = RoamingHost.defaultLaunch,
     transportFactory: @escaping TransportFactory
   ) async throws -> RoamingHost {
+    try await start(
+      workspaces: {
+        LocalRoamingWorkspaces(
+          service: service,
+          control: MuxLocalSession(
+            queue: DispatchQueue(label: "swiftmux.roaming.registry")
+          )
+        )
+      },
+      configuration: config,
+      policy: policy,
+      launch: launch,
+      transportFactory: transportFactory
+    )
+  }
+
+  /// Serves roaming through any SwiftMux topology, such as a durable
+  /// gateway's workers. `workspaces` is called once the listener is bound.
+  package static func start(
+    workspaces: @escaping @Sendable () -> any RoamingWorkspaces,
+    configuration config: HostConfiguration,
+    policy: RegistryPolicy = RegistryPolicy(),
+    launch: @escaping @Sendable () -> LaunchSpec = RoamingHost.defaultLaunch
+  ) async throws -> RoamingHost {
+    try await start(
+      workspaces: workspaces,
+      configuration: config,
+      policy: policy,
+      launch: launch,
+      transportFactory: makeTransport
+    )
+  }
+
+  static func start(
+    workspaces: @escaping @Sendable () -> any RoamingWorkspaces,
+    configuration config: HostConfiguration,
+    policy: RegistryPolicy = RegistryPolicy(),
+    launch: @escaping @Sendable () -> LaunchSpec = RoamingHost.defaultLaunch,
+    transportFactory: @escaping TransportFactory
+  ) async throws -> RoamingHost {
     try Task.checkCancellation()
     try ControlDirectory.prepare(config.stateDirectoryURL)
     let target = RegistryTarget()
@@ -109,7 +149,7 @@ public final class RoamingHost: Sendable {
     do {
       try Task.checkCancellation()
       let registry = SessionRegistry(
-        service: service,
+        workspaces: workspaces(),
         identity: identity,
         policy: policy,
         launch: launch

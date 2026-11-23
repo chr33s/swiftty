@@ -56,6 +56,9 @@ public struct PresentationFrame: Sendable, Equatable {
   public var cursorBlinking: Bool
   public var reverseVideo: Bool
   public var alternateScreen: Bool
+  /// The host's program tracks the mouse (shown as mode 1000); frontends
+  /// route scrolling to wheel reports when they can send them.
+  public var mouseTracking: Bool = false
   public var title: String
   /// Per row, the host's row identity `[generation, alternate, row,
   /// version, screen]` when the host sends shared frames (spec.roaming.md
@@ -159,6 +162,9 @@ public struct SurfaceCapabilities: Sendable, Hashable {
   public var scrollback: Bool
   public var search: Bool
   public var mouseReporting: Bool
+  /// Wheel reports while the program tracks the mouse, even without
+  /// `mouseReporting` (a roaming host with `mouseWheel`).
+  public var wheelReporting: Bool
   /// Program-initiated clipboard writes (OSC 52) may reach the pasteboard.
   public var remoteClipboardWrites: Bool
   /// User-initiated local copy of the displayed frame.
@@ -178,11 +184,13 @@ public struct SurfaceCapabilities: Sendable, Hashable {
     paste: Bool,
     openURLs: Bool,
     localProcess: Bool,
-    textInput: Bool
+    textInput: Bool,
+    wheelReporting: Bool = false
   ) {
     self.scrollback = scrollback
     self.search = search
     self.mouseReporting = mouseReporting
+    self.wheelReporting = wheelReporting
     self.remoteClipboardWrites = remoteClipboardWrites
     self.localCopy = localCopy
     self.paste = paste
@@ -205,7 +213,8 @@ public struct SurfaceCapabilities: Sendable, Hashable {
   )
 
   /// RST/1 v1 presentation: current viewport only, local copy and paste,
-  /// no remote side effects.
+  /// wheel reports (dropped for hosts without `mouseWheel`), no remote
+  /// side effects.
   public static let roaming = SurfaceCapabilities(
     scrollback: false,
     search: false,
@@ -215,6 +224,7 @@ public struct SurfaceCapabilities: Sendable, Hashable {
     paste: true,
     openURLs: false,
     localProcess: false,
-    textInput: true
+    textInput: true,
+    wheelReporting: true
   )
 }

@@ -158,6 +158,14 @@ public struct MouseEvent: Sendable, Hashable {
   public var pixelX: Int?
   public var pixelY: Int?
 
+  /// A wheel notch rather than a button.
+  public var isWheel: Bool {
+    switch button {
+    case .wheelUp, .wheelDown, .wheelLeft, .wheelRight: true
+    case .left, .middle, .right, .none: false
+    }
+  }
+
   public init(
     _ action: Action,
     _ button: Button,
@@ -672,8 +680,7 @@ public enum InputEncoder {
   ) -> Bool {
     let tracking = modes.intersection(Modes.mouseTracking)
     guard !tracking.isEmpty else { return false }
-    let isWheel = [.wheelUp, .wheelDown, .wheelLeft, .wheelRight]
-      .contains(event.button)
+    let isWheel = event.isWheel
 
     switch event.action {
     case .press:

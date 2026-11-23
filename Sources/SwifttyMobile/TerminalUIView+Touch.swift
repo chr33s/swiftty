@@ -95,6 +95,12 @@ extension TerminalUIView {
 
   var tracking: Bool { !lastModes.isDisjoint(with: Modes.mouseTracking) }
 
+  /// How scrolling reaches the terminal now. Wheel reports may reach a
+  /// program whose other mouse input stays local (a roaming host).
+  var scrollRouting: ScrollRouting {
+    ScrollRouting(modes: effectiveCapabilities.scrollModes(programModes))
+  }
+
   /// Grid cell under `point`, clamped to the grid.
   func cell(at point: CGPoint) -> (column: Int, row: Int) {
     let c = geometry.cell(at: point)
@@ -108,6 +114,17 @@ extension TerminalUIView {
     modifiers: KeyModifiers = []
   ) {
     guard tracking else { return }
+    reportMouse(action, button, at: point, modifiers: modifiers)
+  }
+
+  /// Sends a mouse report without checking `tracking`; the host drops it
+  /// unless the program tracks the mouse.
+  private func reportMouse(
+    _ action: MouseEvent.Action,
+    _ button: MouseEvent.Button,
+    at point: CGPoint,
+    modifiers: KeyModifiers
+  ) {
     let c = cell(at: point)
     let pixel = geometry.pixel(at: point)
     session.send(
@@ -612,7 +629,7 @@ extension TerminalUIView {
     at point: CGPoint,
     modifiers: KeyModifiers = []
   ) {
-    let routing = ScrollRouting(modes: lastModes)
+    let routing = scrollRouting
     var lines = lines
     if routing == .viewport, liveKeyboardLift > 0, geometry.lineHeight > 0 {
       let rest = keyboardReveal.consume(
@@ -628,7 +645,7 @@ extension TerminalUIView {
     case .wheel:
       let horizontal = horizontalScrollAccumulator.add(columns)
       for _ in 0 ..< abs(n) {
-        sendMouse(
+        reportMouse(
           .press,
           n > 0 ? .wheelUp : .wheelDown,
           at: point,
@@ -636,7 +653,7 @@ extension TerminalUIView {
         )
       }
       for _ in 0 ..< abs(horizontal) {
-        sendMouse(
+        reportMouse(
           .press,
           horizontal > 0 ? .wheelLeft : .wheelRight,
           at: point,
@@ -669,7 +686,7 @@ extension TerminalUIView {
     momentumTimestamp = nil
     momentum = ScrollMomentum(velocity: velocity)
     horizontalMomentum = ScrollMomentum(
-      velocity: tracking ? horizontalVelocity : 0
+      velocity: scrollRouting == .wheel ? horizontalVelocity : 0
     )
     guard momentum.isActive || horizontalMomentum.isActive, !isRenderingPaused
     else { return }

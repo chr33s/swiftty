@@ -330,7 +330,7 @@ Store SSH private keys in Keychain. Tokens, credentials, terminal contents, and 
 
 The server terminal engine is the only parser of the persistent PTY's output. It retains hidden emulator state, including inactive buffers and modes. The client receives only the presentation needed to draw the selected viewport.
 
-With `paneFrames` (§7.2), a screen is the shared terminal frame: an `rstHeader` envelope plus the common frame body ([spec.multiplexer.md §4, "One frame model"](spec.multiplexer.md#one-frame-model-for-swiftmux-and-rst1)). That body carries the same content as the list below, plus row identities, the palette and palette-tagged colors. Without the feature, a full legacy `ScreenSnapshot` contains:
+A screen is the shared terminal frame (`paneFrames`, §7.2): an `rstHeader` envelope plus the common frame body ([spec.multiplexer.md §4, "One frame model"](spec.multiplexer.md#one-frame-model-for-swiftmux-and-rst1)). That body carries the same content as the list below, plus row identities, the palette and palette-tagged colors. Hosts no longer send legacy `ScreenSnapshot` records and clients reject them; the list describes the content both carry:
 
 ```text
 sessionID, attachmentEpoch, screenRevision, resizeRevision
@@ -352,7 +352,7 @@ Terminal-generated replies, such as cursor-position reports, return to the host 
 
 The supported terminal profile includes cursor movement, erase, scroll regions, SGR attributes, color, alternate screen, cursor/keypad modes, and bracketed paste. Advertise only a terminal profile that passes the compatibility corpus; do not advertise graphics or clipboard features that were disabled.
 
-The client sends semantic text, keys, and paste requests. The server encodes them using its current keyboard and paste modes. IME composition remains local until text is committed. Mouse reporting is deferred.
+The client sends semantic text, keys, and paste requests. The server encodes them using its current keyboard and paste modes. IME composition remains local until text is committed. Mouse reporting is limited to wheel notches (`mouseWheel`, §6); clicks, drags and motion stay local.
 
 Version 1 exposes the current viewport and, where the platform profile permits it, local selection/copy. With `copySelection` (§7.5), selection also spans history the client has not fetched. It does not promise complete historical scrollback, byte-exact terminal recording, or delivery of transient bells/titles. Users needing complete command output can redirect it into a file and retrieve it through SFTP on a full client.
 
@@ -379,14 +379,13 @@ Control records are `UInt32BE(length)` followed by a UTF-8 JSON object. The leng
 A snapshot stream contains exactly one record followed by FIN:
 
 ```text
-UInt8       encoding: 0 = plain UTF-8 JSON, 1 = RFC 1950 zlib JSON,
-                      2 = SMXB/1, 3 = RFC 1950 zlib SMXB/1
+UInt8       encoding: 2 = SMXB/1, 3 = RFC 1950 zlib SMXB/1
 UInt32BE    decodedLength
 UInt32BE    encodedLength
 Byte[]      encoded screen
 ```
 
-Encodings 0 and 1 carry a legacy JSON `ScreenSnapshot`. Encodings 2 and 3 carry an `SMXB/1` payload with an `rstHeader` envelope: a full frame, or a delta when `screenDeltas` is also negotiated. They are valid only on an attachment where both `Attach` and `Attached` list `paneFrames`. The host chooses zlib per record when it shrinks the payload. A record whose encoding was not negotiated is malformed.
+Encodings 2 and 3 carry an `SMXB/1` payload with an `rstHeader` envelope: a full frame, or a delta when `screenDeltas` is also negotiated. The host chooses zlib per record when it shrinks the payload. Encodings 0 and 1 (legacy JSON `ScreenSnapshot`) are retired: receivers reject them, like any other unknown encoding, as malformed.
 
 A sender that abandons a snapshot before writing its record ends the stream with an empty FIN instead; the receiver releases that stream without delivering anything.
 
@@ -407,7 +406,7 @@ Compression is independent per snapshot, without a cross-snapshot dictionary. Bo
 | `Layout` / `LayoutAction` / `LayoutResult` | With `layoutControl`: report the workspace's tabs and panes, and change them (§7.6) |
 | `Error` | Bounded typed failure; never a stack trace or secret-bearing diagnostic |
 
-`Attached` includes `attachmentEpoch`, `writerID`, `lastFullyAppliedInputSequence`, any admitted partial-operation identifier, and current resize revision. Every subsequent control record is scoped to that epoch. It may also carry `features`, a list of additive behaviours the host accepts; peers ignore names they do not know, and an absent list means none. `keypadKeys` admits numeric keypad key names (`kp:one`, `kp:enter`, `kp:pageUp`, …, matching the client's keypad keys). Without it, clients send the main-keyboard key a keypad key types and drop Keypad Begin, which has none. `historyViewport` admits `Viewport` (`attachmentEpoch`, signed `lines`, at most ±1,000,000; positive reveals older output). The host moves that attachment's own window through the primary screen's history, clamped to the retained rows and anchored to an absolute row so it stays put while output arrives, and exports it in place of the live screen with the cursor hidden. The host's own view never moves; the alternate screen has no window; input returns the window to live output, as does moving past the newest line. Clients send `Viewport` only to hosts that advertise the feature, so older hosts never see it.
+`Attached` includes `attachmentEpoch`, `writerID`, `lastFullyAppliedInputSequence`, any admitted partial-operation identifier, and current resize revision. Every subsequent control record is scoped to that epoch. It may also carry `features`, a list of additive behaviours the host accepts; peers ignore names they do not know, and an absent list means none. `keypadKeys` admits numeric keypad key names (`kp:one`, `kp:enter`, `kp:pageUp`, …, matching the client's keypad keys). Without it, clients send the main-keyboard key a keypad key types and drop Keypad Begin, which has none. `historyViewport` admits `Viewport` (`attachmentEpoch`, signed `lines`, at most ±1,000,000; positive reveals older output). The host moves that attachment's own window through the primary screen's history, clamped to the retained rows and anchored to an absolute row so it stays put while output arrives, and exports it in place of the live screen with the cursor hidden. The host's own view never moves; the alternate screen has no window; input returns the window to live output, as does moving past the newest line. Clients send `Viewport` only to hosts that advertise the feature, so older hosts never see it. Both sides must list `paneFrames` and `mouseWheel` (`RSTFeatures.required`): a host refuses an `Attach` without them (`unsupported`), and a client refuses an `Attached` without them. `mouseWheel` admits the `wheel` input operation: one wheel notch (`direction` `up`, `down`, `left` or `right`; zero-based viewport `column` and `row` within the grid limits; optional `modifiers`). It is ordered and acknowledged like a key. The host forwards it to the pane as a mouse press, which the pane reports with the program's own mouse encoding only while the program tracks the mouse, and drops otherwise. Frames keep the `mouseTracking` view mode when the program tracks the mouse (motion and paste-event modes stay host-side). Clients route scrolling to wheel notches whenever the program tracks the mouse, never to alternate-scroll arrow keys.
 
 ### 7.3 Bounded snapshot scheduling
 
@@ -467,7 +466,7 @@ After an outage, discard old transport streams and send a full snapshot of **cur
 
 **Scheduling.** §7.3 is unchanged. Deltas count as snapshots for the two in-flight streams and the single unsent reference, and the protected stream may be a delta. The host sends a full snapshot instead of a delta when it would encode to at least half the size of the full snapshot, on the first screen of an attachment epoch, after a resize revision changes, when `activeBuffer` or the history generation changes, and in answer to `RequestFullScreen`. It answers at most one `RequestFullScreen` per in-flight full snapshot, so repeated requests cannot multiply work.
 
-**Limits.** A delta obeys the snapshot size limits in §12. Retained baselines are bounded by the 200×80 grid limit and the 16-revision cap. Shared frames use the legacy snapshot's bounds: up to one style per cell (16,000) and graphemes up to 64 bytes, longer clusters exporting as the placeholder. A screen the frame budgets still cannot express is sent as a legacy snapshot, which a `paneFrames` client also accepts.
+**Limits.** A delta obeys the snapshot size limits in §12. Retained baselines are bounded by the 200×80 grid limit and the 16-revision cap. Screens come from the worker's frames, so the worker's budgets apply first (`MuxLimits.standard`: 4,096 styles, graphemes up to 32 scalars); the host then clips to the RST/1 grid and exports clusters longer than RST/1 carries as the placeholder. A screen either budget cannot express is not sent; the host captures again on the next change.
 
 ### 7.5 Selection across history
 
@@ -793,7 +792,7 @@ All tests below are release gates for their applicable platform profile unless l
 | A18 | Pair physical Apple Watch and iPhone; force unreachable/stale state, lifecycle changes, malformed previews, and opt-out | Companion remains read-only; timestamps stay honest; no network credentials or RST lease exposed; bounds enforced; preview privacy honored; phone is not kept alive or logged in by watch refresh |
 | A19 | Attempt attachment from two client platforms | The existing one-writer policy is enforced; rejected or replaced attachment cannot replay stale input; watch refresh creates no attachment |
 | A20 | With `screenDeltas`, run typing, full-screen scrolling, CR progress bars, alternate-screen switches, resizes and `historyViewport` moves under the A3 loss/duplication/reordering profile, with stream cancellation and reattachment | Every displayed screen equals the host's full snapshot at that revision; a missing base or checksum mismatch recovers through one full snapshot; no old-frame regression; a host without the feature, or a client without it, exchanges full snapshots only |
-| A21 | With `paneFrames`, run the A8 corpus and malformed-payload fuzzing | Each `SMXB/1` frame displays the same cells, widths, colors, cursor and wraps as the legacy snapshot of the same state; payloads outside RST/1 limits, with the wrong envelope or with an un-negotiated encoding are rejected without partial display; a peer without the feature exchanges legacy snapshots only |
+| A21 | Run the A8 corpus and malformed-payload fuzzing over `SMXB/1` frames | Each frame displays the same cells, widths, colors, cursor and wraps as the worker's state; payloads outside RST/1 limits, with the wrong envelope or with a retired or unknown encoding are rejected without partial display; a peer without `paneFrames` and `mouseWheel` is refused at attach |
 | A22 | With `copySelection`, select across unfetched history during output, then copy under the A3 network profile, with edits under the selection, eviction, oversize text and reattachment mid-copy | Copied text equals the host's grid text; `selectionChanged`/`historyUnavailable`/`limitExceeded` yield no text; a copy cut off by reattachment writes nothing; typing latency during a 2 MiB copy stays within one chunk of delay |
 
 **Recovery target, not a measured claim:** after a path becomes usable, warm reattachment plus an 80×24 current screen should complete within 3 seconds at p95 under 200 ms RTT, 5% independent loss, 2% reordering, and 1 Mbit/s available bandwidth. Test at least 100 recoveries. Exclude time during which neither endpoint has a usable path, but include handshake and application attachment.
@@ -819,6 +818,8 @@ Maintain the design-provenance record (Appendix B) citing the paper and public s
 ---
 
 ## Revision record
+
+**2026-11-23 — Gateway host, frames only, wheel input:** The durable SwiftMux gateway hosts RST/1; sessions drive workers over SMX ([spec.durability.md §13.77](spec.durability.md)). Add `mouseWheel` and the `wheel` input operation; frames carry `mouseTracking`, and clients scroll a mouse-tracking program with wheel notches instead of alternate-scroll arrow keys. `paneFrames` and `mouseWheel` are required (`RSTFeatures.required`); legacy JSON `ScreenSnapshot` records (encodings 0 and 1) are retired.
 
 **2026-11-20 — Ordinary SSH recovery:** Add §9.1: automatic new-shell recovery in bounded bursts with a cooldown, health probes, TCP keepalive and an IPv4-only option, with honest new-shell reporting. RST/1 and roaming recovery are unchanged.
 
@@ -980,14 +981,14 @@ Only terminal-session bytes enter this parser. SFTP data, SSH control messages, 
 #### C. Roaming terminal on direct-client platforms
 
 ```text
-macOS helper:
-  persistent PTY output
-    -> Swiftty authoritative parser/state
-    -> owned ScreenSnapshot export
+macOS durable gateway:
+  worker-owned PTY output and parser/state
+    -> SMX frame for the roaming controller
+    -> RST/1 frame (clipped to the RST/1 profile)
     -> RST/1 over QUIC
 
 client:
-  complete validated ScreenSnapshot
+  complete validated frame, mapped to a ScreenSnapshot
     -> RemoteScreenStore
     -> Swiftty-compatible render snapshot
     -> native view / MetalRenderer
@@ -1038,13 +1039,13 @@ Use a separate read-only companion store, not a terminal backend, on watchOS.
 
 Adapt the native AppKit view, UIKit-derived full-client views, and tvOS frontend, including their supported keyboard, selection, accessibility, search, and resizing extensions. Changing only the view initializer is insufficient: operations that currently reach into local terminal state need backend-specific behavior.
 
-For RST/1 v1, selection/copy is current-viewport-only where the platform profile provides it. Disable unavailable history search, remote scrollback, mouse reporting, clipboard, and local-process actions rather than implying local emulator features automatically work remotely. iPad, Catalyst, and visionOS windows do not expand the one-active-roaming-terminal-per-client scope; a host session still has one writer across all platforms. The watch acquires no writer lease. Capability metadata must also gate SFTP/file access, semantic text input, and companion-only behavior.
+For RST/1 v1, selection/copy is current-viewport-only where the platform profile provides it. Disable unavailable history search, remote scrollback, mouse reporting (other than wheel notches), clipboard, and local-process actions rather than implying local emulator features automatically work remotely. iPad, Catalyst, and visionOS windows do not expand the one-active-roaming-terminal-per-client scope; a host session still has one writer across all platforms. The watch acquires no writer lease. Capability metadata must also gate SFTP/file access, semantic text input, and companion-only behavior.
 
 #### A.4.2 Export semantic screen data, not memory layout
 
 `RenderSnapshot` contains retained pooled storage, raw pointers, borrowed spans, cells with side-table references, and local rendering metadata. Its construction initializer and `SnapshotStorage` are internal to SwifttyCore. It is not an externally constructible network DTO. [R5]
 
-Add an export adapter that produces the RST/1 screen representation. With `paneFrames`, this is the multiplexer's shared frame exporter (`SwiftMuxExport`) with an `rstHeader` envelope, which keeps palette-tagged colors and row identities. The rules below describe the legacy `ScreenSnapshot` export and still apply to both:
+The RST/1 screen representation is the multiplexer's shared frame (`SwiftMuxExport`, exported by the worker) with an `rstHeader` envelope, which keeps palette-tagged colors and row identities. The client maps it to a `ScreenSnapshot`. The export rules:
 
 - Copy complete grapheme text, cell widths/continuations, and row-wrap information.
 - Resolve palette, underline-color, and other internal table references into bounded semantic style values.
@@ -1243,7 +1244,7 @@ Required by §14. Records where the roaming design and its implementation come f
 | Idea | Source | How it is used |
 |---|---|---|
 | Server-authoritative terminal | Winstein & Balakrishnan, *Mosh* paper draft, §§2–3 [S1] | The SwiftMux service keeps the only parser of the PTY output; `TerminalHost` exports its current screen |
-| Synchronising replaceable display state instead of a byte log | [S1] | Complete `ScreenSnapshot`s; missed screens are never replayed |
+| Synchronising replaceable display state instead of a byte log | [S1] | Complete frames (or deltas against an acknowledged one); missed screens are never replayed |
 | Session survives network changes | [S1] | `swiftmux-agent` owns the PTY; clients reattach to its workspace by session ID |
 | Speculative local echo | [S1] | **Not adopted** in v1 |
 

@@ -1,4 +1,5 @@
 @testable import ScreenProtocol
+import SwiftMuxProtocol
 import SessionCore
 import Testing
 
@@ -63,14 +64,19 @@ struct FuzzTests {
   @Test
   func `snapshot decoder rejects mutated frames without crashing`() throws {
     var rng = SplitMix64(state: 2)
-    let frames = try [SnapshotFrame.Encoding.plain, .zlib]
-      .map { try SnapshotFrame.encode(sampleSnapshot(), encoding: $0) }
+    let frames = [SnapshotFrame.Encoding.smxb, .smxbZlib]
+      .map { frameRecord(encoding: $0) }
     var accepted = 0
     for round in 0 ..< 3000 {
       let frame = mutate(frames[round % 2], &rng)
-      if let snapshot = try? SnapshotFrame.decode(frame) {
+      if case let .frame(decoded, _)? = try? SnapshotFrame.decodeRecord(frame) {
         // Anything accepted is fully valid.
-        #expect(throws: Never.self) { try snapshot.validate() }
+        #expect(throws: Never.self) {
+          try FrameValidator.validate(
+            decoded,
+            limits: SnapshotFrame.frameLimits
+          )
+        }
         accepted += 1
       }
     }
@@ -85,12 +91,12 @@ struct FuzzTests {
       try Zlib.decompress(bomb, limit: RSTLimits.maxSnapshotDecodedBytes)
     }
     // A header claiming a small size cannot smuggle a larger body.
-    var frame: [UInt8] = [1]
+    var frame: [UInt8] = [SnapshotFrame.Encoding.smxbZlib.rawValue]
     appendUInt32(100, to: &frame)
     appendUInt32(UInt32(bomb.count), to: &frame)
     frame += bomb
     #expect(throws: FramingError.decompression(.outputLimit)) {
-      try SnapshotFrame.decode(frame)
+      try SnapshotFrame.decodeRecord(frame)
     }
   }
 

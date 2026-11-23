@@ -1,6 +1,7 @@
 #!/bin/sh
-# Builds, signs and installs Swiftty.app, registers its bundled SwiftMux
-# LaunchAgent (SMAppService) and, with --roaming, installs the swifttyd
+# Builds, signs and installs Swiftty.app, installs durable SwiftMux sessions
+# (the guardian and gateway helpers, spec.durability.md §9; the gateway also
+# serves roaming clients) and, with --roaming, installs the swifttyd
 # bootstrap helper and writes the roaming configuration (spec.inbox.md §1).
 # Remote Login is reported, never changed. Firewall changes are opt-in.
 #
@@ -17,9 +18,9 @@
 #                      firewall (uses sudo; leaves global policy unchanged)
 #   --replace-dev-agent  remove a `swmux agent install` LaunchAgent first;
 #                      its running sessions end
-#   --restart-agent    re-register a running agent whose signing team
-#                      changed, or (ad-hoc builds) whose binary changed;
-#                      its running sessions end
+#   --end-sessions     when moving to durable sessions, end the sessions the
+#                      previous (single-process) SwiftMux agent is running;
+#                      without it, installation stops while any are live
 #   --team TEAM        team for the iOS/iPadOS app (default: the Mac build's
 #                      signing team); see Scripts/install-ios.sh
 #   --no-devices       skip installing the iOS/iPadOS app on iPhones and
@@ -38,7 +39,7 @@ host=""
 bind=0.0.0.0
 port=51222
 replace_dev=0
-restart_agent=0
+end_sessions=0
 team=""
 devices=1
 while [ $# -gt 0 ]; do
@@ -70,9 +71,9 @@ while [ $# -gt 0 ]; do
     --roaming) roaming=1; shift ;;
     --configure-firewall) configure_firewall=1; shift ;;
     --replace-dev-agent) replace_dev=1; shift ;;
-    --restart-agent) restart_agent=1; shift ;;
+    --end-sessions) end_sessions=1; shift ;;
     --no-devices) devices=0; shift ;;
-    -h | --help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown option $1" >&2; exit 64 ;;
   esac
 done
@@ -101,6 +102,7 @@ if [ ${#port} -gt 5 ] || [ "$port" -gt 65535 ]; then
 fi
 
 label=com.chr33s.swiftty.swiftmux
+gateway_label=com.chr33s.swiftty.swiftmux-gateway
 bundle_id=com.chr33s.swiftty
 app="$dest/Swiftty.app"
 helper=/usr/local/libexec/swifttyd
@@ -112,34 +114,17 @@ domain="gui/$(id -u)"
 team_of() {
   codesign -dv "$1" 2>&1 | sed -n 's/^TeamIdentifier=//p' | sed 's/^not set$//'
 }
-cdhash_of() {
-  codesign -dvvv "$1" 2>&1 | sed -n 's/^CDHash=//p'
-}
-agent_info=$(launchctl print "$domain/$label" 2>/dev/null || true)
-registered_team=$(printf '%s\n' "$agent_info" \
-  | sed -n 's/.*"team-identifier" => "\(.*\)".*/\1/p' | head -n 1)
 
-# By SHA-1, so duplicate certificates with one name stay unambiguous.
+# By SHA-1, so duplicate certificates with one name stay unambiguous. The
+# guardian and gateway authenticate each other by signing team, so durable
+# sessions need a Developer ID identity; ad-hoc builds cannot run them.
 if [ -z "$identity" ]; then
-  if [ "$restart_agent" -eq 0 ] \
-    && printf '%s\n' "$agent_info" | grep -q 'state = running'; then
-    if [ -z "$registered_team" ]; then
-      identity=-
-    else
-      identity=$(security find-identity -v -p codesigning \
-        | awk -v team="$registered_team" \
-          '/"Developer ID Application/ && index($0, "(" team ")") { print $2; exit }')
-      if [ -z "$identity" ]; then
-        echo "install.sh: no Developer ID identity for the running agent's team '$registered_team'." >&2
-        echo "  Use --identity with a matching identity, or --restart-agent (its running sessions end)." >&2
-        exit 1
-      fi
-    fi
-  else
-    identity=$(security find-identity -v -p codesigning \
-      | awk '/"Developer ID Application/ { print $2; exit }')
-  fi
-  [ -n "$identity" ] || identity=-
+  identity=$(security find-identity -v -p codesigning \
+    | awk '/"Developer ID Application/ { print $2; exit }')
+fi
+if [ -z "$identity" ] || [ "$identity" = "-" ]; then
+  echo "install.sh: durable SwiftMux sessions need a Developer ID signing identity (--identity)." >&2
+  exit 1
 fi
 echo "signing with ${identity}"
 
@@ -159,38 +144,7 @@ Scripts/package-swiftmux.sh "$identity" .build/package
 built=.build/package/Swiftty.app
 bin=$(swift build -c release --show-bin-path)
 
-# launchd pins the registered agent to the signing team it had when
-# registered (a launch constraint); a different team is killed at spawn
-# with "Launch Constraint Violation" until the agent is re-registered. An
-# ad-hoc build has no team and is pinned to its agent's cdhash instead,
-# which changes with every build: launchd then refuses to spawn it
-# (EX_CONFIG, "needs LWCR update") once the running agent exits.
-agent_info=$(launchctl print "$domain/$label" 2>/dev/null || true)
-registered_team=$(printf '%s\n' "$agent_info" \
-  | sed -n 's/.*"team-identifier" => "\(.*\)".*/\1/p' | head -n 1)
-new_team=$(team_of "$built/Contents/MacOS/swiftmux-agent")
-installed_agent="$app/Contents/MacOS/swiftmux-agent"
-reason=""
-if [ -n "$agent_info" ]; then
-  if [ "$registered_team" != "$new_team" ]; then
-    reason="registered for team '${registered_team:-none}', the new build is '${new_team:-none}'"
-  elif [ -z "$new_team" ] && { [ ! -f "$installed_agent" ] \
-    || [ "$(cdhash_of "$installed_agent")" != "$(cdhash_of "$built/Contents/MacOS/swiftmux-agent")" ]; }; then
-    reason="an ad-hoc build, pinned to the previous agent binary"
-  fi
-fi
-reregister=0
-if [ -n "$reason" ]; then
-  if printf '%s\n' "$agent_info" | grep -q 'state = running' \
-    && [ "$restart_agent" -eq 0 ]; then
-    echo "install.sh: the running SwiftMux agent is $reason." >&2
-    echo "  Re-run with --restart-agent (its running sessions end), or sign" >&2
-    echo "  with a Developer ID identity (--identity) to keep it across builds." >&2
-    exit 1
-  fi
-  reregister=1
-fi
-
+new_team=$(team_of "$built/Contents/MacOS/swiftty")
 # Inspect the exact destination before its old bundle is moved by publication.
 # The newly built executable implements this query even on a first install.
 running=$("$built/Contents/MacOS/swiftty" --running-app "$app") || {
@@ -209,19 +163,33 @@ mkdir -p "$dest" 2>/dev/null || sudo mkdir -p "$dest"
 sudo_if_needed "$dest" /usr/bin/python3 -I Scripts/install-app.py "$built" "$app" "$new_team"
 echo "installed $app"
 
-if [ "$reregister" -eq 1 ]; then
-  echo "re-registering the SwiftMux agent ($reason)"
-  "$app/Contents/MacOS/swiftty" --swiftmux-agent unregister >/dev/null || true
-  launchctl bootout "$domain/$label" 2>/dev/null || true
-fi
-status=$("$app/Contents/MacOS/swiftty" --swiftmux-agent register || true)
-echo "SwiftMux agent: $status"
-case "$status" in
-  *requiresApproval*)
-    echo "  Allow \"Swiftty\" in System Settings > General > Login Items." ;;
-  *enabled*) ;;
-  *) echo "install.sh: agent registration failed" >&2; exit 1 ;;
+# Durable sessions: the first install moves from the single-process agent
+# (ending its sessions only with --end-sessions); later installs replace the
+# gateway, keeping every running session.
+swiftty="$app/Contents/MacOS/swiftty"
+durable=$("$swiftty" --durable-sessions status 2>&1) || {
+  echo "install.sh: cannot read durable session status: $durable" >&2; exit 1
+}
+case "$durable" in
+  notInstalled)
+    if [ "$end_sessions" -eq 1 ]; then
+      result=$("$swiftty" --durable-sessions adopt --confirm 2>&1)
+    else
+      result=$("$swiftty" --durable-sessions adopt 2>&1)
+    fi || { echo "install.sh: durable sessions: $result" >&2; exit 1; }
+    case "$result" in
+      declined*)
+        echo "install.sh: the previous SwiftMux agent is running sessions ($result)." >&2
+        echo "  Re-run with --end-sessions to end them and install durable sessions." >&2
+        exit 1 ;;
+    esac ;;
+  *)
+    result=$("$swiftty" --durable-sessions update 2>&1) || {
+      echo "install.sh: durable sessions: $result" >&2; exit 1
+    } ;;
 esac
+echo "durable sessions: $result"
+gateway_helper="$HOME/Library/Application Support/SwiftMux/Helpers/SwiftMuxGateway.app/Contents/MacOS/swiftmux-gateway"
 
 if [ "$roaming" -eq 1 ]; then
   # Sign as this user (the identity lives in the login keychain), then
@@ -265,19 +233,17 @@ if [ "$roaming" -eq 1 ]; then
     echo "wrote $roaming_config ($host, $bind:$port/udp)"
   fi
 
-  # The agent reads the configuration at launch; restarting it would end
-  # running shells, so an already running agent is left alone.
-  if launchctl print "$domain/$label" 2>/dev/null | grep -q 'state = running'; then
-    echo "note: the SwiftMux agent is running; roaming starts the next time it launches"
-  fi
+  # The gateway reads the configuration at launch. Restarting it keeps
+  # every session (the guardian owns them); roaming clients reconnect.
+  launchctl kickstart -k "$domain/$gateway_label" >/dev/null 2>&1 || true
   if ! nc -z localhost 22 >/dev/null 2>&1; then
     echo "note: Remote Login looks off; enable it in System Settings > General > Sharing"
   fi
   if [ "$configure_firewall" -eq 1 ]; then
-    # The bundled agent owns the QUIC listener; swifttyd only relays SSH
+    # The durable gateway owns the QUIC listener; swifttyd only relays SSH
     # bootstrap requests. Reapply after replacement, including repeat installs.
     # socketfilterfw accepts executables, not individual UDP port rules.
-    firewall_agent="$(cd "$app/Contents/MacOS" && pwd -P)/swiftmux-agent"
+    firewall_agent=$gateway_helper
     firewall_state=$(LC_ALL=C "$firewall" --getglobalstate) || {
       echo "install.sh: cannot read macOS firewall state" >&2; exit 1
     }

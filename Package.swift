@@ -184,7 +184,20 @@ let package = Package(
     ),
     .executableTarget(
       name: "SwiftMuxGatewayDaemon",
-      dependencies: ["SwiftMuxGateway", "SwiftMuxGuardian", "SwiftMuxProtocol"]
+      dependencies: [
+        "SwiftMuxGateway", "SwiftMuxGuardian", "SwiftMuxProtocol",
+        "SwiftMuxGatewayRoaming", "TerminalHost",
+      ]
+    ),
+    // The durable gateway's roaming host (spec.durability.md §2): RST/1
+    // sessions on guardian-supervised workers.
+    .target(
+      name: "SwiftMuxGatewayRoaming",
+      dependencies: [
+        "TerminalHost", "SwiftMuxGateway", "SwiftMuxClient", "SwiftMuxProtocol",
+        "SessionCore", "ScreenProtocol",
+      ],
+      swiftSettings: core
     ),
     // Fresh-process terminal setup: login_tty, then exec the shell in place.
     .executableTarget(name: "SwiftMuxLauncher"),
@@ -331,6 +344,7 @@ let package = Package(
       dependencies: [
         "SessionCore", "ScreenProtocol", "AppleTransport", "SwifttyEngine",
         "SwiftMuxProtocol", "SwiftMuxService", "SwiftMuxExport",
+        "SwiftMuxClient",
       ],
       swiftSettings: core
     ),

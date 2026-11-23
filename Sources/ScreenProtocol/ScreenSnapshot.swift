@@ -194,6 +194,9 @@ public struct ScreenSnapshot: Hashable, Sendable, Codable {
   public var activeBuffer: ActiveBuffer
   public var cursor: ScreenCursor
   public var reverseVideo: Bool
+  /// The program tracks the mouse; sent only with `mouseWheel`, so the
+  /// client reports wheel notches instead of alternate-scroll arrows.
+  public var mouseTracking: Bool
   public var title: String
   /// One flag per row: the row soft-wraps into the next.
   public var wrapped: [Bool]
@@ -213,6 +216,7 @@ public struct ScreenSnapshot: Hashable, Sendable, Codable {
     activeBuffer: ActiveBuffer = .primary,
     cursor: ScreenCursor,
     reverseVideo: Bool = false,
+    mouseTracking: Bool = false,
     title: String = "",
     wrapped: [Bool],
     styles: [CellStyle],
@@ -228,6 +232,7 @@ public struct ScreenSnapshot: Hashable, Sendable, Codable {
     self.activeBuffer = activeBuffer
     self.cursor = cursor
     self.reverseVideo = reverseVideo
+    self.mouseTracking = mouseTracking
     self.title = title
     self.wrapped = wrapped
     self.styles = styles
@@ -259,8 +264,8 @@ public struct ScreenSnapshot: Hashable, Sendable, Codable {
 
   enum CodingKeys: String, CodingKey {
     case sessionID, attachmentEpoch, screenRevision, resizeRevision, columns,
-      rows, activeBuffer, cursor, reverseVideo, title, wrapped, styles, cells,
-      lastFullyAppliedInputSequence
+      rows, activeBuffer, cursor, reverseVideo, mouseTracking, title, wrapped,
+      styles, cells, lastFullyAppliedInputSequence
   }
 
   public init(from decoder: any Decoder) throws {
@@ -287,6 +292,8 @@ public struct ScreenSnapshot: Hashable, Sendable, Codable {
     activeBuffer = try c.decode(ActiveBuffer.self, forKey: .activeBuffer)
     cursor = try c.decode(ScreenCursor.self, forKey: .cursor)
     reverseVideo = try c.decode(Bool.self, forKey: .reverseVideo)
+    mouseTracking =
+      try c.decodeIfPresent(Bool.self, forKey: .mouseTracking) ?? false
     title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
     wrapped = try c.decode([Bool].self, forKey: .wrapped)
     styles = try c.decode([CellStyle].self, forKey: .styles)
@@ -307,6 +314,7 @@ public struct ScreenSnapshot: Hashable, Sendable, Codable {
     try c.encode(activeBuffer, forKey: .activeBuffer)
     try c.encode(cursor, forKey: .cursor)
     try c.encode(reverseVideo, forKey: .reverseVideo)
+    if mouseTracking { try c.encode(true, forKey: .mouseTracking) }
     if !title.isEmpty { try c.encode(title, forKey: .title) }
     try c.encode(wrapped, forKey: .wrapped)
     try c.encode(styles, forKey: .styles)

@@ -115,7 +115,7 @@ actor FakeHost {
   /// `Viewport` movements received, in order.
   private(set) var viewports: [Int64] = []
   /// Features advertised in `Attached`.
-  var features: RSTFeatures = []
+  var features: RSTFeatures = .required
 
   var links: [ObjectIdentifier: Link] = [:]
   var current: ObjectIdentifier?
@@ -291,7 +291,7 @@ actor FakeHost {
     let link = try #require(links[id])
     var snapshot = makeSnapshot(epoch: epoch, revision: revision)
     if wrongSession { snapshot.sessionID = SessionID.random() }
-    let payload = malformed ? [0] : try SnapshotFrame.encode(snapshot)
+    let payload = malformed ? [0] : try rstFrameRecord(snapshot)
     nextStream += 1
     try await link.connection.sendSnapshot(payload, stream: nextStream)
   }
@@ -404,6 +404,7 @@ actor FakeHost {
       switch input.operation {
       case let .committedText(t), let .paste(t): bytes = Array(t.utf8)
       case .key: bytes = [0x0D]
+      case .wheel: bytes = Array("\u{1B}[<64;1;1M".utf8)
       case let .resize(c, r, revision):
         columns = c
         rows = r
@@ -450,7 +451,7 @@ actor FakeHost {
     nextStream += 1
     let stream = nextStream
     let payload: [UInt8]
-    do { payload = try SnapshotFrame.encode(snapshot) } catch {
+    do { payload = try rstFrameRecord(snapshot) } catch {
       Issue.record(error)
       return
     }

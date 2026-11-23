@@ -543,12 +543,6 @@ final class ImpairedRSTConnection: RSTConnection, Sendable {
         delta: true,
         base: d.baseRevision
       )
-    case let .snapshot(s)?:
-      RecordInfo(
-        revision: s.screenRevision,
-        epoch: s.attachmentEpoch,
-        delta: false
-      )
     case nil: nil
     }
   }
@@ -634,12 +628,6 @@ final class HostScreenOracle: Sendable {
         .map {
           Screen(epoch: header.attachmentEpoch, frame: frame, display: $0.frame)
         }
-    case let .snapshot(snapshot):
-      entry = Screen(
-        epoch: snapshot.attachmentEpoch,
-        frame: nil,
-        display: PresentationMapper.map(snapshot)
-      )
     }
     guard let entry else {
       unmapped.withLock { $0 += 1 }

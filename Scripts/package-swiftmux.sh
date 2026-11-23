@@ -139,11 +139,12 @@ for exe in swiftmux-agent swmux-launcher swmux swsh; do
   codesign --force --options runtime "$timestamp" --sign "$identity" \
     --identifier "$bundle_id.$exe" "$app/Contents/MacOS/$exe"
 done
-# Durable sessions (spec.durability.md §9), opt-in with SWIFTTY_DURABLE=1: the
-# guardian and gateway helpers and a worker build, each separately signed. The
-# app copies them into the owner's support directory and each registers its
-# own agent (`swiftty --durable-sessions adopt`); nothing here registers.
-if [ "${SWIFTTY_DURABLE:-0}" = 1 ]; then
+# Durable sessions (spec.durability.md §9), the only SwiftMux topology: the
+# guardian and gateway helpers (the gateway also serves roaming clients) and a
+# worker build, each separately signed. The app copies them into the owner's
+# support directory and each registers its own agent
+# (`swiftty --durable-sessions adopt`); nothing here registers.
+{
   helpers="$app/Contents/Library/Helpers"
   guardian_label=com.chr33s.swiftty.swiftmux-guardian
   gateway_label=com.chr33s.swiftty.swiftmux-gateway
@@ -195,8 +196,10 @@ PLIST
       codesign --force --options runtime "$timestamp" --sign "$identity" \
         --identifier "$helper_label.$exe" "$dir/MacOS/$exe"
     done
+    # Signing the bundle re-signs its main executable: keep the identifier
+    # the guardian and gateway require of each other (`<label>.<program>`).
     codesign --force --options runtime "$timestamp" --sign "$identity" \
-      "$helpers/$name.app"
+      --identifier "$helper_label.$program" "$helpers/$name.app"
   }
   helper_bundle SwiftMuxGuardian "$guardian_label" swiftmux-guardian \
     "<key>$guardian_label</key><true/><key>$guardian_label.control</key><true/>" \
@@ -210,7 +213,7 @@ PLIST
 {"schema": 1, "build": "$build", "guardianProtocol": 1, "workerProtocols": [2], "nativeControlProtocol": 1}
 JSON
   codesign --force --options runtime "$timestamp" --sign "$identity" \
-    "$helpers/SwiftMuxGateway.app"
+    --identifier "$gateway_label.swiftmux-gateway" "$helpers/SwiftMuxGateway.app"
   worker="$helpers/Worker.app/Contents"
   mkdir -p "$worker/MacOS" "$worker/Resources"
   for exe in swiftmux-worker swmux-launcher swsh; do
@@ -240,7 +243,7 @@ JSON
 PLIST
   codesign --force --options runtime "$timestamp" --sign "$identity" \
     "$helpers/Worker.app"
-fi
+}
 
 # Associated domains is the only entitlement, and only when configured.
 entitlements=""

@@ -95,7 +95,7 @@ struct FramingTests {
   @Test
   func snapshotReaderRejectsExcessBeforeReadingBody() {
     let input = ReadCountingBytes(
-      prefix: [0, 0, 0, 0, 1, 0, 0, 0, 1],
+      prefix: [SnapshotFrame.Encoding.smxb.rawValue, 0, 0, 0, 1, 0, 0, 0, 1],
       count: 1024 * 1024
     )
     var reader = SnapshotStreamReader()
@@ -168,44 +168,53 @@ struct FramingTests {
     }
   }
 
-  @Test(arguments: [SnapshotFrame.Encoding.plain, .zlib])
-  func `snapshot frame round trip`(encoding: SnapshotFrame.Encoding) throws {
-    let snapshot = sampleSnapshot()
-    let frame = try SnapshotFrame.encode(snapshot, encoding: encoding)
-    #expect(frame[0] == encoding.rawValue)
-    let decoded = try SnapshotFrame.decode(frame)
-    #expect(decoded == snapshot)
-    #expect(decoded.cells[0][0].text == "e\u{301}")
-    #expect(decoded.textLines[0] == "e\u{301}界")
+  @Test(arguments: [SnapshotFrame.Encoding.smxb, .smxbZlib])
+  func `screen record round trip`(encoding: SnapshotFrame.Encoding) throws {
+    let payload = frameRecord(encoding: encoding)
+    #expect(payload[0] == encoding.rawValue)
+    guard
+      case let .frame(decoded, header) = try SnapshotFrame.decodeRecord(payload)
+    else {
+      Issue.record("not a frame")
+      return
+    }
+    #expect(decoded == FrameWireTests.frame())
+    #expect(header == FrameWireTests.header)
 
     var reader = SnapshotStreamReader()
-    for chunk in stride(from: 0, to: frame.count, by: 7) {
-      try reader.append(frame[chunk ..< min(chunk + 7, frame.count)])
+    for chunk in stride(from: 0, to: payload.count, by: 7) {
+      try reader.append(payload[chunk ..< min(chunk + 7, payload.count)])
     }
-    #expect(try reader.finish() == snapshot)
+    guard case let .frame(streamed, _) = try reader.finishRecord() else {
+      Issue.record("not a frame")
+      return
+    }
+    #expect(streamed == decoded)
   }
 
   @Test
-  func `snapshot frame rejects bad headers and bodies`() throws {
-    let frame = try SnapshotFrame.encode(sampleSnapshot(), encoding: .plain)
-    var badEncoding = frame
-    badEncoding[0] = 9
-    #expect(throws: FramingError.unsupportedEncoding(9)) {
-      try SnapshotFrame.decode(badEncoding)
+  func `screen records reject bad headers and bodies`() throws {
+    let payload = frameRecord()
+    for bad: UInt8 in [0, 1, 9] {
+      var badEncoding = payload
+      badEncoding[0] = bad
+      #expect(throws: FramingError.unsupportedEncoding(bad)) {
+        try SnapshotFrame.decodeRecord(badEncoding)
+      }
     }
-    var huge = frame
+    var huge = payload
     huge[1] = 0xFF
     #expect(throws: FramingError.snapshotTooLarge) {
-      try SnapshotFrame.decode(huge)
+      try SnapshotFrame.decodeRecord(huge)
     }
     #expect(throws: FramingError.trailingData) {
-      try SnapshotFrame.decode(frame + [0])
+      try SnapshotFrame.decodeRecord(payload + [0])
     }
     #expect(throws: FramingError.truncated) {
-      try SnapshotFrame.decode(Array(frame.dropLast()))
+      try SnapshotFrame.decodeRecord(Array(payload.dropLast()))
     }
     var reader = SnapshotStreamReader()
-    try reader.append(frame)
+    try reader.append(payload)
     #expect(throws: FramingError.trailingData) { try reader.append([1]) }
   }
 

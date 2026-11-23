@@ -582,16 +582,24 @@ public struct RSTFeatures: OptionSet, Hashable, Sendable {
   public static let copySelection = RSTFeatures(rawValue: 1 << 4)
   /// `Layout`, `LayoutAction` and `LayoutResult` (§7.6).
   public static let layoutControl = RSTFeatures(rawValue: 1 << 5)
+  /// `wheel` input operations, reported while the program tracks the
+  /// mouse; other mouse input stays local.
+  public static let mouseWheel = RSTFeatures(rawValue: 1 << 6)
+
+  /// What every host and client must list: screens are shared frames,
+  /// and scrolling reaches a mouse-tracking program as wheel input.
+  public static let required: RSTFeatures = [.paneFrames, .mouseWheel]
 
   public static let supported: RSTFeatures = [
     .keypadKeys, .historyViewport, .paneFrames, .screenDeltas, .copySelection,
-    .layoutControl,
+    .layoutControl, .mouseWheel,
   ]
 
   private static let wireNames: [(String, RSTFeatures)] = [
     ("keypadKeys", .keypadKeys), ("historyViewport", .historyViewport),
     ("paneFrames", .paneFrames), ("screenDeltas", .screenDeltas),
     ("copySelection", .copySelection), ("layoutControl", .layoutControl),
+    ("mouseWheel", .mouseWheel),
   ]
 
   /// What both peers listed, with dependent features dropped when the

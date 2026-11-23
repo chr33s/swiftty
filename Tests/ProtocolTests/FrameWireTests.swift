@@ -87,8 +87,14 @@ struct FrameWireTests {
     }
     #expect(header == Self.header)
     #expect(decoded == frame)
-    // A legacy decoder refuses the frame encodings rather than misreading.
-    #expect(throws: FramingError.self) { try SnapshotFrame.decode(wire) }
+    // Legacy JSON snapshot encodings are refused, never misread.
+    for legacy: UInt8 in [0, 1] {
+      var old = wire
+      old[0] = legacy
+      #expect(throws: FramingError.unsupportedEncoding(legacy)) {
+        try SnapshotFrame.decodeRecord(old)
+      }
+    }
   }
 
   @Test
@@ -131,7 +137,7 @@ struct FrameWireTests {
       selectedVisible: nil
     )
     var mouse = Self.frame()
-    mouse.modes = [.mouseTracking]
+    mouse.modes = [.mouseTracking, .mouseAnyMotion]
     var envelope = Self.frame()
     envelope.identity = FrameIdentity.unbound
     for frame in [searched, mouse] {
@@ -142,6 +148,18 @@ struct FrameWireTests {
         try SnapshotFrame.decodeRecord(wire)
       }
     }
+    // `mouseTracking` alone is in the profile (`mouseWheel` hosts).
+    var tracking = Self.frame()
+    tracking.modes = [.mouseTracking]
+    let accepted = try SnapshotFrame.encode(
+      frame: [UInt8](SMXB.encode(tracking, envelope: .rst(Self.header.bytes)))
+    )
+    guard case let .frame(decoded, _) = try SnapshotFrame.decodeRecord(accepted)
+    else {
+      Issue.record("not a frame")
+      return
+    }
+    #expect(decoded.modes == [.mouseTracking])
     // A SwiftMux envelope is not an RST/1 screen.
     let mux = try SnapshotFrame.encode(frame: [UInt8](SMXB.encode(envelope)))
     #expect(throws: FramingError.self) { try SnapshotFrame.decodeRecord(mux) }
@@ -247,4 +265,20 @@ struct FrameWireTests {
       RSTFeatures.supported.agreed(with: .supported) == RSTFeatures.supported
     )
   }
+}
+
+/// A screen stream payload for `FrameWireTests.frame()` with the given
+/// encoding (2 plain, 3 zlib).
+func frameRecord(
+  _ frame: PaneFrame = FrameWireTests.frame(),
+  encoding: SnapshotFrame.Encoding = .smxb
+) -> [UInt8] {
+  let record = [UInt8](
+    SMXB.encode(frame, envelope: .rst(FrameWireTests.header.bytes))
+  )
+  let body = encoding == .smxbZlib ? Zlib.compress(record) : record
+  var out = [encoding.rawValue]
+  appendUInt32(UInt32(record.count), to: &out)
+  appendUInt32(UInt32(body.count), to: &out)
+  return out + body
 }

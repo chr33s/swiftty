@@ -648,6 +648,17 @@ struct ScrollTests {
       ) == .wheel
     )
     #expect(ScrollRouting(modes: [.mouseAny]) == .wheel)
+    // A roaming surface keeps wheel routing for a mouse-tracking program
+    // on the alternate screen instead of sending arrow keys.
+    let program = Modes.initial.union([.alternateScreen, .mouseNormal])
+    #expect(
+      ScrollRouting(modes: SurfaceCapabilities.roaming.scrollModes(program))
+        == .wheel
+    )
+    #expect(
+      ScrollRouting(modes: SurfaceCapabilities.roaming.effectiveModes(program))
+        == .arrows
+    )
   }
 }
 

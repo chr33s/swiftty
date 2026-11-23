@@ -34,7 +34,7 @@ public enum PresentationMapper {
       }
     }
     let cursor = snapshot.cursor
-    return PresentationFrame(
+    var frame = PresentationFrame(
       columns: snapshot.columns,
       rows: snapshot.rows,
       cells: cells,
@@ -49,6 +49,8 @@ public enum PresentationMapper {
       alternateScreen: snapshot.activeBuffer == .alternate,
       title: snapshot.title
     )
+    frame.mouseTracking = snapshot.mouseTracking
+    return frame
   }
 
   public static func style(_ style: CellStyle) -> PresentationFrame.Style {

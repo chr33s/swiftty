@@ -139,6 +139,10 @@ final class Client {
   var subscribesInbox = false
   /// Bridged from the roaming transport rather than local XPC.
   var remote = false
+  /// Accepted on an in-process forwarding listener: its hello may declare
+  /// the transport an in-process frontend authenticated, as a bound
+  /// gateway's may.
+  var acceptsForwarding = false
 
   /// Negotiated frame encoding: binary and deltas only when the hello
   /// asked for them (the service supports both).

@@ -26,9 +26,9 @@ extension HostSnapshotEncodingTests {
           id: grant.sessionID,
           service: registry.service,
           grid: grant.initialGrid,
-          snapshotEncoder: { screen in
+          screenEncoder: { screen, record in
             encoded.withLock { $0.append(screen.screenRevision) }
-            return try SnapshotFrame.encode(screen)
+            return record
           }
         )
         defer { _ = session.retire(when: { _ in true }) }
@@ -58,6 +58,7 @@ extension HostSnapshotEncodingTests {
           return
         }
         var latest = try await driveFrames(
+          registry,
           session,
           receiver,
           epoch: 1,
@@ -90,6 +91,7 @@ extension HostSnapshotEncodingTests {
           }
           protected = session.diagnostics.screenRevision
           latest = try await driveFrames(
+            registry,
             session,
             replacement,
             epoch: 2,
@@ -143,7 +145,7 @@ extension HostSnapshotEncodingTests {
           id: grant.sessionID,
           service: registry.service,
           grid: grant.initialGrid,
-          snapshotEncoder: { screen in
+          screenEncoder: { screen, record in
             let first = encoded.withLock {
               $0.append(screen.screenRevision)
               return $0.count == 1
@@ -151,7 +153,7 @@ extension HostSnapshotEncodingTests {
             if first, release.wait(timeout: .now() + 10) == .timedOut {
               Issue.record("encoding gate timed out")
             }
-            return try SnapshotFrame.encode(screen)
+            return record
           }
         )
         defer { _ = session.retire(when: { _ in true }) }
@@ -175,6 +177,7 @@ extension HostSnapshotEncodingTests {
           encoded.withLock { $0.count == 1 } ? true : nil
         }
         var latest = try await driveFrames(
+          registry,
           session,
           receiver,
           epoch: 1,
@@ -197,6 +200,7 @@ extension HostSnapshotEncodingTests {
           }
           protected = session.diagnostics.screenRevision
           latest = try await driveFrames(
+            registry,
             session,
             replacement,
             epoch: 2,
@@ -276,6 +280,7 @@ final class HeldSnapshotSends: RSTConnection, Sendable {
 }
 
 private func driveFrames(
+  _ registry: SessionRegistry,
   _ session: RoamingSession,
   _ receiver: SnapshotReceiver,
   epoch: UInt64,
@@ -294,8 +299,8 @@ private func driveFrames(
       from: receiver.attachment
     )
     try await hostEventuallyAsync("PTY output and capture \(index)") {
-      guard let snapshot = await session.currentSnapshot(),
-        snapshot.textLines.contains("OUTPUT-frame-\(index)"),
+      guard let lines = await liveLines(registry, session),
+        lines.contains("OUTPUT-frame-\(index)"),
         session.diagnostics.screenRevision > before
       else { return nil as Bool? }
       return true

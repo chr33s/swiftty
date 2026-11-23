@@ -70,9 +70,10 @@ public final class RoamingSession: @unchecked Sendable {
   public let id: SessionID
   public var workspace: WorkspaceID { id.workspace }
   let queue: DispatchQueue
-  private let service: MuxService
+  private let panes: any RoamingPanes
   private let statusBox: Mutex<Status>
-  private let snapshotEncoder: @Sendable (ScreenSnapshot) throws -> [UInt8]
+  /// Tests: sees (and may hold or fail) each encoded screen record.
+  private let screenEncoder: ScreenEncoder
   private let encodeQueue = DispatchQueue(
     label: "swiftmux.roaming.snapshot-encode",
     qos: .utility
@@ -116,17 +117,18 @@ public final class RoamingSession: @unchecked Sendable {
   }
   /// A captured screen: a legacy snapshot, or the shared frame model with
   /// its envelope (`paneFrames`).
-  enum CapturedScreen: Sendable {
-    case snapshot(ScreenSnapshot)
+  package enum CapturedScreen: Sendable {
     case frame(PaneFrame, RSTFrameHeader)
 
-    var screenRevision: UInt64 {
+    package var screenRevision: UInt64 {
       switch self {
-      case let .snapshot(s): s.screenRevision
       case let .frame(_, h): h.screenRevision
       }
     }
   }
+  /// Encodes one screen record (the header and the record to send).
+  package typealias ScreenEncoder =
+    @Sendable (RSTFrameHeader, [UInt8]) throws -> [UInt8]
   private struct SnapshotEncoding: Sendable {
     let screen: CapturedScreen
     let stream: UInt64
@@ -152,7 +154,7 @@ public final class RoamingSession: @unchecked Sendable {
   /// At most the current attachment's two scheduler-owned captures wait here.
   /// Replacement removes stale captures before another worker can start them.
   private var pendingSnapshotEncodes: [SnapshotEncoding] = []
-  private var mux: MuxLocalSession?
+  private var mux: (any RoamingMux)?
   /// The SMX attachment of `mux`'s lease.
   private var muxAttachment: AttachmentID?
   /// Called once the previous lease is fully released.
@@ -186,22 +188,39 @@ public final class RoamingSession: @unchecked Sendable {
   /// held, and the exact lease generation a takeover may displace.
   private var target: ResumeTarget?
 
-  init(
+  /// A session of the in-process SwiftMux service.
+  convenience init(
     id: SessionID,
     service: MuxService,
     grid: GridSize,
     floor: Floor = Floor(),
     pendingInputLimit: Int = RSTLimits.maxPendingInputBytes,
-    snapshotEncoder: @escaping @Sendable (ScreenSnapshot) throws -> [UInt8] = {
-      try SnapshotFrame.encode($0)
-    }
+    screenEncoder: @escaping ScreenEncoder = { $1 }
+  ) {
+    self.init(
+      id: id,
+      panes: LocalRoamingPanes(service: service),
+      grid: grid,
+      floor: floor,
+      pendingInputLimit: pendingInputLimit,
+      screenEncoder: screenEncoder
+    )
+  }
+
+  init(
+    id: SessionID,
+    panes: any RoamingPanes,
+    grid: GridSize,
+    floor: Floor = Floor(),
+    pendingInputLimit: Int = RSTLimits.maxPendingInputBytes,
+    screenEncoder: @escaping ScreenEncoder = { $1 }
   ) {
     epoch = floor.epoch
     screenRevision = floor.screenRevision
     resizeRevision = floor.resizeRevision
     self.id = id
-    self.service = service
-    self.snapshotEncoder = snapshotEncoder
+    self.panes = panes
+    self.screenEncoder = screenEncoder
     columns = grid.columns
     rows = grid.rows
     ledger = HostInputLedger(byteLimit: pendingInputLimit)
@@ -301,19 +320,6 @@ public final class RoamingSession: @unchecked Sendable {
       } catch { return .failure(error) }
     }
     return try result.get()
-  }
-
-  /// An owned export of the active pane's screen (diagnostics and tests).
-  public func currentSnapshot() async -> ScreenSnapshot? {
-    let (pane, stamp) = queue.sync { (activePane, stamp(epoch: epoch)) }
-    guard let pane else { return nil }
-    return await withCheckedContinuation { continuation in
-      service.inspect(
-        pane: pane,
-        { ScreenExporter.export($0, stamp: stamp) },
-        completion: { continuation.resume(returning: $0) }
-      )
-    }
   }
 
   private func endAuthorizationOnQueue() {
@@ -438,11 +444,11 @@ public final class RoamingSession: @unchecked Sendable {
     }
     let admission = LeaseAdmission(connection: a.connection)
     leaseAdmission = admission
-    let session = MuxLocalSession(queue: queue)
+    let session = panes.makeMux(workspace: workspace, queue: queue)
     // Fails this attach without touching a newer one's client.
     let failAttach = { [self] (code: RSTErrorCode) in
       admission.revoke()
-      if mux === session { closeMux {} } else { session.close() }
+      if mux === session { closeMux {} } else { session.close(then: nil) }
       completion(.failure(terminated ? .unknownSession : code))
     }
     let refusal = { [self] () -> RSTErrorCode? in
@@ -488,7 +494,7 @@ public final class RoamingSession: @unchecked Sendable {
       stale.close()
     }
     mux = session
-    session.connect(to: service, frontend: .native, remote: true)
+    session.connect()
     let target = WorkspaceSelector.id(workspace)
     session.request(
       .attach(AttachRequest(target)),
@@ -678,7 +684,7 @@ public final class RoamingSession: @unchecked Sendable {
     let state = statusBox.withLock { $0.state }
     guard state != reportedState else { return }
     reportedState = state
-    service.roamingSessionChanged(
+    panes.sessionChanged(
       id.description,
       workspace: workspace,
       state: state.rawValue
@@ -748,6 +754,7 @@ public final class RoamingSession: @unchecked Sendable {
         a.pendingViewportLines = 0
         a.liveReturns &+= 1
       }
+      if let pane { mux?.present(pane: pane, top: nil, generation: 0) }
       if let status = summary?.exitStatus {
         exited(status)
       } else {
@@ -887,6 +894,9 @@ public final class RoamingSession: @unchecked Sendable {
       a.liveReturns &+= 1
       if a.historyTop != nil {
         a.historyTop = nil
+        if let pane = activePane {
+          mux?.present(pane: pane, top: nil, generation: a.historyGeneration)
+        }
         contentChanged()
       }
       admit(input, from: a)
@@ -1005,14 +1015,12 @@ public final class RoamingSession: @unchecked Sendable {
       unit: request.unit,
       screenRowVersions: identities
     )
+    guard let mux else { return finish(.historyUnavailable) }
     a.copyInFlight = true
-    let versions = a.rowVersions
-    service.inspect(
+    mux.copy(
       pane: pane,
-      { state in
-        SelectionCopy.text(copy, in: state) { versions.matches($0, in: state) }
-      },
-      completion: { [weak self] result in
+      copy,
+      { [weak self] result in
         self?.queue
           .async { [weak self] in
             guard let self, a === self.attachment, a.isCurrent, a.epoch == epoch
@@ -1282,16 +1290,13 @@ public final class RoamingSession: @unchecked Sendable {
     // Comparing `historyTop` alone misses input that arrives while a move
     // from live output resolves: live stays nil, so the move would apply.
     let liveReturns = a.liveReturns
-    service.inspect(
+    guard let mux else { return }
+    mux.historyTop(
       pane: pane,
-      { state -> (top: Int?, generation: UInt64) in
-        let from = generation == state.addressingGeneration ? current : nil
-        return (
-          ScreenExporter.historyTop(state, from: from, moving: lines),
-          state.addressingGeneration
-        )
-      },
-      completion: { [weak self] resolved in
+      from: current,
+      generation: generation,
+      moving: lines,
+      { [weak self] resolved in
         self?.queue
           .async { [weak self] in
             a.viewportMoveInFlight = false
@@ -1303,6 +1308,12 @@ public final class RoamingSession: @unchecked Sendable {
             {
               a.historyTop = resolved.top
               a.historyGeneration = resolved.generation
+              self.mux?
+                .present(
+                  pane: pane,
+                  top: resolved.top,
+                  generation: resolved.generation
+                )
               self.contentChanged(interactive: true)
             }
             self.resolveViewportMove(for: a)
@@ -1383,6 +1394,18 @@ public final class RoamingSession: @unchecked Sendable {
       }
       mux.input(
         .input(.key(name, modifiers)),
+        attachment: smx,
+        pane: pane,
+        done
+      )
+    case let .wheel(wheel):
+      // The service reports it only while the program tracks the mouse.
+      guard mux.welcome?.features.contains(.mouseReporting) == true else {
+        done(nil)
+        return
+      }
+      mux.input(
+        .input(.mouse(Self.muxMouse(wheel))),
         attachment: smx,
         pane: pane,
         done
@@ -1499,7 +1522,7 @@ public final class RoamingSession: @unchecked Sendable {
         newlineCount: newlines,
         limits: limits
       )
-    case .key: return MuxService.permanentlyExceedsKey(limits: limits)
+    case .key, .wheel: return MuxService.permanentlyExceedsKey(limits: limits)
     case .resize: return false
     }
   }
@@ -1507,6 +1530,27 @@ public final class RoamingSession: @unchecked Sendable {
   private func acknowledge(_ sequence: UInt64) {
     guard let a = attachment, a.isCurrent else { return }
     a.send(.inputAck(epoch: a.epoch, sequence: sequence))
+  }
+
+  static func muxMouse(_ wheel: SemanticWheel) -> MuxMouse {
+    var modifiers: MuxKeyModifiers = []
+    if wheel.modifiers.contains(.shift) { modifiers.insert(.shift) }
+    if wheel.modifiers.contains(.alt) { modifiers.insert(.alt) }
+    if wheel.modifiers.contains(.control) { modifiers.insert(.control) }
+    let button: MuxMouse.Button =
+      switch wheel.direction {
+      case .up: .wheelUp
+      case .down: .wheelDown
+      case .left: .wheelLeft
+      case .right: .wheelRight
+      }
+    return MuxMouse(
+      .press,
+      button,
+      column: wheel.column,
+      row: wheel.row,
+      modifiers: modifiers
+    )
   }
 
   /// Without `keypadKeys`, keypad keys become the keys they type.
@@ -1605,41 +1649,17 @@ public final class RoamingSession: @unchecked Sendable {
       a.scheduler.started(stream: stream, revision: stamp.screenRevision)
       pruneSnapshotWork()
       let exit = exitStatus
-      let frames = a.features.contains(.paneFrames)
-      let versions = a.rowVersions
-      // Exported in the pane's order, so every byte parsed before this
-      // point (including final output after exit) is included.
-      service.inspect(
+      guard let mux else {
+        return captured(nil, stream: stream, exit: exit, to: a)
+      }
+      mux.capture(
         pane: pane,
-        { state -> CapturedScreen? in
-          // Rows renumbered since the window opened: show live output.
-          let historyTop = window.flatMap {
-            $0.generation == state.addressingGeneration ? $0.top : nil
-          }
-          guard frames else {
-            return .snapshot(
-              ScreenExporter.export(state, stamp: stamp, historyTop: historyTop)
-            )
-          }
-          // A screen the frame budgets cannot express goes as a legacy
-          // snapshot, which the client also accepts, rather than failing
-          // and retrying every capture.
-          if let (frame, header) = ScreenExporter.frame(
-            state,
-            stamp: stamp,
-            historyTop: historyTop,
-            versions: versions
-          ) {
-            return .frame(frame, header)
-          }
-          return .snapshot(
-            ScreenExporter.export(state, stamp: stamp, historyTop: historyTop)
-          )
-        },
-        completion: { [weak self] screen in
+        stamp: stamp,
+        window: window,
+        { [weak self] screen in
           self?.queue
             .async { [weak self] in
-              self?.captured(screen ?? nil, stream: stream, exit: exit, to: a)
+              self?.captured(screen, stream: stream, exit: exit, to: a)
             }
         }
       )
@@ -1695,15 +1715,9 @@ public final class RoamingSession: @unchecked Sendable {
   /// when that is smaller than half the frame, otherwise in full.
   private static func encode(
     _ job: SnapshotEncoding,
-    legacy: @Sendable (ScreenSnapshot) throws -> [UInt8]
+    encoder: ScreenEncoder
   ) throws -> EncodedScreen {
     switch job.screen {
-    case let .snapshot(snapshot):
-      return EncodedScreen(
-        payload: try legacy(snapshot),
-        baseline: nil,
-        full: true
-      )
     case let .frame(frame, header):
       let envelope = SMXB.Envelope.rst(header.bytes)
       let delta = job.baseline.flatMap {
@@ -1713,7 +1727,10 @@ public final class RoamingSession: @unchecked Sendable {
         delta.map { SMXB.encode($0, envelope: envelope) }
         ?? SMXB.encode(frame, envelope: envelope)
       return EncodedScreen(
-        payload: try SnapshotFrame.encode(frame: [UInt8](record)),
+        payload: try encoder(
+          header,
+          try SnapshotFrame.encode(frame: [UInt8](record))
+        ),
         baseline: FrameBaseline(frame),
         full: delta == nil
       )
@@ -1742,9 +1759,9 @@ public final class RoamingSession: @unchecked Sendable {
     else { return }
     let job = pendingSnapshotEncodes.removeFirst()
     encodingSnapshot = true
-    let encode = snapshotEncoder
+    let encode = screenEncoder
     encodeQueue.async { [weak self] in
-      let result = Result { try Self.encode(job, legacy: encode) }
+      let result = Result { try Self.encode(job, encoder: encode) }
       self?.queue
         .async { [weak self] in self?.snapshotEncoded(result, job: job) }
     }

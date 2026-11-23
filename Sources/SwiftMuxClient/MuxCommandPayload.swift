@@ -93,6 +93,10 @@ private struct MuxCommandPayload {
     case let .renameWorkspace(value, name):
       try selector(value)
       try text(name)
+    case .endWorkspaceIfUnused: break
+    case let .roamingSessionChanged(id, _, state):
+      try text(id)
+      try text(state)
     case let .setTheme(theme):
       try add(
         count: theme.palette.colors.count,

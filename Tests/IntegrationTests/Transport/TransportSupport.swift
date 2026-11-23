@@ -141,10 +141,10 @@ func connector(
   QUICRSTConnector(alpn: alpn, handshakeTimeout: timeout)
 }
 
-/// A syntactically valid plain-encoding snapshot payload of `bodyLength`
+/// A syntactically valid uncompressed screen payload of `bodyLength`
 /// bytes; the transport never decodes it.
 func snapshotPayload(bodyLength: Int, fill: UInt8) -> [UInt8] {
-  var out: [UInt8] = [SnapshotFrame.Encoding.plain.rawValue]
+  var out: [UInt8] = [SnapshotFrame.Encoding.smxb.rawValue]
   for _ in 0 ..< 2 {
     let n = UInt32(bodyLength)
     out += [

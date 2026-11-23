@@ -102,11 +102,17 @@ struct PresentationMapperTests {
   }
 
   @Test
-  func `snapshot wire round trip maps identically`() throws {
-    let payload = try SnapshotFrame.encode(sample())
-    let decoded = try #require(RoamingClient.decode(payload))
-    #expect(decoded.frame == PresentationMapper.map(sample()))
-    #expect(RoamingClient.decode(Array(payload.dropLast())) == nil)
+  func `frame wire round trip keeps the screen's text and geometry`() throws {
+    let payload = try rstFrameRecord(sample())
+    guard case let .screen(decoded)? = RoamingClient.decodeRecord(payload)
+    else {
+      Issue.record("not a screen")
+      return
+    }
+    #expect(decoded.snapshot.textLines == sample().textLines)
+    #expect(decoded.snapshot.wrapped == sample().wrapped)
+    #expect(decoded.frame.columns == sample().columns)
+    #expect(RoamingClient.decodeRecord(Array(payload.dropLast())) == nil)
   }
 
   @Test

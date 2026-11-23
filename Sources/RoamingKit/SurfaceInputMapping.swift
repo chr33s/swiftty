@@ -73,8 +73,9 @@ extension SemanticKey {
 
 extension SurfaceInput {
   /// The semantic input for a presentation session's frontend input, or
-  /// `nil` for input that never reaches the host: empty text, mouse and
-  /// focus reports, raw bytes, and unmappable keys.
+  /// `nil` for input that never reaches the host: empty text, mouse
+  /// reports other than wheel presses, focus reports, raw bytes, and
+  /// unmappable keys.
   public init?(_ input: TerminalInput) {
     switch input {
     case let .text(text):
@@ -86,7 +87,25 @@ extension SurfaceInput {
     case let .key(event):
       guard let key = SemanticKey(event) else { return nil }
       self = .key(key)
-    case .mouse, .focus, .bytes: return nil
+    case let .mouse(event):
+      guard event.action == .press else { return nil }
+      let direction: SemanticWheelDirection
+      switch event.button {
+      case .wheelUp: direction = .up
+      case .wheelDown: direction = .down
+      case .wheelLeft: direction = .left
+      case .wheelRight: direction = .right
+      case .left, .middle, .right, .none: return nil
+      }
+      self = .wheel(
+        SemanticWheel(
+          direction,
+          column: event.column,
+          row: event.row,
+          modifiers: SemanticModifiers(event.modifiers)
+        )
+      )
+    case .focus, .bytes: return nil
     }
   }
 }

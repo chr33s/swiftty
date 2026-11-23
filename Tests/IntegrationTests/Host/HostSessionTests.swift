@@ -268,8 +268,8 @@ struct HostSessionTests {
       #expect(!shownRows.isEmpty && shownRows.max()! < 199)
       #expect(!window.cursor.visible)
       // The host's own view stays at live output.
-      let live = try #require(await session.currentSnapshot())
-      #expect(live.textLines.contains { $0.contains("$") })
+      let live = try #require(await liveLines(registry, session))
+      #expect(live.contains { $0.contains("$") })
       // Moving past the newest line returns to live output.
       try await client.send(.viewport(epoch: 1, lines: -1_000))
       let backToLive = try await client.snapshot("back to live", after: window)
@@ -405,7 +405,7 @@ struct HostSessionTests {
       // A5: the service keeps parsing about 1.6 MB while detached.
       let deadline = ContinuousClock.now + .seconds(45)
       while await
-        !(session.currentSnapshot()?.textLines.contains("DONE-150000") ?? false)
+        !(liveLines(registry, session)?.contains("DONE-150000") ?? false)
       {
         guard ContinuousClock.now < deadline else {
           throw HostTestTimeout(what: "loop finished")

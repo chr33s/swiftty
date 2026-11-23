@@ -49,7 +49,7 @@ extension NegotiatedLimits {
       return maxPasteBytes > 0 && text.utf8.count <= maxPasteBytes
     case let .resize(columns, rows, _):
       return contains(GridSize(columns: columns, rows: rows))
-    case .key: return true
+    case .key, .wheel: return true
     }
   }
 }

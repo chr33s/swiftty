@@ -72,6 +72,7 @@ public enum FrameScreenMapper {
         blinking: frame.cursor.blinking
       ),
       reverseVideo: frame.modes.contains(.reverseVideo),
+      mouseTracking: frame.modes.contains(.mouseTracking),
       title: frame.title,
       wrapped: wrapped,
       styles: styles,

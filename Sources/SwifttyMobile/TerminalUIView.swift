@@ -29,7 +29,7 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
   /// on them (mouse tracking is masked without mouse reporting).
   var lastModes: Modes = .initial
   /// The same frame's modes as the terminal reported them.
-  private var programModes: Modes = .initial
+  private(set) var programModes: Modes = .initial
   /// Cursor of the last drawn frame, for placing IME candidates.
   var lastCursor: CursorState?
   private(set) var gridSize = (columns: 0, rows: 0)

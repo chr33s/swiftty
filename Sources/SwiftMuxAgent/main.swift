@@ -31,11 +31,14 @@ var machService =
   ProcessInfo.processInfo.environment["SWMUX_SERVICE"] ?? SMX.defaultMachService
 var launcherPath: String?
 var idleExit: TimeInterval? = 30
-/// Explicit paths are required; only a missing default disables roaming.
-var roamingConfig: URL? = HostConfiguration.resolvedConfigurationURL()
+/// Installed SwiftMux serves remote clients from the durable gateway only.
+/// This agent roams only when told to (`--roaming-config`, or
+/// `SWIFTMUX_ROAMING_CONFIG`): development and test harnesses.
 var requiredRoamingConfig =
   !(ProcessInfo.processInfo.environment[HostConfiguration.environmentKey] ?? "")
   .isEmpty
+var roamingConfig: URL? =
+  requiredRoamingConfig ? HostConfiguration.resolvedConfigurationURL() : nil
 var args = CommandLine.arguments.dropFirst()
 while let arg = args.popFirst() {
   switch arg {

@@ -22,12 +22,12 @@ extension HostSessionTests {
           id: grant.sessionID,
           service: registry.service,
           grid: grant.initialGrid,
-          snapshotEncoder: { screen in
+          screenEncoder: { screen, record in
             entered.withLock { $0 = true }
             if release.wait(timeout: .now() + 10) == .timedOut {
               Issue.record("snapshot encoding gate timed out")
             }
-            return try SnapshotFrame.encode(screen)
+            return record
           }
         )
         defer { _ = session.retire(when: { _ in true }) }

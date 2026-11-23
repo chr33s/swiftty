@@ -144,9 +144,17 @@ public final class SessionRegistry: @unchecked Sendable {
   public var identity: HostIdentity { identityBox.withLock { $0 } }
   private let identityBox: Mutex<HostIdentity>
   public let policy: RegistryPolicy
-  public let service: MuxService
+  private let backend: any RoamingWorkspaces
+  /// The in-process SwiftMux service of a local registry
+  /// (`init(service:…)`: tests and development roaming). A durable
+  /// gateway's registry has none; asking it is a programming error.
+  public var service: MuxService {
+    guard let local = backend as? LocalRoamingWorkspaces else {
+      preconditionFailure("this registry serves a durable gateway's workers")
+    }
+    return local.service
+  }
   private let makeLaunch: @Sendable () -> LaunchSpec
-  private let control: MuxLocalSession
   private let state = Mutex(State())
   private struct SweepTimerState {
     var source: DispatchSourceTimer?
@@ -173,30 +181,40 @@ public final class SessionRegistry: @unchecked Sendable {
   }
 
   /// The same control frontend, supplied explicitly for connection-lifetime tests.
-  init(
+  convenience init(
     service: MuxService,
     identity: HostIdentity,
     policy: RegistryPolicy = RegistryPolicy(),
     launch: @escaping @Sendable () -> LaunchSpec = { LaunchSpec() },
     control: MuxLocalSession
   ) {
-    self.service = service
-    serverInstanceID = SessionCore.ServerInstanceID(service.instance)
+    self.init(
+      workspaces: LocalRoamingWorkspaces(service: service, control: control),
+      identity: identity,
+      policy: policy,
+      launch: launch
+    )
+  }
+
+  /// Sessions through any SwiftMux topology (a durable gateway's workers).
+  package init(
+    workspaces: any RoamingWorkspaces,
+    identity: HostIdentity,
+    policy: RegistryPolicy = RegistryPolicy(),
+    launch: @escaping @Sendable () -> LaunchSpec = { LaunchSpec() }
+  ) {
+    backend = workspaces
+    serverInstanceID = SessionCore.ServerInstanceID(workspaces.instance)
     identityBox = Mutex(identity)
     var policy = policy
     policy.tokenLifetime = min(policy.tokenLifetime, RSTLimits.maxTokenLifetime)
     self.policy = policy
     makeLaunch = launch
-    self.control = control
-    control.queue.sync {
-      control.connect(to: service, frontend: .control, remote: true)
-    }
   }
 
   deinit {
     timer.withLock { $0.source?.cancel() }
-    let control = control
-    control.queue.async { control.close() }
+    backend.close()
   }
 
   // MARK: Bootstrap operations
@@ -218,23 +236,21 @@ public final class SessionRegistry: @unchecked Sendable {
     guard reserved else { throw .sessionLimit }
     var reservationHeld = true
     defer { if reservationHeld { state.withLock { $0.pendingCreates -= 1 } } }
-    let result = await control.request(
-      .newWorkspace(
-        NewWorkspaceRequest(
-          columns: grid.columns,
-          rows: grid.rows,
-          launch: makeLaunch(),
-          remainOnExit: true
-        )
+    let result = await backend.create(
+      NewWorkspaceRequest(
+        columns: grid.columns,
+        rows: grid.rows,
+        launch: makeLaunch(),
+        remainOnExit: true
       )
     )
-    guard case let .success(.created(ws)) = result else {
+    guard case let .success(workspace) = result else {
       if case let .failure(error) = result, error.code == .resourceLimit {
         throw .sessionLimit
       }
       throw .internalError
     }
-    let id = SessionID(ws.id)
+    let id = SessionID(workspace)
     let session = makeSession(id, grid: grid)
     let writerID = WriterID.random()
     let now = ContinuousClock.now
@@ -497,7 +513,7 @@ public final class SessionRegistry: @unchecked Sendable {
       return entry
     }
     defer { state.withLock { $0.finishEnding(id) } }
-    let result = await control.request(.endWorkspace(.id(id.workspace)))
+    let result = await backend.control(.endWorkspace(.id(id.workspace)))
     if case .success = result { return true }
     return entry != nil
   }
@@ -545,13 +561,13 @@ public final class SessionRegistry: @unchecked Sendable {
   public func metadata(
     _ request: AttentionRequest
   ) async throws(BootstrapErrorCode) -> HostMetadata {
-    var metadata = HostMetadata(serviceEpoch: service.instance)
+    var metadata = HostMetadata(serviceEpoch: backend.instance)
     switch request {
     case .workspaces: metadata.workspaces = try await workspaces()
     case let .inbox(query): metadata.inbox = try await inboxPage(query)
     case let .locate(reference):
       guard
-        case let .success(.attention(location)) = await control.request(
+        case let .success(.attention(location)) = await backend.control(
           .locateAttention(reference)
         )
       else { throw .internalError }
@@ -568,7 +584,7 @@ public final class SessionRegistry: @unchecked Sendable {
   private func acknowledge(
     _ command: MuxCommand
   ) async throws(BootstrapErrorCode) {
-    switch await control.request(command) {
+    switch await backend.control(command) {
     case .success: return
     case let .failure(error) where error.code == .notFound:
       throw .unknownSession
@@ -587,10 +603,10 @@ public final class SessionRegistry: @unchecked Sendable {
     query.limit = min(max(query.limit, 1), 100)
     while true {
       guard
-        case let .success(.inbox(page)) = await control.request(.inbox(query))
+        case let .success(.inbox(page)) = await backend.control(.inbox(query))
       else { throw .internalError }
       let response = BootstrapResponse.metadata(
-        HostMetadata(serviceEpoch: service.instance, inbox: page)
+        HostMetadata(serviceEpoch: backend.instance, inbox: page)
       )
       if (try? BootstrapEnvelope.encode(response)) != nil { return page }
       guard query.limit > 1 else { throw .internalError }
@@ -602,9 +618,7 @@ public final class SessionRegistry: @unchecked Sendable {
   var pendingCreationCount: Int { state.withLock { $0.pendingCreates } }
 
   /// Control requests still awaiting a service reply.
-  var pendingControlRequestCount: Int {
-    control.queue.sync { control.pendingRequestCount }
-  }
+  var pendingControlRequestCount: Int { backend.pendingControlRequestCount }
 
   /// Attachment operations still awaiting their owner result.
   var pendingAttachmentCount: Int { state.withLock { $0.pendingAttachments } }
@@ -621,7 +635,7 @@ public final class SessionRegistry: @unchecked Sendable {
   ) -> RoamingSession {
     let session = RoamingSession(
       id: id,
-      service: service,
+      panes: backend,
       grid: grid,
       floor: floor
     )
@@ -643,7 +657,7 @@ public final class SessionRegistry: @unchecked Sendable {
   /// Nil when the service did not answer.
   private func listWorkspaces() async -> [WorkspaceSummary]? {
     guard
-      case let .success(.workspaces(list)) = await control.request(
+      case let .success(.workspaces(list)) = await backend.control(
         .listWorkspaces
       )
     else { return nil }
@@ -666,6 +680,11 @@ public final class SessionRegistry: @unchecked Sendable {
     _ request: ControlMessage.Attach,
     attachment: HostAttachment
   ) async -> AttachOutcome<RoamingSession> {
+    // Screens are shared frames only; scrolling a mouse-tracking program
+    // is wheel input. A client without either cannot use this host.
+    guard RSTFeatures.required.isSubset(of: request.features) else {
+      return .failure(.unsupported)
+    }
     let now = ContinuousClock.now
     let checked = state.withLock {
       s -> AttachOutcome<(RoamingSession, Credential)> in
@@ -808,19 +827,11 @@ public final class SessionRegistry: @unchecked Sendable {
       if pending.onlyIfExited {
         // A native frontend may add a live pane after the list replied.
         // Check again in service order, atomically with ending the workspace.
-        _ = await withCheckedContinuation { continuation in
-          service.endExitedWorkspace(pending.id.workspace) { ended in
-            continuation.resume(returning: ended)
-          }
-        }
+        _ = await backend.endIfUnused(pending.id.workspace, onlyIfExited: true)
       } else {
         // Local use outlives its lease. Expire remote authorization while
         // preserving any workspace a native frontend has already used.
-        _ = await withCheckedContinuation { continuation in
-          service.endReservedWorkspace(pending.id.workspace) { ended in
-            continuation.resume(returning: ended)
-          }
-        }
+        _ = await backend.endIfUnused(pending.id.workspace, onlyIfExited: false)
       }
       state.withLock { $0.finishEnding(pending.id) }
     }

@@ -29,12 +29,15 @@ extension TerminalView {
 
   var tracking: Bool { !lastModes.isDisjoint(with: Modes.mouseTracking) }
 
+  /// `scrolling` reports a wheel notch the scroll routing chose: it may
+  /// reach a program whose other mouse input stays local (a roaming host).
   func sendMouse(
     _ action: MouseEvent.Action,
     _ button: MouseEvent.Button,
-    _ event: NSEvent
+    _ event: NSEvent,
+    scrolling: Bool = false
   ) {
-    guard tracking else { return }
+    guard scrolling || tracking else { return }
     let c = cell(for: event)
     let pixel = terminalPixel(for: event)
     submitInput(
@@ -443,10 +446,10 @@ extension TerminalView {
 
   public override func scrollWheel(with event: NSEvent) {
     let mode: TerminalPointer.ScrollMode
-    if tracking {
+    let modes = capabilities.scrollModes(lastSnapshot?.modes ?? session.modes)
+    if !modes.isDisjoint(with: Modes.mouseTracking) {
       mode = .mouse
-    } else if lastModes.contains(.alternateScreen),
-      lastModes.contains(.alternateScroll)
+    } else if modes.contains(.alternateScreen), modes.contains(.alternateScroll)
     {
       mode = capabilities.textInput ? .arrows : .disabled
     } else {
@@ -460,7 +463,7 @@ extension TerminalView {
       multiplier: config.mouseScrollMultiplier
     ) { input in
       switch input {
-      case let .wheel(button): sendMouse(.press, button, event)
+      case let .wheel(button): sendMouse(.press, button, event, scrolling: true)
       case let .key(key): submitInput(.key(KeyEvent(key)))
       case let .history(lines): session.scrollViewport(by: lines)
       }

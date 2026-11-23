@@ -62,7 +62,7 @@ Implement planned replacement as one sequential operation over the guardian's tr
 | At baseline, [`PaneRuntime`](Sources/SwiftMuxService/PaneRuntime.swift) owns engine, PTY and child observation | Process/I/O ownership is extracted into [`GuardianPTY`](Sources/SwiftMuxGuardian/GuardianPTY.swift), with a guardian-backed runtime adapter; production routing remains pending (§13) |
 | `PaneWriter` owns partial writes, paste envelopes and deferred replies (now extracted to [`SwiftMuxGuardian`](Sources/SwiftMuxGuardian/PaneWriter.swift)) | Move the complete byte-writer state machine into the guardian process; do not split its mutable state between processes |
 | [`PaneLauncher`](Sources/SwiftMuxGuardian/PaneLauncher.swift) launches shells (now extracted to the guardian module) | Guardian process becomes the parent/reaper and termination authority |
-| [`RoamingHost`](Sources/TerminalHost/RoamingHost.swift) uses an in-process mux adapter | Route through a worker-backed facade without giving network code PTY access |
+| [`RoamingHost`](Sources/TerminalHost/RoamingHost.swift) uses an in-process mux adapter | Done (§13.77): the gateway hosts roaming; sessions drive workers over SMX (`SMXRoamingMux`) with remote trust |
 | [`UpdateCoordinator`](Sources/SwiftMuxClient/UpdateCoordinator.swift) waits for an empty service | Preserve that path for initial adoption and guardian maintenance; add gateway-only updates |
 | [`Parser`](Sources/SwifttyEngine/Terminal/Parser.swift) and [`TerminalState`](Sources/SwifttyEngine/Terminal/TerminalState.swift) are noncopyable | Planned replacement needs explicit export/import, never raw memory serialization |
 
@@ -3867,3 +3867,16 @@ tests that recorded them as known issues are now ordinary tests.
 
 Migration was not affected: the guardian's digest covers the bytes it
 received.
+
+### 13.77 Roaming through the gateway; durable sessions by default — 2026-11-23
+
+The durable gateway hosts RST/1 roaming, and durable sessions are the only installed SwiftMux topology.
+
+- `RoamingSession` and `SessionRegistry` reach SwiftMux only through `RoamingPanes` / `RoamingWorkspaces` (`Sources/TerminalHost/RoamingPanes.swift`). Sessions use `SMXRoamingMux`: one SMX connection per attachment that receives frames for the active pane (`setSubscriptions`), presents the history window as the controller viewport (`setViewport`), copies with `copySelection`, and sends input as ordinary input records. Screens are converted with `ScreenExporter.frame(from:stamp:)` (clipped to the RST/1 grid, overlong graphemes as the placeholder). Closing detaches before closing, so a replacement never finds the old lease still held.
+- `GatewayRoamingWorkspaces` (`Sources/SwiftMuxGatewayRoaming`) binds grants to the guardian incarnation (gateway restarts keep them), creates workspaces with `GatewayRuntime.createWorkspace`, connects sessions with `GatewayRuntime.connectWorker(… transport: .remote)`, and asks each worker's lease-free local control client for attention, inbox pages (merged, newest first, no cross-worker cursor), `endWorkspaceIfUnused` and `roamingSessionChanged` (`ServiceFeatures.roamingControl`).
+- `swiftmux-gateway` loads the roaming configuration (`config.json`, `SWIFTMUX_ROAMING_CONFIG`) and starts `RoamingHost`. `swiftmux-agent` roams only when explicitly configured (development and test harnesses).
+- RST/1 requires `paneFrames` and `mouseWheel`; legacy snapshots are neither sent nor accepted.
+- Packaging always includes the guardian, gateway and worker. `Scripts/install.sh` requires a Developer ID identity, adopts on first install (`--end-sessions` ends the previous agent's sessions; otherwise installation stops while any are live), and updates the gateway on later installs. `mise run restart` restarts only the gateway (sessions survive); `mise run restart-guardian` ends every session.
+
+Evidence: every host and roaming integration suite runs on the SMX path (the in-process test registry reaches its service over an in-process forwarding listener, `MuxService.listenForwarding`). Not established: the signed lifecycle with a real gateway and an iPhone client.
+

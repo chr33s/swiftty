@@ -2,6 +2,7 @@
 import AppleTransport
 import Darwin
 import Foundation
+import RoamingKit
 import ScreenProtocol
 import SessionCore
 import SwiftMuxProtocol
@@ -182,7 +183,8 @@ final class TestClient: @unchecked Sendable {
           }
         },
         onSnapshot: { [self] bytes in
-          guard let snapshot = try? SnapshotFrame.decode(bytes) else {
+          // Full frames only: the client never lists `screenDeltas`.
+          guard let snapshot = try? decodeScreen(bytes) else {
             state.withLock { $0.badFrames += 1 }
             return
           }
@@ -246,7 +248,7 @@ final class TestClient: @unchecked Sendable {
     _ grant: BootstrapGrant,
     token: ApplicationToken? = nil,
     instance: SessionCore.ServerInstanceID? = nil,
-    features: RSTFeatures = []
+    features: RSTFeatures = .required
   ) async throws {
     try await send(
       .attach(
@@ -263,7 +265,7 @@ final class TestClient: @unchecked Sendable {
 
   func attached(
     _ grant: BootstrapGrant,
-    features: RSTFeatures = []
+    features: RSTFeatures = .required
   ) async throws -> ControlMessage.Attached {
     try await attach(grant, features: features)
     let reply = try await message("Attached or Error") {
@@ -293,6 +295,32 @@ final class TestClient: @unchecked Sendable {
       return false
     }
   }
+}
+
+/// The text of `session`'s active pane as the service shows it locally
+/// (live output, not any client's history window); nil without a pane.
+func liveLines(
+  _ registry: SessionRegistry,
+  _ session: RoamingSession
+) async -> [String]? {
+  guard let pane = session.diagnostics.activePane else { return nil }
+  return await withCheckedContinuation { continuation in
+    registry.service.inspect(
+      pane: pane,
+      { state in
+        let screen = state.captureOwnedWindow(top: nil)
+        return (0 ..< screen.rows).map { screen.text(row: $0) }
+      },
+      completion: { continuation.resume(returning: $0) }
+    )
+  }
+}
+
+/// A full RST/1 frame as the client presents it.
+func decodeScreen(_ bytes: [UInt8]) throws -> ScreenSnapshot {
+  guard case let .frame(frame, header) = try SnapshotFrame.decodeRecord(bytes)
+  else { throw FramingError.invalidFrame("not a full frame") }
+  return try FrameScreenMapper.snapshot(frame, header: header)
 }
 
 func screenText(_ snapshot: ScreenSnapshot) -> String {

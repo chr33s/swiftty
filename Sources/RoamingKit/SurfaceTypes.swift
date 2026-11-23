@@ -4,11 +4,13 @@ import SwifttyEngine
 
 /// Semantic input a frontend submits (spec §6, §A.4.4): committed
 /// text, keys and paste, before any terminal-byte encoding. IME preedit
-/// stays local; only committed text arrives here.
+/// stays local; only committed text arrives here. Wheel notches reach
+/// hosts with `mouseWheel`; other mouse input stays local.
 public enum SurfaceInput: Hashable, Sendable {
   case text(String)
   case key(SemanticKey)
   case paste(String)
+  case wheel(SemanticWheel)
 
   /// The RST/1 operation for this input.
   public var operation: InputOperation {
@@ -16,6 +18,7 @@ public enum SurfaceInput: Hashable, Sendable {
     case let .text(text): .committedText(text)
     case let .key(key): .key(key)
     case let .paste(text): .paste(text)
+    case let .wheel(wheel): .wheel(wheel)
     }
   }
 
@@ -27,6 +30,16 @@ public enum SurfaceInput: Hashable, Sendable {
     case let .key(key):
       .key(
         KeyEvent(Self.key(key.name), modifiers: Self.modifiers(key.modifiers))
+      )
+    case let .wheel(wheel):
+      .mouse(
+        MouseEvent(
+          .press,
+          Self.button(wheel.direction),
+          column: wheel.column,
+          row: wheel.row,
+          modifiers: Self.modifiers(wheel.modifiers)
+        )
       )
     }
   }
@@ -51,6 +64,15 @@ public enum SurfaceInput: Hashable, Sendable {
     case let .function(n): .function(n)
     case let .keypad(k):
       KeypadKey(rawValue: k.rawValue).map(Key.keypad) ?? .enter
+    }
+  }
+
+  static func button(_ direction: SemanticWheelDirection) -> MouseEvent.Button {
+    switch direction {
+    case .up: .wheelUp
+    case .down: .wheelDown
+    case .left: .wheelLeft
+    case .right: .wheelRight
     }
   }
 

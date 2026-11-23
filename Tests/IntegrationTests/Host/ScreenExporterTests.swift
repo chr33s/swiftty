@@ -1,6 +1,8 @@
 #if os(macOS)
 import ScreenProtocol
 import SessionCore
+import SwiftMuxExport
+import SwiftMuxProtocol
 import SwifttyCore
 @testable import TerminalHost
 import TestSupport
@@ -23,35 +25,49 @@ private func export(
     configuration: configuration
   )
   terminal.feed(Array(input.utf8))
-  let snapshot = terminal.withState {
-    ScreenExporter.export(
-      $0,
-      stamp: .init(sessionID: session, attachmentEpoch: 3, screenRevision: 7)
+  // The roaming path: the worker's frame (its own budgets), the host's
+  // RST/1 profile, the frame wire format and the client's mapping.
+  let worker = try terminal.withState {
+    try FrameExporter.frame(
+      from: $0.captureOwnedWindow(top: nil),
+      identity: .unbound,
+      limits: .standard
     )
   }
+  let (frame, header) = try #require(
+    ScreenExporter.frame(
+      from: worker,
+      stamp: .init(sessionID: session, attachmentEpoch: 3, screenRevision: 7)
+    )
+  )
+  let payload = try SnapshotFrame.encode(
+    frame: [UInt8](SMXB.encode(frame, envelope: .rst(header.bytes)))
+  )
+  let snapshot = try decodeScreen(payload)
   try snapshot.validate()
-  // Survives the wire format unchanged.
-  let decoded = try SnapshotFrame.decode(SnapshotFrame.encode(snapshot))
-  #expect(decoded == snapshot)
   return snapshot
 }
 
 struct ScreenExporterTests {
   @Test
-  func maximumGridPreservesEveryDistinctStyle() throws {
+  func `a full worker style table survives to the client`() throws {
+    // Every style a worker frame can carry: the plain style and the rest
+    // distinct truecolors, on the largest RST/1 grid.
+    let distinct = MuxLimits.standard.maxStyles - 1
     var input = ""
     for index in 0 ..< RSTLimits.maxColumns * RSTLimits.maxRows {
-      input += "\(esc)[38;2;0;\(index >> 8);\(index & 255)mX"
+      let color = index % distinct
+      input += "\(esc)[38;2;0;\(color >> 8);\(color & 255)mX"
     }
     let snapshot = try export(
       input,
       columns: RSTLimits.maxColumns,
       rows: RSTLimits.maxRows
     )
-    #expect(snapshot.styles.count == RSTLimits.maxStyles)
+    #expect(snapshot.styles.count == distinct + 1)
     for y in 0 ..< snapshot.rows {
       for x in 0 ..< snapshot.columns {
-        let index = y * snapshot.columns + x
+        let index = (y * snapshot.columns + x) % distinct
         let cell = snapshot.cells[y][x]
         #expect(cell.text == "X")
         #expect(
@@ -156,12 +172,16 @@ struct ScreenExporterTests {
   }
 
   @Test
-  func `oversized graphemes and titles are bounded`() throws {
-    let marks = String(repeating: "\u{301}", count: 40)
+  func `long graphemes and titles are bounded`() throws {
+    // The longest cluster a worker frame carries arrives whole.
+    let marks = String(
+      repeating: "\u{301}",
+      count: MuxLimits.standard.maxGraphemeScalars - 1
+    )
     let s = try export(
       "a\(marks)b\(esc)]2;\(String(repeating: "é", count: 600))\u{07}"
     )
-    #expect(s.cells[0][0].text == RSTLimits.graphemePlaceholder)
+    #expect(s.cells[0][0].text == "a" + marks)
     #expect(s.cells[0][1].text == "b")
     #expect(s.title.utf8.count <= RSTLimits.maxTitleBytes)
     #expect(s.title == String(repeating: "é", count: 512))

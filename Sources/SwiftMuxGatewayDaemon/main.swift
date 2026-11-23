@@ -2,7 +2,9 @@ import Darwin
 import Dispatch
 import Foundation
 import SwiftMuxGateway
+import SwiftMuxGatewayRoaming
 import SwiftMuxGuardian
+import TerminalHost
 
 // This is a separate native control service, not a replacement registration for
 // the legacy SMX agent. Installation must explicitly choose the durable topology.
@@ -11,6 +13,25 @@ if CommandLine.arguments.count == 2,
 {
   exit(HelperAgentCommand.run(CommandLine.arguments[1]))
 }
+// Remote clients (spec.roaming.md): the same configuration `swifttyd
+// bootstrap` reads. Only an absent optional default disables roaming.
+let hostConfiguration: HostConfiguration?
+do {
+  let url = HostConfiguration.resolvedConfigurationURL()
+  hostConfiguration = try HostConfiguration.loadForStartup(
+    from: url,
+    required:
+      !(ProcessInfo.processInfo.environment[HostConfiguration.environmentKey]
+      ?? "")
+      .isEmpty
+  )
+} catch {
+  FileHandle.standardError.write(
+    Data("swiftmux-gateway: cannot read roaming configuration: \(error)\n".utf8)
+  )
+  exit(78)
+}
+
 do {
   let configuration = try GatewayDaemonConfiguration(
     arguments: Array(CommandLine.arguments.dropFirst())
@@ -30,6 +51,7 @@ do {
   let task = Task.detached {
     var runtime: GatewayRuntime?
     var server: GatewayControlServer?
+    var roaming: RoamingHost?
     var status: Int32 = 0
     do {
       let supervisor = try await GatewaySupervisor.connect(
@@ -108,6 +130,15 @@ do {
       )
       server = control
       control.listen(machService: configuration.controlService)
+      if let hostConfiguration {
+        let workspaces = try await GatewayRoamingWorkspaces.make(
+          runtime: started
+        )
+        roaming = try await RoamingHost.start(
+          workspaces: { workspaces },
+          configuration: hostConfiguration
+        )
+      }
       while true {
         try Task.checkCancellation()
         if let failure = await started.failure { throw failure }
@@ -123,6 +154,10 @@ do {
     }
     // Drain native work before releasing guardian authority. Neither action ends
     // a workspace; launchd may restart this gateway and rediscover the sessions.
+    // Serving until here; releasing it stops the listener and control
+    // socket before native work drains.
+    withExtendedLifetime(roaming) {}
+    roaming = nil
     await server?.close()
     await runtime?.close()
     exit(status)

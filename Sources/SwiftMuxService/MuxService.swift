@@ -138,10 +138,25 @@ public actor MuxService {
     return listener.endpoint
   }
 
-  private nonisolated func start(_ listener: SMXListener) {
+  /// An anonymous listener for a frontend in this process that forwards
+  /// another transport (the roaming host): hellos may declare
+  /// `forwardedTransport`, so remote clients get remote restrictions. Only
+  /// code holding the endpoint can connect.
+  package nonisolated func listenForwarding() -> SMXEndpoint {
+    let listener = SMXListener(anonymousOn: queue)
+    start(listener, forwarding: true)
+    return listener.endpoint
+  }
+
+  private nonisolated func start(
+    _ listener: SMXListener,
+    forwarding: Bool = false
+  ) {
     listener.activate(connectionQueue: queue) { [weak self] channel in
       guard let self else { return }
-      self.queue.async { self.assumeIsolated { $0.accept(channel) } }
+      self.queue.async {
+        self.assumeIsolated { $0.accept(channel, forwarding: forwarding) }
+      }
     }
     queue.async { self.assumeIsolated { $0.listeners.append(listener) } }
   }
@@ -163,7 +178,7 @@ public actor MuxService {
 
   // MARK: Connections
 
-  private func accept(_ channel: SMXChannel) {
+  private func accept(_ channel: SMXChannel, forwarding: Bool = false) {
     // OS-provided peer identity, never a claimed pid or bundle id.
     guard
       !configuration.requiresGatewayBinding || gatewayPeerPID == channel.peerPID
@@ -183,6 +198,7 @@ public actor MuxService {
       return
     }
     let client = Client(channel: channel)
+    client.acceptsForwarding = forwarding
     register(client)
     let id = client.id
     let recordLimit = SMXCodec.clientRecordLimit(limits)
@@ -363,11 +379,12 @@ public actor MuxService {
 
   private func handshake(_ hello: Hello, client: Client) {
     if let transport = hello.forwardedTransport {
-      guard configuration.requiresGatewayBinding,
-        configuration.workerWorkspace != nil,
-        case let .xpc(channel) = client.transport,
-        gatewayPeerPID == channel.peerPID
-      else {
+      let gatewayBound: Bool =
+        if configuration.requiresGatewayBinding,
+          configuration.workerWorkspace != nil,
+          case let .xpc(channel) = client.transport
+        { gatewayPeerPID == channel.peerPID } else { false }
+      guard gatewayBound || client.acceptsForwarding else {
         send(
           .rejected(
             MuxError(.unauthorized, "forwarding requires the current gateway")
@@ -496,6 +513,19 @@ public actor MuxService {
       }
       workspaces[i].name = name
       commitLayout(workspaces[i].id)
+      ok()
+    case let .endWorkspaceIfUnused(id, onlyIfExited):
+      guard !client.remote, hello.frontend == .control else {
+        return fail(MuxError(.unauthorized, "local control clients only"))
+      }
+      let ended =
+        onlyIfExited ? endIfAllPanesExited(id) : endIfNeverUsedLocally(id)
+      ended ? ok() : fail(MuxError(.notFound, "workspace kept"))
+    case let .roamingSessionChanged(id, workspace, state):
+      guard !client.remote, hello.frontend == .control else {
+        return fail(MuxError(.unauthorized, "local control clients only"))
+      }
+      roamingSessionChanged(id, workspace: workspace, state: state)
       ok()
     case .detachActive:
       // Update barrier and `swmux detach`: every holder is told.
@@ -1081,11 +1111,11 @@ public actor MuxService {
       ok()
     case .status, .listWorkspaces, .newWorkspace, .newWorkspaceFromTemplate,
       .endWorkspace, .renameWorkspace, .detachActive, .endAllWorkspaces,
-      .attach, .detach, .switchWorkspace, .quiesce, .setTheme, .takeover,
-      .resumeAttachment, .observeWorkspaces, .observeWorkspaceGraph,
-      .savedLayoutState, .exportSavedOutput, .subscribeAutomation,
-      .subscribeInbox, .inbox, .locateAttention, .markSeen, .snooze,
-      .markReviewed:
+      .endWorkspaceIfUnused, .roamingSessionChanged, .attach, .detach,
+      .switchWorkspace, .quiesce, .setTheme, .takeover, .resumeAttachment,
+      .observeWorkspaces, .observeWorkspaceGraph, .savedLayoutState,
+      .exportSavedOutput, .subscribeAutomation, .subscribeInbox, .inbox,
+      .locateAttention, .markSeen, .snooze, .markReviewed:
       ok()  // handled by `handle`
     }
   }

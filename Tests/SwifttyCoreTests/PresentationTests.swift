@@ -301,7 +301,7 @@ struct PresentationTests {
         case let .text(text): "text:\(text)"
         case let .key(event): "key:\(event.key):\(event.action)"
         case let .paste(text): "paste:\(text)"
-        case .mouse: "mouse"
+        case let .mouse(event): "mouse:\(event.button):\(event.action)"
         case .focus: "focus"
         case .bytes: "bytes"
         }
@@ -313,6 +313,8 @@ struct PresentationTests {
     session.send(.key(KeyEvent(.up, action: .repeat)))
     session.send(.paste("pasted\n"))
     session.send(.mouse(MouseEvent(.press, .left, column: 1, row: 1)))
+    session.send(.mouse(MouseEvent(.press, .wheelUp, column: 1, row: 1)))
+    session.send(.mouse(MouseEvent(.release, .wheelUp, column: 1, row: 1)))
     session.send(.focus(true))
     session.send(.bytes([0x1B]))
     // Program output and query replies cannot occur: nothing is parsed.
@@ -323,6 +325,7 @@ struct PresentationTests {
     #expect(
       semantic.withLock { $0 } == [
         "text:ls", "key:enter:press", "key:up:repeat", "paste:pasted\n",
+        "mouse:wheelUp:press",
       ]
     )
     #expect(written.withLock { $0 }.isEmpty)
@@ -430,6 +433,13 @@ struct PresentationTests {
     let modes: Modes = [.mouseAny, .mouseSGR, .focusEvents, .cursorVisible]
     #expect(roaming.effectiveModes(modes) == [.mouseSGR, .cursorVisible])
     #expect(SurfaceCapabilities.full.effectiveModes(modes) == modes)
+    // Wheel reports still reach a program tracking the mouse: scrolling
+    // must not fall back to arrow keys (alternate scroll mode).
+    #expect(roaming.wheelReporting)
+    #expect(roaming.scrollModes(modes) == modes)
+    var noWheel = roaming
+    noWheel.wheelReporting = false
+    #expect(noWheel.scrollModes(modes) == noWheel.effectiveModes(modes))
     for action: KeyAction in [
       .startSearch, .scrollToTop, .reset, .clearScreen, .copyToClipboard,
     ] { #expect(SurfaceCapabilities.full.allows(action)) }

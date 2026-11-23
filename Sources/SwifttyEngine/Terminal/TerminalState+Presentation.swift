@@ -72,6 +72,10 @@ extension TerminalState {
     modes.update(.cursorBlink, frame.cursorBlinking)
     modes.update(.reverseVideo, frame.reverseVideo)
     modes.update(.alternateScreen, frame.alternateScreen)
+    if frame.mouseTracking != !modes.isDisjoint(with: Modes.mouseTracking) {
+      modes.subtract(Modes.mouseTracking)
+      if frame.mouseTracking { modes.insert(.mouseNormal) }
+    }
     if title != frame.title {
       titleBytes = Array(frame.title.utf8)
       titleChanged = true
