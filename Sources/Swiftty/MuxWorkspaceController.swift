@@ -189,7 +189,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     workspaceToolbar.onToggleSidebar = { [weak self] in self?.toggleSidebar() }
     workspaceToolbar.sidebarControls.sidebarWidth = MuxTabSidebar.width
     window.toolbar = workspaceToolbar.toolbar
-    window.toolbarStyle = .unifiedCompact
+    window.toolbarStyle = .unified
     window.titleVisibility = .hidden
     setTabPosition(configuration.tabPosition)
     startPipelines()

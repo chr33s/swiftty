@@ -17,7 +17,7 @@ extension MuxNativeTests {
     let toolbar = c.workspaceToolbar
     let firstTab = try #require(c.activeTab?.id)
     #expect(window.toolbar === toolbar.toolbar)
-    #expect(window.toolbarStyle == .unifiedCompact)
+    #expect(window.toolbarStyle == .unified)
     #expect(toolbar.tabs.view === c.tabStrip)
     #expect(
       toolbar.toolbar.items.map(\.itemIdentifier) == [

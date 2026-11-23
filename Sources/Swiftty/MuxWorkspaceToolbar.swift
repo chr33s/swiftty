@@ -34,6 +34,8 @@ final class MuxWorkspaceToolbar: NSObject, NSToolbarDelegate {
     newTab.label = "New Tab"
     newTab.toolTip = "New Tab"
     newTab.image = MuxIcons.image("plus", "New Tab")
+    // Plain glyphs beside the tabs, as the pane headers' actions are.
+    newTab.isBordered = false
     newTab.target = self
     newTab.action = #selector(newTabClicked)
     sidebar.label = "Sidebar"
@@ -49,6 +51,7 @@ final class MuxWorkspaceToolbar: NSObject, NSToolbarDelegate {
     item.paletteLabel = "Attention Inbox"
     item.toolTip = "Programs waiting for you, failures and results"
     item.image = MuxIcons.image("tray", "Attention inbox")
+    item.isBordered = false
     item.target = self
     item.action = #selector(clicked)
     toolbar.delegate = self
