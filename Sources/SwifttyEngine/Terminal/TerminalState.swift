@@ -185,6 +185,9 @@ public struct TerminalState: ~Copyable {
   /// The command is reconstructed from the marked input cells at OSC 133 C.
   /// Empty when the shell did not provide an input boundary.
   public var onShellCommandFinished: (@Sendable (String, Int?) -> Void)?
+  /// Optional observer of OSC 133 C: the command line about to run, as
+  /// `onShellCommandFinished` later reports it.
+  public var onShellCommandStarted: (@Sendable (String) -> Void)?
   var shellCommand = ""
   var titleStack: [[UInt8]] = []
   var penStack: [CellAttributes] = []

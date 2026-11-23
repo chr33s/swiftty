@@ -104,7 +104,10 @@ extension TerminalState {
       semanticState = .input
       markInputLine()
     case 0x43:  // C
-      if onShellCommandFinished != nil { shellCommand = captureShellCommand() }
+      if onShellCommandFinished != nil || onShellCommandStarted != nil {
+        shellCommand = captureShellCommand()
+        onShellCommandStarted?(shellCommand)
+      }
       semanticState = .output
       clearInputLine()
       // At column zero the output replaces this row's prompt; after

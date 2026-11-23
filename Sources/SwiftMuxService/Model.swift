@@ -94,6 +94,8 @@ struct PaneRecord {
   var columns: Int
   var rows: Int
   var title = ""
+  /// The foreground program (`PaneEvent.program`); empty when unknown.
+  var program = ""
   var workingDirectory: String?
   /// How the pane started, for saved layouts.
   var launch: SavedPaneLaunch = .loginShell
@@ -112,7 +114,8 @@ struct PaneRecord {
       title: title,
       pid: runtime.pid > 0 ? runtime.pid : nil,
       exitStatus: exitStatus,
-      workingDirectory: workingDirectory
+      workingDirectory: workingDirectory,
+      program: program.isEmpty ? nil : program
     )
   }
 }

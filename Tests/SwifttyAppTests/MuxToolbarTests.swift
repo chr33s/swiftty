@@ -515,7 +515,6 @@ extension MuxNativeTests {
         MuxTabItem(
           id: TabID(),
           title: "Workspace tab \(index)",
-          symbol: "terminal",
           isActive: index == 11,
           hasActivity: false
         )
@@ -562,7 +561,6 @@ extension MuxNativeTests {
     replaced[replaced.count - 1] = MuxTabItem(
       id: TabID(),
       title: "New tab",
-      symbol: "terminal",
       isActive: true,
       hasActivity: false
     )

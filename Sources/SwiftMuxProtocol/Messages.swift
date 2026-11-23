@@ -91,6 +91,9 @@ public struct ClientCapabilities: OptionSet, Codable, Sendable, Equatable {
   public static let inboxAcknowledgementTokens = ClientCapabilities(
     rawValue: 1 << 6
   )
+  /// The client takes `MuxEvent.program`: the program each pane runs, for
+  /// its icon (not in `supported`; only frontends that show it ask).
+  public static let paneProgram = ClientCapabilities(rawValue: 1 << 7)
 
   public static let supported: ClientCapabilities = [
     .attachReadiness, .observers, .viewerViewport, .binaryFrames, .frameDeltas,
@@ -303,6 +306,9 @@ public struct PaneSummary: Codable, Sendable, Equatable {
   /// Set once the pane's process exited and output drained.
   public var exitStatus: Int32?
   public var workingDirectory: String?
+  /// The program the pane runs in its foreground, as `MuxEvent.program`
+  /// reports it; nil when unknown (or from an older service).
+  public var program: String?
 
   public init(
     id: PaneID,
@@ -311,7 +317,8 @@ public struct PaneSummary: Codable, Sendable, Equatable {
     title: String = "",
     pid: Int32? = nil,
     exitStatus: Int32? = nil,
-    workingDirectory: String? = nil
+    workingDirectory: String? = nil,
+    program: String? = nil
   ) {
     self.id = id
     self.columns = columns
@@ -320,6 +327,7 @@ public struct PaneSummary: Codable, Sendable, Equatable {
     self.pid = pid
     self.exitStatus = exitStatus
     self.workingDirectory = workingDirectory
+    self.program = program
   }
 }
 
@@ -1114,6 +1122,9 @@ public enum MuxEvent: Codable, Sendable {
   /// final output may be incomplete.
   case paneExited(PaneID, status: Int32, truncated: Bool)
   case title(PaneID, String)
+  /// The pane's foreground program changed: a bare name (`ProgramName`),
+  /// empty when unknown. Only to clients with `paneProgram`.
+  case program(PaneID, String)
   case bell(PaneID)
   /// An unsubscribed pane in another tab of the attached workspace
   /// changed. Sent once until it is subscribed again.

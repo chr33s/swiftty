@@ -1467,6 +1467,13 @@ public actor MuxService {
       savedLayoutCauses.insert(.metadata)
       publishWorkspaces()
       if let client { send(.event(.title(id, title)), to: client) }
+    case let .program(program):
+      panes[id]?.program = program
+      if let client,
+        clients[client]?.hello?.capabilities.contains(.paneProgram) == true
+      {
+        send(.event(.program(id, program)), to: client)
+      }
     case .bell: if let client { send(.event(.bell(id)), to: client) }
     case let .workingDirectory(dir, local):
       panes[id]?.workingDirectory = dir

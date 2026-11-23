@@ -200,11 +200,14 @@ swiftty.events.bindKey("cmd+shift+d", () => {
 | --- | --- |
 | `ui.setBadge(text)` | Set dock badge text; an empty string clears it. |
 | `ui.setTabIcon(text)` | Replace the source tab's title icon or text; an empty string clears it. |
+| `ui.setPaneIcon(name)` | Pick the source pane's program icon by name from the built-in table (`"git"`, `"claude"`, `"terminal"`, ...); an empty or unknown name returns it to automatic detection. |
 | `ui.notify(title, message)` | Request a native macOS notification. |
 | `ui.registerStatusItem(id, options)` | Register or replace a status item by identity. |
 | `ui.refreshStatusItem(id)` | Request a render of an existing status item. |
 
 A tab icon belongs to the tab and persists across pane splits and focus changes.
+A pane icon belongs to the pane and outranks its detected program and title.
+It names an entry of the local table, never a file or image.
 Updating it replaces the previous icon rather than accumulating title prefixes.
 Packaged applications use UserNotifications authorization and foreground banners;
 command-line development hosts log notifications.

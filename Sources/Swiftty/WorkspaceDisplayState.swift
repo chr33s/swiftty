@@ -9,6 +9,8 @@ import SwiftMuxProtocol
 final class WorkspaceDisplayState {
   /// Sanitized titles supplied by terminal programs and workspace snapshots.
   var titles: [PaneID: String] = [:]
+  /// Foreground programs the service reports (`MuxEvent.program`).
+  var programs: [PaneID: String] = [:]
   /// Panes with output the user has not seen (hidden tabs, bells).
   var activity: Set<PaneID> = []
 }

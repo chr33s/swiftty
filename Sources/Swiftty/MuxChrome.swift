@@ -2,11 +2,12 @@ import AppKit
 import SwiftMuxProtocol
 
 /// Local presentation of one workspace tab. Icons are chosen here from a
-/// fixed symbol set; nothing a program sends picks an image.
+/// fixed local table; nothing a program sends picks an image.
 struct MuxTabItem: Equatable {
   var id: TabID
   var title: String
-  var symbol: String
+  /// One icon per pane shown, the active pane's first (`MuxIcons`).
+  var icons: [MuxIcon] = [.terminal]
   var isActive: Bool
   var hasActivity: Bool
   /// The tab's stored name, which a rename edits; nil for an unnamed tab
@@ -17,28 +18,178 @@ struct MuxTabItem: Equatable {
   var detail: String = ""
 }
 
+/// A program's icon. It shows two ways: as a tile (the glyph in white on
+/// the brand color, or on a dark neutral square) in tabs, and as the bare
+/// glyph, tinted like the text beside it, in pane headers.
+struct MuxIcon: Hashable, Sendable {
+  /// An SF Symbol: the glyph without a brand, and the fallback when the
+  /// brand's file is missing.
+  var symbol: String
+  /// A logo from developer-icons (`Sources/Swiftty/BrandIcons/<brand>.svg`,
+  /// `Scripts/fetch-brand-icons.sh`), drawn by its alpha only.
+  var brand: String?
+  /// The tile's color as 0xRRGGBB; nil is the neutral tile.
+  var tint: UInt32?
+
+  init(symbol: String, brand: String? = nil, tint: UInt32? = nil) {
+    self.symbol = symbol
+    self.brand = brand
+    self.tint = tint
+  }
+
+  static let terminal = MuxIcon(symbol: "terminal")
+  static let claude = MuxIcon(
+    symbol: "asterisk",
+    brand: "claude-ai",
+    tint: 0xD9_7757
+  )
+}
+
 enum MuxIcons {
-  /// An SF Symbol for a sanitized title, from a fixed local table.
-  static func symbol(for title: String) -> String {
-    let t = title.lowercased()
-    let table: [([String], String)] = [
-      (["git", "tig", "lazygit", "gitui"], "arrow.triangle.branch"),
-      (["claude", "assistant", "codex", "aider", "copilot"], "asterisk"),
-      (["snake", "game", "tetris", "nethack", "2048"], "gamecontroller"),
-      (["vim", "nvim", "emacs", "nano", "hx", "helix"], "doc.text"),
-      (["top", "htop", "btop"], "chart.bar"), (["ssh", "mosh"], "network"),
-      (["less", "man", "more"], "book"),
-    ]
-    let words = t.split { !$0.isLetter && !$0.isNumber }.map(String.init)
-    for (keys, symbol) in table where keys.contains(where: words.contains) {
-      return symbol
+  /// Programs by a word of their title, first match wins.
+  static let table: [([String], MuxIcon)] = [
+    (["claude"], .claude),
+    (
+      ["codex", "openai", "chatgpt"],
+      MuxIcon(symbol: "asterisk", brand: "openai", tint: 0x10_A37F)
+    ),
+    (
+      ["copilot"],
+      MuxIcon(symbol: "asterisk", brand: "github-copilot", tint: 0x83_4EF3)
+    ), (["cursor"], MuxIcon(symbol: "asterisk", brand: "cursor-dark")),
+    (["assistant", "aider"], MuxIcon(symbol: "asterisk")),
+    (
+      ["git", "tig", "lazygit", "gitui"],
+      MuxIcon(symbol: "arrow.triangle.branch", brand: "git", tint: 0xF0_5032)
+    ),
+    (
+      ["brew", "homebrew"],
+      MuxIcon(symbol: "mug", brand: "homebrew", tint: 0xF2_A33A)
+    ),
+    (
+      ["docker"],
+      MuxIcon(symbol: "shippingbox", brand: "docker", tint: 0x1D_63ED)
+    ),
+    (
+      ["node", "npm", "npx", "pnpm", "yarn"],
+      MuxIcon(symbol: "terminal", brand: "nodejs", tint: 0x5F_A04E)
+    ),
+    (
+      ["python", "python3", "ipython", "pip", "pip3"],
+      MuxIcon(symbol: "terminal", brand: "python", tint: 0x37_76AB)
+    ), (["go"], MuxIcon(symbol: "terminal", brand: "go", tint: 0x00_ADD8)),
+    (
+      ["cargo", "rustc", "rustup"],
+      MuxIcon(symbol: "terminal", brand: "rust-dark", tint: 0xB7_410E)
+    ),
+    (["mysql"], MuxIcon(symbol: "cylinder", brand: "mysql", tint: 0x00_758F)),
+    (["aws"], MuxIcon(symbol: "cloud", brand: "aws", tint: 0xFF_9900)),
+    (
+      ["nvim", "neovim"],
+      MuxIcon(symbol: "doc.text", brand: "neovim", tint: 0x57_A143)
+    ), (["vim", "emacs", "nano", "hx", "helix"], MuxIcon(symbol: "doc.text")),
+    (
+      ["snake", "game", "tetris", "nethack", "2048"],
+      MuxIcon(symbol: "gamecontroller")
+    ), (["top", "htop", "btop"], MuxIcon(symbol: "chart.bar")),
+    (["ssh", "mosh"], MuxIcon(symbol: "network")),
+    (["less", "man", "more"], MuxIcon(symbol: "book")),
+  ]
+
+  /// Brands of language runtimes: their process runs many tools, so a
+  /// title naming the tool says more (`codex` runs as `node`).
+  static let runtimes: Set<String> = ["nodejs", "python"]
+
+  /// A pane's icon, most specific first: the name a script chose
+  /// (`ui.setPaneIcon`), Claude Code's status glyph, the foreground
+  /// program the service reports, then the title's words.
+  static func icon(
+    title: String,
+    program: String? = nil,
+    override: String? = nil
+  ) -> MuxIcon {
+    if let override, let icon = named(override) { return icon }
+    if marker(of: title) != nil { return .claude }
+    let fromTitle = match(title)
+    if let program, let fromProgram = match(program) {
+      if let brand = fromProgram.brand, runtimes.contains(brand), let fromTitle
+      {
+        return fromTitle
+      }
+      return fromProgram
     }
-    return "terminal"
+    return fromTitle ?? .terminal
+  }
+
+  /// The icon for a sanitized title, from the fixed local table.
+  static func icon(for title: String) -> MuxIcon { icon(title: title) }
+
+  /// A table icon by one of its keys ("git", "claude"), or "terminal".
+  static func named(_ name: String) -> MuxIcon? {
+    let key = name.lowercased()
+    if key == "terminal" { return .terminal }
+    return table.first { $0.0.contains(key) }?.1
+  }
+
+  /// The first table entry a word of `text` names.
+  private static func match(_ text: String) -> MuxIcon? {
+    let words = text.lowercased().split { !$0.isLetter && !$0.isNumber }
+      .map(String.init)
+    return table.first { $0.0.contains(where: words.contains) }?.1
+  }
+
+  /// The SF Symbol for a sanitized title (the icon's fallback glyph).
+  static func symbol(for title: String) -> String { icon(for: title).symbol }
+
+  /// The title as shown beside its icon: without the status glyph Claude
+  /// Code leads its title with, which the icon now stands for.
+  static func displayTitle(_ title: String) -> String {
+    guard let marker = marker(of: title) else { return title }
+    return String(title[marker...]).trimmingCharacters(in: .whitespaces)
+  }
+
+  /// Where the title proper starts after Claude Code's leading status
+  /// glyph ("✳ " idle, a braille spinner frame while working), or nil
+  /// when it has none.
+  private static func marker(of title: String) -> String.Index? {
+    guard let first = title.unicodeScalars.first,
+      first.value == 0x2733 || (0x2801 ... 0x28FF).contains(first.value)
+    else { return nil }
+    let scalars = title.unicodeScalars
+    var rest = scalars.index(after: scalars.startIndex)
+    // "✳️": the emoji presentation selector may follow.
+    if rest < scalars.endIndex, scalars[rest].value == 0xFE0F {
+      rest = scalars.index(after: rest)
+    }
+    guard rest < scalars.endIndex, scalars[rest] == " " else { return nil }
+    return rest
   }
 
   static func image(_ symbol: String, _ label: String) -> NSImage? {
     NSImage(systemSymbolName: symbol, accessibilityDescription: label)
   }
+
+  /// The icon's glyph as a template image: the brand's logo when its file
+  /// loads, else the SF Symbol.
+  static func image(_ icon: MuxIcon) -> NSImage? {
+    icon.brand.flatMap(brandImage) ?? image(icon.symbol, "")
+  }
+
+  static func brandImage(_ name: String) -> NSImage? {
+    if let cached = brandCache[name] { return cached }
+    guard
+      let url = Bundle.module.url(
+        forResource: name,
+        withExtension: "svg",
+        subdirectory: "BrandIcons"
+      ), let image = NSImage(contentsOf: url)
+    else { return nil }
+    image.isTemplate = true
+    brandCache[name] = image
+    return image
+  }
+
+  nonisolated(unsafe) private static var brandCache: [String: NSImage] = [:]
 }
 
 /// A small filled circle marking unseen output.
@@ -72,29 +223,50 @@ final class MuxActivityDot: NSView {
   override var wantsUpdateLayer: Bool { true }
 }
 
-/// A tab's icon in a small rounded square: dark with a light glyph for the
-/// active tab, muted for the others.
+/// One icon as a tile: a rounded square in the brand's color (or dark
+/// and neutral) with the glyph in white.
 @MainActor
-final class MuxTabIconBadge: NSView {
-  let icon = NSImageView()
-  var isActive = false {
+final class MuxIconTile: NSView {
+  let glyph = NSImageView()
+  private var glyphSize: [NSLayoutConstraint] = []
+
+  var icon: MuxIcon? {
     didSet {
-      icon.contentTintColor = isActive ? .white : .secondaryLabelColor
+      guard icon != oldValue else { return }
+      let brand = icon?.brand.flatMap(MuxIcons.brandImage)
+      glyph.image = brand ?? icon.flatMap { MuxIcons.image($0.symbol, "") }
+      // A logo fills its share of the tile; a symbol keeps its point size.
+      glyph.imageScaling =
+        brand == nil ? .scaleProportionallyDown : .scaleProportionallyUpOrDown
       needsDisplay = true
     }
+  }
+
+  /// The tile's background for `icon`.
+  var fill: NSColor {
+    guard let tint = icon?.tint else { return NSColor(white: 0.16, alpha: 1) }
+    return NSColor(
+      srgbRed: CGFloat(tint >> 16 & 0xFF) / 255,
+      green: CGFloat(tint >> 8 & 0xFF) / 255,
+      blue: CGFloat(tint & 0xFF) / 255,
+      alpha: 1
+    )
   }
 
   override init(frame: NSRect) {
     super.init(frame: frame)
     wantsLayer = true
     translatesAutoresizingMaskIntoConstraints = false
-    icon.translatesAutoresizingMaskIntoConstraints = false
-    icon.setAccessibilityElement(false)
-    icon.contentTintColor = .secondaryLabelColor
-    addSubview(icon)
+    glyph.translatesAutoresizingMaskIntoConstraints = false
+    glyph.setAccessibilityElement(false)
+    glyph.contentTintColor = .white
+    glyph.symbolConfiguration = .init(pointSize: 10, weight: .medium)
+    addSubview(glyph)
     NSLayoutConstraint.activate([
-      icon.centerXAnchor.constraint(equalTo: centerXAnchor),
-      icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+      glyph.centerXAnchor.constraint(equalTo: centerXAnchor),
+      glyph.centerYAnchor.constraint(equalTo: centerYAnchor),
+      glyph.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.6),
+      glyph.heightAnchor.constraint(equalTo: heightAnchor, multiplier: 0.6),
       widthAnchor.constraint(equalTo: heightAnchor),
     ])
     setAccessibilityElement(false)
@@ -108,25 +280,64 @@ final class MuxTabIconBadge: NSView {
   override func updateLayer() {
     guard let layer else { return }
     layer.cornerCurve = .continuous
-    layer.cornerRadius = Self.cornerRadius(bounds.height)
-    layer.backgroundColor =
-      (isActive
-      ? NSColor.black.withAlphaComponent(0.7)
-      : NSColor.labelColor.withAlphaComponent(0.1))
-      .cgColor
+    layer.cornerRadius = (bounds.height * 0.28).rounded()
+    layer.backgroundColor = fill.cgColor
     layer.borderWidth = 1
-    layer.borderColor =
-      NSColor.white.withAlphaComponent(isActive ? 0.18 : 0.08).cgColor
+    layer.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
   }
 
   override func layout() {
     super.layout()
-    layer?.cornerRadius = Self.cornerRadius(bounds.height)
+    layer?.cornerRadius = (bounds.height * 0.28).rounded()
+  }
+}
+
+/// A tab's icons as tiles: the active pane's in front and, for a split
+/// tab, the next pane's peeking out behind it.
+@MainActor
+final class MuxTabIconBadge: NSView {
+  /// How far a tile behind shows past the one in front.
+  static let peek: CGFloat = 7
+  private(set) var tiles: [MuxIconTile] = []
+  private var width: NSLayoutConstraint!
+
+  var icons: [MuxIcon] = [] {
+    didSet {
+      guard icons != oldValue else { return }
+      let shown = Array(icons.prefix(2))
+      while tiles.count < shown.count {
+        let tile = MuxIconTile()
+        // Each later tile sits behind the ones before it.
+        addSubview(tile, positioned: .below, relativeTo: tiles.last)
+        NSLayoutConstraint.activate([
+          tile.topAnchor.constraint(equalTo: topAnchor),
+          tile.bottomAnchor.constraint(equalTo: bottomAnchor),
+          tile.leadingAnchor.constraint(
+            equalTo: leadingAnchor,
+            constant: CGFloat(tiles.count) * Self.peek
+          ),
+        ])
+        tiles.append(tile)
+      }
+      for (index, tile) in tiles.enumerated() {
+        tile.isHidden = index >= shown.count
+        tile.icon = index < shown.count ? shown[index] : nil
+        tile.alphaValue = index == 0 ? 1 : 0.85
+      }
+      width.constant = CGFloat(max(shown.count - 1, 0)) * Self.peek
+    }
   }
 
-  private static func cornerRadius(_ height: CGFloat) -> CGFloat {
-    (height * 0.28).rounded()
+  override init(frame: NSRect) {
+    super.init(frame: frame)
+    translatesAutoresizingMaskIntoConstraints = false
+    width = widthAnchor.constraint(equalTo: heightAnchor)
+    width.isActive = true
+    setAccessibilityElement(false)
   }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError() }
 }
 
 // MARK: Tab strip
@@ -489,7 +700,7 @@ private final class MuxTabGlass: NSGlassEffectView {
   override var mouseDownCanMoveWindow: Bool { false }
 }
 
-/// One tab: its icon in a circular badge, then its title. In a row (the
+/// One tab: its icons as tiles, then its title. In a row (the
 /// toolbar) it is a glass capsule; in a column (the sidebar) a full-width
 /// row, a glass capsule only when active.
 @MainActor
@@ -547,7 +758,7 @@ final class MuxTabButton: NSView, NSTextFieldDelegate {
       // tab, or none, ends it without renaming.
       if oldValue?.id != item?.id { cancelRename() }
       guard let item, item != oldValue else { return }
-      badge.icon.image = MuxIcons.image(item.symbol, "")
+      badge.icons = item.icons
       toolTip = item.detail.isEmpty ? nil : item.detail
       dot.isHidden = !item.hasActivity
       showTitle()
@@ -643,7 +854,6 @@ final class MuxTabButton: NSView, NSTextFieldDelegate {
     closeTrailing.constant = isVertical ? -8 : -8
     glass.cornerRadius = height / 2
     layer?.cornerRadius = height / 2
-    badge.icon.symbolConfiguration = .init(pointSize: 10, weight: .medium)
     closeButton.symbolConfiguration = .init(pointSize: 10, weight: .semibold)
   }
 
@@ -654,7 +864,6 @@ final class MuxTabButton: NSView, NSTextFieldDelegate {
       active
       ? .systemFont(ofSize: 13, weight: .medium) : .systemFont(ofSize: 13)
     label.textColor = active ? .labelColor : .secondaryLabelColor
-    badge.isActive = active
     // The active pill reads lighter, edged by a hairline.
     glass.tintColor = NSColor.white.withAlphaComponent(active ? 0.14 : 0.03)
     layer?.borderWidth = active ? 1 : 0
@@ -884,6 +1093,8 @@ struct MuxPaneHeaderState: Equatable {
   var hasActivity: Bool
   var isZoomed: Bool
   var hasExited: Bool
+  /// The pane's program icon (`MuxWorkspaceController.icon(of:)`).
+  var icon: MuxIcon = .terminal
 }
 
 /// A pane's header (icon, title, actions) above its Metal view.
@@ -1051,12 +1262,16 @@ final class MuxPaneHeader: NSView {
   ) {
     didSet {
       guard state != oldValue else { return }
-      label.stringValue =
-        state.hasExited ? "\(state.title) (exited)" : state.title
+      let title = MuxIcons.displayTitle(state.title)
+      label.stringValue = state.hasExited ? "\(title) (exited)" : title
       // The active pane reads at full strength, the others dimmed.
       label.textColor = state.isActive ? .labelColor : .secondaryLabelColor
       icon.contentTintColor = label.textColor
-      icon.image = MuxIcons.image(MuxIcons.symbol(for: state.title), "")
+      let program = state.icon
+      let brand = program.brand.flatMap(MuxIcons.brandImage)
+      icon.image = brand ?? MuxIcons.image(program.symbol, "")
+      icon.imageScaling =
+        brand == nil ? .scaleProportionallyDown : .scaleProportionallyUpOrDown
       dot.isHidden = !state.hasActivity
       actionButtons[.zoom]?.image = MuxIcons.image(
         state.isZoomed
@@ -1110,6 +1325,7 @@ final class MuxPaneHeader: NSView {
     NSLayoutConstraint.activate([
       iconLeading, icon.centerYAnchor.constraint(equalTo: centerYAnchor),
       icon.widthAnchor.constraint(equalToConstant: 16),
+      icon.heightAnchor.constraint(equalToConstant: 15),
       label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 7),
       label.centerYAnchor.constraint(equalTo: centerYAnchor),
       dot.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 4),

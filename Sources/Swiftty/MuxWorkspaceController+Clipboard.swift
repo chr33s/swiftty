@@ -8,10 +8,11 @@ import SwifttyMac
 /// are served at once; other reads and every write ask first.
 extension MuxWorkspaceController {
   /// What native windows ask of the service: the standard set plus
-  /// clipboard requests, which they answer with the pasteboard.
-  static let clientCapabilities = ClientCapabilities.supported.union(
-    .clipboardRequests
-  )
+  /// clipboard requests, which they answer with the pasteboard, and pane
+  /// programs, which pick tab and header icons.
+  static let clientCapabilities = ClientCapabilities.supported.union([
+    .clipboardRequests, .paneProgram,
+  ])
 
   func handleClipboardRead(_ request: MuxClipboardRead) {
     guard request.granted || request.mimes.isEmpty else {

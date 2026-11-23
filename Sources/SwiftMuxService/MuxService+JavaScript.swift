@@ -97,7 +97,7 @@ extension MuxService {
       return
     }
     switch action.kind {
-    case .write, .split, .close, .tabIcon:
+    case .write, .split, .close, .tabIcon, .paneIcon:
       guard let raw = action.pane, let pane = PaneID(raw) else { return }
       if automation.starting.contains(pane) {
         if automation.pending[pane, default: []].count < 64 {
@@ -123,6 +123,11 @@ extension MuxService {
         guard let (w, t) = locate(pane: pane) else { return }
         var presentation = action
         presentation.id = workspaces[w].tabs[t].id.description
+        publishAutomation(presentation)
+      case .paneIcon:
+        guard (action.text?.utf8.count ?? 0) <= 64 else { return }
+        var presentation = action
+        presentation.id = pane.description
         publishAutomation(presentation)
       case .close: endPane(pane)
       case .split:
@@ -168,6 +173,7 @@ extension MuxService {
     switch action.kind {
     case .badge: key = "badge"
     case .tabIcon: key = action.id.map { "icon:" + $0 }
+    case .paneIcon: key = action.id.map { "paneIcon:" + $0 }
     case .status: key = action.status.map { "status:" + $0.id }
     case .keybinding: key = action.text.map { "key:" + $0 }
     default: key = nil

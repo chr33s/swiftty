@@ -9,7 +9,8 @@ import Foundation
 //   scrollback compression units and stale-cell lists: physical layout. The
 //   logical rows they hold are encoded.
 // - `widths`: a static table.
-// - `onShellCommandFinished`, `kittyClipboardReader`, `kittyClipboardWriter`:
+// - `onShellCommandFinished`, `onShellCommandStarted`, `kittyClipboardReader`,
+//   `kittyClipboardWriter`:
 //   host callbacks; the importing host installs its own.
 // - `searchNeedsRefresh` is encoded; derived matches are encoded too so the
 //   selected index keeps its meaning.
