@@ -367,6 +367,8 @@ extension MuxNativeTests {
 
         // The holder reattaches while the user decides: the first takeover
         // is refused as stale and the user is asked again.
+        // `other` stands in for another device in use: always asked.
+        c.decideTakeControl = { .ask($0.leaseGeneration) }
         var asked: [String] = []
         c.confirmDestructive = { message in
           asked.append(message)
@@ -948,6 +950,8 @@ extension MuxNativeTests {
         try await MuxConnection.connect(endpoint: endpoint, frontend: .native)
       }
       c.onReplaced = { shown = $0 }
+      // The phone stands in for another device in use: always asked.
+      c.decideTakeControl = { .ask($0.leaseGeneration) }
       var asked: [String] = []
       var answer = false
       c.confirmDestructive = { message in

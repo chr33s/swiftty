@@ -76,6 +76,23 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   private var geometryDeferred = false
   private var subscribed: [PaneID] = []
   private var detached = false
+  /// Shown over a window that lost control: typing or its button takes
+  /// control back (`requestControl`).
+  let controlBar = MuxControlBar()
+  /// Input typed while asking for control, replayed in the window that
+  /// gets it, in order.
+  var controlReplays: [@MainActor (MuxWorkspaceController) -> Void] = []
+  /// A request for control is in flight; further input only queues.
+  var requestingControl = false {
+    didSet { controlBar.isBusy = requestingControl }
+  }
+  /// Most input kept while asking for control.
+  static let maxControlReplays = 256
+  /// Whether taking this workspace's control needs asking (tests force
+  /// a prompt for a local holder standing in for another device).
+  var decideTakeControl: (WorkspaceSummary) -> MuxTakeControl.Decision = {
+    MuxTakeControl.decide($0)
+  }
   private var presentationAttachment: AttachmentID?
   /// Lease loss leaves inbox metadata available until the window closes.
   private var closed = false
@@ -151,6 +168,10 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     layoutView.controller = self
     content.addSubview(layoutView)
     content.addSubview(automationStatus)
+    controlBar.translatesAutoresizingMaskIntoConstraints = false
+    controlBar.isHidden = true
+    controlBar.onTakeControl = { [weak self] in self?.requestControl() }
+    content.addSubview(controlBar)
     tabSidebar.translatesAutoresizingMaskIntoConstraints = false
     tabSidebar.isHidden = true
     content.addSubview(tabSidebar)
@@ -178,6 +199,15 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
         equalTo: content.trailingAnchor
       ),
       automationStatus.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+      controlBar.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+      controlBar.topAnchor.constraint(
+        equalTo: content.safeAreaLayoutGuide.topAnchor,
+        constant: 8
+      ),
+      controlBar.widthAnchor.constraint(
+        lessThanOrEqualTo: content.widthAnchor,
+        constant: -32
+      ),
     ])
     TerminalWindowBackground.apply(
       to: window,
@@ -465,9 +495,13 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     guard !detached else { return }
     detached = true
     stopPipelines()
-    for view in views.values { view.reset() }
+    // The last frames stay, dimmed, so the window still shows where
+    // things were; typing takes control back (`requestControl`).
+    for view in views.values { view.cancelComposition() }
+    layoutView.alphaValue = 0.55
     showsTabs(true)
     window?.title = "\(workspaceTitle) — detached (\(reason))"
+    showControlBar(reason: reason)
   }
 
   // MARK: Layout
@@ -1342,12 +1376,13 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     _ message: String,
     _ detail: String,
     button: String = "End",
+    declined: @escaping @MainActor () -> Void = {},
     _ action: @escaping @MainActor () -> Void
   ) {
-    guard !isClosed else { return }
+    guard !isClosed else { return declined() }
     guard ask else { return action() }
     Task { @MainActor [weak self] in
-      guard let self, !isClosed else { return }
+      guard let self, !isClosed else { return declined() }
       let ok: Bool
       if let hook = confirmDestructive {
         ok = await hook(message)
@@ -1365,7 +1400,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
           ok = alert.runModal() == .alertFirstButtonReturn
         }
       }
-      if ok, !isClosed { action() }
+      if ok, !isClosed { action() } else { declined() }
     }
   }
 

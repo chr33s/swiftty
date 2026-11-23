@@ -334,7 +334,9 @@ extension MuxInboxRefreshTests {
     )
     service.sendEvent(.detached(reason: "taken over"))
     try #require(await until { !controller.holdsLease })
-    #expect(view.presented == nil)
+    // The last frame stays (dimmed, under the control bar); a late one
+    // from the retired attachment never replaces it.
+    #expect(view.presented?.frame.identity.revision == 1)
     frame.identity.revision = 2
     service.sendEvent(.frame(frame))
     service.script(revision: 13)
@@ -351,8 +353,10 @@ extension MuxInboxRefreshTests {
     )
     try #require(await until { controller.inbox.revision == 13 })
     view.draw(in: view)
-    #expect(view.presented == nil)
-    #expect(view.accessibilityValue() == nil)
+    #expect(view.presented?.frame.identity.revision == 1)
+    #expect(
+      (view.accessibilityValue() as? String)?.contains("before detach") == true
+    )
     await controller.detach()
   }
 

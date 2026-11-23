@@ -274,14 +274,21 @@ extension MuxWorkspaceController {
   }
 
   /// Shows `target` in a new window on a new connection, replacing this
-  /// one that lost its lease (`MuxWorkspaceController.reveal`). A
-  /// workspace held elsewhere is taken over only after confirmation.
-  private func reattach(_ target: PaneTarget, takeover lease: UInt64? = nil) {
+  /// one that lost its lease (`MuxWorkspaceController.reveal`) in its
+  /// place. A workspace held elsewhere is taken over silently or after
+  /// confirmation (`MuxTakeControl.decide`). `done` receives the window
+  /// that took control, or nil when declined or failed.
+  func reattach(
+    _ target: PaneTarget,
+    takeover lease: UInt64? = nil,
+    done: @escaping @MainActor (MuxWorkspaceController?) -> Void = { _ in }
+  ) {
     Task { [weak self] in
-      guard let self else { return }
+      guard let self else { return done(nil) }
+      let frame = window?.frame
       var replacement: MuxWorkspaceController?
       do {
-        _ = try await Self.reveal(
+        let shown = try await Self.reveal(
           target,
           in: self,
           configuration: config,
@@ -289,20 +296,29 @@ extension MuxWorkspaceController {
           takeover: lease
         ) { controller in
           replacement = controller
+          if let frame { controller.window?.setFrame(frame, display: false) }
           controller.connectService = self.connectService
+          controller.decideTakeControl = self.decideTakeControl
           controller.onReplaced = self.onReplaced
           self.onReplaced?(controller)
         }
-      } catch is CancellationError { return } catch let error as MuxError
+        done(shown)
+      } catch is CancellationError { done(nil) } catch let error as MuxError
         where replacement == nil && !isClosed
         && (error.code == .leaseHeld || error.code == .staleRevision)
       {
-        confirmTakeover(target.workspace, moved: lease != nil) {
-          [weak self] lease in self?.reattach(target, takeover: lease)
+        confirmTakeover(
+          target.workspace,
+          moved: lease != nil,
+          declined: { done(nil) }
+        ) { [weak self] lease in
+          guard let self else { return done(nil) }
+          reattach(target, takeover: lease, done: done)
         }
       } catch {
         let recipient = replacement ?? self
         if !recipient.isClosed { recipient.inboxFailed(error, alert: true) }
+        done(replacement)
       }
     }
   }
@@ -316,12 +332,14 @@ extension MuxWorkspaceController {
     )
   }
 
-  /// Asks before taking over `wsID` at the lease generation listed now,
-  /// then calls `take` with it. If the lease moves while asking, the
-  /// takeover fails `staleRevision` and `take`'s caller asks again.
-  private func confirmTakeover(
+  /// Takes over `wsID` at the lease generation listed now, asking first
+  /// unless `MuxTakeControl.decide` allows it silently, then calls `take`
+  /// with it. If the lease moves meanwhile, the takeover fails
+  /// `staleRevision` and `take`'s caller decides again.
+  func confirmTakeover(
     _ wsID: WorkspaceID,
     moved: Bool,
+    declined: @escaping @MainActor () -> Void = {},
     take: @escaping @MainActor (UInt64) -> Void
   ) {
     let connection = connection
@@ -342,18 +360,22 @@ extension MuxWorkspaceController {
         summary = found
       } catch {
         if let self, !isClosed { inboxFailed(error, alert: true) }
-        return
+        return declined()
       }
-      guard let self, !isClosed else { return }
+      guard let self, !isClosed else { return declined() }
+      let decision = decideTakeControl(summary)
+      guard case .ask = decision else { return take(decision.generation) }
       let name = DisplayText.workspaceName(summary.name)
+      let holder = MuxTakeControl.describe(summary.leaseHolder)
       confirmThen(
         true,
         moved
           ? "Control of workspace “\(name)” changed while you were deciding. Take control now?"
           : "Take control of workspace “\(name)”?",
-        "Another window or device controls it. Taking over disconnects it there; its programs keep running.",
-        button: "Take Over"
-      ) { take(summary.leaseGeneration) }
+        "It is in use on \(holder). Taking over disconnects it there; its programs keep running.",
+        button: "Take Over",
+        declined: declined
+      ) { take(decision.generation) }
     }
   }
 }
