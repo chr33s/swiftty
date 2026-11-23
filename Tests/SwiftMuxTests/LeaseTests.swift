@@ -135,6 +135,29 @@ struct LeaseTests {
     #expect(try await summary(o, ws.id).paneCount == 1)
   }
 
+  /// Takeover prompts are skipped for an idle holder; admitted input
+  /// marks when the holder last typed.
+  @Test
+  func admittedInputRecordsTheHoldersLastInput() async throws {
+    let h = try Harness()
+    let c = try await h.connect()
+    let ws = try await create(c, "typed")
+    let pane = ws.tabs[0].activePane
+    try await c.attachAndShow(.id(ws.id))
+    #expect(try await summary(c, ws.id).leaseHolder?.lastInput == nil)
+    let before = Date()
+    try await c.submit(
+      raw: InputRecord(
+        sequence: 1,
+        attachment: await c.attachment!,
+        pane: pane,
+        payload: .input(.text("x"))
+      )
+    )
+    let last = try #require(try await summary(c, ws.id).leaseHolder?.lastInput)
+    #expect(last >= before.addingTimeInterval(-1))
+  }
+
   @Test
   func inputLedgerDropsDuplicatesAndRefusesGaps() async throws {
     let h = try Harness()

@@ -510,6 +510,16 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
   }
 
   override func keyDown(with event: NSEvent) {
+    // A window that lost control takes it back on typing (Command
+    // shortcuts such as Copy still work read-only); the key is replayed
+    // in the window that gets it.
+    if let controller, !controller.holdsLease,
+      !event.modifierFlags.contains(.command)
+    {
+      let pane = pane
+      controller.requestControl { $0.views[pane]?.keyDown(with: event) }
+      return
+    }
     if !hasMarkedText(),
       controller?.handleAutomationKey(event, pane: pane) == true
     {
@@ -689,6 +699,11 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
 
   @objc
   func paste(_ sender: Any?) {
+    if let controller, !controller.holdsLease {
+      let pane = pane
+      controller.requestControl { $0.views[pane]?.paste(nil) }
+      return
+    }
     // A program asking for kitty paste events reads what it wants itself.
     if features.contains(.kittyClipboard), modes.contains(.kittyPasteEvents) {
       clearSelection()

@@ -286,6 +286,7 @@ extension MuxService {
       return ack(MuxError(.inputGap, "expected input \(current.nextInput)"))
     }
     leases[wsID]?.nextInput += 1
+    leases[wsID]?.holder.lastInput = Date()
     // Answered once, like any refusal: never written, never retried as-is.
     if migrationFrozen {
       return ack(MuxError(.quiescing, "workspace is moving to a new worker"))

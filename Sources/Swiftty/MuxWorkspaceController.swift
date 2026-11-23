@@ -73,13 +73,41 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   static let maxQueuedCommands = 64
   private var pipelineTasks: [Task<Void, Never>] = []
   private var tasks: [Task<Void, Never>] = []
-  private let connectionAttempts = MuxConnectionAttempts()
+  let connectionAttempts = MuxConnectionAttempts()
   private var geometryGeneration: UInt64 = 0
   private var sentGeometry: (revision: UInt64, entries: [GeometryBatch.Entry])?
   private var geometryScheduled = false
   private var geometryDeferred = false
   private var subscribed: [PaneID] = []
   private var detached = false
+  /// Controller, or a read-only observer: a window that lost control
+  /// keeps showing the workspace live as one (`startObserving`).
+  private(set) var role: AttachmentRole = .controller
+  /// Shown over a window that lost control: typing or its button takes
+  /// control back (`requestControl`).
+  let controlBar = MuxControlBar()
+  /// Input typed while asking for control, replayed in the window that
+  /// gets it, in order.
+  var controlReplays: [@MainActor (MuxWorkspaceController) -> Void] = []
+  /// A request for control is in flight; further input only queues.
+  var requestingControl = false {
+    didSet { controlBar.isBusy = requestingControl }
+  }
+  /// Most input kept while asking for control.
+  static let maxControlReplays = 256
+  /// Replacing this window with a live observer is in progress; a
+  /// request for control waits for it (`startObserving`).
+  var startingObserver = false
+  /// Input asked for control while `startingObserver`.
+  var controlRequestedWhileObserving = false
+  /// Whether a takeover elsewhere turns this window into a live observer
+  /// (tests that inspect the frozen window turn it off).
+  var observesAfterTakeover = true
+  /// Whether taking this workspace's control needs asking (tests force
+  /// a prompt for a local holder standing in for another device).
+  var decideTakeControl: (WorkspaceSummary) -> MuxTakeControl.Decision = {
+    MuxTakeControl.decide($0)
+  }
   private var presentationAttachment: AttachmentID?
   /// Lease loss leaves inbox metadata available until the window closes.
   private var closed = false
@@ -88,7 +116,13 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   /// Whether this window still holds its workspace's lease: false once
   /// it detached, lost its connection or another frontend took over
   /// (the window then shows "SwiftMux — detached").
-  var holdsLease: Bool { !isClosed && !detached && attachedWorkspace != nil }
+  var holdsLease: Bool {
+    !isClosed && !detached && attachedWorkspace != nil && role == .controller
+  }
+  /// Whether this window shows its workspace live without controlling it.
+  var isObserving: Bool {
+    !isClosed && !detached && attachedWorkspace != nil && role == .observer
+  }
   var onClose: (() -> Void)?
   /// Receives the window that replaced this one after it lost its lease
   /// (inbox "Open" reattaching); the app keeps one SwiftMux window.
@@ -155,6 +189,10 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     layoutView.controller = self
     content.addSubview(layoutView)
     content.addSubview(automationStatus)
+    controlBar.translatesAutoresizingMaskIntoConstraints = false
+    controlBar.isHidden = true
+    controlBar.onTakeControl = { [weak self] in self?.requestControl() }
+    content.addSubview(controlBar)
     tabSidebar.translatesAutoresizingMaskIntoConstraints = false
     tabSidebar.isHidden = true
     content.addSubview(tabSidebar)
@@ -184,6 +222,15 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
         equalTo: content.trailingAnchor
       ),
       automationStatus.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+      controlBar.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+      controlBar.topAnchor.constraint(
+        equalTo: content.safeAreaLayoutGuide.topAnchor,
+        constant: 8
+      ),
+      controlBar.widthAnchor.constraint(
+        lessThanOrEqualTo: content.widthAnchor,
+        constant: -32
+      ),
     ])
     TerminalWindowBackground.apply(
       to: window,
@@ -213,6 +260,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     configuration: Configuration,
     connection: MuxConnection,
     takeover expectedLease: UInt64? = nil,
+    role: AttachmentRole = .controller,
     beforeReturnForTesting: (
       @MainActor (MuxWorkspaceController) async -> Void
     )? = nil,
@@ -239,7 +287,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     try Task.checkCancellation()
     let attach: MuxCommand =
       expectedLease.map { .takeover(target, expectedLease: $0) }
-      ?? .attach(AttachRequest(target))
+      ?? .attach(AttachRequest(target, role: role))
     guard
       case let .attached(attachment, ws) = try await connection.execute(
         attach,
@@ -252,14 +300,19 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
       welcome: welcome,
       configuration: configuration,
     )
+    if expectedLease == nil { controller.role = role }
     controller.apply(ws, attached: true, attachment: attachment)
     controller.startEvents()
     controller.startInbox()
-    if controller.features.contains(.javaScript) {
-      controller.command(.subscribeAutomation(true))
+    if controller.role == .observer {
+      controller.startWatchingControl()
+    } else {
+      if controller.features.contains(.javaScript) {
+        controller.command(.subscribeAutomation(true))
+      }
+      controller.sendTheme()
+      controller.observeAppearance()
     }
-    controller.sendTheme()
-    controller.observeAppearance()
     do {
       await beforeReturnForTesting?(controller)
       try Task.checkCancellation()
@@ -455,8 +508,9 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
       refreshInbox()
     case let .clipboardRead(request): handleClipboardRead(request)
     case let .clipboardWrite(request): handleClipboardWrite(request)
-    case .paste, .frameUnavailable, .frame, .frameDelta, .workspaces,
-      .workspaceGraph, .ready:
+    case let .workspaces(list): controlHolderChanged(list)
+    case .paste, .frameUnavailable, .frame, .frameDelta, .workspaceGraph,
+      .ready:
       break
     }
   }
@@ -471,9 +525,20 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     guard !detached else { return }
     detached = true
     stopPipelines()
-    for view in views.values { view.reset() }
+    // The last frames stay, dimmed, so the window still shows where
+    // things were; typing takes control back (`requestControl`).
+    for view in views.values { view.cancelComposition() }
+    layoutView.alphaValue = 0.55
     showsTabs(true)
     window?.title = "\(workspaceTitle) — detached (\(reason))"
+    let wasController = role == .controller
+    showControlBar(reason: reason)
+    // Taken over: keep showing the workspace live, read-only.
+    if wasController, observesAfterTakeover,
+      reason == MuxTakeControl.takenOverReason
+    {
+      startObserving()
+    }
   }
 
   // MARK: Layout
@@ -962,7 +1027,9 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   }
 
   private func sendGeometry() {
-    guard !detached, let ws = workspace, let commands else { return }
+    // An observer's frames keep the controller's grid size.
+    guard !detached, role == .controller, let ws = workspace, let commands
+    else { return }
     let entries =
       views.compactMap { id, view -> GeometryBatch.Entry? in
         guard view.superview != nil, view.bounds.width > 0,
@@ -1025,6 +1092,11 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
       failed?(MuxError(.notAttached))
       return
     }
+    // An observer's other commands would only be refused.
+    guard role == .controller || command.allowedForObserver else {
+      failed?(MuxError(.unauthorized, "this window does not control it"))
+      return
+    }
     let connection = connection
     let admission = commands.yield {
       do {
@@ -1082,13 +1154,13 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   }
 
   func send(_ input: MuxInput, to pane: PaneID) {
-    guard !detached else { return }
+    guard !detached, role == .controller else { return }
     if showsReopenedNotice { showsReopenedNotice = false }
     inputs?.send(input, to: pane)
   }
 
   func paste(_ text: String, to pane: PaneID) {
-    guard !detached else { return }
+    guard !detached, role == .controller else { return }
     if showsReopenedNotice { showsReopenedNotice = false }
     inputs?.paste(text, to: pane)
   }
@@ -1436,12 +1508,13 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
     _ message: String,
     _ detail: String,
     button: String = "End",
+    declined: @escaping @MainActor () -> Void = {},
     _ action: @escaping @MainActor () -> Void
   ) {
-    guard !isClosed else { return }
+    guard !isClosed else { return declined() }
     guard ask else { return action() }
     Task { @MainActor [weak self] in
-      guard let self, !isClosed else { return }
+      guard let self, !isClosed else { return declined() }
       let ok: Bool
       if let hook = confirmDestructive {
         ok = await hook(message)
@@ -1459,7 +1532,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
           ok = alert.runModal() == .alertFirstButtonReturn
         }
       }
-      if ok, !isClosed { action() }
+      if ok, !isClosed { action() } else { declined() }
     }
   }
 

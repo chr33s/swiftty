@@ -416,16 +416,20 @@ final class WorkspaceCoordinator {
     guard controller(holding: ws.id) == nil, ws.isAttached else {
       return open(ws.id, server: server)
     }
+    let decision = MuxTakeControl.decide(ws)
+    guard case .ask = decision else {
+      return open(ws.id, server: server, takeover: decision.generation)
+    }
     let alert = NSAlert()
     alert.messageText =
       "Take control of workspace “\(DisplayText.workspaceName(ws.name))”?"
     alert.informativeText =
-      "Another window or device controls it. Taking over disconnects it there; its programs keep running."
+      "It is in use on \(MuxTakeControl.describe(ws.leaseHolder)). Taking over disconnects it there; its programs keep running."
     alert.alertStyle = .warning
     alert.addButton(withTitle: "Take Over")
     alert.addButton(withTitle: "Cancel")
     guard alert.runModal() == .alertFirstButtonReturn else { return }
-    open(ws.id, server: server, takeover: ws.leaseGeneration)
+    open(ws.id, server: server, takeover: decision.generation)
   }
 
   // MARK: Launch

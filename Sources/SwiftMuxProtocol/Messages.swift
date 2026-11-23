@@ -428,11 +428,20 @@ public struct LeaseHolder: Codable, Sendable, Hashable {
   public var transport: Transport
   public var frontend: FrontendKind
   public var since: Date
+  /// When the holder last wrote input (nil before any, or from older
+  /// services): an idle holder may be taken over without asking.
+  public var lastInput: Date?
 
-  public init(transport: Transport, frontend: FrontendKind, since: Date) {
+  public init(
+    transport: Transport,
+    frontend: FrontendKind,
+    since: Date,
+    lastInput: Date? = nil
+  ) {
     self.transport = transport
     self.frontend = frontend
     self.since = since
+    self.lastInput = lastInput
   }
 }
 

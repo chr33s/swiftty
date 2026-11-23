@@ -63,6 +63,18 @@ struct MuxNativeTests {
         connection: connection
       )
       controller.window?.isReleasedWhenClosed = false
+      // Replacement windows (observing after a takeover, reattaching)
+      // connect to this service, never the installed one.
+      controller.connectService = {
+        try await MuxConnection.connect(
+          endpoint: endpoint,
+          frontend: .native,
+          capabilities: MuxWorkspaceController.clientCapabilities
+        )
+      }
+      // Most tests inspect the window a takeover leaves; observing
+      // replaces it (`MuxTakeControlTests` turn it on).
+      controller.observesAfterTakeover = false
       controller.showWindow(nil)
       return Fixture(
         service: service,

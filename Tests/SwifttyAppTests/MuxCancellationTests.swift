@@ -119,6 +119,8 @@ extension MuxNativeTests {
         )
       }
       controller.onReplaced = { shown = $0 }
+      // The phone stands in for another device in use: always asked.
+      controller.decideTakeControl = { .ask($0.leaseGeneration) }
       controller.confirmDestructive = { _ in
         asked = true
         for await _ in gate.stream { break }
