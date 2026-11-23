@@ -72,8 +72,9 @@ extension MuxWorkspaceController {
     }
   }
 
-  private func openObserver(_ wsID: WorkspaceID) async -> MuxWorkspaceController?
-  {
+  private func openObserver(
+    _ wsID: WorkspaceID
+  ) async -> MuxWorkspaceController? {
     let frame = window?.frame
     let visible = window?.isVisible == true
     let replaced = onReplaced
@@ -106,9 +107,7 @@ extension MuxWorkspaceController {
       replaced?(observer)
       if visible { observer.window?.orderFront(nil) }
       return observer
-    } catch {
-      return nil
-    }
+    } catch { return nil }
   }
 
   /// Takes control back for this window that lost it, then runs
@@ -134,9 +133,8 @@ extension MuxWorkspaceController {
       return
     }
     requestingControl = true
-    reattach(
-      PaneTarget(workspace: wsID, tab: activeTab?.id, pane: pane)
-    ) { [weak self] replacement in
+    reattach(PaneTarget(workspace: wsID, tab: activeTab?.id, pane: pane)) {
+      [weak self] replacement in
       guard let self else { return }
       let replays = controlReplays
       controlReplays.removeAll()

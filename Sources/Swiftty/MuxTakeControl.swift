@@ -57,8 +57,7 @@ enum MuxTakeControl {
   /// the current holder is known.
   static func message(reason: String) -> String {
     switch reason {
-    case takenOverReason:
-      "Controlled elsewhere — type to take control"
+    case takenOverReason: "Controlled elsewhere — type to take control"
     case "took over another workspace", "detached":
       "Not controlling this workspace — type to take control"
     default:
@@ -175,12 +174,18 @@ final class MuxControlBar: NSGlassEffectView {
     cancelButton.isHidden = !asking
     button.isEnabled = asking || !isBusy
     let spinning = isBusy && !asking
-    if spinning { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
+    if spinning {
+      spinner.startAnimation(nil)
+    } else {
+      spinner.stopAnimation(nil)
+    }
   }
 
-  @objc private func primary() {
+  @objc
+  private func primary() {
     if question != nil { answer(true) } else { onTakeControl?() }
   }
 
-  @objc private func cancel() { answer(false) }
+  @objc
+  private func cancel() { answer(false) }
 }

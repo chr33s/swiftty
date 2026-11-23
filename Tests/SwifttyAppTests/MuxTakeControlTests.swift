@@ -276,8 +276,7 @@ extension MuxNativeTests {
   }
 
   @Test(.enabled(if: hasMetal))
-  func `typing in an observing window takes control and replays`()
-    async throws
+  func `typing in an observing window takes control and replays`() async throws
   {
     try await withTakenOverWindow { o in
       #expect(await until { o.windows().first?.isObserving == true })
@@ -300,9 +299,7 @@ extension MuxNativeTests {
   }
 
   @Test(.enabled(if: hasMetal))
-  func `the control bar asks before displacing a holder in use`()
-    async throws
-  {
+  func `the control bar asks before displacing a holder in use`() async throws {
     try await withTakenOverWindow { o in
       #expect(await until { o.windows().first?.isObserving == true })
       let observer = try #require(o.windows().first)
@@ -313,7 +310,9 @@ extension MuxNativeTests {
       // Declined in the bar: the phone keeps control, the input is dropped.
       view.keyDown(with: try typing("n"))
       #expect(await until { observer.controlBar.isAsking })
-      #expect(observer.controlBar.message.hasPrefix("Take control of workspace"))
+      #expect(
+        observer.controlBar.message.hasPrefix("Take control of workspace")
+      )
       observer.controlBar.answer(false)
       #expect(await until { !observer.requestingControl })
       #expect(observer.controlReplays.isEmpty)
