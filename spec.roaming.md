@@ -466,7 +466,7 @@ After an outage, discard old transport streams and send a full snapshot of **cur
 
 **Scheduling.** §7.3 is unchanged. Deltas count as snapshots for the two in-flight streams and the single unsent reference, and the protected stream may be a delta. The host sends a full snapshot instead of a delta when it would encode to at least half the size of the full snapshot, on the first screen of an attachment epoch, after a resize revision changes, when `activeBuffer` or the history generation changes, and in answer to `RequestFullScreen`. It answers at most one `RequestFullScreen` per in-flight full snapshot, so repeated requests cannot multiply work.
 
-**Limits.** A delta obeys the snapshot size limits in §12. Retained baselines are bounded by the 200×80 grid limit and the 16-revision cap. Screens come from the worker's frames, so the worker's budgets apply first (`MuxLimits.standard`: 4,096 styles, graphemes up to 32 scalars); the host then clips to the RST/1 grid and exports clusters longer than RST/1 carries as the placeholder. A screen either budget cannot express is not sent; the host captures again on the next change.
+**Limits.** A delta obeys the snapshot size limits in §12. Retained baselines are bounded by the 200×80 grid limit and the 16-revision cap. Screens come from the worker's frames, so the worker's budgets apply first (`MuxLimits.standard`: 4,096 styles, graphemes up to 32 scalars). A longer cluster is shown as U+FFFD in every SwiftMux frame, native or roaming, rather than failing the frame; the host then clips to the RST/1 grid. A screen with more distinct styles than the budget is not sent; the host captures again on the next change.
 
 ### 7.5 Selection across history
 

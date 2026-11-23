@@ -4,13 +4,21 @@ import SwifttyEngine
 
 /// Converts a consistent owned capture into a `PaneFrame`.
 public enum FrameExporter {
-  /// - Throws: `resourceLimit` when valid state exceeds an export budget;
-  ///   cells are never silently omitted.
+  /// Shown for a grapheme cluster longer than the frame budget allows.
+  package static let replacementCharacter: UInt32 = 0xFFFD
+
+  /// A cluster longer than `limits.maxGraphemeScalars` is shown as
+  /// `overlongGrapheme` (U+FFFD by default) rather than failing the frame;
+  /// nil fails it instead.
+  ///
+  /// - Throws: `resourceLimit` when valid state exceeds another export
+  ///   budget (or an over-long cluster has no placeholder); cells are
+  ///   never silently omitted.
   package static func frame(
     from screen: OwnedScreen,
     identity: FrameIdentity,
     limits: MuxLimits = .standard,
-    overlongGrapheme: UInt32? = nil
+    overlongGrapheme: UInt32? = replacementCharacter
   ) throws(MuxError) -> PaneFrame {
     guard
       let count = limits.cellCount(columns: screen.columns, rows: screen.rows)

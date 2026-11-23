@@ -134,7 +134,7 @@ A frame contains complete visible terminal state for one pane. Required groups a
 |---|---|
 | Identity | Server instance, attachment, pane, frame revision, accepted layout/geometry and viewport revisions |
 | Grid | Columns, rows, active screen, row metadata, explicit wide-cell continuation structure |
-| Text | Owned Unicode scalars/graphemes and bounded frame-local lookup tables |
+| Text | Owned Unicode scalars/graphemes and bounded frame-local lookup tables; a cluster longer than `maxGraphemeScalars` is shown as U+FFFD rather than failing the frame |
 | Appearance | Cell styles, colors/palette, row wraps, cursor position/style/visibility and supported overlays |
 | Interaction | Relevant terminal modes, history generation/range, stable row addressing for supported history actions |
 

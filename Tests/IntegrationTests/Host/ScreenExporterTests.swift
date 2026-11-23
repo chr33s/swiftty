@@ -173,16 +173,17 @@ struct ScreenExporterTests {
 
   @Test
   func `long graphemes and titles are bounded`() throws {
-    // The longest cluster a worker frame carries arrives whole.
-    let marks = String(
-      repeating: "\u{301}",
-      count: MuxLimits.standard.maxGraphemeScalars - 1
-    )
+    // The longest cluster a worker frame carries arrives whole; a longer
+    // one is shown as the replacement character, not a missing screen.
+    let budget = MuxLimits.standard.maxGraphemeScalars
+    let fits = String(repeating: "\u{301}", count: budget - 1)
+    let overlong = String(repeating: "\u{301}", count: budget + 8)
     let s = try export(
-      "a\(marks)b\(esc)]2;\(String(repeating: "é", count: 600))\u{07}"
+      "a\(overlong)b\(fits)c\(esc)]2;\(String(repeating: "é", count: 600))\u{07}"
     )
-    #expect(s.cells[0][0].text == "a" + marks)
-    #expect(s.cells[0][1].text == "b")
+    #expect(s.cells[0][0].text == RSTLimits.graphemePlaceholder)
+    #expect(s.cells[0][1].text == "b" + fits)
+    #expect(s.cells[0][2].text == "c")
     #expect(s.title.utf8.count <= RSTLimits.maxTitleBytes)
     #expect(s.title == String(repeating: "é", count: 512))
   }
