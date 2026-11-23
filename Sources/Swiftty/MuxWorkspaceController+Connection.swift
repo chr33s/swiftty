@@ -267,6 +267,7 @@ extension MuxWorkspaceController {
     configuration: Configuration,
     connection: MuxConnection,
     takeover expectedLease: UInt64? = nil,
+    role: AttachmentRole = .controller,
   ) async throws -> MuxWorkspaceController {
     let controller: MuxWorkspaceController
     do {
@@ -276,6 +277,7 @@ extension MuxWorkspaceController {
         configuration: configuration,
         connection: connection,
         takeover: expectedLease,
+        role: role,
       )
     } catch {
       await connection.close()

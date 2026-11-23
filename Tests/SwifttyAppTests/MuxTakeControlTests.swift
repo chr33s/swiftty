@@ -108,7 +108,13 @@ extension MuxNativeTests {
     try await withDetachedFixture { d in
       let c = d.fixture.controller
       #expect(c.controlBar.isHidden == false)
-      #expect(c.controlBar.message.hasPrefix("Controlled elsewhere"))
+      // Names who has it once the service answers.
+      #expect(
+        await until {
+          c.controlBar.message
+            == "In use on another window on this Mac — type to take control"
+        }
+      )
       #expect(c.layoutView.alphaValue < 1)
       // The last frame stays rather than going blank.
       #expect(c.views[d.pane]?.presented != nil)
@@ -188,6 +194,140 @@ extension MuxNativeTests {
       #expect(
         (try? await d.phone.execute(.newTab(name: nil, launch: nil))) != nil
       )
+    }
+  }
+
+  /// A window that observes after a takeover, and every window that
+  /// replaces it, recorded in order.
+  private struct Observed {
+    let fixture: Fixture
+    let phone: MuxConnection
+    let pane: PaneID
+    let windows: () -> [MuxWorkspaceController]
+  }
+
+  private func withTakenOverWindow(
+    _ work: @MainActor (Observed) async throws -> Void
+  ) async throws {
+    let f = try await open()
+    let c = f.controller
+    c.observesAfterTakeover = true
+    var windows: [MuxWorkspaceController] = []
+    c.onReplaced = { windows.append($0) }
+    var phone: MuxConnection?
+    try await RuntimeFixture.withCleanup {
+      let pane = try #require(c.activePane)
+      let other = try await MuxConnection.connect(
+        endpoint: f.endpoint,
+        frontend: .native
+      )
+      phone = other
+      guard
+        case let .workspaces(list) = try await other.execute(.listWorkspaces),
+        let summary = list.first(where: { $0.id == f.workspace }),
+        case .attached = try await other.execute(
+          .takeover(.id(f.workspace), expectedLease: summary.leaseGeneration)
+        )
+      else { throw MuxError(.invalidRequest, "no takeover") }
+      try await work(
+        Observed(fixture: f, phone: other, pane: pane, windows: { windows })
+      )
+    } cleanup: {
+      for window in windows {
+        await window.detach()
+        window.close()
+      }
+      await phone?.close()
+      await retire(f)
+    }
+  }
+
+  @Test(.enabled(if: hasMetal))
+  func `a window taken over keeps showing the workspace live`() async throws {
+    try await withTakenOverWindow { o in
+      let c = o.fixture.controller
+      #expect(await until { o.windows().first?.isObserving == true })
+      let observer = try #require(o.windows().first)
+      #expect(c.isClosed)
+      #expect(!observer.holdsLease)
+      #expect(observer.controlBar.isHidden == false)
+      #expect(
+        await until {
+          observer.controlBar.message
+            == "In use on another window on this Mac — type to take control"
+        }
+      )
+      // Output from the new holder shows up read-only.
+      await o.phone.post(.text("echo live-$((70+7))\r"), to: o.pane)
+      #expect(
+        await until {
+          (observer.views[o.pane]?.accessibilityValue() as? String)?
+            .contains("live-77") == true
+        }
+      )
+      // The holder lets go: the bar says nobody controls it.
+      _ = try await o.phone.execute(.detach)
+      #expect(
+        await until {
+          observer.controlBar.message.hasPrefix("No one is controlling")
+        }
+      )
+    }
+  }
+
+  @Test(.enabled(if: hasMetal))
+  func `typing in an observing window takes control and replays`()
+    async throws
+  {
+    try await withTakenOverWindow { o in
+      #expect(await until { o.windows().first?.isObserving == true })
+      let observer = try #require(o.windows().first)
+      observer.views[o.pane]?.keyDown(with: try typing("ob9"))
+      #expect(await until { o.windows().last?.holdsLease == true })
+      let window = try #require(o.windows().last)
+      #expect(window !== observer)
+      #expect(observer.isClosed)
+      #expect(
+        await until {
+          (window.views[o.pane]?.accessibilityValue() as? String)?
+            .contains("ob9") == true
+        }
+      )
+      #expect(
+        (try? await o.phone.execute(.newTab(name: nil, launch: nil))) == nil
+      )
+    }
+  }
+
+  @Test(.enabled(if: hasMetal))
+  func `the control bar asks before displacing a holder in use`()
+    async throws
+  {
+    try await withTakenOverWindow { o in
+      #expect(await until { o.windows().first?.isObserving == true })
+      let observer = try #require(o.windows().first)
+      // Stands in for another device in use right now.
+      observer.decideTakeControl = { .ask($0.leaseGeneration) }
+      let view = try #require(observer.views[o.pane])
+
+      // Declined in the bar: the phone keeps control, the input is dropped.
+      view.keyDown(with: try typing("n"))
+      #expect(await until { observer.controlBar.isAsking })
+      #expect(observer.controlBar.message.hasPrefix("Take control of workspace"))
+      observer.controlBar.answer(false)
+      #expect(await until { !observer.requestingControl })
+      #expect(observer.controlReplays.isEmpty)
+      #expect(o.windows().count == 1)
+      #expect(
+        (try? await o.phone.execute(.newTab(name: nil, launch: nil))) != nil
+      )
+
+      // Confirmed: a new window controls the workspace.
+      view.keyDown(with: try typing("y"))
+      #expect(await until { observer.controlBar.isAsking })
+      observer.controlBar.answer(true)
+      #expect(await until { o.windows().last?.holdsLease == true })
+      #expect(o.windows().count == 2)
     }
   }
 }

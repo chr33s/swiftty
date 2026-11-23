@@ -299,6 +299,7 @@ extension MuxWorkspaceController {
           if let frame { controller.window?.setFrame(frame, display: false) }
           controller.connectService = self.connectService
           controller.decideTakeControl = self.decideTakeControl
+          controller.observesAfterTakeover = self.observesAfterTakeover
           controller.onReplaced = self.onReplaced
           self.onReplaced?(controller)
         }
@@ -367,13 +368,11 @@ extension MuxWorkspaceController {
       guard case .ask = decision else { return take(decision.generation) }
       let name = DisplayText.workspaceName(summary.name)
       let holder = MuxTakeControl.describe(summary.leaseHolder)
-      confirmThen(
-        true,
+      askTakeover(
         moved
           ? "Control of workspace “\(name)” changed while you were deciding. Take control now?"
           : "Take control of workspace “\(name)”?",
-        "It is in use on \(holder). Taking over disconnects it there; its programs keep running.",
-        button: "Take Over",
+        holder: holder,
         declined: declined
       ) { take(decision.generation) }
     }
