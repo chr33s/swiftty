@@ -222,6 +222,12 @@ package final class SMXRoamingMux: RoamingMux, @unchecked Sendable {
     }
   }
 
+  /// Drops the connection from any thread (its worker was replaced): the
+  /// session sees it close and its client reattaches to the new worker.
+  package func invalidate(_ reason: String) {
+    queue.async { [weak self] in self?.finish(reason) }
+  }
+
   /// `detaching`: `close` releases the lease before closing the connection.
   private func finish(_ reason: String, detaching: Bool = false) {
     guard !closed else { return }

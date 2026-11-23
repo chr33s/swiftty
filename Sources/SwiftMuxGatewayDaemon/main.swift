@@ -14,7 +14,8 @@ if CommandLine.arguments.count == 2,
   exit(HelperAgentCommand.run(CommandLine.arguments[1]))
 }
 // Remote clients (spec.roaming.md): the same configuration `swifttyd
-// bootstrap` reads. Only an absent optional default disables roaming.
+// bootstrap` reads. Roaming is optional: an absent or unreadable
+// configuration disables it, never the gateway's native service.
 let hostConfiguration: HostConfiguration?
 do {
   let url = HostConfiguration.resolvedConfigurationURL()
@@ -27,9 +28,12 @@ do {
   )
 } catch {
   FileHandle.standardError.write(
-    Data("swiftmux-gateway: cannot read roaming configuration: \(error)\n".utf8)
+    Data(
+      "swiftmux-gateway: roaming disabled: cannot read its configuration: \(error)\n"
+        .utf8
+    )
   )
-  exit(78)
+  hostConfiguration = nil
 }
 
 do {
@@ -51,7 +55,7 @@ do {
   let task = Task.detached {
     var runtime: GatewayRuntime?
     var server: GatewayControlServer?
-    var roaming: RoamingHost?
+    var roaming: Task<RoamingHost?, Never>?
     var status: Int32 = 0
     do {
       let supervisor = try await GatewaySupervisor.connect(
@@ -131,13 +135,7 @@ do {
       server = control
       control.listen(machService: configuration.controlService)
       if let hostConfiguration {
-        let workspaces = try await GatewayRoamingWorkspaces.make(
-          runtime: started
-        )
-        roaming = try await RoamingHost.start(
-          workspaces: { workspaces },
-          configuration: hostConfiguration
-        )
+        roaming = Task { await serveRoaming(hostConfiguration, started) }
       }
       while true {
         try Task.checkCancellation()
@@ -156,8 +154,9 @@ do {
     // a workspace; launchd may restart this gateway and rediscover the sessions.
     // Serving until here; releasing it stops the listener and control
     // socket before native work drains.
-    withExtendedLifetime(roaming) {}
-    roaming = nil
+    // Stops the listener and control socket before native work drains.
+    roaming?.cancel()
+    _ = await roaming?.value
     await server?.close()
     await runtime?.close()
     exit(status)
@@ -177,4 +176,38 @@ do {
     )
   )
   exit(78)
+}
+
+/// Serves roaming clients until cancelled. A failure to start (the port is
+/// in use, the certificate cannot be prepared) is retried in the background;
+/// it never takes the native service down with it.
+func serveRoaming(
+  _ configuration: HostConfiguration,
+  _ runtime: GatewayRuntime
+) async -> RoamingHost? {
+  var host: RoamingHost?
+  while !Task.isCancelled {
+    if host == nil {
+      do {
+        let workspaces = try await GatewayRoamingWorkspaces.make(
+          runtime: runtime
+        )
+        host = try await RoamingHost.start(
+          workspaces: { workspaces },
+          configuration: configuration
+        )
+      } catch {
+        if Task.isCancelled { break }
+        FileHandle.standardError.write(
+          Data(
+            "swiftmux-gateway: roaming unavailable, retrying: \(error)\n".utf8
+          )
+        )
+      }
+    }
+    try? await Task.sleep(for: host == nil ? .seconds(30) : .seconds(3600))
+  }
+  // Released here: its deinit stops the listener and control socket.
+  withExtendedLifetime(host) {}
+  return nil
 }

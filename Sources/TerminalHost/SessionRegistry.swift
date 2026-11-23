@@ -251,7 +251,7 @@ public final class SessionRegistry: @unchecked Sendable {
       throw .internalError
     }
     let id = SessionID(workspace)
-    let session = makeSession(id, grid: grid)
+    let session = makeSession(id, grid: grid, floor: backend.initialFloor)
     let writerID = WriterID.random()
     let now = ContinuousClock.now
     let credential = issue(writer: writerID, takeover: false, now: now)
@@ -357,7 +357,7 @@ public final class SessionRegistry: @unchecked Sendable {
         let candidate = makeSession(
           id,
           grid: grid ?? GridSize(columns: 80, rows: 24),
-          floor: s.floors[id] ?? RoamingSession.Floor()
+          floor: s.floors[id] ?? backend.initialFloor
         )
         s.entries[id] = Entry(
           session: candidate,
@@ -684,6 +684,20 @@ public final class SessionRegistry: @unchecked Sendable {
     // is wheel input. A client without either cannot use this host.
     guard RSTFeatures.required.isSubset(of: request.features) else {
       return .failure(.unsupported)
+    }
+    // A live workspace this host never granted (its sessions outlived a
+    // restart of this host): the client renews its grant over SSH (`resume`)
+    // rather than losing the session. A grant this host retired (retention)
+    // stays revoked.
+    if request.serverInstanceID == serverInstanceID,
+      state.withLock({
+        $0.entries[request.sessionID] == nil
+          && $0.floors[request.sessionID] == nil
+      }),
+      let live = await listWorkspaces(),
+      live.contains(where: { $0.id == request.sessionID.workspace })
+    {
+      return .failure(.expired)
     }
     let now = ContinuousClock.now
     let checked = state.withLock {

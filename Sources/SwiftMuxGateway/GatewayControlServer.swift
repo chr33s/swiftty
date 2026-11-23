@@ -203,7 +203,7 @@ package final class GatewayControlServer: @unchecked Sendable {
           }
         }
         jobs[id] = Job(task: task, bytes: charge)
-        arm(id, seconds: 30)
+        arm(id, seconds: Self.deadline(for: body))
       }
     } catch {
       refuse(
@@ -340,6 +340,14 @@ package final class GatewayControlServer: @unchecked Sendable {
     peer.timer = nil;
     peer.deadline = nil
   }
+  /// Seconds a command may run. An update validates its candidate and may
+  /// wait up to 30 s for workers to settle before replacing anything, so it
+  /// gets room to finish (or defer) rather than be cancelled midway.
+  static func deadline(for command: GatewayControlCommand) -> Int {
+    if case .prepareUpdate = command { return 120 }
+    return 30
+  }
+
   private func arm(_ id: UUID, seconds: Int) {
     guard let peer = peers[id] else { return }
     disarm(peer)

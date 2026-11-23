@@ -3880,3 +3880,13 @@ The durable gateway hosts RST/1 roaming, and durable sessions are the only insta
 
 Evidence: every host and roaming integration suite runs on the SMX path (the in-process test registry reaches its service over an in-process forwarding listener, `MuxService.listenForwarding`). Not established: the signed lifecycle with a real gateway and an iPhone client.
 
+
+### 13.78 Review fixes: installation, roaming and migration — 2026-11-23
+
+- Gateway updates accept the production helper layout: the installation policy takes its Login Items association and `KeepAlive` from the running gateway's own agent, and the candidate's bundle and executable share the identifier the guardian requires (`<label>.swiftmux-gateway`). `GatewayInstallationLayoutTests` builds that exact layout.
+- Every package gets its own build (UTC packaging time unless `SWIFTTY_BUILD` is set), so a new worker build is installed and selected, and candidate and previous gateways differ.
+- Roaming: attention actions go to the worker whose service epoch the reference names; creation returns once the workspace is discovered; a migration (`GatewayRuntime.setMigrationHandler`) drops the retired worker's roaming sessions (they reattach) and control clients; inbox and attention fan out concurrently. After a gateway restart, a grant for a live workspace the gateway never issued is answered `expired`, so the client renews it over SSH, and new sessions start their counters above any earlier run (`GatewayRoamingWorkspaces.floor`). Grants the retention sweep revoked stay revoked.
+- The gateway keeps serving native frontends when roaming cannot start (it retries every 30 s) or its configuration is unreadable.
+- Installer: `install.sh` finishes interrupted adoption or maintenance and restarts an unavailable gateway before updating; `adopt` refuses an installed topology before touching its helpers; `--end-sessions` replaces a previous agent that can no longer be reached.
+- Guardian: End or worker loss while an aborted migration waits to resume settles it as ended; an output acknowledgement wakes only panes paused for pressure.
+- Gateway control: `prepareUpdate` may run 120 s, beyond its own validation and settle wait.

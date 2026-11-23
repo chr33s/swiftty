@@ -14,6 +14,9 @@ package actor GatewayRuntime {
   /// Saved layouts (spec.durability.md §12.2); nil disables them.
   private let saved: SavedLayoutService?
   private let peerRequirement: String?
+  /// Told when a workspace's processes moved to another worker, so direct
+  /// worker clients (the roaming host's) reconnect to it.
+  private var migrationHandler: (@Sendable (WorkspaceID) async -> Void)?
   private var monitor: Task<Void, Never>?
   private var closed = false
   package private(set) var failure: MuxError?
@@ -220,6 +223,31 @@ package actor GatewayRuntime {
     )
   }
 
+  package func setMigrationHandler(
+    _ handler: (@Sendable (WorkspaceID) async -> Void)?
+  ) { migrationHandler = handler }
+
+  /// Waits until `workspace` is discovered and available to frontends
+  /// (inventory and graph), refreshing the directory rather than waiting
+  /// for the next poll. Throws `notFound` when it does not appear in time.
+  package func waitUntilAvailable(
+    _ workspace: WorkspaceID,
+    timeout: Duration = .seconds(10)
+  ) async throws {
+    let deadline = ContinuousClock.now + timeout
+    while true {
+      try checkOpen()
+      try? await directory.refresh()
+      if (try? await directory.nativeAuthority(for: .id(workspace))) != nil {
+        return
+      }
+      guard ContinuousClock.now < deadline else {
+        throw MuxError(.notFound, "workspace was not discovered in time")
+      }
+      try await Task.sleep(for: .milliseconds(50))
+    }
+  }
+
   /// The guardian incarnation: stable across gateway restarts, new when
   /// the guardian (and with it every session) restarts.
   package var guardianIncarnation: UUID? {
@@ -334,6 +362,7 @@ package actor GatewayRuntime {
         from: record.inventory.authority,
         to: next
       )
+      await migrationHandler?(workspace)
     case let (.resumed?, next?) where next != record.inventory.authority:
       // The same worker carries on under a fresh authority: re-pin the
       // route; its relays keep their connections.

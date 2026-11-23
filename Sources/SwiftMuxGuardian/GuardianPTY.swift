@@ -266,6 +266,11 @@ package final class GuardianPTY: @unchecked Sendable {
     poll.resume()
   }
 
+  /// Reading stopped (output or consumer pressure); `flush` resumes it.
+  package var isReadPaused: Bool {
+    master >= 0 && !consumerUnavailable && !readSourceActive
+  }
+
   package func flush() {
     guard master >= 0, !consumerUnavailable else { return }
     let replyBefore = writer.pendingReplyBytes + writer.deferredReplyBytes

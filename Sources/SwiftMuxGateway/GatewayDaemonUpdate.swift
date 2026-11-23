@@ -23,13 +23,14 @@ package enum GatewayDaemonUpdate {
       throw MuxError(.notFound, "gateway build declaration missing")
     }
     let policy = try installationPolicy(configuration, bundle: bundle)
-    guard let bundleIdentifier = bundle.bundleIdentifier,
-      let executableIdentifier = signingIdentifier()
-    else { throw MuxError(.unauthorized, "gateway signing identity unknown") }
-    let bundleRequirement =
-      "(\(teamRequirement)) and identifier \"\(bundleIdentifier)\""
+    // The bundle's signature is its main executable's: one identifier, the
+    // one the guardian requires of its gateway (`<label>.swiftmux-gateway`).
+    guard let executableIdentifier = signingIdentifier() else {
+      throw MuxError(.unauthorized, "gateway signing identity unknown")
+    }
     let executableRequirement =
       "(\(teamRequirement)) and identifier \"\(executableIdentifier)\""
+    let bundleRequirement = executableRequirement
     return { request in
       let candidate = try GatewayUpdateArtifact.validate(
         URL(fileURLWithPath: request.candidate),
@@ -59,7 +60,7 @@ package enum GatewayDaemonUpdate {
   }
 
   /// The policy this installation was registered with: its one agent plist
-  /// supplies the label and log paths.
+  /// supplies the label, log paths, Login Items association and keep-alive.
   static func installationPolicy(
     _ configuration: GatewayDaemonConfiguration,
     bundle: Bundle
@@ -84,7 +85,10 @@ package enum GatewayDaemonUpdate {
       agentLabel: label,
       configuration: configuration,
       standardOutputPath: agent["StandardOutPath"] as? String,
-      standardErrorPath: agent["StandardErrorPath"] as? String
+      standardErrorPath: agent["StandardErrorPath"] as? String,
+      associatedBundleIdentifiers: agent["AssociatedBundleIdentifiers"]
+        as? [String],
+      keepAlive: agent["KeepAlive"] as? [String: Bool]
     )
   }
 

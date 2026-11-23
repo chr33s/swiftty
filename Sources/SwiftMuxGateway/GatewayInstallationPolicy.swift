@@ -10,13 +10,20 @@ package struct GatewayInstallationPolicy: Sendable {
   package let configuration: GatewayDaemonConfiguration
   package let standardOutputPath: String?
   package let standardErrorPath: String?
+  /// Who the agent is listed under in Login Items: the gateway itself, or
+  /// the app that installed it.
+  package let associatedBundleIdentifiers: [String]
+  /// The agent's `KeepAlive`, if it declares one.
+  package let keepAlive: [String: Bool]?
 
   package init(
     bundleIdentifier: String,
     agentLabel: String,
     configuration: GatewayDaemonConfiguration,
     standardOutputPath: String? = nil,
-    standardErrorPath: String? = nil
+    standardErrorPath: String? = nil,
+    associatedBundleIdentifiers: [String]? = nil,
+    keepAlive: [String: Bool]? = nil
   ) throws {
     guard GatewayDaemonConfiguration.identifier(bundleIdentifier),
       GatewayDaemonConfiguration.identifier(agentLabel),
@@ -30,6 +37,9 @@ package struct GatewayInstallationPolicy: Sendable {
     self.configuration = configuration
     self.standardOutputPath = standardOutputPath
     self.standardErrorPath = standardErrorPath
+    self.associatedBundleIdentifiers =
+      associatedBundleIdentifiers ?? [bundleIdentifier]
+    self.keepAlive = keepAlive
   }
 
   /// Returns the exact metadata bytes to recheck after signature validation.
@@ -74,12 +84,14 @@ package struct GatewayInstallationPolicy: Sendable {
       "Label", "BundleProgram", "ProgramArguments",
       "AssociatedBundleIdentifiers", "MachServices", "RunAtLoad", "ProcessType",
       "EnablePressuredExit", "EnableTransactions", "StandardOutPath",
-      "StandardErrorPath",
+      "StandardErrorPath", "KeepAlive",
     ]
     guard Set(agent.keys).isSubset(of: keys),
       agent["Label"] as? String == agentLabel,
       agent["BundleProgram"] as? String == "Contents/MacOS/swiftmux-gateway",
-      agent["AssociatedBundleIdentifiers"] as? [String] == [bundleIdentifier],
+      agent["AssociatedBundleIdentifiers"] as? [String]
+        == associatedBundleIdentifiers,
+      agent["KeepAlive"] as? [String: Bool] == keepAlive,
       agent["MachServices"] as? [String: Bool] == [
         configuration.controlService: true
       ], agent["RunAtLoad"] as? Bool == true,

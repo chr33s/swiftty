@@ -130,6 +130,10 @@ final class LocalRoamingPanes: RoamingPanes {
 package protocol RoamingWorkspaces: RoamingPanes {
   /// The epoch grants are bound to; a new one invalidates every grant.
   var instance: SwiftMuxProtocol.ServerInstanceID { get }
+  /// Where a session with no retained floor starts its attachment epochs
+  /// and revisions. A host whose sessions outlive it (a durable gateway)
+  /// starts above anything a client of its previous run saw.
+  var initialFloor: RoamingSession.Floor { get }
   /// Never holds a lease, so `leaseHeldElsewhere` reports any holder.
   func control(_ command: MuxCommand) async -> MuxResult
   /// Starts a workspace; `resourceLimit` when no more may start.
@@ -161,6 +165,9 @@ final class LocalRoamingWorkspaces: RoamingWorkspaces {
   }
 
   var instance: SwiftMuxProtocol.ServerInstanceID { service.instance }
+
+  /// The service's sessions end with it: start from zero.
+  var initialFloor: RoamingSession.Floor { RoamingSession.Floor() }
 
   func control(_ command: MuxCommand) async -> MuxResult {
     await session.request(command)

@@ -16,7 +16,10 @@
 #                     Contents/embedded.provisionprofile; macOS honours
 #                     the associated-domains entitlement only with one.
 #   SWIFTTY_VERSION   CFBundleShortVersionString (default 0.2).
-#   SWIFTTY_BUILD     CFBundleVersion (default 1).
+#   SWIFTTY_BUILD     CFBundleVersion (default: the UTC time of packaging,
+#                     YYYYMMDDhhmmss). Every package needs its own build: the
+#                     worker build (`<version>-<build>`) installs only when new,
+#                     and gateway updates tell candidate and previous apart by it.
 set -eu
 # Domain records are deliberately word-split below. Their developer-mode
 # suffix is literal text, even when the caller has matching filenames.
@@ -27,7 +30,7 @@ out=${2:-.build/package}
 label=com.chr33s.swiftty.swiftmux
 bundle_id=com.chr33s.swiftty
 version=${SWIFTTY_VERSION:-0.2}
-build=${SWIFTTY_BUILD:-1}
+build=${SWIFTTY_BUILD:-$(date -u +%Y%m%d%H%M%S)}
 # Up to three dot-separated integers each, as the bundle keys require.
 for number in "$version" "$build"; do
   # Digits and single dots only (no newline can pass), at most two dots.

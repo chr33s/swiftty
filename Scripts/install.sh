@@ -165,28 +165,41 @@ echo "installed $app"
 
 # Durable sessions: the first install moves from the single-process agent
 # (ending its sessions only with --end-sessions); later installs replace the
-# gateway, keeping every running session.
+# gateway, keeping every running session. An interrupted adoption or
+# maintenance is finished here, as the app's notice asks.
 swiftty="$app/Contents/MacOS/swiftty"
-durable=$("$swiftty" --durable-sessions status 2>&1) || {
-  echo "install.sh: cannot read durable session status: $durable" >&2; exit 1
+confirm=""
+[ "$end_sessions" -eq 1 ] && confirm=--confirm
+durable_step() { # ACTION [--confirm]: prints the outcome, fails loudly
+  result=$("$swiftty" --durable-sessions "$@" 2>&1) || {
+    echo "install.sh: durable sessions ($1): $result" >&2; exit 1
+  }
+  case "$result" in
+    declined*)
+      echo "install.sh: SwiftMux is running sessions ($result)." >&2
+      echo "  Re-run with --end-sessions to end them and continue." >&2
+      exit 1 ;;
+  esac
+}
+# Status on stdout only, so a diagnostic cannot change the decision.
+durable=$("$swiftty" --durable-sessions status 2>/dev/null) || {
+  echo "install.sh: cannot read durable session status" >&2; exit 1
 }
 case "$durable" in
-  notInstalled)
-    if [ "$end_sessions" -eq 1 ]; then
-      result=$("$swiftty" --durable-sessions adopt --confirm 2>&1)
-    else
-      result=$("$swiftty" --durable-sessions adopt 2>&1)
-    fi || { echo "install.sh: durable sessions: $result" >&2; exit 1; }
-    case "$result" in
-      declined*)
-        echo "install.sh: the previous SwiftMux agent is running sessions ($result)." >&2
-        echo "  Re-run with --end-sessions to end them and install durable sessions." >&2
-        exit 1 ;;
-    esac ;;
+  notInstalled | interrupted*transitioning*)
+    durable_step adopt $confirm ;;
+  interrupted*maintaining*)
+    durable_step maintain $confirm ;;
+  unavailable)
+    # Installed, but its gateway is not answering: start it, then update.
+    launchctl kickstart "$domain/$gateway_label" >/dev/null 2>&1 || true
+    sleep 2
+    durable_step update ;;
+  running* | sessionsEnded*)
+    durable_step update ;;
   *)
-    result=$("$swiftty" --durable-sessions update 2>&1) || {
-      echo "install.sh: durable sessions: $result" >&2; exit 1
-    } ;;
+    echo "install.sh: unexpected durable session status: $durable" >&2
+    exit 1 ;;
 esac
 echo "durable sessions: $result"
 gateway_helper="$HOME/Library/Application Support/SwiftMux/Helpers/SwiftMuxGateway.app/Contents/MacOS/swiftmux-gateway"

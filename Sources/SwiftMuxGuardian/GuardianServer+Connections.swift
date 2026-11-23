@@ -320,9 +320,14 @@ extension GuardianServer {
       pane.outputBytes -= released
       workspace.outputBytes -= released
       outputBytes -= released
-      // Host/workspace pressure may have paused other panes as well.
+      pane.runtime.flush()
+      // Host/workspace pressure may have paused other panes as well; only
+      // those need waking.
       for group in workspaces.values where !group.unavailable {
-        for value in group.panes.values { value.runtime.flush() }
+        for value in group.panes.values
+        where value !== pane && value.runtime.isReadPaused {
+          value.runtime.flush()
+        }
       }
       checkMigrationCut(workspace)
     case .hello, .migrationHello, .migrationImported, .migrationActivated: break
@@ -387,8 +392,11 @@ extension GuardianServer {
     guard !workspace.unavailable else { return }
     workspace.lossReason = reason
     // Old-worker death before release aborts; promotion is crash recovery.
+    // While an abort waits for resumption, End or loss settles it now (End
+    // is reported as ended, not as an unavailable workspace).
     if let migration, migration.workspace == workspace.authority.workspace,
       migration.phase == .preparing || migration.phase == .frozen
+        || migration.phase == .aborting
     {
       abortMigration(
         MuxError(.connectionLost, "old worker lost during migration"),

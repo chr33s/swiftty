@@ -245,13 +245,30 @@ enum DurableSessions {
   }
 
   /// The monolithic agent this app registered before the transition.
+  /// `force` (the user confirmed ending its sessions): an agent that can no
+  /// longer be reached (another signing team, or an ad-hoc build launchd
+  /// refuses to start) is unregistered, ending its sessions, instead of
+  /// blocking the transition.
   struct Legacy: LegacyMux {
+    var force = false
     private var service: SMAppService {
       SMAppService.agent(plistName: SMX.agentPlistName)
     }
     func workspaceCount() async throws -> Int {
       guard service.status == .enabled else { return 0 }
-      let connection = try await MuxConnection.connect(frontend: .control)
+      let connection: MuxConnection
+      do {
+        connection = try await MuxConnection.connect(frontend: .control)
+      } catch {
+        guard force else {
+          throw MuxError(
+            .connectionLost,
+            "the previous SwiftMux agent cannot be reached (\(error)); confirm ending its sessions to replace it"
+          )
+        }
+        try await service.unregister()
+        return 0
+      }
       defer { Task { await connection.close() } }
       guard
         case let .workspaces(list) = try await connection.execute(
@@ -294,8 +311,17 @@ enum DurableSessions {
       let installer = try installer()
       switch action {
       case "adopt":
+        // Never replace a live installation's helpers outside an update.
+        guard !isInstalled else {
+          throw MuxError(.invalidRequest, "the durable topology is installed")
+        }
         try prepare()
-        print(try await installer.adopt(from: Legacy(), confirm: confirm))
+        print(
+          try await installer.adopt(
+            from: Legacy(force: confirmed),
+            confirm: confirm
+          )
+        )
       case "maintain":
         print(
           try await installer.maintainGuardian(confirm: confirm) {
