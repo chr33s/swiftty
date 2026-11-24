@@ -130,7 +130,7 @@ function speed() {
   ];
   const live = `(svg, say) => {
   const P = ${json(P)}, X0 = ${X0}, X1 = ${X1};
-  const RUNS = [["csi-heavy", 483.0, 226.6], ["ghostty-styled", 421.7, 185.2], ["osc-heavy", 1241.2, 378.4], ["scroll", 414.8, 306.9], ["compiler-log", 142.7, 111.6]];
+  const RUNS = [["csi-heavy", 368.0, 216.8], ["kitty-unique-unicode", 610.6, 292.6], ["ghostty-utf8", 555.8, 389.3], ["kitty-csi", 322.9, 264.4], ["scroll", 323.0, 257.5]];
   const sleds = [0, 1].map((i) => svg.querySelector('[data-part="sled-' + i + '"]'));
   const lamps = [0, 1].map((i) => svg.querySelector('[data-part="lamp-' + i + '"] .iso-solid'));
   const TS = 1.5, GAP = 0.6, HOLD = 1.6, BACK = 0.9;

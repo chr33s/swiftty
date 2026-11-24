@@ -3,7 +3,7 @@
 # Swift Testing runtime, which conflicts with Xcode 27.2's XCTest and
 # stops the native test host from discovering tests.
 tmux = "3.7c" # integration tests; latest available tmux-builds release
-zig = "0.17.0" # builds upstream ghostty-bench for comparison
+zig = "0.17.1" # builds upstream ghostty-bench for comparison
 "github:sharkdp/hyperfine" = "2.0.0" # upstream now publishes native arm64 binaries
 
 [env]

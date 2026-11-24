@@ -1,3 +1,5 @@
+import CTerminalSIMD
+
 /// A parsed control sequence (CSI) handed to the terminal.
 ///
 /// Parameters live inline; a sequence never allocates.
@@ -192,6 +194,13 @@ public struct Parser: ~Copyable {
     return (count, i)
   }
 
+  /// The same bytes, signed. `SIMD16<Int8>(truncatingIfNeeded:)` is not
+  /// inlined: it compiles to a call, which spills vector registers.
+  @inline(__always)
+  private static func signed(_ v: SIMD16<UInt8>) -> SIMD16<Int8> {
+    unsafeBitCast(v, to: SIMD16<Int8>.self)
+  }
+
   /// One bit per byte of a comparison, at bit `4 * index`.
   @inline(__always)
   private static func nibbles(_ mask: SIMDMask<SIMD16<Int8>>) -> UInt64 {
@@ -225,7 +234,7 @@ public struct Parser: ~Copyable {
     while end &- i >= 20, count <= scalarCapacity &- 16 {
       let raw = UnsafeRawPointer(p + i)
       let v0 = raw.loadUnaligned(as: SIMD16<UInt8>.self)
-      let c0 = SIMD16<Int8>(truncatingIfNeeded: v0) .< continuation
+      let c0 = Self.signed(v0) .< continuation
       let starts = nibbles(.!c0)
       guard starts & 1 != 0 else { break }
       // Starts at every second or third byte: valid text has only two- or
@@ -248,10 +257,10 @@ public struct Parser: ~Copyable {
       let v2 = raw.loadUnaligned(fromByteOffset: 2, as: SIMD16<UInt8>.self)
       let v3 = raw.loadUnaligned(fromByteOffset: 3, as: SIMD16<UInt8>.self)
       let v4 = raw.loadUnaligned(fromByteOffset: 4, as: SIMD16<UInt8>.self)
-      let c1 = SIMD16<Int8>(truncatingIfNeeded: v1) .< continuation
-      let c2 = SIMD16<Int8>(truncatingIfNeeded: v2) .< continuation
-      let c3 = SIMD16<Int8>(truncatingIfNeeded: v3) .< continuation
-      let c4 = SIMD16<Int8>(truncatingIfNeeded: v4) .< continuation
+      let c1 = Self.signed(v1) .< continuation
+      let c2 = Self.signed(v2) .< continuation
+      let c3 = Self.signed(v3) .< continuation
+      let c4 = Self.signed(v4) .< continuation
       let two = v0 .>= SIMD16(repeating: 0xC0)
       let three = v0 .>= SIMD16(repeating: 0xE0)
       let four = v0 .>= SIMD16(repeating: 0xF0)
@@ -529,6 +538,13 @@ public struct Parser: ~Copyable {
           i += 2
           continue
         }
+        // A bare LF defers its clears too, and a tab only moves the cursor:
+        // neither reads cells, so pending clears can wait.
+        if base[i] == 0x0A || base[i] == 0x09 {
+          Self.lineFeedOrTab(base[i], &terminal)
+          i += 1
+          continue
+        }
         // Complete multi-byte sequences decode inline; partial or
         // invalid ones fall through to the state machine.
         if base[i] >= 0xC2 {
@@ -559,6 +575,12 @@ public struct Parser: ~Copyable {
     return i
   }
 
+  /// Out of line, so the CR LF path's loop keeps its shape.
+  @inline(never)
+  private static func lineFeedOrTab(_ byte: UInt8, _ t: inout TerminalState) {
+    if byte == 0x0A { t.lineFeedDeferringClears() } else { t.execute(0x09) }
+  }
+
   /// Index of the first byte in `from..<to` outside 0x20...0x7E.
   @inline(__always)
   static func scanPrintableASCII(
@@ -571,12 +593,11 @@ public struct Parser: ~Copyable {
     while i + 16 <= end {
       let v = raw.loadUnaligned(fromByteOffset: i, as: SIMD16<UInt8>.self)
       // (b - 0x20) < 0x5F  <=>  0x20 <= b <= 0x7E
-      let ok = (v &- 0x20) .< SIMD16<UInt8>(repeating: 0x5F)
-      if all(ok) {
-        i += 16;
-        continue
-      }
-      break
+      let bits = nibbles((v &- 0x20) .>= SIMD16<UInt8>(repeating: 0x5F))
+      // Lines end inside a window: its mask finds the byte, sparing a
+      // scalar loop over the rest of the window.
+      if bits != 0 { return i + bits.trailingZeroBitCount / 4 }
+      i += 16
     }
     while i < end, p[i] &- 0x20 < 0x5F { i += 1 }
     return i
@@ -585,26 +606,12 @@ public struct Parser: ~Copyable {
   /// The first byte at or after `start` that is a C0 control or 0x80 and
   /// above (not kitty graphics payload). As signed bytes both are below
   /// 0x20, so one minimum per 64 bytes finds either.
+  @inline(__always)
   static func scanPayload(
     _ p: UnsafePointer<UInt8>,
     from start: Int,
     to end: Int
-  ) -> Int {
-    var i = start
-    let raw = UnsafeRawPointer(p)
-    let space = SIMD16<Int8>(repeating: 0x20)
-    while i + 64 <= end {
-      let a = raw.loadUnaligned(fromByteOffset: i, as: SIMD16<Int8>.self)
-      let b = raw.loadUnaligned(fromByteOffset: i + 16, as: SIMD16<Int8>.self)
-      let c = raw.loadUnaligned(fromByteOffset: i + 32, as: SIMD16<Int8>.self)
-      let d = raw.loadUnaligned(fromByteOffset: i + 48, as: SIMD16<Int8>.self)
-      let low = pointwiseMin(pointwiseMin(a, b), pointwiseMin(c, d))
-      if any(low .< space) { break }
-      i += 64
-    }
-    while i < end, p[i] >= 0x20, p[i] < 0x80 { i += 1 }
-    return i
-  }
+  ) -> Int { swiftty_scan_payload(p, start, end) }
 
   /// Index of the first C0 control (< 0x20) in `from..<to`.
   @inline(__always)
@@ -613,25 +620,8 @@ public struct Parser: ~Copyable {
     from start: Int,
     to end: Int
   ) -> Int {
-    var i = start
-    let raw = UnsafeRawPointer(p)
-    let space = SIMD16<UInt8>(repeating: 0x20)
-    while i + 64 <= end {
-      let a = raw.loadUnaligned(fromByteOffset: i, as: SIMD16<UInt8>.self)
-      let b = raw.loadUnaligned(fromByteOffset: i + 16, as: SIMD16<UInt8>.self)
-      let c = raw.loadUnaligned(fromByteOffset: i + 32, as: SIMD16<UInt8>.self)
-      let d = raw.loadUnaligned(fromByteOffset: i + 48, as: SIMD16<UInt8>.self)
-      let low = pointwiseMin(pointwiseMin(a, b), pointwiseMin(c, d))
-      if any(low .< space) { break }
-      i += 64
-    }
-    while i + 16 <= end {
-      let v = raw.loadUnaligned(fromByteOffset: i, as: SIMD16<UInt8>.self)
-      if any(v .< space) { break }
-      i += 16
-    }
-    while i < end, p[i] >= 0x20 { i += 1 }
-    return i
+    // NEON in C: Swift's `pointwiseMin` and `any` compiled to calls here.
+    swiftty_scan_controls(p, start, end)
   }
 
   /// Decodes one well-formed 2–4 byte UTF-8 sequence at `p`.
@@ -1090,11 +1080,28 @@ public struct Parser: ~Copyable {
   private mutating func appendOSC(_ p: UnsafePointer<UInt8>, count: Int) {
     var p = p
     var count = count
-    // Byte by byte until the command prefix the limits depend on is fixed.
+    // The command prefix the limits depend on: copied in runs while the
+    // limits cannot apply, byte by byte near one.
     while count > 0, oscCount <= oscCommandStart + 3 || oscCount < 5 {
-      appendOSC(p.pointee)
-      p += 1
-      count -= 1
+      let n = min(count, max(oscCommandStart + 4, 5) - oscCount)
+      let bound = min(Self.maxColorOSCBytes, ProgramStatusCommand.maxBodyBytes)
+      guard !oscOverflow, oscCount + n <= min(bound, oscCapacity) else {
+        appendOSC(p.pointee)
+        p += 1
+        count -= 1
+        continue
+      }
+      // Leading zeros of the command number are skipped, as one by one.
+      let zeros = oscCommandStart == oscCount
+      (osc + oscCount).update(from: p, count: n)
+      oscCount += n
+      if zeros {
+        while oscCommandStart < oscCount, osc[oscCommandStart] == 0x30 {
+          oscCommandStart += 1
+        }
+      }
+      p += n
+      count -= n
     }
     guard count > 0, !oscOverflow else { return }
     var limit = Self.maxOSCBytes

@@ -16,7 +16,7 @@ struct HyperlinkTable {
   var pinned: [Bool] = []
   /// Links opened with `id=`: the parameter, and the link by (id, URI).
   var explicitID: [UInt32: [UInt8]] = [:]
-  var explicitIndex: [UInt64: UInt32] = [:]
+  var explicitIndex = HashIndex()
   /// Ids no cell carries.
   var freeIDs: [UInt32] = []
   /// Closed links in closing order, with the row bound recorded then.
@@ -27,7 +27,7 @@ struct HyperlinkTable {
   var targets: [[UInt8]] = []
   var targetUses: [UInt32] = []
   var targetHash: [UInt64] = []
-  var targetIndex: [UInt64: UInt32] = Dictionary(minimumCapacity: 512)
+  var targetIndex = HashIndex(minimumCapacity: 512)
   var freeTargets: [UInt32] = []
 
   /// Links in use that trigger the next scan for unused ids, and scans to
@@ -58,9 +58,9 @@ struct HyperlinkTable {
     uri: UnsafeBufferPointer<UInt8>,
     key: UInt64
   ) -> UInt32? {
-    guard let id = explicitIndex[key], isLive(id),
-      explicitID[id]?.elementsEqual(explicit) == true,
-      targets[Int(target[Int(id) - 1])].elementsEqual(uri)
+    guard let id = explicitIndex[key], isLive(id), let name = explicitID[id],
+      TerminalState.bytesEqual(name, explicit),
+      TerminalState.bytesEqual(targets[Int(target[Int(id) - 1])], uri)
     else { return nil }
     return id
   }
@@ -75,7 +75,9 @@ struct HyperlinkTable {
   ) {
     let hash = Self.hash(uri, seed: 0xCBF2_9CE4_8422_2325)
     let slot: UInt32
-    if let known = targetIndex[hash], targets[Int(known)].elementsEqual(uri) {
+    if let known = targetIndex[hash],
+      TerminalState.bytesEqual(targets[Int(known)], uri)
+    {
       slot = known
     } else if let reused = freeTargets.popLast() {
       slot = reused
@@ -136,5 +138,101 @@ struct HyperlinkTable {
     // A byte no id holds separates the two.
     let name = hash(explicit, seed: 0xCBF2_9CE4_8422_2325)
     return hash(uri, seed: (name ^ 0x3B) &* 0x100_0000_01B3)
+  }
+}
+
+/// A `UInt64` to `UInt32` map for keys that are already hashes (FNV-1a):
+/// open addressing with linear probing, where `Dictionary` would hash
+/// each key again. At most half the slots are used, tombstones included.
+struct HashIndex {
+  private var keys: [UInt64]
+  private var slotValues: [UInt32]
+  /// 0: empty, 1: full, 2: removed.
+  private var states: [UInt8]
+  private(set) var count = 0
+  /// Full and removed slots.
+  private var used = 0
+
+  init(minimumCapacity: Int = 0) {
+    var capacity = 16
+    while capacity < minimumCapacity * 2 { capacity <<= 1 }
+    keys = Array(repeating: 0, count: capacity)
+    slotValues = Array(repeating: 0, count: capacity)
+    states = Array(repeating: 0, count: capacity)
+  }
+
+  @inline(__always)
+  private func start(_ key: UInt64) -> Int {
+    // Fibonacci hashing spreads keys whose low bits agree.
+    Int(truncatingIfNeeded: (key &* 0x9E37_79B9_7F4A_7C15) >> 32)
+      & (keys.count - 1)
+  }
+
+  private func slot(of key: UInt64) -> Int? {
+    let mask = keys.count - 1
+    var i = start(key)
+    while true {
+      switch states[i] {
+      case 0: return nil
+      case 1 where keys[i] == key: return i
+      default: i = (i + 1) & mask
+      }
+    }
+  }
+
+  subscript(key: UInt64) -> UInt32? {
+    get { slot(of: key).map { slotValues[$0] } }
+    set {
+      guard let value = newValue else {
+        if let i = slot(of: key) {
+          count -= 1
+          let mask = keys.count - 1
+          guard states[(i + 1) & mask] == 0 else {
+            states[i] = 2
+            return
+          }
+          // No probe continues past an empty slot, so this one and the
+          // tombstones before it can be empty too.
+          var j = i
+          repeat {
+            states[j] = 0
+            used -= 1
+            j = (j - 1) & mask
+          } while states[j] == 2
+        }
+        return
+      }
+      if let i = slot(of: key) {
+        slotValues[i] = value
+        return
+      }
+      if (used + 1) * 2 > keys.count { rehash(minimumCapacity: count + 1) }
+      let mask = keys.count - 1
+      var i = start(key)
+      while states[i] == 1 { i = (i + 1) & mask }
+      if states[i] == 0 { used += 1 }
+      states[i] = 1
+      keys[i] = key
+      slotValues[i] = value
+      count += 1
+    }
+  }
+
+  /// Entries in no particular order.
+  var entries: [(key: UInt64, value: UInt32)] {
+    var out: [(key: UInt64, value: UInt32)] = []
+    out.reserveCapacity(count)
+    for i in states.indices where states[i] == 1 {
+      out.append((keys[i], slotValues[i]))
+    }
+    return out
+  }
+
+  private mutating func rehash(minimumCapacity: Int) {
+    var table = HashIndex(minimumCapacity: max(minimumCapacity * 2, 8))
+    for i in states.indices where states[i] == 1 {
+      table[keys[i]] = slotValues[i]
+    }
+    self = table
   }
 }

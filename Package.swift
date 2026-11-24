@@ -112,11 +112,14 @@ let package = Package(
       name: "SwifttyEngine",
       dependencies: [
         "Checksum", "TerminalProcess", "ZlibCodec", "CKittyBase64",
+        "CTerminalSIMD",
       ],
       swiftSettings: core
     ), .target(name: "TerminalProcess"),
     // NEON base64 blocks for kitty graphics payloads.
     .target(name: "CKittyBase64"),
+    // NEON cell stores and byte scans for the parser and printing.
+    .target(name: "CTerminalSIMD"),
     // CRC-32C instructions for verifying compressed scrollback.
     .target(name: "CScrollbackChecksum"),
     // CRC-32C with those instructions or a portable fallback: scrollback

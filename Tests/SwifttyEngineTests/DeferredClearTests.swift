@@ -136,6 +136,84 @@ struct DeferredClearTests {
     for x in 0 ..< 10 { #expect(vt.cell(x, 0).isBlank) }
   }
 
+  /// Printable ASCII that soft-wraps across recycled rows, so most scrolls
+  /// come from `printASCII`'s wrap; the rest are bare line feeds. Pieces end
+  /// mid-row, change the pen, erase and print wide characters.
+  private static func wrappingInput(seed: UInt64, runs: Int) -> [UInt8] {
+    var state = seed
+    func next(_ bound: Int) -> Int {
+      state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+      return Int((state >> 33) % UInt64(bound))
+    }
+    // Bare LF and tab take the parser's deferring fast path.
+    let pieces = [
+      "\(CSI)41m", "\(CSI)0m", "\(CSI)K", "漢", "\t", "\(CSI)3D", "\n", "\n\t",
+    ]
+    var s = ""
+    for _ in 0 ..< runs {
+      s += String(repeating: "abcdefghij", count: 4).prefix(1 + next(40))
+      if next(3) == 0 { s += pieces[next(pieces.count)] }
+    }
+    return Array(s.utf8)
+  }
+
+  @Test(arguments: [false, true], [1, 7, 4096])
+  func `wrapped ASCII over recycled rows matches byte-at-a-time output`(
+    alternate: Bool,
+    seed: UInt64
+  ) {
+    let columns = 12
+    let rows = 4
+    // Fill history and the screen with long lines first.
+    var prefix = alternate ? "\(CSI)?1049h" : ""
+    for _ in 0 ..< 30 { prefix += "\(CSI)44m0123456789AB\(CSI)0m\r\n" }
+    let input = Self.wrappingInput(seed: seed, runs: 200)
+    // ~20 history rows, so wraps recycle rows that hold old content.
+    var actual = VT(columns, rows, scrollback: 4096)
+    var reference = VT(columns, rows, scrollback: 4096)
+    actual.feed(prefix)
+    reference.feed(prefix)
+    // Byte-at-a-time feeding wraps through the same deferring path, so
+    // also check that no cell past a row's extent keeps old content.
+    var i = 0
+    while i < input.count {
+      actual.feed(bytes: Array(input[i ..< min(i + 37, input.count)]))
+      i += 37
+      for y in 0 ..< rows {
+        for x in actual.state.grid.extent(y) ..< columns {
+          #expect(actual.cell(x, y).isBlank, "row \(y) column \(x)")
+        }
+      }
+    }
+    for b in input { reference.feed(bytes: [b]) }
+    Self.expectSame(actual, reference, columns: columns, rows: rows)
+  }
+
+  @Test(arguments: [false, true])
+  func `a line wrapping onto a recycled row leaves the rest blank`(
+    alternate: Bool
+  ) {
+    var vt = VT(10, 2, scrollback: 4096)
+    if alternate { vt.feed("\(CSI)?1049h") }
+    for _ in 0 ..< 40 { vt.feed("\(CSI)41m0123456789\(CSI)0m\r\n") }
+    // The wrap recycles a row; "xy" writes two cells of it.
+    vt.feed("abcdefghijxy")
+    #expect(vt.lines == ["abcdefghij", "xy"])
+    for x in 2 ..< 10 { #expect(vt.cell(x, 1).isBlank) }
+    let wrapped = (vt.state.grid.isWrapped(0), vt.state.grid.isWrapped(1))
+    #expect(wrapped == (true, false))
+  }
+
+  @Test
+  func `a coloured line wrapping onto a recycled row fills its background`() {
+    var vt = VT(10, 2, scrollback: 4096)
+    for _ in 0 ..< 40 { vt.feed("0123456789\r\n") }
+    vt.feed("\(CSI)42mabcdefghijxy")
+    #expect(vt.lines == ["abcdefghij", "xy"])
+    let erased = vt.state.eraseCell
+    for x in 2 ..< 10 { #expect(vt.cell(x, 1) == erased) }
+  }
+
   @Test
   func `a shorter line over a recycled row leaves the rest blank`() {
     var vt = VT(10, 2, scrollback: 4096)

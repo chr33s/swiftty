@@ -1,3 +1,5 @@
+import CTerminalSIMD
+
 /// Keep ordinary and wide loops separate during compiler specialization.
 private protocol ScalarPrintingPolicy { static var enabled: Bool { get } }
 
@@ -39,7 +41,15 @@ extension TerminalState {
           writeCell(UInt32(bytes[n - 1]), .narrow)
           break
         }
-        printWrap()
+        // Like the CR LF fast path, a recycled row is blanked lazily: the
+        // writes below overwrite most of it.
+        if selection == nil {
+          grid.storage.deferClears = true
+          printWrap()
+          grid.storage.deferClears = false
+        } else {
+          printWrap()
+        }
       }
       let row = grid._unsafeRow(cursor.y)
       var x = cursor.x
@@ -99,43 +109,9 @@ extension TerminalState {
     pen: CellAttributes,
     into dst: UnsafeMutablePointer<Cell>
   ) {
+    // The glyph is the template's first word (see `Cell`).
     let base = cellVector(Cell(glyph: 0, attributes: pen, width: 1))
-    let raw = UnsafeMutableRawPointer(dst)
-    // Amortize the loop branch over four cells in long runs.
-    let grouped = count & ~3
-    var k = 0
-    while k < grouped {
-      var first = base
-      var second = base
-      var third = base
-      var fourth = base
-      first[0] = UInt32(src[k])
-      second[0] = UInt32(src[k &+ 1])
-      third[0] = UInt32(src[k &+ 2])
-      fourth[0] = UInt32(src[k &+ 3])
-      raw.storeBytes(of: first, toByteOffset: k &* 16, as: SIMD4<UInt32>.self)
-      raw.storeBytes(
-        of: second,
-        toByteOffset: (k &+ 1) &* 16,
-        as: SIMD4<UInt32>.self
-      )
-      raw.storeBytes(
-        of: third,
-        toByteOffset: (k &+ 2) &* 16,
-        as: SIMD4<UInt32>.self
-      )
-      raw.storeBytes(
-        of: fourth,
-        toByteOffset: (k &+ 3) &* 16,
-        as: SIMD4<UInt32>.self
-      )
-      k &+= 4
-    }
-    for k in grouped ..< count {
-      var cell = base
-      cell[0] = UInt32(src[k])
-      raw.storeBytes(of: cell, toByteOffset: k &* 16, as: SIMD4<UInt32>.self)
-    }
+    swiftty_store_ascii(src, count, base[1], base[2], base[3], dst)
   }
 
   /// Batched path for a run of printable scalars (mixed ASCII/UTF-8).
@@ -356,6 +332,10 @@ extension TerminalState {
     var canBatchWide = true
     var appended = false
     var selectorIgnored = false
+    // Whether to try `storeNarrowBlocks`: at the start, and after a long
+    // run through `storeBases`. A failed try costs a mispredicted branch,
+    // so text with combining marks, whose runs are short, rarely retries.
+    var tryNarrow = true
     while i < n, x < limit {
       let c = p[i]
       let packed = info.lookup(c)
@@ -416,7 +396,29 @@ extension TerminalState {
         }
         canBatchWide = false
       }
+      if tryNarrow, c < 0x300, masks[following] & 1 == 0, n - i >= 8,
+        limit - x >= 8
+      {
+        let stored = Self.storeNarrowBlocks(
+          p + i,
+          count: min(n - i, limit - x),
+          into: raw + x * 16,
+          pen: pen
+        )
+        tryNarrow = false
+        if stored > 0 {
+          x += stored
+          i += stored
+          lastBase = i - 1
+          following = 0
+          baseColumn = x - 1
+          stray = x
+          selectorIgnored = false
+          continue
+        }
+      }
       // Stores this scalar at least.
+      let first = i
       (i, x) = Self.storeBases(
         p,
         from: i,
@@ -426,6 +428,7 @@ extension TerminalState {
         batchingWide: canBatchWide,
         store
       )
+      tryNarrow = i - first >= 16
       lastBase = i - 1
       let last = info.lookup(p[lastBase])
       following = Int(last & 0x1F)
@@ -442,6 +445,38 @@ extension TerminalState {
     }
     previousClass = following
     return (i, x, lastBase, selectorIgnored)
+  }
+
+  /// Stores narrow cells for the leading scalars below U+0300, which join
+  /// nothing, eight at a time, then the spacer `storeBases` leaves after
+  /// a narrow base; returns how many scalars it stored. Out of line, so
+  /// that `printFresh` keeps its registers for the scalar paths.
+  @inline(never)
+  private static func storeNarrowBlocks(
+    _ p: UnsafePointer<UInt32>,
+    count: Int,
+    into output: UnsafeMutableRawPointer,
+    pen: CellAttributes
+  ) -> Int {
+    let narrow = cellVector(Cell(glyph: 0, attributes: pen, width: 1))
+    let stored = swiftty_store_narrow(
+      p,
+      count,
+      narrow[1],
+      narrow[2],
+      narrow[3],
+      output
+    )
+    if stored > 0 {
+      var tailPen = pen
+      tailPen.flags.insert(.spacerTail)
+      output.storeBytes(
+        of: cellVector(Cell(glyph: 0, attributes: tailPen, width: 0)),
+        toByteOffset: stored * 16,
+        as: SIMD4<UInt32>.self
+      )
+    }
+    return stored
   }
 
   /// The pen and tables `storeBases` writes with.

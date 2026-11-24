@@ -176,6 +176,9 @@ public struct TerminalState: ~Copyable {
   /// offset into its logical line; that line's first row carries the
   /// grid's input-line flag, so the point follows scrolling and reflow.
   var inputOffset: Int?
+  /// The absolute row `markInputLine` last flagged: where `clearInputLine`
+  /// looks first. A hint only; it is checked against the flag.
+  var inputLineHint: Int?
   /// Whether any OSC 133 prompt has been seen (menus enable on it).
   public internal(set) var hasSemanticPrompts = false
   public internal(set) var lastExitCode: Int?
@@ -305,10 +308,22 @@ public struct TerminalState: ~Copyable {
     _ target: inout [UInt8],
     with bytes: UnsafeBufferPointer<UInt8>
   ) -> Bool {
-    if target.elementsEqual(bytes) { return false }
+    if bytesEqual(target, bytes) { return false }
     target.removeAll(keepingCapacity: true)
     target.append(contentsOf: bytes)
     return true
+  }
+
+  /// `a.elementsEqual(b)` with one length check and `memcmp`; the generic
+  /// version iterates byte by byte.
+  @inline(__always)
+  static func bytesEqual(_ a: [UInt8], _ b: UnsafeBufferPointer<UInt8>) -> Bool
+  {
+    guard a.count == b.count else { return false }
+    guard let other = b.baseAddress, b.count > 0 else { return true }
+    return a.withUnsafeBufferPointer {
+      memcmp($0.baseAddress!, other, b.count) == 0
+    }
   }
 
   public var isAlternateScreen: Bool { modes.contains(.alternateScreen) }

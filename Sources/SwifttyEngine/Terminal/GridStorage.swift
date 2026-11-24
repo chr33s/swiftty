@@ -11,7 +11,12 @@ struct GridStorage: ~Copyable {
   let capacity: Int  // physical rows: screen + history
   /// Cell backing, unit descriptors and cold payloads.
   var store: CellStore
-  let rowMap: UnsafeMutablePointer<Int32>
+  /// Screen row ids: `rows` entries from here, a window into `rowBuffer`.
+  /// A full-screen scroll moves the window down a row instead of shifting
+  /// it (`shiftRowMap`).
+  private(set) var rowMap: UnsafeMutablePointer<Int32>
+  private let rowBuffer: UnsafeMutablePointer<Int32>
+  static let rowWindows = 8
   let wrapped: UnsafeMutablePointer<Bool>
   /// Per physical row: `RowMark` raw value (OSC 133 semantic prompts),
   /// plus `inputLineBit` on the first row of the line being edited.
@@ -109,7 +114,10 @@ struct GridStorage: ~Copyable {
       extents: extents,
       mapped: reclaimable && historyRows > 0
     )
-    rowMap = .allocate(capacity: rows)
+    rowBuffer = .allocate(
+      capacity: checkedAllocationCount(rows, Self.rowWindows)
+    )
+    rowMap = rowBuffer
     wrapped = .allocate(capacity: capacity)
     wrapped.initialize(repeating: false, count: capacity)
     marks = .allocate(capacity: capacity)
@@ -119,7 +127,7 @@ struct GridStorage: ~Copyable {
   }
 
   deinit {
-    rowMap.deallocate()
+    rowBuffer.deallocate()
     wrapped.deallocate()
     marks.deallocate()
     extents.deallocate()
@@ -132,6 +140,19 @@ struct GridStorage: ~Copyable {
   }
 
   var chunkCount: Int { store.chunkCount }
+
+  /// Moves screen rows 1... to 0..., leaving the last entry for the caller
+  /// to set. The window advances a row; at the buffer's end it moves back
+  /// to the start, one copy every `rows * (rowWindows - 1)` scrolls.
+  @inline(__always)
+  mutating func shiftRowMap() {
+    if rowMap + rows == rowBuffer + rows * Self.rowWindows {
+      rowBuffer.update(from: rowMap + 1, count: rows - 1)
+      rowMap = rowBuffer
+    } else {
+      rowMap += 1
+    }
+  }
 
   /// Raw row cells. Screen rows are always resident; history rows must be
   /// promoted (`ensureResident`) or read through `store.withRow` first.

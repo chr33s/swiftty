@@ -193,6 +193,7 @@ extension TerminalState {
     } else {
       grid.setInputLine(index - grid.historyCount, true)
     }
+    inputLineHint = top
     inputOffset =
       (screenAbsoluteRow(cursor.y) - top) * columns + cursor.x
       + (cursor.pendingWrap ? 1 : 0)
@@ -202,6 +203,23 @@ extension TerminalState {
     // Only `markInputLine` sets the flag, and it sets the offset too.
     guard inputOffset != nil else { return }
     inputOffset = nil
+    // Only one row carries the flag: usually the one last marked, which
+    // spares a scan of the screen and history for each prompt.
+    if let top = inputLineHint {
+      inputLineHint = nil
+      let index = top - firstAbsoluteRow
+      let history = grid.historyCount
+      if index >= 0, index < history, grid.isHistoryInputLine(index) {
+        grid.setHistoryInputLine(index, false)
+        return
+      }
+      if index >= history, index - history < rows,
+        grid.isInputLine(index - history)
+      {
+        grid.setInputLine(index - history, false)
+        return
+      }
+    }
     for y in 0 ..< rows where grid.isInputLine(y) {
       grid.setInputLine(y, false)
       return
@@ -229,6 +247,7 @@ extension TerminalState {
     return TerminalPoint(row: top + offset / columns, column: offset % columns)
   }
 
+  @inline(__always)
   private var cursorLogicalLineStart: Int {
     var top = screenAbsoluteRow(cursor.y)
     while top > firstAbsoluteRow, isWrapped(absoluteRow: top - 1) == true {

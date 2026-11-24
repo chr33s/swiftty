@@ -341,7 +341,9 @@ public struct Grid: ~Copyable {
       // History never holds stale cells.
       if storage.hasStaleRows { resolveStale(Int(top)) }
       let fresh = storage.pushHistory(top)
-      if bottom > 0 {
+      if bottom == rows - 1 {
+        storage.shiftRowMap()
+      } else if bottom > 0 {
         storage.rowMap.update(from: storage.rowMap + 1, count: bottom)
       }
       storage.rowMap[bottom] = fresh
@@ -361,6 +363,24 @@ public struct Grid: ~Copyable {
         clear(rows: bottom ..< bottom + 1, with: cell)
       }
     }
+  }
+
+  /// Clears a recycled row for the next line, which overwrites most old
+  /// cells; the rest blank later (`resolveStaleRows`, `prepareWrite`), as
+  /// `scrollUpIntoHistory` does inline.
+  @inline(__always)
+  private mutating func clearLazily(row y: Int) {
+    let fresh = storage.rowMap[y]
+    let p = Int(fresh)
+    storage.stale[p] = max(storage.stale[p], storage.extents[p])
+    storage.extents[p] = 0
+    storage.hasStaleRows = true
+    if storage.staleCount < GridStorage.staleListCapacity {
+      storage.staleList[storage.staleCount] = fresh
+    }
+    storage.staleCount += 1
+    setWrapped(y, false)
+    clearMarks(y)
   }
 
   @inline(__always)
@@ -480,8 +500,26 @@ public struct Grid: ~Copyable {
     let height = bottom - top + 1
     let n = min(count, height)
     guard n > 0 else { return }
-    if n < height { rotate(top, bottom + 1, by: n) }
-    clear(rows: bottom + 1 - n ..< bottom + 1, with: cell)
+    if n == 1, height == rows, height > 1 {
+      // The whole screen by a line: slide the window, as a line feed does.
+      let first = storage.rowMap[0]
+      storage.shiftRowMap()
+      storage.rowMap[rows - 1] = first
+    } else if n < height {
+      rotate(top, bottom + 1, by: n)
+    }
+    // An in-place scroll (alternate screen) defers like scrollUpIntoHistory.
+    if storage.deferClears, cell.isBlank {
+      clearLazily(rows: bottom + 1 - n ..< bottom + 1)
+    } else {
+      clear(rows: bottom + 1 - n ..< bottom + 1, with: cell)
+    }
+  }
+
+  /// Out of line, so `scrollUp` stays small enough to inline.
+  @inline(never)
+  private mutating func clearLazily(rows range: Range<Int>) {
+    for y in range { clearLazily(row: y) }
   }
 
   /// Scrolls logical rows `top...bottom` down by `count`; vacated rows at

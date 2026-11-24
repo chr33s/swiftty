@@ -731,7 +731,7 @@ extension HyperlinkTable {
       w.data(bytes)
     }
     w.int(explicitIndex.count)
-    for (key, id) in explicitIndex.sorted(by: { $0.key < $1.key }) {
+    for (key, id) in explicitIndex.entries.sorted(by: { $0.key < $1.key }) {
       w.u64(key)
       w.u32(id)
     }
@@ -750,7 +750,7 @@ extension HyperlinkTable {
       w.u64(targetHash[i])
     }
     w.int(targetIndex.count)
-    for (key, index) in targetIndex.sorted(by: { $0.key < $1.key }) {
+    for (key, index) in targetIndex.entries.sorted(by: { $0.key < $1.key }) {
       w.u64(key)
       w.u32(index)
     }
@@ -789,7 +789,7 @@ extension HyperlinkTable {
       table.targetUses.append(try r.u32())
       table.targetHash.append(try r.u64())
     }
-    var index: [UInt64: UInt32] = [:]
+    var index = HashIndex(minimumCapacity: 512)
     for _ in 0 ..< (try r.count(max: targetCount, minimumSize: 12)) {
       let key = try r.u64()
       index[key] = try r.u32()
@@ -805,8 +805,8 @@ extension HyperlinkTable {
       table.target.allSatisfy({
         $0 == Self.free || Int($0) < table.targets.count
       }), table.freeIDs.allSatisfy({ $0 >= 1 && Int($0) <= links }),
-      table.targetIndex.values.allSatisfy({ Int($0) < targetCount }),
-      table.explicitIndex.values.allSatisfy({ Int($0) <= links })
+      table.targetIndex.entries.allSatisfy({ Int($0.value) < targetCount }),
+      table.explicitIndex.entries.allSatisfy({ Int($0.value) <= links })
     else { throw CheckpointError("invalid hyperlink table") }
     self = table
   }

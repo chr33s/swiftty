@@ -627,7 +627,9 @@ Measured 2026-11-24, Release, against the gates in
 | 381 MB file medium (bound 250 ms) | 20.9 ms | | |
 
 Paired runs against the parent commit show every text workload at 99.2–101.2%
-of its throughput. `Scripts/compare-ghostty.py` now also generates the
+of its throughput. The later comparison below (2026-11-25) puts kitty's Images
+payload at 114.9% of Ghostty's throughput and `transmit-4k` at 109.2%.
+`Scripts/compare-ghostty.py` now also generates the
 `transmit-4k` input. Roaming across networks: an iPhone 16 switched between
 Wi-Fi and cellular through 20 reattachments with an image on screen, and no
 image it held was sent again (`Scripts/kg28-image-resends.sh`: 18 aliases,
@@ -720,21 +722,23 @@ results are in [spec.apple.md](spec.apple.md#shared-surface-device-validation--2
 ### Swiftty vs Ghostty
 
 Parser and terminal-state throughput on an Apple M5 Max (18 CPU cores, 128 GiB),
-measured 2026-11-05: Ghostty `5dc28bb`, Zig 0.16.0 ReleaseFast, versus Swift
-6.4.2 Release. Each binary read the same ~100 MiB files in 64 KiB chunks at
-120×80. Times are median CPU time (user + sys) of each process, including
-startup and file reads; relative throughput by wall time, recorded alongside,
-is within 1% of these except on `kitty-long-escape-codes` (4.6%) and
-`ghostty-ascii` (1.1%). Each input had two warmups and 20 rounds in a balanced
-(Williams) order, so every variant ran in each position and after each other
-variant equally often. Intervals are paired bootstrap 95% intervals.
-The 1-minute load average stayed between 1.7 and 3.4.
+measured 2026-11-25: Ghostty `167acf0` (upstream HEAD), Zig 0.17.1 ReleaseFast,
+versus Swift 6.4.2 Release (`ea13282`). Each binary read the same ~100 MiB
+files in 64 KiB chunks at 120×80. Times are median CPU time (user + sys) of
+each process, including startup and file reads; relative throughput by wall
+time, recorded alongside, is within 1% of these except on
+`kitty-long-escape-codes` (4.5 points lower), `transmit-4k` (2.4 points lower)
+and `ghostty-ascii` (1.1 points lower). Each input had two warmups and 20
+rounds in a balanced (Williams) order, so every variant ran in each position
+and after each other variant equally often. Intervals are paired bootstrap 95%
+intervals. The 1-minute load average stayed between 1.3 and 2.9.
 
-The inputs are ten Swiftty generators, four `ghostty-gen` generators and five
+The inputs are ten Swiftty generators, four `ghostty-gen` generators, all six
 of kitty's `kitten __benchmark__` payloads, built from kitty's source at
-`fb99338` and repeated as the kitten sends them, on the alternate screen.
-These measurements predate kitty graphics support, so kitty's Images payload
-was omitted; `Scripts/compare-ghostty.py --generate` now includes it.
+`fb99338` and repeated as the kitten sends them on the alternate screen, and
+`transmit-4k`. kitty's Images payload is a 1024×1024 RGBA kitty graphics
+transmission in 4096-byte chunks followed by its delete; `transmit-4k` repeats
+a 3840×2160 RGBA transmission and delete (spec.graphics.md §21.3).
 
 Ghostty's `terminal-stream` raises its 10,000-byte scrollback limit to two
 215-row pages, up to 350 history rows at 120×80; Swiftty applies 10,000 bytes
@@ -742,57 +746,109 @@ literally (5 rows). "Matched" gives Swiftty 350 rows (672,000 bytes) and is the
 like-for-like comparison. kitty's payloads use the alternate screen, so history
 does not apply to them.
 
-With matched history Swiftty was faster on all 19 inputs, from 3.0% on
-`cat-source` to 3.5× on `ghostty-osc`. The nominal limit gives the same
-count. On 4 November, before the UTF-8 decoder and cluster changes, mixed
-`utf8` and `kitty-unique-unicode` were about 1.2% slower and `utf8-latin`
-tied ([samples](Benchmarks/Ghostty/compare-2026-11-04.json)).
+With matched history Swiftty was faster on 19 of 21 inputs, from 1.4% on
+`utf8-cjk` to 2.1× on `kitty-unique-unicode`, and slower on `cat-source`
+(92.5%) and `ascii` (88.9%); the nominal limit gives the same split, at 95.0%
+and 91.2%. On those two, short lines of plain ASCII, most of the remaining
+difference is per line: blanking the cells a reused row's previous line left
+past the new one, and the line feed's bookkeeping. Cell size is not most of
+it: a prototype with 8-byte cells, which dropped colours and links, was only
+3–11% faster on the ASCII inputs.
+
+Since the previous run, earlier on 2026-11-25
+([samples](Benchmarks/Ghostty/compare-2026-11-25.json)), with the same inputs
+and Ghostty build, Swiftty's matched times fell by 19.4% on `utf8-latin`,
+17.1% on `kitty-long-escape-codes`, 14.9% on `ascii` and `ghostty-ascii`,
+13.2% on `scroll`, 11.7% on `cat-source` and 9.0–9.6% on `transmit-4k`,
+`compiler-log`, `kitty-images` and `osc-heavy`, and moved by −5.9% to +0.6%
+elsewhere, except `kitty-unique-unicode` (+3.0%):
+
+- Printable ASCII is stored with NEON (`Sources/CTerminalSIMD`): sixteen bytes
+  are widened in vector registers and `vst4q` writes four cells per store.
+  Swift's generic SIMD conversions compiled to calls there, and building each
+  cell moved its byte through a general register.
+- The escape-sequence payload scanners (OSC, DCS and APC, which carries kitty
+  graphics) are NEON too: `pointwiseMin` and `any` compiled to calls.
+- Runs of narrow scalars below U+0300 other than © and ® are stored eight at
+  a time. The check runs out of line and is retried only after a long run,
+  which costs text with combining marks about 3% (`kitty-unique-unicode`).
+- A full-screen scroll moves a window over a row-map buffer eight screens
+  long instead of shifting every screen row's entry; the scrollback ring no
+  longer divides on each push.
+
+On 5 November, against Ghostty `5dc28bb`, Swiftty led on all 19 inputs then
+measured ([samples](Benchmarks/Ghostty/compare-2026-11-05.json)). Ghostty's
+time has since fallen on 17 of them, by 5.4% (`kitty-long-escape-codes`) to
+78.4% (`osc-heavy`, 1241 to 269 ms): bisecting its first-parent merges, most
+of that is `dc8f59943` (new pages keep the capacity recent pages needed: OSC 8
+input no longer reallocates pages) and `091beb992` (ASCII printed from the
+input bytes, as Swiftty already did). Neither had a Swiftty counterpart to
+port. In the round before this one, measured against the same Ghostty build
+([before](Benchmarks/Ghostty/compare-2026-11-24.json),
+[after](Benchmarks/Ghostty/compare-2026-11-25.json)), Swiftty's matched times
+fell on `osc-heavy` (377.1 to 278.2 ms), `ghostty-ascii` (62.1 to 46.9),
+`kitty-ascii` (166.6 to 133.9) and `compiler-log` (109.9 to 103.3), and moved
+by −1.9% to +3.5% elsewhere:
+
+- Soft wraps and bare line feeds no longer blank a recycled row before the
+  next line overwrites it, on either screen, and tabs no longer force those
+  pending clears; CR LF already deferred.
+- OSC titles, directories and link targets compare bytes with `memcmp`, not
+  generic `elementsEqual`; the link table indexes its hashes in an
+  open-addressing table instead of `Dictionary`.
+- OSC 133 ; B no longer copies the whole `TerminalState` to find the
+  cursor's line, and clears the previous input-line flag without scanning
+  the screen and history.
+- An OSC's command prefix is copied in runs; the printable-ASCII scan finds a
+  line's end from the vector mask instead of a scalar loop.
 
 Relative throughput is `Ghostty time / Swiftty time`.
 
 | Input                   |   Ghostty |   Swiftty | Relative (95% CI)     |   Matched | Relative (95% CI)     |
 | ----------------------- | --------: | --------: | --------------------- | --------: | --------------------- |
-| ascii                   |   99.9 ms |   88.7 ms | 112.6% (112.3–113.2%) |   90.8 ms | 110.0% (109.7–110.5%) |
-| cat-source              |  149.5 ms |  139.7 ms | 107.0% (106.7–107.3%) |  145.1 ms | 103.0% (102.5–103.5%) |
-| compiler-log            |  142.7 ms |  110.4 ms | 129.2% (128.6–131.2%) |  111.6 ms | 127.8% (127.2–129.7%) |
-| csi-heavy               |  483.0 ms |  226.6 ms | 213.1% (211.6–214.6%) |  226.6 ms | 213.2% (212.0–214.4%) |
-| osc-heavy               | 1241.2 ms |  367.7 ms | 337.6% (329.8–343.0%) |  378.4 ms | 328.0% (320.2–335.2%) |
-| scroll                  |  414.8 ms |  305.8 ms | 135.6% (134.2–136.4%) |  306.9 ms | 135.2% (133.2–136.5%) |
-| unicode-joins           |  667.7 ms |  347.6 ms | 192.1% (189.1–196.0%) |  361.6 ms | 184.7% (181.8–188.3%) |
-| utf8 (mixed scripts)    |  340.4 ms |  223.2 ms | 152.5% (151.8–153.0%) |  224.2 ms | 151.8% (151.1–152.3%) |
-| utf8-latin              |  132.5 ms |  123.3 ms | 107.5% (107.1–108.2%) |  124.6 ms | 106.4% (105.9–107.0%) |
-| utf8-cjk                |  101.7 ms |   93.5 ms | 108.8% (108.1–109.5%) |   94.3 ms | 107.8% (107.5–108.4%) |
-| ghostty-ascii           |   69.3 ms |   61.6 ms | 112.5% (111.4–113.1%) |   62.1 ms | 111.6% (110.3–112.5%) |
-| ghostty-osc             | 4389.5 ms | 1238.2 ms | 354.5% (349.7–355.7%) | 1249.6 ms | 351.3% (346.4–353.4%) |
-| ghostty-styled          |  421.7 ms |  184.4 ms | 228.7% (228.1–229.3%) |  185.2 ms | 227.7% (227.0–228.4%) |
-| ghostty-utf8            |  766.4 ms |  385.8 ms | 198.7% (198.0–199.3%) |  388.4 ms | 197.3% (196.6–197.8%) |
-| kitty-ascii             |  167.7 ms |  156.2 ms | 107.4% (106.7–108.0%) |  156.1 ms | 107.4% (106.9–107.9%) |
-| kitty-unicode           |   97.4 ms |   85.2 ms | 114.4% (114.0–114.9%) |   85.0 ms | 114.6% (114.2–115.2%) |
-| kitty-unique-unicode    |  586.4 ms |  283.3 ms | 207.0% (206.0–208.4%) |  283.3 ms | 207.0% (205.9–208.4%) |
-| kitty-csi               |  426.0 ms |  273.7 ms | 155.7% (155.4–156.7%) |  273.1 ms | 156.0% (155.5–156.7%) |
-| kitty-long-escape-codes |   13.9 ms |   12.3 ms | 113.3% (111.4–114.6%) |   12.3 ms | 112.6% (110.5–114.4%) |
+| ascii                   |   66.7 ms |   73.1 ms | 91.2% (90.6–91.5%)    |   75.0 ms | 88.9% (88.2–89.1%)    |
+| cat-source              |  117.1 ms |  123.2 ms | 95.0% (94.8–95.5%)    |  126.6 ms | 92.5% (92.2–92.7%)    |
+| compiler-log            |  102.3 ms |   92.6 ms | 110.5% (109.9–110.9%) |   93.5 ms | 109.4% (109.0–109.7%) |
+| csi-heavy               |  368.0 ms |  216.6 ms | 169.9% (169.2–170.4%) |  216.8 ms | 169.8% (169.1–170.6%) |
+| osc-heavy               |  267.2 ms |  239.5 ms | 111.6% (110.9–112.6%) |  253.3 ms | 105.5% (104.7–106.1%) |
+| scroll                  |  323.0 ms |  258.9 ms | 124.8% (123.4–125.3%) |  257.5 ms | 125.4% (123.6–126.2%) |
+| unicode-joins           |  514.9 ms |  340.6 ms | 151.2% (150.8–151.9%) |  351.4 ms | 146.5% (146.3–146.9%) |
+| utf8 (mixed scripts)    |  252.6 ms |  220.2 ms | 114.7% (114.3–114.9%) |  221.6 ms | 114.0% (113.6–114.3%) |
+| utf8-latin              |  118.3 ms |   97.3 ms | 121.6% (120.9–122.2%) |   98.4 ms | 120.3% (119.7–120.9%) |
+| utf8-cjk                |   89.7 ms |   87.8 ms | 102.2% (101.6–102.7%) |   88.4 ms | 101.4% (100.5–101.9%) |
+| ghostty-ascii           |   40.6 ms |   39.4 ms | 103.1% (102.7–103.8%) |   39.9 ms | 101.7% (101.3–102.4%) |
+| ghostty-osc             | 1368.6 ms | 1226.6 ms | 111.6% (111.2–111.9%) | 1229.1 ms | 111.3% (110.9–111.8%) |
+| ghostty-styled          |  211.6 ms |  172.8 ms | 122.5% (122.1–122.7%) |  173.9 ms | 121.7% (121.6–121.8%) |
+| ghostty-utf8            |  555.8 ms |  387.3 ms | 143.5% (143.2–144.0%) |  389.3 ms | 142.8% (142.6–143.3%) |
+| kitty-ascii             |  142.9 ms |  126.4 ms | 113.0% (112.7–113.6%) |  126.7 ms | 112.8% (112.6–113.5%) |
+| kitty-unicode           |   97.6 ms |   85.5 ms | 114.1% (113.6–114.6%) |   85.5 ms | 114.2% (113.8–114.5%) |
+| kitty-unique-unicode    |  610.6 ms |  292.4 ms | 208.9% (207.9–210.0%) |  292.6 ms | 208.7% (207.9–210.0%) |
+| kitty-csi               |  322.9 ms |  266.0 ms | 121.4% (120.4–122.0%) |  264.4 ms | 122.1% (121.7–122.6%) |
+| kitty-images            |   30.4 ms |   26.5 ms | 114.8% (114.2–115.9%) |   26.5 ms | 114.9% (113.9–116.2%) |
+| kitty-long-escape-codes |   13.1 ms |   10.4 ms | 126.2% (125.7–130.6%) |   10.4 ms | 126.2% (125.5–131.7%) |
+| transmit-4k             |   36.4 ms |   33.2 ms | 109.5% (108.6–110.0%) |   33.3 ms | 109.2% (108.6–110.2%) |
 
 Caveats:
 
-- Upstream `ghostty-bench` logs warnings to stderr while timed. A build with
-  `log_level = .err` was 23.1% faster on `ghostty-utf8`, 15.6% on `osc-heavy`,
-  8.5% on `kitty-long-escape-codes` and 0.7–4.9% on the rest. Against it,
-  nominal-limit Swiftty is at 161.4% on `ghostty-utf8` and 291.9% on
-  `osc-heavy`, and stays ahead on every input, by at least 3.1%
-  (`cat-source`). With matched history it is ahead on all but `cat-source`
-  (99.2%).
+- Upstream `ghostty-bench` logs warnings to stderr while timed. At `167acf0`
+  a build with `log_level = .err` was 31.3% faster on `ghostty-utf8` and 3.7%
+  on `ghostty-osc`, and within 3.2% on the rest. Against it, matched Swiftty
+  is at 108.7% on `ghostty-utf8`, 107.3% on `ghostty-osc` and 104.1% on
+  `osc-heavy`; the other inputs keep the split above.
 - Final states are not compared. OSC 8 links follow Ghostty's rules: an `id=`
   parameter and the URI identify a link, every other OSC 8 opens a link of
   its own, and URIs are kept whole. Swiftty keeps them in one table for both
   screens, stores each distinct URI once, and labels at most 1,048,575 live
-  links. Adopting these rules left `ghostty-osc` where it was (351.4% before)
-  and made `osc-heavy` faster (252.5% before).
+  links.
 - `ghostty-gen +ascii` and `+osc` are unseeded and `cat-source` concatenates
-  this repository's sources; compare input hashes across runs.
-- Median peak RSS: Swiftty 7.7–10.4 MiB, Ghostty 9.5–11.2 MiB.
+  this repository's sources; compare input hashes across runs. This run
+  reused the corpus of the two runs before it.
+- Median peak RSS on text inputs: Swiftty 7.7–11.1 MiB, Ghostty 9.7–11.1 MiB.
+  On graphics inputs Swiftty peaked at 12.3 MiB (`kitty-images`) and 39.8 MiB
+  (`transmit-4k`), Ghostty at 87.6 and 105.9 MiB.
 
 Raw samples, input and binary hashes, load averages and toolchain versions are
-in [Benchmarks/Ghostty/compare-2026-11-05.json](Benchmarks/Ghostty/compare-2026-11-05.json).
+in [Benchmarks/Ghostty/compare-2026-11-25-2.json](Benchmarks/Ghostty/compare-2026-11-25-2.json).
 To reproduce:
 
 ```sh

@@ -27,21 +27,25 @@ struct Scrollback: ~Copyable {
   @inline(__always)
   func id(_ index: Int) -> Int32 {
     precondition(index >= 0 && index < count, "history index out of bounds")
-    return ids[(head + index) % capacity]
+    return ids[slot(head + index)]
   }
+
+  /// `i % capacity` for `i < 2 * capacity`, without a division.
+  @inline(__always)
+  private func slot(_ i: Int) -> Int { i >= capacity ? i - capacity : i }
 
   /// Appends `id`; returns the evicted oldest id when full.
   @inline(__always)
   mutating func push(_ id: Int32) -> Int32? {
     precondition(capacity > 0, "cannot push into disabled history")
     if count < capacity {
-      ids[(head + count) % capacity] = id
+      ids[slot(head + count)] = id
       count += 1
       return nil
     }
     let oldest = ids[head]
     ids[head] = id
-    head = (head + 1) % capacity
+    head = slot(head + 1)
     evicted += 1
     return oldest
   }
