@@ -22,8 +22,8 @@ enum ForegroundProgram {
     }
     let group = pid_t(bitPattern: info.e_tpgid)
     // The shell itself is named as it runs, never by its arguments.
-    guard group > 0, group != pid, let name = processName(group) else {
-      return processName(pid)
+    guard group > 0, group != pid, let name = programName(group) else {
+      return programName(pid)
     }
     if interpreters.contains(name) || name.hasPrefix("python3."),
       let script = scriptName(group)
@@ -31,6 +31,46 @@ enum ForegroundProgram {
       return script
     }
     return name
+  }
+
+  /// `processName`, except that an executable named by its version
+  /// (Claude Code's `~/.local/share/claude/versions/2.1.296`) is named by
+  /// how it was invoked, or else by its installation directory.
+  static func programName(_ pid: pid_t) -> String? {
+    guard let name = processName(pid) else { return nil }
+    guard isVersion(name), let process = processArguments(pid) else {
+      return name
+    }
+    return versionedName(
+      arguments: process.arguments,
+      executable: process.executable
+    ) ?? name
+  }
+
+  /// A versioned executable's program: argv[0] (the symlink it ran
+  /// through), else the nearest path component that is neither a version
+  /// nor a `versions` directory.
+  static func versionedName(arguments: [String], executable: String?) -> String?
+  {
+    if let first = arguments.first, let name = ProgramName.sanitize(first),
+      !isVersion(name)
+    {
+      return name
+    }
+    guard let executable else { return nil }
+    for component in executable.split(separator: "/").reversed() {
+      guard let name = ProgramName.sanitize(component) else { return nil }
+      if isVersion(name) || name == "versions" { continue }
+      return name
+    }
+    return nil
+  }
+
+  /// "2.1.296", "v1.2": a version number standing in for a program name.
+  static func isVersion(_ name: String) -> Bool {
+    let digits = name.first == "v" ? name.dropFirst() : name[...]
+    return digits.first?.isASCII == true && digits.first?.isNumber == true
+      && digits.allSatisfy { $0 == "." || ("0" ... "9").contains($0) }
   }
 
   static func processName(_ pid: pid_t) -> String? {
@@ -44,14 +84,17 @@ enum ForegroundProgram {
   /// An interpreter's script: its first argument, when that is a file
   /// rather than an option (`python3 -m`, `node -e` keep the interpreter).
   static func scriptName(_ pid: pid_t) -> String? {
-    guard let arguments = arguments(pid), arguments.count > 1,
+    guard let arguments = processArguments(pid)?.arguments, arguments.count > 1,
       !arguments[1].hasPrefix("-")
     else { return nil }
     return ProgramName.sanitize(arguments[1])
   }
 
-  /// The process's argv (`KERN_PROCARGS2`), at most the first few.
-  static func arguments(_ pid: pid_t) -> [String]? {
+  /// The process's executable path and argv (`KERN_PROCARGS2`), at most
+  /// the first few arguments.
+  static func processArguments(
+    _ pid: pid_t
+  ) -> (executable: String, arguments: [String])? {
     var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
     var size = 0
     guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 4 else { return nil }
@@ -63,6 +106,7 @@ enum ForegroundProgram {
     // argc, the executable path, NUL padding, then argv.
     var cursor = 4
     while cursor < size, buffer[cursor] != 0 { cursor += 1 }
+    let executable = String(decoding: buffer[4 ..< cursor], as: UTF8.self)
     while cursor < size, buffer[cursor] == 0 { cursor += 1 }
     var arguments: [String] = []
     while cursor < size, arguments.count < min(count, 3) {
@@ -73,6 +117,6 @@ enum ForegroundProgram {
       )
       cursor += 1
     }
-    return arguments
+    return (executable, arguments)
   }
 }
