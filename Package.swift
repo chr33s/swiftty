@@ -133,7 +133,7 @@ let package = Package(
       dependencies: [
         "SwifttyCore", "SwifttyMac", "SwiftMuxClient", "SwiftMuxBridge",
         "MuxNavigation", "MuxNavigationSMX", "HostConnection", "SwifttyJS",
-        "SwiftMuxGuardian",
+        "SwiftMuxGuardian", "ProgramIcons",
       ],
       // BrandIcons: developer-icons logos (MIT), Scripts/fetch-brand-icons.sh.
       resources: [.process("Localizable.xcstrings"), .copy("BrandIcons")]
@@ -221,6 +221,9 @@ let package = Package(
         "SwiftMuxGuardian", "SwiftMuxClient", "SwiftMuxProtocol", "SwiftMuxXPC",
       ]
     ),
+    // Program icons by title and foreground program: the Mac app's tabs and
+    // pane headers, and the iPhone and iPad terminal header.
+    .target(name: "ProgramIcons"),
     // Deep links (spec.inbox.md §4): typed destinations, the
     // opaque locator, URL validation and the navigation state machine.
     // Foundation only, so the watch companion can link it.
@@ -420,6 +423,7 @@ let package = Package(
         "RoamingStore", "SessionCore", "ScreenProtocol", "SSHClient",
         "TerminalSurface", "CompanionModel", "SwifttyCore", "SwifttyMobile",
         "MuxNavigation", "HostConnection", "SSHIdentity", "SwiftMuxProtocol",
+        "ProgramIcons",
         // AppKit surface for native macOS builds (the SwiftPM test host).
         .target(name: "SwifttyMac", condition: .when(platforms: [.macOS])),
         .product(name: "Crypto", package: "swift-crypto"),
@@ -496,6 +500,7 @@ let package = Package(
         "TestSupport", "SwiftMuxService", "SwiftMuxClient", "SwiftMuxProtocol",
         "SwiftMuxXPC", "SwiftMuxExport", "MuxNavigation", "MuxNavigationSMX",
         "HostConnection", "SwiftMuxGateway", "SwiftMuxGuardian",
+        "ProgramIcons",
       ]
     ),
     .testTarget(

@@ -1,4 +1,5 @@
 import AppKit
+import ProgramIcons
 import MuxNavigation
 import Synchronization
 import SwiftMuxClient

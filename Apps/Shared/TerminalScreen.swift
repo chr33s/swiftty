@@ -1,3 +1,4 @@
+import ProgramIcons
 import SessionCore
 import SwiftUI
 import SwifttyCore
@@ -87,7 +88,9 @@ public struct TerminalScreen: View {
     // terminal starts higher.
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
-      ToolbarItem(placement: .principal) { TerminalTitle(model: model) }
+      ToolbarItem(placement: .principal) {
+        TerminalTitle(model: model, background: terminalBackground)
+      }
     }
     #else
     .toolbar {
@@ -198,21 +201,92 @@ private struct PendingInputDelay: ViewModifier {
   }
 }
 
-/// The host name with a state dot: green connected, orange on the way,
-/// red failed. The dot carries the state text for VoiceOver and tests.
+#if os(iOS) && !targetEnvironment(macCatalyst)
+/// The running program's icon and the host name, as the Mac shows a tab:
+/// the icon a tile picked from the pane's title (`MuxIcons`), with the
+/// connection state as a dot on its bottom-right corner: green connected,
+/// orange on the way, red failed. The dot carries the state text for
+/// VoiceOver and tests.
 private struct TerminalTitle: View {
   let model: TerminalScreenModel
+  /// The bar's color (the terminal's), which the dot's ring cuts out of
+  /// the tile; nil is the system background.
+  let background: Color?
 
   var body: some View {
-    HStack(spacing: 6) {
-      Circle().fill(model.connectionState.indicatorColor)
-        .frame(width: 8, height: 8).accessibilityElement()
-        .accessibilityLabel(Text(model.stateText))
-        .accessibilityIdentifier("terminal.status")
+    HStack(spacing: 8) {
+      ProgramIconTile(icon: MuxIcons.icon(title: model.title))
+        .overlay(alignment: .bottomTrailing) {
+          Circle().fill(model.connectionState.indicatorColor)
+            .frame(width: 9, height: 9)
+            .overlay {
+              Circle()
+                .strokeBorder(
+                  background.map(AnyShapeStyle.init)
+                    ?? AnyShapeStyle(.background),
+                  lineWidth: 1.5
+                )
+            }
+            .offset(x: 3, y: 3).accessibilityElement()
+            .accessibilityLabel(Text(model.stateText))
+            .accessibilityIdentifier("terminal.status")
+        }
       Text(model.host.nickname).font(.headline).lineLimit(1)
     }
   }
 }
+
+/// A program's icon as the Mac's tab tile: a rounded square in the
+/// brand's color (or dark and neutral) with the glyph in white, or a
+/// `colored` logo in its own colors in place of the tile. Logos are the
+/// asset catalog's `brand-<name>` image sets; a missing one, or no brand,
+/// draws the SF Symbol.
+private struct ProgramIconTile: View {
+  let icon: MuxIcon
+  private let size: CGFloat = 22
+
+  var body: some View {
+    Group {
+      if let logo, icon.colored {
+        Image(uiImage: logo).renderingMode(.original).resizable().scaledToFit()
+      } else {
+        RoundedRectangle(
+          cornerRadius: (size * 0.28).rounded(),
+          style: .continuous
+        )
+        .fill(fill).strokeBorder(.white.opacity(0.16), lineWidth: 1)
+        .overlay { glyph.foregroundStyle(.white) }
+      }
+    }
+    .frame(width: size, height: size).accessibilityHidden(true)
+  }
+
+  private var logo: UIImage? {
+    icon.brand.flatMap { UIImage(named: "brand-\($0)", in: .main, with: nil) }
+  }
+
+  @ViewBuilder
+  private var glyph: some View {
+    if let logo {
+      // A logo fills its share of the tile; a symbol keeps its size.
+      Image(uiImage: logo).renderingMode(.template).resizable().scaledToFit()
+        .frame(width: size * 0.6, height: size * 0.6)
+    } else {
+      Image(systemName: icon.symbol).font(.system(size: 11, weight: .medium))
+    }
+  }
+
+  private var fill: Color {
+    guard let tint = icon.tint else { return Color(white: 0.16) }
+    return Color(
+      .sRGB,
+      red: Double(tint >> 16 & 0xFF) / 255,
+      green: Double(tint >> 8 & 0xFF) / 255,
+      blue: Double(tint & 0xFF) / 255
+    )
+  }
+}
+#endif
 
 private struct TerminalStatusBar: View {
   let model: TerminalScreenModel

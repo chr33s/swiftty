@@ -2,6 +2,7 @@ import AppKit
 import SwiftMuxProtocol
 import SwifttyCore
 import SwifttyJS
+import ProgramIcons
 @testable import Swiftty
 import Testing
 
@@ -195,5 +196,54 @@ extension MuxNativeTests {
     )
     #expect(await until { c.automationPaneIcons[pane] == nil })
     #expect(c.icon(of: pane).brand == nil)
+  }
+}
+
+@MainActor
+struct MuxIconTableTests {
+  @Test
+  func `tools win over the package managers and runtimes that run them`() {
+    #expect(MuxIcons.icon(for: "npm exec vitest").brand == "vitest")
+    #expect(MuxIcons.icon(for: "pnpm vite dev").brand == "vitejs")
+    #expect(MuxIcons.icon(for: "npm install").brand == "npm")
+    #expect(MuxIcons.icon(for: "pnpm install").brand == "pnpm-dark")
+    #expect(MuxIcons.icon(for: "bunx playwright test").brand == "playwright")
+    #expect(MuxIcons.icon(for: "torchrun train.py").brand == "pytorch")
+    // A runtime program defers to the tool its title names.
+    #expect(
+      MuxIcons.icon(title: "tsc --watch", program: "bun").brand == "typescript"
+    )
+  }
+
+  @Test
+  func `C++ compilers keep their plus signs`() {
+    #expect(MuxIcons.icon(for: "g++ -O2 main.cpp").brand == "c-plus-plus")
+    #expect(MuxIcons.icon(for: "clang++ main.cc").brand == "c-plus-plus")
+    #expect(MuxIcons.icon(for: "gcc main.c").brand == "c")
+  }
+
+  @Test
+  func `logos shaped as plain silhouettes keep their colors`() {
+    for title in ["swift build", "tsc", "npm test", "kubectl get pods"] {
+      #expect(MuxIcons.icon(for: title).colored)
+    }
+    for title in ["git status", "psql", "gh pr list", "claude"] {
+      #expect(!MuxIcons.icon(for: title).colored)
+    }
+  }
+
+  @Test
+  func `every table logo ships on the Mac and in the iOS catalog`() throws {
+    let root = URL(filePath: #filePath).deletingLastPathComponent()
+      .deletingLastPathComponent().deletingLastPathComponent()
+    let catalog = root.appending(path: "Resources/Assets.xcassets/Brand Icons")
+    for icon in MuxIcons.table.map(\.1) {
+      guard let brand = icon.brand else { continue }
+      #expect(MuxIcons.brandImage(icon) != nil, "\(brand) missing on the Mac")
+      let set = catalog.appending(path: "brand-\(brand).imageset/Contents.json")
+      let json = try String(contentsOf: set, encoding: .utf8)
+      let intent = icon.colored ? "original" : "template"
+      #expect(json.contains("\"\(intent)\""), "\(brand) catalog intent")
+    }
   }
 }
