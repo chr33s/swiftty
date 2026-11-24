@@ -12,7 +12,7 @@ struct NegotiatedAccumulatorTests {
     var limits = NegotiatedLimits()
     limits.maxSnapshotEncodedBytes = decoded ? 128 : 32
     limits.maxSnapshotDecodedBytes = decoded ? 32 : 128
-    let header: [UInt8] = [1, 0, 0, 0, 64, 0, 0, 0, 64]
+    let header: [UInt8] = [3, 0, 0, 0, 64, 0, 0, 0, 64]
     var accumulator = SnapshotStreamAccumulator(limits: limits)
     try accumulator.append(header.prefix(split))
     let input = ReadCountingBytes(
@@ -33,7 +33,7 @@ struct NegotiatedAccumulatorTests {
     limits.maxSnapshotEncodedBytes = 32
     limits.maxSnapshotDecodedBytes = 32
     let payload: [UInt8] =
-      [0, 0, 0, 0, 32, 0, 0, 0, 32] + Array(repeating: 7, count: 32)
+      [2, 0, 0, 0, 32, 0, 0, 0, 32] + Array(repeating: 7, count: 32)
     var accumulator = SnapshotStreamAccumulator(limits: limits)
     #expect(accumulator.nextReadLimit == payload.count + 1)
     try accumulator.append(payload.prefix(4))

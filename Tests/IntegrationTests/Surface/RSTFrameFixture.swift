@@ -66,7 +66,9 @@ func rstFrameRecord(_ snapshot: ScreenSnapshot) throws -> [UInt8] {
       cursor: 0xFF_FFFF
     ),
     cursor: FrameCursor(
-      x: snapshot.cursor.column,
+      // A snapshot parks a pending-wrap cursor past the last column; a
+      // frame keeps it on the grid (the engine holds pending wrap as a flag).
+      x: min(snapshot.cursor.column, snapshot.columns - 1),
       y: snapshot.cursor.row,
       visible: snapshot.cursor.visible,
       style: cursorStyle,

@@ -221,7 +221,7 @@ struct IdentityTests {
   @Test
   func snapshotAccumulatorRejectsExcessBeforeReadingBody() {
     let input = ReadCountingBytes(
-      prefix: [0, 0, 0, 0, 1, 0, 0, 0, 1],
+      prefix: [2, 0, 0, 0, 1, 0, 0, 0, 1],
       count: 1024 * 1024
     )
     var accumulator = SnapshotStreamAccumulator()
