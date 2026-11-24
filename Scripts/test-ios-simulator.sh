@@ -38,8 +38,9 @@ let package = Package(
         .library(name: "CoreTestSupport", targets: ["CoreTestSupport"]),
     ],
     targets: [
-        .target(name: "SwifttyEngine", dependencies: ["Checksum"],
+        .target(name: "SwifttyEngine", dependencies: ["Checksum", "TerminalProcess"],
                 swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+        .target(name: "TerminalProcess"),
         .target(name: "CScrollbackChecksum"),
         .target(name: "Checksum", dependencies: ["CScrollbackChecksum"]),
         .target(name: "SwifttyConfig"),

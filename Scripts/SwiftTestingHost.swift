@@ -114,6 +114,10 @@ private func entryPointSymbol(
 @main
 struct SwiftTestingHost {
   static func main() {
+    // The runtime has already read it for this host. Children inherit it,
+    // and privileged ones such as /usr/bin/python3 then print a warning
+    // into the terminal output tests compare byte for byte.
+    unsetenv("SWIFT_BACKTRACE")
     guard let path = ProcessInfo.processInfo.environment["SWIFTTY_TEST_BUNDLE"],
       let bundle = dlopen(path, RTLD_NOW | RTLD_GLOBAL),
       let symbol = entryPointSymbol(bundle: bundle)
