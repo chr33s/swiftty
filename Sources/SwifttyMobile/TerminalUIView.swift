@@ -308,6 +308,14 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
       name: UIResponder.keyboardWillHideNotification,
       object: nil,
     )
+    // Settles on the accessory's measured frame; a hardware keyboard
+    // that shows only the accessory posts nothing else.
+    center.addObserver(
+      self,
+      selector: #selector(keyboardFrameChanged(_:)),
+      name: UIResponder.keyboardDidChangeFrameNotification,
+      object: nil,
+    )
     #endif
     center.addObserver(
       self,
@@ -686,8 +694,16 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
         width: bounds.width,
         height: bounds.height
       )
-      if keyboard.maxY >= resting.maxY - 1, keyboard.intersects(resting) {
-        inset = max(0, resting.maxY - keyboard.minY)
+      let covering = Self.keyboardCovering(
+        keyboard: keyboard,
+        accessory: accessoryFrame(in: superview, screen: screen),
+        settled: notification.name
+          == UIResponder.keyboardDidChangeFrameNotification
+      )
+      if covering.maxY >= resting.maxY - 1, covering.minY < resting.maxY,
+        covering.maxX > resting.minX, covering.minX < resting.maxX
+      {
+        inset = max(0, resting.maxY - covering.minY)
       }
     }
     guard inset != keyboardInset else { return }
@@ -706,6 +722,46 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
     )
   }
   #endif
+
+  #if !os(visionOS) && !os(tvOS)
+  /// The shown accessory's frame in `superview`, or nil when none is on
+  /// screen.
+  private func accessoryFrame(in superview: UIView, screen: UIScreen)
+    -> CGRect?
+  {
+    guard isFirstResponder, let accessory = inputAccessoryView,
+      accessory.window != nil, !accessory.isHidden,
+      accessory.bounds.height > 0
+    else { return nil }
+    return superview.convert(
+      accessory.convert(accessory.bounds, to: screen.coordinateSpace),
+      from: screen.coordinateSpace
+    )
+  }
+  #endif
+
+  /// The region a docked keyboard and its accessory cover. The reported
+  /// keyboard frame omits the accessory, which sits directly above it
+  /// (zero height under a hardware keyboard). While the keyboard moves the
+  /// accessory is mid-flight, so only its height counts; once `settled`,
+  /// its measured frame does, which also corrects a frame that already
+  /// included it.
+  nonisolated static func keyboardCovering(
+    keyboard: CGRect,
+    accessory: CGRect?,
+    settled: Bool
+  ) -> CGRect {
+    guard let accessory, !accessory.isEmpty else { return keyboard }
+    let top =
+      settled
+      ? min(keyboard.minY, accessory.minY) : keyboard.minY - accessory.height
+    return CGRect(
+      x: min(keyboard.minX, accessory.minX),
+      y: top,
+      width: max(keyboard.maxX, accessory.maxX) - min(keyboard.minX, accessory.minX),
+      height: max(0, keyboard.maxY - top)
+    )
+  }
 
   /// Whether `damage` covers at least half of `rows`: a new screen rather
   /// than output to the shown one.

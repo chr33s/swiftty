@@ -13,6 +13,54 @@ struct KeyboardLiftTests {
   )
 
   @Test
+  func `the accessory above the reported keyboard is covered`() {
+    let keyboard = CGRect(x: 0, y: 500, width: 400, height: 374)
+    // Mid-animation the accessory's position is stale; its height counts.
+    let moving = TerminalUIView.keyboardCovering(
+      keyboard: keyboard,
+      accessory: CGRect(x: 0, y: 874, width: 400, height: 60),
+      settled: false
+    )
+    #expect(moving.minY == 440)
+    #expect(moving.maxY == 874)
+    // Settled, the measured frame counts.
+    let settled = TerminalUIView.keyboardCovering(
+      keyboard: keyboard,
+      accessory: CGRect(x: 0, y: 440, width: 400, height: 60),
+      settled: true
+    )
+    #expect(settled.minY == 440)
+  }
+
+  @Test
+  func `a hardware keyboard covers only the accessory`() {
+    let covering = TerminalUIView.keyboardCovering(
+      keyboard: CGRect(x: 0, y: 874, width: 400, height: 0),
+      accessory: CGRect(x: 0, y: 814, width: 400, height: 60),
+      settled: true
+    )
+    #expect(covering == CGRect(x: 0, y: 814, width: 400, height: 60))
+  }
+
+  @Test
+  func `a settled frame that includes the accessory is not doubled`() {
+    let keyboard = CGRect(x: 0, y: 440, width: 400, height: 434)
+    let covering = TerminalUIView.keyboardCovering(
+      keyboard: keyboard,
+      accessory: CGRect(x: 0, y: 440, width: 400, height: 60),
+      settled: true
+    )
+    #expect(covering == keyboard)
+    #expect(
+      TerminalUIView.keyboardCovering(
+        keyboard: keyboard,
+        accessory: nil,
+        settled: false
+      ) == keyboard
+    )
+  }
+
+  @Test
   func `no keyboard means no lift`() {
     #expect(
       TerminalUIView.keyboardLift(
