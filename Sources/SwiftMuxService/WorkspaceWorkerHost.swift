@@ -18,6 +18,7 @@ package final class WorkspaceWorkerHost: @unchecked Sendable {
   private let workspace: WorkspaceID
   private let launcherPath: String
   private let peerRequirement: String?
+  private let limits: MuxLimits
   private let onReady: @Sendable (ServerInstanceID) -> Void
   private let onUnavailable: @Sendable (MuxError) -> Void
   private var broker: GuardianWorkspaceTransport?
@@ -42,8 +43,10 @@ package final class WorkspaceWorkerHost: @unchecked Sendable {
     ready: @escaping @Sendable (ServerInstanceID) -> Void,
     unavailable: @escaping @Sendable (MuxError) -> Void,
     candidate: UUID? = nil,
+    limits: MuxLimits = .standard,
     retired: @escaping @Sendable () -> Void = {}
   ) throws {
+    self.limits = limits
     self.candidate = candidate
     onRetired = retired
     self.workspace = workspace
@@ -127,6 +130,7 @@ package final class WorkspaceWorkerHost: @unchecked Sendable {
     }
     var configuration = MuxServiceConfiguration(launcherPath: launcherPath)
     configuration.workerWorkspace = workspace
+    configuration.limits = limits
     configuration.instance = instance
     configuration.requiresGatewayBinding = true
     configuration.peerRequirement = peerRequirement
@@ -151,6 +155,7 @@ package final class WorkspaceWorkerHost: @unchecked Sendable {
     do {
       var configuration = MuxServiceConfiguration(launcherPath: launcherPath)
       configuration.workerWorkspace = workspace
+      configuration.limits = limits
       configuration.requiresGatewayBinding = true
       configuration.peerRequirement = peerRequirement
       let workspaceID = workspace

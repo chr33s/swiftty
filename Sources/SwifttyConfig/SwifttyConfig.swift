@@ -179,6 +179,12 @@ public struct TerminalConfig: Codable, Equatable, Sendable {
   public var preferredShell: ShellKind? = nil
   public var shellProfiles: [String: ShellLaunchProfile] = [:]
   public var scrollbackLimit: Int
+  /// Kitty graphics bytes per screen; nil uses the platform default
+  /// (320 MB on macOS, 128 MB on iOS and iPadOS); 0 disables images.
+  public var imageStorageLimit: Int? = nil
+  /// Roaming images on cellular and other expensive paths: `full`,
+  /// `reduced` or `off`; nil uses `reduced`.
+  public var imagesOnCellular: String? = nil
   public static let `default` = Self()
   public init(shell: String? = nil, scrollbackLimit: Int = 10_000) {
     self.shell = shell
@@ -189,6 +195,8 @@ public struct TerminalConfig: Codable, Equatable, Sendable {
     case scrollbackLimit = "scrollback_limit"
     case preferredShell = "preferred_shell"
     case shellProfiles = "shell_profiles"
+    case imageStorageLimit = "image_storage_limit"
+    case imagesOnCellular = "images_on_cellular"
   }
   public init(from decoder: any Decoder) throws {
     let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -205,6 +213,14 @@ public struct TerminalConfig: Codable, Equatable, Sendable {
     scrollbackLimit =
       values.contains(.scrollbackLimit)
       ? try values.decode(Int.self, forKey: .scrollbackLimit) : 10_000
+    imageStorageLimit = try values.decodeIfPresent(
+      Int.self,
+      forKey: .imageStorageLimit
+    )
+    imagesOnCellular = try values.decodeIfPresent(
+      String.self,
+      forKey: .imagesOnCellular
+    )
   }
 }
 

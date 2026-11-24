@@ -79,9 +79,22 @@ final class TerminalAccessibilityElement: UIAccessibilityElement,
 /// VoiceOver runs.
 extension TerminalUIView: @MainActor UIAccessibilityReadingContent {
   func updateAccessibilityElements() {
-    accessibilityElements =
+    let base: [Any] =
       isSearchVisible
       ? [searchBar, accessibilityTerminal] : [accessibilityTerminal]
+    // Visible kitty graphics images (spec.graphics.md §13.4).
+    accessibilityElements =
+      base
+      + imageRegions.map { region -> UIAccessibilityElement in
+        let element = UIAccessibilityElement(accessibilityContainer: self)
+        element.accessibilityLabel = region.label
+        element.accessibilityTraits = .image
+        var frame = geometry.rect(column: region.column, row: region.row)
+        frame.size.width *= CGFloat(region.columns)
+        frame.size.height *= CGFloat(region.rows)
+        element.accessibilityFrameInContainerSpace = frame
+        return element
+      }
   }
 
   public func accessibilityLineNumber(for point: CGPoint) -> Int {

@@ -30,7 +30,7 @@ UIKit supports app-owned controls through inputAccessoryView. This feature uses 
 
 The implementation targets iOS and iPadOS, including narrow iPad windows, floating keyboard arrangements and hardware-keyboard use. Shared UIKit code must continue compiling for the repository's existing platform targets, but this interaction is enabled only for the iPhone/iPad product.
 
-Kitty graphics remains excluded. Existing terminal keyboard encoding, including any already-supported negotiated keyboard protocol, remains responsible for translating arrow events. This specification does not introduce a graphics protocol or a system-wide keyboard extension.
+Kitty graphics is out of scope here ([spec.graphics.md](spec.graphics.md)). Existing terminal keyboard encoding, including any already-supported negotiated keyboard protocol, remains responsible for translating arrow events. This specification does not introduce a graphics protocol or a system-wide keyboard extension.
 
 ## 2. Accessory layout
 

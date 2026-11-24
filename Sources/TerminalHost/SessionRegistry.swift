@@ -693,8 +693,7 @@ public final class SessionRegistry: @unchecked Sendable {
       state.withLock({
         $0.entries[request.sessionID] == nil
           && $0.floors[request.sessionID] == nil
-      }),
-      let live = await listWorkspaces(),
+      }), let live = await listWorkspaces(),
       live.contains(where: { $0.id == request.sessionID.workspace })
     {
       return .failure(.expired)

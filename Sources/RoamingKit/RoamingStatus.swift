@@ -55,6 +55,11 @@ public struct RoamingClientConfiguration: Sendable {
   /// attempt that hears nothing is abandoned after this wait instead of
   /// after `attachTimeout` (spec.roaming.md §9).
   public var attachProgressMinimum: Duration
+  /// Kitty graphics pixels to keep across clients: a frontend that replaces
+  /// its client on reconnect passes the same cache, so the new attachment's
+  /// inventory still lists what the device holds (spec.graphics.md KG28).
+  /// Nil gives each client its own.
+  public var images: RoamingImageCache?
 
   /// `detachDeadline` unless configured otherwise.
   public static let defaultDetachDeadline: Duration = .seconds(2)
@@ -68,7 +73,8 @@ public struct RoamingClientConfiguration: Sendable {
     tokenRefreshMargin: Duration = .seconds(60),
     backoffJitter: Double = 0.2,
     maxOutboundRecords: Int = 512,
-    attachProgressMinimum: Duration = .milliseconds(1500)
+    attachProgressMinimum: Duration = .milliseconds(1500),
+    images: RoamingImageCache? = nil
   ) {
     self.initialGrid = initialGrid
     self.detachDeadline = detachDeadline
@@ -79,6 +85,7 @@ public struct RoamingClientConfiguration: Sendable {
     self.backoffJitter = backoffJitter
     self.maxOutboundRecords = maxOutboundRecords
     self.attachProgressMinimum = attachProgressMinimum
+    self.images = images
   }
 }
 

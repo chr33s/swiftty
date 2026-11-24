@@ -162,6 +162,14 @@ extension TerminalUIView {
       return
     }
     let c = geometry.cell(at: point)
+    if let handler = session.imageTapHandler,
+      tapImageRegions.contains(where: {
+        (($0.row) ..< $0.row + $0.rows).contains(c.row)
+          && ($0.column ..< $0.column + $0.columns).contains(c.column)
+      }), handler()
+    {
+      return
+    }
     let detect = configuration.linkURL
     let (link, click) = session.withState { state in
       let p = state.viewportPoint(row: c.row, column: c.column)

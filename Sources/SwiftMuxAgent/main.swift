@@ -100,6 +100,7 @@ guard FileManager.default.isExecutableFile(atPath: launcher) else {
 }
 
 var configuration = MuxServiceConfiguration(launcherPath: launcher)
+configuration.limits = .userConfigured()
 configuration.javaScriptDirectory = FileManager.default
   .homeDirectoryForCurrentUser.appendingPathComponent(
     ".config/swiftty",

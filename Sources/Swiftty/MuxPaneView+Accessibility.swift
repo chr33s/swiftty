@@ -18,6 +18,15 @@ extension MuxPaneView {
   override func isAccessibilityElement() -> Bool { true }
   override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
   override func accessibilityRoleDescription() -> String? { "terminal" }
+  /// Visible kitty graphics images (spec.graphics.md §13.4).
+  override func accessibilityChildren() -> [Any]? {
+    (super.accessibilityChildren() ?? [])
+      + TerminalImageElement.elements(
+        for: (frozen ?? presented)?.snapshot,
+        in: self,
+        renderer: renderer
+      )
+  }
   override func accessibilityLabel() -> String? { "Terminal pane" }
   override func accessibilityValue() -> Any? {
     (frozen ?? presented)

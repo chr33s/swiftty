@@ -119,14 +119,38 @@ public enum FrameImporter {
     fromValidated frame: PaneFrame,
     selection: HighlightSpan? = nil,
     sequence: UInt64,
-    limits: MuxLimits = .standard
+    limits: MuxLimits = .standard,
+    images store: MuxImageStore? = nil
   ) -> RenderSnapshot {
     assert((try? FrameValidator.validate(frame, limits: limits)) != nil)
     return RenderSnapshot(
-      owned: convert(frame),
+      owned: withImages(convert(frame), frame, store),
       selection: selection,
       sequence: sequence
     )
+  }
+
+  /// Images `store` lacks for `frame`, to fetch.
+  public static func missingImages(
+    _ frame: PaneFrame,
+    in store: MuxImageStore
+  ) -> [FrameImage] {
+    // Shown images first, then the other frames of their animations.
+    guard let section = frame.images else { return [] }
+    return (section.images + section.prefetch)
+      .filter { store.pixels($0) == nil }
+  }
+
+  private static func withImages(
+    _ screen: OwnedScreen,
+    _ frame: PaneFrame,
+    _ store: MuxImageStore?
+  ) -> OwnedScreen {
+    guard let store, let section = frame.images else { return screen }
+    var out = screen
+    out.images = store.placements(section)
+    out.imageCellSize = SIMD2(Int(section.cellWidth), Int(section.cellHeight))
+    return out
   }
 
   /// An independent renderer snapshot with full damage.
@@ -134,10 +158,11 @@ public enum FrameImporter {
     from frame: PaneFrame,
     selection: HighlightSpan? = nil,
     sequence: UInt64,
-    limits: MuxLimits = .standard
+    limits: MuxLimits = .standard,
+    images store: MuxImageStore? = nil
   ) throws(MuxError) -> RenderSnapshot {
     RenderSnapshot(
-      owned: try screen(from: frame, limits: limits),
+      owned: withImages(try screen(from: frame, limits: limits), frame, store),
       selection: selection,
       sequence: sequence
     )

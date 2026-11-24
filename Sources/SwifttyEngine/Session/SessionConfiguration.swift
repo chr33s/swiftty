@@ -24,6 +24,13 @@ public struct SessionConfiguration: Sendable {
   /// Answer DECRQCRA rectangle checksums
   /// (`TerminalState.rectangleChecksumsEnabled`).
   public var rectangleChecksumsEnabled = false
+  /// Kitty graphics image bytes per screen; 0 disables the protocol
+  /// (`TerminalState.imageStorageLimit`, spec.graphics.md §8.2).
+  public var imageStorageLimitBytes = TerminalState.defaultImageStorageLimit
+  /// Media beyond `direct` for programs a byte-stream embedder feeds.
+  /// Local PTY sessions always allow every medium; remote programs must
+  /// never name client files (spec.graphics.md §7.1).
+  public var kittyGraphicsMedia = KittyGraphics.Media.direct
 
   public init(
     command: [String]? = nil,

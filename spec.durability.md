@@ -206,6 +206,7 @@ Use a versioned, sectioned, checksummed format with build/schema identifiers, re
 | Engine | Main/alternate grids, history/order/addressing, cursor, modes, margins, tabs, rendition, palettes, character sets, titles/directories, geometry and input modes |
 | Parser | Partial UTF-8 and escape/control sequences, parse state and bounded accumulators |
 | Tables | Graphemes, hyperlinks, prompt/command markers and all references needed by retained rows |
+| Kitty graphics | Section 15, only when images exist: each screen's images, pixels, animation frames and placements ([spec.graphics.md §18](spec.graphics.md#18-durability-and-checkpoints)) |
 | Workspace | IDs, graph/layout revision, active pane/tab, zoom, launch settings, retained exit states and workspace attention/snooze state |
 | Continuity | Terminal/frame/geometry revisions, operation watermarks, live controller/observer records and resolved external-operation state |
 
@@ -497,7 +498,9 @@ Never save:
 - cursor, mode or parser state;
 - input, paste or clipboard data, including OSC 52 payloads;
 - hyperlink targets or OSC 7501 attention records;
-- PIDs, leases or capabilities.
+- PIDs, leases or capabilities;
+- kitty graphics images or placements (a planned migration carries them in
+  checkpoint section 15 only, [spec.graphics.md §18](spec.graphics.md#18-durability-and-checkpoints)).
 
 #### 12.2.4 Storage format and protection
 

@@ -12,6 +12,16 @@ extension TerminalView {
 
   public override func accessibilityRoleDescription() -> String? { "terminal" }
 
+  /// Visible kitty graphics images (spec.graphics.md §13.4).
+  public override func accessibilityChildren() -> [Any]? {
+    (super.accessibilityChildren() ?? [])
+      + TerminalImageElement.elements(
+        for: lastSnapshot,
+        in: self,
+        renderer: renderer
+      )
+  }
+
   public override func accessibilityLabel() -> String? {
     window?.title ?? "Terminal"
   }

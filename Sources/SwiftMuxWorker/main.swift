@@ -22,6 +22,7 @@ do {
     ready: { _ in },
     unavailable: { _ in exit(75) },
     candidate: bootstrap.migration,
+    limits: .userConfigured(),
     // Retired after a planned replacement: the guardian keeps every process.
     // Keep answering frozen frontends while gateway relays move to the
     // candidate, then leave (the guardian's grace is longer).

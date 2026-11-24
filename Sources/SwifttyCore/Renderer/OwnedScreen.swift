@@ -30,6 +30,8 @@ extension RenderSnapshot {
       viewportOffset: screen.viewportOffset,
       scrollbackCount: screen.scrollbackCount,
       sequence: sequence,
+      images: screen.images,
+      imageCellSize: screen.imageCellSize,
     )
   }
 }

@@ -3,8 +3,30 @@ import Dispatch
 import Foundation
 import SwiftMuxProtocol
 import SwiftMuxXPC
+import SwifttyConfig
 import SwifttyEngine
 import SwifttyJS
+
+extension MuxLimits {
+  /// The standard limits with the user's `terminal.image_storage_limit`
+  /// (0 disables images) capped at the protocol's per-screen budget
+  /// (spec.graphics.md §8.2). Production entry points use this; tests
+  /// keep `standard` and never read the user's settings.
+  public static func userConfigured() -> MuxLimits {
+    var limits = MuxLimits.standard
+    let url =
+      ((try? ConfigDiscovery.resolve(arguments: [])) ?? nil)
+      ?? ConfigDiscovery.defaultURL()
+    let configured =
+      (try? ConfigLoader.load(from: url))?.terminal.imageStorageLimit
+      ?? TerminalState.defaultImageStorageLimit
+    limits.imageBytesPerScreen = min(
+      max(0, configured),
+      limits.imageBytesPerScreen
+    )
+    return limits
+  }
+}
 
 public struct MuxServiceConfiguration: Sendable {
   /// The shared automation VM. The host installs callbacks before creating the service.
@@ -150,7 +172,8 @@ final class Client {
     let capabilities = hello?.capabilities ?? []
     return PaneRuntime.FrameEncoding(
       binary: capabilities.contains(.binaryFrames),
-      deltas: capabilities.contains(.frameDeltas)
+      deltas: capabilities.contains(.frameDeltas),
+      images: capabilities.contains(.images)
     )
   }
 

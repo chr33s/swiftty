@@ -57,6 +57,7 @@ extension SurfaceInput {
   /// reach the host: empty text, a truncated paste, an unmappable key.
   public init?(_ input: DecodedInput) {
     switch input {
+    case .reply: return nil
     case let .text(text):
       guard !text.isEmpty else { return nil }
       self = .text(text)

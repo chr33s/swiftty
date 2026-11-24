@@ -7,3 +7,4 @@
 *.xcodeproj
 DerivedData/
 Apps/Config/Generated/
+__pycache__/

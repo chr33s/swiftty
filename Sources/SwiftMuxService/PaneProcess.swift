@@ -69,10 +69,29 @@ protocol PaneProcess: AnyObject, Sendable {
     rows: Int,
     completion: @escaping @Sendable (Result<Void, MuxError>) -> Void
   )
+  /// As `resize`, also reporting the text area in pixels to the program
+  /// (`TIOCGWINSZ`), which kitty graphics clients size images from.
+  func resize(
+    columns: Int,
+    rows: Int,
+    pixelWidth: Int,
+    pixelHeight: Int,
+    completion: @escaping @Sendable (Result<Void, MuxError>) -> Void
+  )
   func flush()
   func retire(completion: @escaping @Sendable (MuxError?) -> Void)
   func terminate()
   func terminationStateForTesting() -> String
+}
+
+extension PaneProcess {
+  func resize(
+    columns: Int,
+    rows: Int,
+    pixelWidth: Int,
+    pixelHeight: Int,
+    completion: @escaping @Sendable (Result<Void, MuxError>) -> Void
+  ) { resize(columns: columns, rows: rows, completion: completion) }
 }
 
 /// Local process owner used by the existing monolithic service. The guardian
@@ -92,7 +111,28 @@ extension GuardianPTY: PaneProcess {
     rows: Int,
     completion: @escaping @Sendable (Result<Void, MuxError>) -> Void
   ) {
-    let error = resize(columns: columns, rows: rows)
+    resize(
+      columns: columns,
+      rows: rows,
+      pixelWidth: 0,
+      pixelHeight: 0,
+      completion: completion
+    )
+  }
+
+  func resize(
+    columns: Int,
+    rows: Int,
+    pixelWidth: Int,
+    pixelHeight: Int,
+    completion: @escaping @Sendable (Result<Void, MuxError>) -> Void
+  ) {
+    let error = resize(
+      columns: columns,
+      rows: rows,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight
+    )
     if error == 0 {
       completion(.success(()))
     } else {

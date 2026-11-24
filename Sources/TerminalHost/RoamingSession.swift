@@ -8,6 +8,7 @@ import SwiftMuxProtocol
 import SwiftMuxService
 import SwifttyEngine
 import Synchronization
+import os
 
 /// One roaming session: an RST/1 view of a SwiftMux workspace (spec.inbox.md
 /// §1). The SwiftMux service owns the shell, PTY and terminal;
@@ -578,6 +579,15 @@ public final class RoamingSession: @unchecked Sendable {
       with: a.clientFeatures.withLock { $0 }
     )
     a.submittedBaselines = [:]
+    a.imagesDelivered = [:]
+    a.digestsDelivered = a.clientImages.withLock { $0.inventory }
+    imageLog.notice(
+      "attach epoch=\(a.epoch, privacy: .public) inventory=\(a.digestsDelivered.count, privacy: .public)"
+    )
+    a.frameImages = [:]
+    a.imageQueue = []
+    a.imagesInFlight = []
+    a.digestsSending = []
     a.deltaBaseline = nil
     a.fullScreenPending = false
     a.lastFullScreenRevision = 0
@@ -598,9 +608,38 @@ public final class RoamingSession: @unchecked Sendable {
     )
     completion(.success(epoch))
     sendLayout()
+    applyCellPixels(a)
     pumpInput()
     a.scheduler.markDirty()
     pumpSnapshots(a)
+  }
+
+  /// The client's cell size reaches the pane: pixel-size reports and
+  /// kitty graphics sizing (spec.graphics.md §16.2).
+  private func applyCellPixels(_ a: HostAttachment) {
+    if let cell = a.cellPixels.withLock({ $0 }), let pane = activePane, let mux
+    {
+      geometryGeneration += 1
+      mux.request(
+        .setGeometry(
+          GeometryBatch(
+            layoutRevision: layoutRevision,
+            generation: geometryGeneration,
+            entries: [
+              .init(
+                pane: pane,
+                columns: columns,
+                rows: rows,
+                cellWidth: cell.width,
+                cellHeight: cell.height
+              )
+            ]
+          )
+        ),
+        expiresAt: nil,
+        isAdmitted: nil
+      ) { _ in }
+    }
   }
 
   private func detachOnQueue(_ a: HostAttachment) {
@@ -936,6 +975,57 @@ public final class RoamingSession: @unchecked Sendable {
         return
       }
       performLayout(action, request: id, for: a)
+    case let .imageRequest(_, keys, variant):
+      guard a.features.contains(.kittyGraphics) else {
+        a.fail(.malformed)
+        detachOnQueue(a)
+        return
+      }
+      a.clientImages.withLock { $0.variant = variant }
+      // Images went off on the client's path: push nothing more.
+      if variant == .off { a.imageQueue.removeAll() }
+      for key in keys {
+        // Its pixels are on their way under another key: no second copy.
+        if let digest = a.imagesDelivered[key],
+          a.digestsSending.contains(digest)
+        {
+          continue
+        }
+        // The client no longer holds it: send pixels, not an alias.
+        if let digest = a.imagesDelivered.removeValue(forKey: key) {
+          imageLog.notice(
+            "request epoch=\(a.epoch, privacy: .public) digest=\(digest.prefix(16), privacy: .public)"
+          )
+          a.digestsDelivered.remove(digest)
+        }
+        if let image = a.frameImages[key], !a.imageQueue.contains(image) {
+          a.imageQueue.append(image)
+        }
+      }
+      pumpImages(a)
+    case let .cellSize(_, width, height):
+      guard a.features.contains(.kittyGraphics) else {
+        a.fail(.malformed)
+        detachOnQueue(a)
+        return
+      }
+      a.cellPixels.withLock { $0 = (width, height) }
+      applyCellPixels(a)
+    case let .imageLoad(_, keys, variant):
+      guard a.features.contains(.kittyGraphics), variant != .off else {
+        a.fail(.malformed)
+        detachOnQueue(a)
+        return
+      }
+      for key in keys {
+        guard let image = a.frameImages[key] else { continue }
+        if let digest = a.imagesDelivered.removeValue(forKey: key) {
+          a.digestsDelivered.remove(digest)
+        }
+        a.imageVariantOverrides[key] = variant
+        if !a.imageQueue.contains(image) { a.imageQueue.append(image) }
+      }
+      pumpImages(a)
     case let .ping(_, nonce): a.send(.pong(epoch: a.epoch, nonce: nonce))
     // The answer to a copy delivery ping (`sendCopy`); others are stale.
     case let .pong(_, nonce): releaseCopyFence(a, nonce: nonce)
@@ -1420,7 +1510,15 @@ public final class RoamingSession: @unchecked Sendable {
       let batch = GeometryBatch(
         layoutRevision: layoutRevision,
         generation: geometryGeneration,
-        entries: [.init(pane: pane, columns: c, rows: r)]
+        entries: [
+          .init(
+            pane: pane,
+            columns: c,
+            rows: r,
+            cellWidth: attachment?.cellPixels.withLock { $0?.width },
+            cellHeight: attachment?.cellPixels.withLock { $0?.height }
+          )
+        ]
       )
       mux.request(.setGeometry(batch)) { [weak self] result in
         guard let self else { return }
@@ -1700,6 +1798,22 @@ public final class RoamingSession: @unchecked Sendable {
   ) {
     pruneSnapshotWork()
     let deltas = a.features.contains(.screenDeltas) && !a.fullScreenPending
+    var screen = screen
+    if case .frame(var frame, let header) = screen {
+      if !a.features.contains(.kittyGraphics) {
+        frame.images = nil
+      } else if a.clientImages.withLock({ $0.variant }) != .off {
+        queueImages(frame.images, for: a)
+      } else {
+        // Images off: placements still go, so the client can draw boxes
+        // and load one on a tap; no pixels are pushed.
+        a.frameImages = Dictionary(
+          (frame.images?.images ?? []).map { ($0.key, $0) },
+          uniquingKeysWith: { a, _ in a }
+        )
+      }
+      screen = .frame(frame, header)
+    }
     pendingSnapshotEncodes.append(
       SnapshotEncoding(
         screen: screen,
@@ -1754,6 +1868,7 @@ public final class RoamingSession: @unchecked Sendable {
 
   private func startNextSnapshotEncoding() {
     pruneSnapshotWork()
+    if pendingSnapshotEncodes.isEmpty, let a = attachment { pumpImages(a) }
     guard !encodingSnapshot, snapshotSends.count < 2,
       !pendingSnapshotEncodes.isEmpty
     else { return }
@@ -1827,6 +1942,200 @@ public final class RoamingSession: @unchecked Sendable {
     }
   }
 
+  // MARK: Kitty graphics (spec.graphics.md §16.3)
+
+  /// Queues images a frame references that this attachment lacks.
+  private func queueImages(_ section: FrameImages?, for a: HostAttachment) {
+    a.frameImages = [:]
+    // Shown images first, then the other frames of their animations.
+    for image in (section?.images ?? []) + (section?.prefetch ?? []) {
+      a.frameImages[image.key] = image
+      guard a.imagesDelivered[image.key] == nil,
+        !a.imagesInFlight.contains(image.key), !a.imageQueue.contains(image)
+      else { continue }
+      a.imageQueue.append(image)
+    }
+    a.imageQueue.removeAll { a.frameImages[$0.key] == nil }
+    pumpImages(a)
+  }
+
+  /// At most two images in flight, started only while no screen waits
+  /// for an encoder: images never delay screens or input.
+  private func pumpImages(_ a: HostAttachment) {
+    guard a === attachment, a.isCurrent, let pane = activePane, let mux else {
+      return
+    }
+    let now = ContinuousClock.now
+    let elapsed =
+      Double((now - a.imageTokensAt).components.attoseconds) / 1e18
+      + Double((now - a.imageTokensAt).components.seconds)
+    a.imageTokens = min(8, a.imageTokens + elapsed * 2)
+    a.imageTokensAt = now
+    while a.imagesInFlight.count < 2, pendingSnapshotEncodes.isEmpty,
+      !a.imageQueue.isEmpty
+    {
+      guard a.imageTokens >= 1 else {
+        if !a.imageRetryScheduled {
+          a.imageRetryScheduled = true
+          queue.asyncAfter(deadline: .now() + .milliseconds(500)) {
+            [weak self] in
+            a.imageRetryScheduled = false
+            self?.pumpImages(a)
+          }
+        }
+        return
+      }
+      a.imageTokens -= 1
+      let image = a.imageQueue.removeFirst()
+      a.imagesInFlight.insert(image.key)
+      fetchImage(image, pane: pane, mux: mux, offset: 0, bytes: [], for: a)
+    }
+  }
+
+  private func fetchImage(
+    _ image: FrameImage,
+    pane: PaneID,
+    mux: any RoamingMux,
+    offset: Int,
+    bytes: [UInt8],
+    for a: HostAttachment
+  ) {
+    // The mux is not Sendable: later chunks go through `self.mux`, and
+    // only while it is still the mux this fetch started on.
+    let requested = ObjectIdentifier(mux)
+    mux.request(
+      .imageChunk(pane: pane, key: image.key, offset: offset),
+      expiresAt: nil,
+      isAdmitted: nil
+    ) { [weak self] result in
+      self?.queue
+        .async { [weak self] in
+          guard let self else { return }
+          guard case let .success(.imageChunk(chunk)) = result,
+            (try? chunk.validate(requestedOffset: offset, key: image.key))
+              != nil, chunk.image == image, !chunk.bytes.isEmpty
+          else { return self.imageFinished(image, for: a) }
+          let all = bytes + chunk.bytes
+          if all.count < image.byteCount {
+            guard let mux = self.mux, ObjectIdentifier(mux) == requested else {
+              return self.imageFinished(image, for: a)
+            }
+            return self.fetchImage(
+              image,
+              pane: pane,
+              mux: mux,
+              offset: all.count,
+              bytes: all,
+              for: a
+            )
+          }
+          self.encodeImage(image, bytes: all, for: a)
+        }
+    }
+  }
+
+  private func encodeImage(
+    _ image: FrameImage,
+    bytes: [UInt8],
+    for a: HostAttachment
+  ) {
+    let variant =
+      a.imageVariantOverrides[image.key]
+      ?? a.clientImages.withLock { $0.variant }
+    let known = a.digestsDelivered
+    encodeQueue.async { [weak self] in
+      guard
+        let pixels = KittyImagePixels(
+          receivedWidth: Int(image.width),
+          height: Int(image.height),
+          bytesPerPixel: Int(image.bytesPerPixel),
+          bytes: bytes
+        )
+      else {
+        self?.queue.async { [weak self] in self?.imageFinished(image, for: a) }
+        return
+      }
+      let rgba = pixels.rgba()
+      let digest = ImageBlobCodec.digest(rgba: rgba)
+        .map { String(format: "%02x", $0) }.joined()
+      if known.contains(digest) {
+        self?.queue
+          .async { [weak self] in
+            guard let self, a === self.attachment, a.isCurrent else { return }
+            a.send(.imageAlias(epoch: a.epoch, key: image.key, digest: digest))
+            imageLog.notice(
+              "alias epoch=\(a.epoch, privacy: .public) digest=\(digest.prefix(16), privacy: .public)"
+            )
+            a.imagesDelivered[image.key] = digest
+            self.imageFinished(image, for: a)
+          }
+        return
+      }
+      let blob = ImageBlobCodec.encode(
+        key: image.key,
+        rgba: rgba,
+        width: pixels.width,
+        height: pixels.height,
+        variant: variant
+      )
+      self?.queue
+        .async { [weak self] in
+          guard let self else { return }
+          guard let blob, a === self.attachment, a.isCurrent else {
+            return self.imageFinished(image, for: a)
+          }
+          // Two keys with the same pixels encode concurrently: the second
+          // becomes an alias once the first is delivered or on its way.
+          if a.digestsDelivered.contains(blob.digestHex)
+            || a.digestsSending.contains(blob.digestHex)
+          {
+            a.send(
+              .imageAlias(
+                epoch: a.epoch,
+                key: image.key,
+                digest: blob.digestHex
+              )
+            )
+            a.imagesDelivered[image.key] = blob.digestHex
+            imageLog.notice(
+              "alias epoch=\(a.epoch, privacy: .public) digest=\(blob.digestHex.prefix(16), privacy: .public)"
+            )
+            return self.imageFinished(image, for: a)
+          }
+          a.digestsSending.insert(blob.digestHex)
+          let stream = a.nextImageStream
+          a.nextImageStream &+= 1
+          let payload = blob.encoded()
+          Task { [weak self] in
+            let sent =
+              (try? await a.connection.sendSnapshot(payload, stream: stream))
+              != nil
+            self?.queue
+              .async { [weak self] in
+                a.digestsSending.remove(blob.digestHex)
+                if sent {
+                  a.imagesDelivered[image.key] = blob.digestHex
+                  a.digestsDelivered.insert(blob.digestHex)
+                  let cached = a.clientImages.withLock {
+                    $0.inventory.contains(blob.digestHex)
+                  }
+                  imageLog.notice(
+                    "blob epoch=\(a.epoch, privacy: .public) digest=\(blob.digestHex.prefix(16), privacy: .public) bytes=\(payload.count, privacy: .public) variant=\(String(describing: variant), privacy: .public) cached=\(cached ? 1 : 0, privacy: .public)"
+                  )
+                }
+                self?.imageFinished(image, for: a)
+              }
+          }
+        }
+    }
+  }
+
+  private func imageFinished(_ image: FrameImage, for a: HostAttachment) {
+    a.imagesInFlight.remove(image.key)
+    a.imageVariantOverrides[image.key] = nil
+    pumpImages(a)
+  }
+
   /// Encoding and transport failures settle on the attachment's owner queue.
   private func snapshotFailed(stream: UInt64, to a: HostAttachment, retry: Bool)
   {
@@ -1850,4 +2159,10 @@ extension Duration {
     return .nanoseconds(value)
   }
 }
+/// Image deliveries per attachment (spec.graphics.md KG28): digests only,
+/// never pixels. `Scripts/kg28-image-resends.sh` reads them back.
+private let imageLog = Logger(
+  subsystem: "dev.chr33s.swiftty.host",
+  category: "images"
+)
 #endif

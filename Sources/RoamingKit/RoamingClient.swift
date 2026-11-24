@@ -1,4 +1,5 @@
 import Foundation
+import os
 import ScreenProtocol
 import SessionCore
 import SwiftMuxExport
@@ -97,6 +98,35 @@ public actor RoamingClient {
   /// Recently installed shared-model frames: the bases a delta may name
   /// (at most 16, for 2 seconds; §7.4).
   private var frameBases: [(frame: PaneFrame, at: Instant)] = []
+  /// Kitty graphics pixels for this session (spec.graphics.md §16.4).
+  public nonisolated let images: RoamingImageCache
+  /// The image variant this client's path wants; `setImageVariant`
+  /// changes it.
+  public private(set) var imageVariant: ImageVariant = .full
+  /// Device pixels per cell, sent in `Attach` for pixel-size reports and
+  /// kitty graphics sizing on the host.
+  public private(set) var cellPixelSize: (width: Int, height: Int)?
+
+  public func setCellPixelSize(width: Int, height: Int) {
+    let next = width > 0 && height > 0 ? (width: width, height: height) : nil
+    guard
+      next?.width != cellPixelSize?.width
+        || next?.height != cellPixelSize?.height
+    else { return }
+    cellPixelSize = next
+    // After `Attach`, a new cell size reaches the pane's PTY (pixel-size
+    // reports such as `kitten icat` needs).
+    if let next, let epoch, agreedFeatures.contains(.kittyGraphics) {
+      send(.cellSize(epoch: epoch, width: next.width, height: next.height))
+    }
+  }
+  /// The newest installed screen, redrawn when its images arrive.
+  private var installedImageFrame:
+    (frame: PaneFrame, presentation: PresentationFrame)?
+  /// Keys this attachment has asked the host to send again.
+  private var requestedImages: Set<UInt64> = []
+  /// Aliases for digests whose blob has not arrived yet.
+  private var pendingAliases: [String: Set<UInt64>] = [:]
   static let retainedFrameBases = 16
   static let frameBaseLifetime: Duration = .seconds(2)
   /// Deltas applied and full screens requested (tests, diagnostics).
@@ -179,6 +209,11 @@ public actor RoamingClient {
     self.sink = sink
     self.configuration = configuration
     self.timing = timing
+    // A shared cache keeps its pixels; image keys belong to the previous
+    // client's attachments, and the host restates each one.
+    images = configuration.images ?? RoamingImageCache()
+    images.forgetKeys()
+    images.drawsBoxes = imageVariant == .off
     backoff = ReconnectBackoff(jitter: configuration.backoffJitter)
     // The view's latest grid: a resume asks for it rather than adopting
     // whatever grid the session last had.
@@ -633,9 +668,18 @@ public actor RoamingClient {
           serverInstanceID: grant.serverInstanceID,
           writerID: queue?.writerID ?? grant.writerID,
           applicationToken: grant.applicationToken,
-          features: .supported
+          features: .supported,
+          imageInventory: images.inventory,
+          imageVariant: imageVariant,
+          cellWidth: cellPixelSize?.width,
+          cellHeight: cellPixelSize?.height
         )
       )
+    )
+    requestedImages = []
+    pendingAliases = [:]
+    imageLog.notice(
+      "attach inventory=\(self.images.inventory.count, privacy: .public)"
     )
     let attachGen = connectionGeneration
     return await withCheckedContinuation { continuation in
@@ -802,8 +846,20 @@ public actor RoamingClient {
           await self?.handleControl(bytes, generation: gen)
         },
         onSnapshot: { [weak self] bytes in
+          // Kitty graphics pixels arrive on their own streams.
+          if ImageBlob.isRecord(bytes) {
+            guard let self else { return }
+            if let blob = try? ImageBlob.decode(bytes),
+              let rgba = ImageBlobCodec.decode(blob),
+              self.images.insert(blob, rgba: rgba)
+            {
+              await self.imagesArrived(generation: gen)
+            }
+            return
+          }
+          let images = self?.images
           // Decode, validate and map off the actor and the UI executor.
-          switch Self.decodeRecord(bytes, limits: limits) {
+          switch Self.decodeRecord(bytes, limits: limits, images: images) {
           case let .screen(decoded)?:
             await self?.handleSnapshot(decoded, generation: gen)
           case let .delta(delta, header)?:
@@ -816,7 +872,7 @@ public actor RoamingClient {
                 to: base,
                 limits: SnapshotFrame.frameLimits
               ))
-              .flatMap { Self.screen($0, header: header) }
+              .flatMap { Self.screen($0, header: header, images: images) }
             }
             await self?
               .handleDelta(
@@ -994,6 +1050,28 @@ public actor RoamingClient {
     case let .error(error):
       heard()
       handleError(error)
+    case let .imageAlias(e, key, digest):
+      guard e == epoch else { return }
+      heard()
+      if images.alias(key, digest: digest) {
+        redrawImages()
+      } else {
+        // The host aliases a digest whose blob may still be on its way:
+        // wait for it, and ask only if it never comes.
+        pendingAliases[digest, default: []].insert(key)
+        imageLog.notice(
+          "alias pending digest=\(digest.prefix(16), privacy: .public)"
+        )
+        let generation = connectionGeneration
+        let sleep = timing.sleep
+        Task { [weak self] in
+          try? await sleep(.seconds(2))
+          await self?.pendingAliasTimedOut(digest, generation: generation)
+        }
+      }
+    case .imageRequest, .imageLoad, .cellSize:
+      // Client to host only.
+      connectionFailed(.protocolViolation)
     case let .copyChunk(e, id, index, text):
       guard e == epoch else { return }
       heard()
@@ -1190,7 +1268,10 @@ public actor RoamingClient {
         return
       }
       self.store = store
-      if let frame = decoded.paneFrame { retainBase(frame) }
+      if let frame = decoded.paneFrame {
+        retainBase(frame)
+        noteImages(frame, presentation: decoded.frame)
+      }
       if decoded.snapshot.attachmentEpoch == epoch { heard() }
       send(
         .screenAck(
@@ -1219,30 +1300,156 @@ public actor RoamingClient {
   /// the actor to its base. Legacy snapshots are not accepted.
   nonisolated static func decodeRecord(
     _ bytes: [UInt8],
-    limits: NegotiatedLimits = NegotiatedLimits()
+    limits: NegotiatedLimits = NegotiatedLimits(),
+    images: RoamingImageCache? = nil
   ) -> DecodedRecord? {
-    guard let record = try? SnapshotFrame.decodeRecord(bytes, limits: limits)
+    guard
+      let record = try? SnapshotFrame.decodeRecord(
+        bytes,
+        limits: limits,
+        allowsImages: images != nil
+      )
     else { return nil }
     switch record {
     case let .frame(frame, header):
-      return screen(frame, header: header).map { .screen($0) }
+      return screen(frame, header: header, images: images).map { .screen($0) }
     case let .delta(delta, header): return .delta(delta, header)
     }
   }
 
   nonisolated static func screen(
     _ frame: PaneFrame,
-    header: RSTFrameHeader
+    header: RSTFrameHeader,
+    images: RoamingImageCache? = nil
   ) -> DecodedScreen? {
     guard let snapshot = try? FrameScreenMapper.snapshot(frame, header: header)
     else { return nil }
     var presentation = PresentationMapper.map(snapshot)
     presentation.rowKeys = frame.rowKeys
+    if let images, let section = frame.images {
+      presentation.images = images.placements(section)
+      presentation.imageCellSize = SIMD2(
+        Int(section.cellWidth),
+        Int(section.cellHeight)
+      )
+    }
     return DecodedScreen(
       snapshot: snapshot,
       frame: presentation,
       paneFrame: frame
     )
+  }
+
+  // MARK: Kitty graphics (spec.graphics.md §16)
+
+  /// Remembers the installed screen and asks again for images the host
+  /// already delivered but this client no longer holds.
+  private func noteImages(_ frame: PaneFrame, presentation: PresentationFrame) {
+    guard let section = frame.images else {
+      installedImageFrame = nil
+      return
+    }
+    installedImageFrame = (frame, presentation)
+    let missing = images.missing(section)
+      .filter { !requestedImages.contains($0) }
+    // Keys never seen are pushed by the host; only evicted ones are asked for.
+    let evicted = missing.filter { images.wasDelivered($0) }
+    if !evicted.isEmpty {
+      imageLog.notice("request evicted keys=\(evicted.count, privacy: .public)")
+      requestImages(evicted)
+    }
+  }
+
+  private func requestImages(_ keys: [UInt64]) {
+    guard let epoch, agreedFeatures.contains(.kittyGraphics),
+      imageVariant != .off
+    else { return }
+    for chunk in stride(from: 0, to: keys.count, by: 32) {
+      let part = Array(keys[chunk ..< min(chunk + 32, keys.count)])
+      requestedImages.formUnion(part)
+      send(.imageRequest(epoch: epoch, keys: part, variant: imageVariant))
+    }
+  }
+
+  /// Images are off: load the visible ones once, reduced (a tap on a box).
+  public func loadVisibleImages() {
+    guard let epoch, agreedFeatures.contains(.kittyGraphics),
+      imageVariant == .off,
+      let keys = installedImageFrame?.frame.images?.images.map(\.key)
+    else { return }
+    let missing = images.missing(installedImageFrame?.frame.images)
+      .filter { keys.contains($0) }
+    for chunk in stride(from: 0, to: missing.count, by: 32) {
+      let part = Array(missing[chunk ..< min(chunk + 32, missing.count)])
+      send(.imageLoad(epoch: epoch, keys: part, variant: .reduced))
+    }
+  }
+
+  private func imagesArrived(generation: UInt64) {
+    guard generation == connectionGeneration else { return }
+    // Aliases that arrived before their blob.
+    for (digest, keys) in pendingAliases {
+      guard keys.allSatisfy({ images.alias($0, digest: digest) }) else {
+        continue
+      }
+      pendingAliases[digest] = nil
+    }
+    redrawImages()
+  }
+
+  private func pendingAliasTimedOut(_ digest: String, generation: UInt64) {
+    guard generation == connectionGeneration, let keys = pendingAliases[digest]
+    else { return }
+    pendingAliases[digest] = nil
+    let missing = keys.filter { !images.alias($0, digest: digest) }
+    guard !missing.isEmpty else { return redrawImages() }
+    imageLog.notice(
+      "request after alias digest=\(digest.prefix(16), privacy: .public) keys=\(missing.count, privacy: .public)"
+    )
+    requestImages(Array(missing))
+  }
+
+  /// Redraws the installed screen with the images now cached. The screen
+  /// itself is unchanged, so nothing is acknowledged again.
+  private func redrawImages() {
+    guard let installed = installedImageFrame,
+      let section = installed.frame.images
+    else { return }
+    var presentation = installed.presentation
+    presentation.images = images.placements(section)
+    presentation.imageCellSize = SIMD2(
+      Int(section.cellWidth),
+      Int(section.cellHeight)
+    )
+    guard presentation.images != installed.presentation.images else { return }
+    installedImageFrame = (installed.frame, presentation)
+    _ = sink?.install(presentation)
+  }
+
+  /// Low Data Mode, cellular or a user setting (spec.graphics.md §16.4):
+  /// later images come as `variant`; visible ones are fetched again.
+  public func setImageVariant(_ variant: ImageVariant) {
+    guard variant != imageVariant else { return }
+    let wasOff = imageVariant == .off
+    imageVariant = variant
+    images.drawsBoxes = variant == .off
+    redrawImages()
+    // Unattached: the next `Attach` carries the variant.
+    guard let epoch, agreedFeatures.contains(.kittyGraphics) else { return }
+    // Only an upgrade asks again (back on Wi-Fi after reduced pixels);
+    // held pixels are never re-sent for a downgrade (KG28 iPhone run).
+    let section = installedImageFrame?.frame.images
+    var keys = images.needingUpgrade(section, to: variant)
+    // Images were off: the host pushed nothing, so ask for what is shown.
+    if wasOff { keys += images.missing(section) }
+    guard !keys.isEmpty else {
+      // The host learns the variant from `ImageRequest` alone, and one
+      // needs a key: 0 is never issued, so nothing is sent for it.
+      send(.imageRequest(epoch: epoch, keys: [0], variant: variant))
+      return
+    }
+    imageLog.notice("request upgrade keys=\(keys.count, privacy: .public)")
+    requestImages(keys)
   }
 
   // MARK: Deltas (spec.roaming.md §7.4)
@@ -1670,3 +1877,9 @@ extension RoamingTarget {
     }
   }
 }
+
+/// Image requests and their reasons (spec.graphics.md KG28): digests only.
+private let imageLog = Logger(
+  subsystem: "dev.chr33s.swiftty.client",
+  category: "images"
+)

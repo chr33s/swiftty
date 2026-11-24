@@ -82,6 +82,21 @@ public enum ControlMessage: Hashable, Sendable {
   case layoutAction(epoch: UInt64, requestID: UInt64, LayoutAction)
   /// Host to client: a `LayoutAction` was applied, or why not.
   case layoutResult(epoch: UInt64, requestID: UInt64, error: RSTErrorCode?)
+  /// With `kittyGraphics`: send these images again, as `variant`
+  /// (after client eviction, a missed alias or a path change). Key 0 is
+  /// never issued: a request for it alone only changes the variant.
+  case imageRequest(epoch: UInt64, keys: [UInt64], variant: ImageVariant)
+  /// With `kittyGraphics`: `key` has the pixels of `digest`, which the
+  /// client listed in its inventory or already received.
+  case imageAlias(epoch: UInt64, key: UInt64, digest: String)
+  /// With `kittyGraphics`: send these images once as `variant`, without
+  /// changing the attachment's variant (a tap on an image while images
+  /// are off, spec.graphics.md §16.4).
+  case imageLoad(epoch: UInt64, keys: [UInt64], variant: ImageVariant)
+  /// With `kittyGraphics`: the client's cell size in device pixels
+  /// changed after `Attach` (layout, rotation, font size). The host gives
+  /// the pane's PTY the new pixel size (spec.graphics.md §16.2).
+  case cellSize(epoch: UInt64, width: Int, height: Int)
   case error(RSTError)
 
   /// Bytes of text in one `CopyChunk`, under the control-record limit.
@@ -143,19 +158,38 @@ public enum ControlMessage: Hashable, Sendable {
     public var applicationToken: ApplicationToken
     /// Additions the client can receive (§5.3); empty from older clients.
     public var features: RSTFeatures
+    /// With `kittyGraphics`: digests of images the client still holds for
+    /// this session, so reattachment resends none of them.
+    public var imageInventory: [String]
+    /// With `kittyGraphics`: the image variant the client's path wants.
+    public var imageVariant: ImageVariant
+    /// The client's cell size in device pixels, for the program's pixel
+    /// size reports and kitty graphics sizing; nil from older clients.
+    public var cellWidth: Int?
+    public var cellHeight: Int?
+
+    public static let maxImageInventory = 256
 
     public init(
       sessionID: SessionID,
       serverInstanceID: SessionCore.ServerInstanceID,
       writerID: WriterID,
       applicationToken: ApplicationToken,
-      features: RSTFeatures = []
+      features: RSTFeatures = [],
+      imageInventory: [String] = [],
+      imageVariant: ImageVariant = .full,
+      cellWidth: Int? = nil,
+      cellHeight: Int? = nil
     ) {
+      self.cellWidth = cellWidth.map { min(max($0, 0), 4096) }
+      self.cellHeight = cellHeight.map { min(max($0, 0), 4096) }
       self.sessionID = sessionID
       self.serverInstanceID = serverInstanceID
       self.writerID = writerID
       self.applicationToken = applicationToken
       self.features = features
+      self.imageInventory = imageInventory
+      self.imageVariant = imageVariant
     }
   }
 
@@ -242,6 +276,10 @@ public enum ControlMessage: Hashable, Sendable {
     case .layout: "Layout"
     case .layoutAction: "LayoutAction"
     case .layoutResult: "LayoutResult"
+    case .imageRequest: "ImageRequest"
+    case .imageAlias: "ImageAlias"
+    case .imageLoad: "ImageLoad"
+    case .cellSize: "CellSize"
     case .error: "Error"
     }
   }
@@ -257,7 +295,9 @@ public enum ControlMessage: Hashable, Sendable {
       let .terminated(e), let .sessionExited(e, _, _), let .viewport(e, _),
       let .requestFullScreen(e, _), let .copyChunk(e, _, _, _),
       let .copyResult(e, _, _, _), let .layout(e, _),
-      let .layoutAction(e, _, _), let .layoutResult(e, _, _):
+      let .layoutAction(e, _, _), let .layoutResult(e, _, _),
+      let .imageRequest(e, _, _), let .imageAlias(e, _, _),
+      let .imageLoad(e, _, _), let .cellSize(e, _, _):
       e
     case let .copySelection(c): c.attachmentEpoch
     }
@@ -271,7 +311,9 @@ extension ControlMessage: Codable {
       resizeRevision, sequence, operation, screenRevision, nonce, status,
       finalScreenRevision, code, message, features, lines, requestID,
       generation, alternateScreen, startRow, startColumn, endRow, endColumn,
-      unit, screenRowVersions, index, text, totalBytes, error, layout, action
+      unit, screenRowVersions, index, text, totalBytes, error, layout, action,
+      imageInventory, imageVariant, keys, key, digest, variant, cellWidth,
+      cellHeight
   }
 
   public init(from decoder: any Decoder) throws {
@@ -296,7 +338,28 @@ extension ControlMessage: Codable {
           ),
           features: RSTFeatures(
             names: try c.decodeIfPresent([String].self, forKey: .features) ?? []
-          )
+          ),
+          imageInventory: try {
+            let inventory =
+              try c.decodeIfPresent([String].self, forKey: .imageInventory)
+              ?? []
+            guard inventory.count <= Attach.maxImageInventory,
+              inventory.allSatisfy({ $0.utf8.count == 64 })
+            else {
+              throw DecodingError.dataCorruptedError(
+                forKey: .imageInventory,
+                in: c,
+                debugDescription: "image inventory"
+              )
+            }
+            return inventory
+          }(),
+          imageVariant: try c.decodeIfPresent(
+            ImageVariant.self,
+            forKey: .imageVariant
+          ) ?? .full,
+          cellWidth: try c.decodeIfPresent(Int.self, forKey: .cellWidth),
+          cellHeight: try c.decodeIfPresent(Int.self, forKey: .cellHeight)
         )
       )
     case "Attached":
@@ -443,6 +506,50 @@ extension ControlMessage: Codable {
         requestID: try u64(.requestID),
         error: try c.decodeIfPresent(RSTErrorCode.self, forKey: .error)
       )
+    case "ImageRequest", "ImageLoad":
+      let keys = try c.decode([WireUInt64].self, forKey: .keys)
+      guard (1 ... 32).contains(keys.count) else {
+        throw DecodingError.dataCorruptedError(
+          forKey: .keys,
+          in: c,
+          debugDescription: "image request keys"
+        )
+      }
+      let make = type == "ImageLoad" ? Self.imageLoad : Self.imageRequest
+      self = make(
+        try u64(.attachmentEpoch),
+        keys.map(\.value),
+        try c.decode(ImageVariant.self, forKey: .variant)
+      )
+    case "CellSize":
+      let width = try c.decode(Int.self, forKey: .cellWidth)
+      let height = try c.decode(Int.self, forKey: .cellHeight)
+      guard (1 ... 4096).contains(width), (1 ... 4096).contains(height) else {
+        throw DecodingError.dataCorruptedError(
+          forKey: .cellWidth,
+          in: c,
+          debugDescription: "cell size"
+        )
+      }
+      self = .cellSize(
+        epoch: try u64(.attachmentEpoch),
+        width: width,
+        height: height
+      )
+    case "ImageAlias":
+      let digest = try c.decode(String.self, forKey: .digest)
+      guard digest.utf8.count == 64 else {
+        throw DecodingError.dataCorruptedError(
+          forKey: .digest,
+          in: c,
+          debugDescription: "image digest"
+        )
+      }
+      self = .imageAlias(
+        epoch: try u64(.attachmentEpoch),
+        key: try u64(.key),
+        digest: digest
+      )
     case "Error":
       let message = try c.decodeIfPresent(String.self, forKey: .message)
       guard (message?.utf8.count ?? 0) <= 1024 else {
@@ -485,6 +592,14 @@ extension ControlMessage: Codable {
       if !a.features.isEmpty {
         try c.encode(a.features.names, forKey: .features)
       }
+      if !a.imageInventory.isEmpty {
+        try c.encode(a.imageInventory, forKey: .imageInventory)
+      }
+      if a.imageVariant != .full {
+        try c.encode(a.imageVariant, forKey: .imageVariant)
+      }
+      try c.encodeIfPresent(a.cellWidth, forKey: .cellWidth)
+      try c.encodeIfPresent(a.cellHeight, forKey: .cellHeight)
     case let .attached(a):
       try u64(a.attachmentEpoch, .attachmentEpoch)
       try c.encode(a.writerID, forKey: .writerID)
@@ -555,6 +670,18 @@ extension ControlMessage: Codable {
       try u64(e, .attachmentEpoch)
       try u64(request, .requestID)
       try c.encodeIfPresent(error, forKey: .error)
+    case let .imageRequest(e, keys, variant), let .imageLoad(e, keys, variant):
+      try u64(e, .attachmentEpoch)
+      try c.encode(keys.map { WireUInt64($0) }, forKey: .keys)
+      try c.encode(variant, forKey: .variant)
+    case let .imageAlias(e, key, digest):
+      try u64(e, .attachmentEpoch)
+      try u64(key, .key)
+      try c.encode(digest, forKey: .digest)
+    case let .cellSize(e, width, height):
+      try u64(e, .attachmentEpoch)
+      try c.encode(width, forKey: .cellWidth)
+      try c.encode(height, forKey: .cellHeight)
     case let .error(error):
       try c.encode(error.code, forKey: .code)
       if let s = error.sequence { try u64(s, .sequence) }
@@ -585,6 +712,9 @@ public struct RSTFeatures: OptionSet, Hashable, Sendable {
   /// `wheel` input operations, reported while the program tracks the
   /// mouse; other mouse input stays local.
   public static let mouseWheel = RSTFeatures(rawValue: 1 << 6)
+  /// Kitty graphics: frames carry `images` sections and pixels arrive on
+  /// `KGIB/1` streams; needs `paneFrames` (spec.graphics.md §16).
+  public static let kittyGraphics = RSTFeatures(rawValue: 1 << 7)
 
   /// What every host and client must list: screens are shared frames,
   /// and scrolling reaches a mouse-tracking program as wheel input.
@@ -592,14 +722,14 @@ public struct RSTFeatures: OptionSet, Hashable, Sendable {
 
   public static let supported: RSTFeatures = [
     .keypadKeys, .historyViewport, .paneFrames, .screenDeltas, .copySelection,
-    .layoutControl, .mouseWheel,
+    .layoutControl, .mouseWheel, .kittyGraphics,
   ]
 
   private static let wireNames: [(String, RSTFeatures)] = [
     ("keypadKeys", .keypadKeys), ("historyViewport", .historyViewport),
     ("paneFrames", .paneFrames), ("screenDeltas", .screenDeltas),
     ("copySelection", .copySelection), ("layoutControl", .layoutControl),
-    ("mouseWheel", .mouseWheel),
+    ("mouseWheel", .mouseWheel), ("kittyGraphics", .kittyGraphics),
   ]
 
   /// What both peers listed, with dependent features dropped when the
@@ -607,7 +737,7 @@ public struct RSTFeatures: OptionSet, Hashable, Sendable {
   public func agreed(with other: RSTFeatures) -> RSTFeatures {
     var both = intersection(other)
     if !both.contains(.paneFrames) {
-      both.subtract([.screenDeltas, .copySelection])
+      both.subtract([.screenDeltas, .copySelection, .kittyGraphics])
     }
     if !both.contains(.historyViewport) { both.remove(.copySelection) }
     return both

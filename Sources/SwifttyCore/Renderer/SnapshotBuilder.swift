@@ -5,6 +5,18 @@ package struct SnapshotBuilder {
   private var sequence: UInt64 = 0
   private var presentationRevision: UInt64 = 0
   private(set) var last: RenderSnapshot?
+  /// Inputs of the last image capture, to reuse it while nothing moved.
+  private var imageKey:
+    (revision: UInt64, top: Int, rows: Int, columns: Int, cell: SIMD2<Int>)?
+  private var images: [KittyGraphics.Placement] = []
+  private var placeholderRows: [KittyGraphics.PlaceholderRow] = []
+  private var placeholderShape: (top: Int, rows: Int, columns: Int)?
+  /// Damaged rows to rescan, reused across frames.
+  private var rescan: [Int] = []
+  /// Whether virtual placements exist, as of a graphics revision.
+  private var usesPlaceholders: (revision: UInt64, value: Bool) = (.max, false)
+  /// The latest capture found kitty images in the state.
+  private var hadKittyImages = false
 
   package init() { pool.reserveCapacity(3) }
 
@@ -32,16 +44,28 @@ package struct SnapshotBuilder {
       style: state.cursorStyle,
       isBlinking: modes.contains(.cursorBlink),
     )
-    if !damage.isEmpty || last?.cursor != cursor || last?.modes != modes
+    let presentationChanged =
+      !damage.isEmpty || last?.cursor != cursor || last?.modes != modes
       || last?.viewportOffset != state.viewportOffset
-    {
-      presentationRevision &+= 1
-    }
     for storage in pool { storage.pending.formUnion(damage) }
 
     let storage = takeFreeStorage()
     storage.ensureSize(columns: state.columns, rows: rowCount)
-    storage.fill(from: state, damage: damage)
+    // As of the previous capture: the first capture with images rescans
+    // every row, so it needs no candidate bits.
+    storage.fill(
+      from: state,
+      damage: damage,
+      detectPlaceholders: hadKittyImages
+    )
+    // After the fill: placeholder rescans read the rows just copied.
+    let imagesChanged = captureImages(
+      &state,
+      rows: rowCount,
+      damage: damage,
+      storage: storage
+    )
+    if presentationChanged || imagesChanged { presentationRevision &+= 1 }
 
     sequence &+= 1
     func span(
@@ -114,9 +138,104 @@ package struct SnapshotBuilder {
       scrollbackCount: state.scrollbackCount,
       sequence: sequence,
       presentationRevision: presentationRevision,
+      images: images,
+      imageCellSize: state.presentationImages.isEmpty
+        ? SIMD2(state.cellPixelSize.width, state.cellPixelSize.height)
+        : state.presentationImageCellSize,
     )
     last = snapshot
     return snapshot
+  }
+
+  /// Refreshes `images`; true when they changed. Placeholder runs depend
+  /// on cell contents, so any damage recaptures while images exist.
+  private mutating func captureImages(
+    _ state: inout TerminalState,
+    rows: Int,
+    damage: DamageRegion,
+    storage: SnapshotStorage
+  ) -> Bool {
+    if !state.presentationImages.isEmpty {
+      imageKey = nil
+      hadKittyImages = false
+      guard state.presentationImages != images else { return false }
+      images = state.presentationImages
+      return true
+    }
+    guard let probe = state.kittySnapshotKey else {
+      // No images now. Clears both local images and presentation ones (a
+      // roaming pane switched to one without images).
+      if hadKittyImages {
+        hadKittyImages = false
+        imageKey = nil
+        // Images that return start with a full rescan.
+        placeholderRows = []
+        placeholderShape = nil
+      }
+      guard !images.isEmpty else { return false }
+      images = []
+      return true
+    }
+    hadKittyImages = true
+    let cell = SIMD2(state.cellPixelSize.width, state.cellPixelSize.height)
+    let key = (
+      revision: probe.revision, top: probe.top, rows: rows,
+      columns: state.columns, cell: cell
+    )
+    let sameKey =
+      imageKey.map {
+        $0.revision == key.revision && $0.top == key.top && $0.rows == key.rows
+          && $0.columns == key.columns && $0.cell == key.cell
+      } ?? false
+    if sameKey, damage.isEmpty { return false }
+    // Anchored placements depend only on the key; placeholder runs only on
+    // row contents, so damaged rows are rescanned and an unchanged result
+    // skips reassembly (spec.graphics.md §10.2).
+    var rowsChanged = false
+    var cached: [KittyGraphics.PlaceholderRow]?
+    if usesPlaceholders.revision != key.revision {
+      usesPlaceholders = (key.revision, state.kittyUsesPlaceholders)
+    }
+    if usesPlaceholders.value {
+      let shape = (top: key.top, rows: rows, columns: key.columns)
+      if placeholderShape.map({ $0 != shape }) ?? true
+        || placeholderRows.count != rows
+      {
+        placeholderRows = (0 ..< rows)
+          .map { state.kittyPlaceholderRow(absoluteRow: key.top + $0) }
+        placeholderShape = shape
+        rowsChanged = true
+      } else {
+        // A damaged row that held no runs needs the engine only when its
+        // freshly copied cells include a candidate.
+        // Rows are collected first: calling into `state` from inside the
+        // closure copied the whole TerminalState once per row.
+        let candidates = storage.placeholderCandidates
+        rescan.removeAll(keepingCapacity: true)
+        damage.forEachRow(below: rows) { y in
+          if placeholderRows[y].isEmpty, !candidates[y] { return }
+          rescan.append(y)
+        }
+        for y in rescan {
+          let row = state.kittyPlaceholderRow(absoluteRow: key.top + y)
+          if row != placeholderRows[y] {
+            placeholderRows[y] = row
+            rowsChanged = true
+          }
+        }
+      }
+      cached = placeholderRows
+    } else if !placeholderRows.isEmpty {
+      placeholderRows = []
+      placeholderShape = nil
+      rowsChanged = true
+    }
+    if sameKey, !rowsChanged { return false }
+    imageKey = key
+    let captured = state.kittyPlacements(rows: rows, placeholderRows: cached)
+    guard captured != images else { return false }
+    images = captured
+    return true
   }
 
   /// The previous snapshot with no damage (synchronized output).

@@ -381,7 +381,8 @@ damage-driven rendering with idle suspension (MTKView supports event-driven
 drawing); one serial terminal owner (deterministic mutation and input
 order); compact cells, borrowed storage and bounded side metadata; a
 headless engine separate from UI; windowed visionOS and focus-oriented
-tvOS; a read-only watch companion; the Kitty graphics exclusion; and the
+tvOS; a read-only watch companion; kitty graphics without Sixel
+([spec.graphics.md](spec.graphics.md)); and the
 OS 27.0 baseline (a support policy, not an idiom requirement).
 ([AppKit integration][INTEROP], [MTKView][METALKIT])
 

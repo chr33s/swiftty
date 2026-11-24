@@ -48,6 +48,11 @@ public struct Parser: ~Copyable {
     /// Only `ESC \` at the start of a line (after `%exit`) ends it;
     /// any other ESC is data. CAN and SUB still abort.
     case controlMode, controlModeEscape
+    /// After `ESC _`: a `G` starts a kitty graphics command; anything
+    /// else is an ignored APC string.
+    case apcEntry
+    /// A kitty graphics command body, handed to `TerminalState` in bulk.
+    case apcKitty
   }
 
   private var state = State.ground
@@ -111,7 +116,9 @@ public struct Parser: ~Copyable {
 
   package var continuation: Continuation {
     Continuation(
-      state: state,
+      // The graphics command body lives in TerminalState; a continued
+      // stream drops an interrupted one.
+      state: state == .apcEntry || state == .apcKitty ? .stringIgnore : state,
       csi: csi,
       currentParam: currentParam,
       hasParam: hasParam,
@@ -408,6 +415,57 @@ public struct Parser: ~Copyable {
     return consume(buffer, into: &terminal, replyLimit: replyLimit)
   }
 
+  /// After `ESC _`: `G` starts a kitty graphics command. The `consume`
+  /// loop hands command bodies over in bulk (`kittyBulk`), so `.apcKitty`
+  /// reaches here only defensively. Out of line, like `kittyBulk`.
+  @inline(never)
+  private mutating func apcStep(_ byte: UInt8, _ t: inout TerminalState) {
+    if state == .apcKitty {
+      withUnsafePointer(to: byte) {
+        t.kittyAPCPut(UnsafeBufferPointer(start: $0, count: 1))
+      }
+    } else if byte == 0x47 {  // G
+      t.kittyAPCStart()
+      state = .apcKitty
+    } else {
+      state = .stringIgnore
+    }
+  }
+
+  /// Hands a kitty graphics payload run to `TerminalState`, up to ESC, CAN
+  /// or SUB, and ends (ESC) or aborts (CAN, SUB) the command there.
+  /// Payloads are printable base64, scanned with SIMD; other C0 bytes are
+  /// payload. Out of line, and `step` never sees this state, so the text
+  /// paths' code is unchanged.
+  @inline(never)
+  private static func kittyBulk(
+    _ base: UnsafePointer<UInt8>,
+    from i: Int,
+    to n: Int,
+    into terminal: inout TerminalState
+  ) -> Int {
+    var end = scanPayload(base, from: i, to: n)
+    var high = false
+    while end < n, base[end] != 0x1B, base[end] != 0x18, base[end] != 0x1A {
+      high = high || base[end] >= 0x80
+      end = scanPayload(base, from: end + 1, to: n)
+    }
+    if end > i {
+      terminal.kittyAPCPut(
+        UnsafeBufferPointer(start: base + i, count: end - i),
+        hasHighBytes: high
+      )
+    }
+    if end < n {
+      if base[end] == 0x1B {
+        terminal.kittyAPCEnd()
+      } else {
+        terminal.kittyAPCAbort()
+      }
+    }
+    return end
+  }
+
   private mutating func consume(
     _ buffer: UnsafeBufferPointer<UInt8>,
     into terminal: inout TerminalState,
@@ -438,6 +496,13 @@ public struct Parser: ~Copyable {
           i = end
           if i == n { break }
         }
+      }
+      if state == .apcKitty {
+        i = Self.kittyBulk(base, from: i, to: n, into: &terminal)
+        // The terminator ended or aborted the command; `step` handles it
+        // as it would end an ignored string.
+        if i < n { state = .stringIgnore }
+        if i == n { break }
       }
       if state == .oscString {
         let end = Self.scanNonControl(base, from: i, to: n)
@@ -514,6 +579,30 @@ public struct Parser: ~Copyable {
       break
     }
     while i < end, p[i] &- 0x20 < 0x5F { i += 1 }
+    return i
+  }
+
+  /// The first byte at or after `start` that is a C0 control or 0x80 and
+  /// above (not kitty graphics payload). As signed bytes both are below
+  /// 0x20, so one minimum per 64 bytes finds either.
+  static func scanPayload(
+    _ p: UnsafePointer<UInt8>,
+    from start: Int,
+    to end: Int
+  ) -> Int {
+    var i = start
+    let raw = UnsafeRawPointer(p)
+    let space = SIMD16<Int8>(repeating: 0x20)
+    while i + 64 <= end {
+      let a = raw.loadUnaligned(fromByteOffset: i, as: SIMD16<Int8>.self)
+      let b = raw.loadUnaligned(fromByteOffset: i + 16, as: SIMD16<Int8>.self)
+      let c = raw.loadUnaligned(fromByteOffset: i + 32, as: SIMD16<Int8>.self)
+      let d = raw.loadUnaligned(fromByteOffset: i + 48, as: SIMD16<Int8>.self)
+      let low = pointwiseMin(pointwiseMin(a, b), pointwiseMin(c, d))
+      if any(low .< space) { break }
+      i += 64
+    }
+    while i < end, p[i] >= 0x20, p[i] < 0x80 { i += 1 }
     return i
   }
 
@@ -701,6 +790,8 @@ public struct Parser: ~Copyable {
     // terminated by ESC (\) or CAN/SUB above
     case .stringIgnore, .dcsIgnore: break
 
+    case .apcEntry, .apcKitty: apcStep(byte, &t)
+
     case .dcsEntry, .dcsParam, .dcsIntermediate, .dcsPassthrough:
       dcsStep(byte, &t)
 
@@ -726,7 +817,8 @@ public struct Parser: ~Copyable {
     case 0x50:
       enterCSI();
       state = .dcsEntry  // P
-    case 0x58, 0x5E, 0x5F: state = .stringIgnore  // X ^ _
+    case 0x58, 0x5E: state = .stringIgnore  // X ^
+    case 0x5F: state = .apcEntry  // _
     case 0x7F: break
     default:
       t.escDispatch(intermediate: 0, final: byte);
@@ -1068,6 +1160,10 @@ extension Parser {
   /// chunked (spec.durability.md MR2). Each such field is reset on entry
   /// to the states that read it.
   package func checkpoint(into w: inout CheckpointWriter) {
+    // An interrupted graphics command is dropped (spec.graphics.md §18).
+    let state =
+      self.state == .apcEntry || self.state == .apcKitty
+      ? .stringIgnore : self.state
     w.u8(state.rawValue)
     // Sequence fields are read only inside CSI and DCS, which every entry
     // reaches through `enterCSI`; `params` beyond `count` are never read.

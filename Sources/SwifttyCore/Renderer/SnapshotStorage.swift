@@ -22,6 +22,10 @@ final class SnapshotStorage: @unchecked Sendable {
 
   /// Damage accumulated since this storage was last filled.
   var pending = DamageRegion.full
+  /// Per row copied by the latest `fill`: whether any cell is a grapheme
+  /// or (with `detectPlaceholders`) a plane-16 scalar, so may be a kitty
+  /// placeholder (spec.graphics.md §10.2).
+  private(set) var placeholderCandidates: [Bool] = []
 
   init() {
     cells = .allocate(capacity: 1)
@@ -54,22 +58,26 @@ final class SnapshotStorage: @unchecked Sendable {
     }
     self.columns = columns
     self.rows = rows
+    if placeholderCandidates.count < rows {
+      placeholderCandidates = [Bool](repeating: false, count: rows)
+    }
     pending.setFull()
   }
 
-  /// Copies damaged rows from `state`; everything when graphemes are
-  /// involved in a changed frame since their side table is rebuilt from scratch.
-  func fill(from state: borrowing TerminalState, damage: DamageRegion) {
-    var full = pending.isFull || (hasGraphemes && !pending.isEmpty)
-    if !full {
-      for y in 0 ..< rows
-      where pending.contains(row: y)
-        && Self.row(y, of: state).cells.contains(where: \.isGrapheme)
-      {
-        full = true
-        break
-      }
-    }
+  /// Copies damaged rows from `state`. The grapheme side table is append
+  /// only: unchanged rows keep their entries and changed rows append new
+  /// ones, so a screen of graphemes (emoji, kitty graphics placeholders)
+  /// refills only what changed. A full refill compacts it once dead
+  /// entries outnumber a few screens' worth.
+  @inline(__always)
+  func fill(
+    from state: borrowing TerminalState,
+    damage: DamageRegion,
+    detectPlaceholders: Bool = false
+  ) {
+    let full =
+      pending.isFull || entryCount > max(4096, 4 * rows * columns)
+      || scalarCount > max(1 << 16, 16 * rows * columns)
     if full {
       scalarCount = 0
       entryCount = 0
@@ -91,12 +99,32 @@ final class SnapshotStorage: @unchecked Sendable {
       let n = min(src.count, columns)
       if n > 0 { dst.update(from: src.baseAddress!, count: n) }
       if n < columns { (dst + n).update(repeating: .blank, count: columns - n) }
+      // Candidates are graphemes (a placeholder with diacritics) and
+      // U+10EEEE alone. With images on screen, OR-ing the glyphs costs one
+      // instruction per cell; any plane-16 scalar sets bit 20 and only
+      // triggers the engine's exact scan. Only rows copied by this fill
+      // are read, so rows copied without images need no bit.
+      var grapheme = false
       for x in 0 ..< n where dst[x].isGrapheme {
         dst[x].glyph = appendGrapheme(state.graphemeScalars(dst[x].glyph))
-        hasGraphemes = true
+        grapheme = true
       }
+      if grapheme { hasGraphemes = true }
+      placeholderCandidates[y] =
+        grapheme || detectPlaceholders && Self.hasPlane16Glyph(dst, n)
     }
     pending = .none
+  }
+
+  /// Whether any glyph has bit 20 set (a plane-16 scalar such as
+  /// U+10EEEE). Branchless OR, one instruction per cell.
+  static func hasPlane16Glyph(
+    _ cells: UnsafeMutablePointer<Cell>,
+    _ n: Int
+  ) -> Bool {
+    var glyphs: UInt32 = 0
+    for x in 0 ..< n { glyphs |= cells[x].glyph }
+    return glyphs & KittyGraphics.placeholder & 0x10_0000 != 0
   }
 
   /// Visible row `y`, or for `y >= state.rows` the overscan row below.
@@ -130,8 +158,14 @@ final class SnapshotStorage: @unchecked Sendable {
       entryCapacity *= 2
     }
     scalars.withUnsafeBufferPointer { buffer in
-      (graphemeScalars + scalarCount)
-        .update(from: buffer.baseAddress!, count: buffer.count)
+      let dst = graphemeScalars + scalarCount
+      // Most clusters are a few scalars (a kitty placeholder is three):
+      // a memmove call per cluster cost more than the copy.
+      if buffer.count <= 4 {
+        for i in 0 ..< buffer.count { dst[i] = buffer[i] }
+      } else {
+        dst.update(from: buffer.baseAddress!, count: buffer.count)
+      }
     }
     graphemeEntries[entryCount] =
       UInt64(scalarCount) << 32 | UInt64(scalars.count)

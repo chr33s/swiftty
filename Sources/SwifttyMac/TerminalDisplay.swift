@@ -20,6 +20,11 @@ package final class TerminalDisplay {
   private var retryScheduled = false
   private var retryFrame: UInt64?
   private var visibilityObservers: [NSKeyValueObservation] = []
+  /// Advances kitty graphics animations and returns seconds until the
+  /// next frame change (direct sessions; mux hosts animate themselves).
+  package var advanceImageAnimations: (() -> TimeInterval?)?
+  private var animationTimer: Timer?
+  private var hasImages = false
 
   /// Direct embedders suspend on occlusion. Native mux preserves its existing
   /// ability to admit an attached window's frame while another window covers it.
@@ -35,7 +40,10 @@ package final class TerminalDisplay {
     self.submissionPolicy = submissionPolicy
   }
 
-  isolated deinit { blinkTimer?.invalidate() }
+  isolated deinit {
+    blinkTimer?.invalidate()
+    animationTimer?.invalidate()
+  }
 
   package static func makeRenderer(
     configuration: Configuration
@@ -115,6 +123,7 @@ package final class TerminalDisplay {
   ) -> MetalRenderer.SubmitResult {
     guard let view else { return .noDrawable }
     cursorBlinks = cursorBlink ?? snapshot.cursor.isBlinking
+    hasImages = !snapshot.images.isEmpty
     renderer.options.isFocused = focused
     renderer.options.cursorVisible = blinkOn || !cursorBlinks || !focused
     renderer.options.textBlinkVisible = blinkOn
@@ -265,6 +274,45 @@ package final class TerminalDisplay {
       view.enableSetNeedsDisplay = !animating
     }
     updateBlinkTimer()
+    updateImageAnimation()
+  }
+
+  /// Kitty animation is an independent animation source: it runs only
+  /// while the surface is visible, and Reduce Motion holds it on its
+  /// current frame (spec.graphics.md §11, §13.4).
+  private func updateImageAnimation() {
+    let needed =
+      hasImages && !isStopped && isSurfaceVisible
+      && !renderer.options.reducesMotion && advanceImageAnimations != nil
+    guard needed else {
+      animationTimer?.invalidate()
+      animationTimer = nil
+      return
+    }
+    guard animationTimer == nil, let delay = advanceImageAnimations?() else {
+      return
+    }
+    scheduleImageAnimation(after: delay)
+  }
+
+  private func scheduleImageAnimation(after delay: TimeInterval) {
+    animationTimer = Timer.scheduledTimer(
+      withTimeInterval: max(delay, 1.0 / 240),
+      repeats: false
+    ) { [weak self] timer in
+      let identity = ObjectIdentifier(timer)
+      MainActor.assumeIsolated {
+        guard let self,
+          self.animationTimer.map(ObjectIdentifier.init) == identity
+        else { return }
+        self.animationTimer = nil
+        guard self.isSurfaceVisible, !self.isStopped,
+          let next = self.advanceImageAnimations?()
+        else { return }
+        self.view?.needsDisplay = true
+        self.scheduleImageAnimation(after: next)
+      }
+    }
   }
 
   private func retryDraw(frame: UInt64) {

@@ -3,6 +3,7 @@ import Darwin
 import Dispatch
 import Foundation
 import SwiftMuxClient
+import SwiftMuxExport
 import SwiftMuxProtocol
 
 /// The `swmux` interactive attachment inside Swiftty: raw outer tty,
@@ -56,6 +57,10 @@ public final class TerminalClient {
   private var frames: [PaneID: PaneFrame] = [:]
   private var size: (columns: Int, rows: Int)
   private var renderer = DiffRenderer()
+  /// Kitty graphics re-emitted to the outer Swiftty terminal as Unicode
+  /// placeholders (spec.graphics.md §14.5).
+  private let graphics = TTYGraphics(requested: .kitty)
+  private let imageStore = MuxImageStore()
   private var geometryGeneration: UInt64 = 0
   private var lastGeometry: (revision: UInt64, entries: [GeometryBatch.Entry])?
   private var subscriptions: [PaneID] = []
@@ -189,6 +194,8 @@ public final class TerminalClient {
     message = nil
     messageTimer?.cancel()
     renderer.invalidate()
+    graphics.invalidate()
+    imageStore.removeAll()
     switching = false
     apply(selected.workspace, attached: true)
     if running { startEvents() }
@@ -295,10 +302,12 @@ public final class TerminalClient {
     case SIGWINCH:
       size = tty.size
       renderer.invalidate()
+      graphics.invalidate()
       syncLayout()
     case SIGCONT:
       try? tty.enter()
       renderer.invalidate()
+      graphics.invalidate()
       redraw()
     default: finish(.detached("terminated by signal \(sig)"), detach: true)
     }
@@ -338,6 +347,7 @@ public final class TerminalClient {
     mode = .normal
     frames = [:]
     renderer.invalidate()
+    graphics.invalidate()
     show("reconnecting; prefix d detaches")
     messageTimer?.cancel()
     let oldEvents = eventTask
@@ -379,6 +389,7 @@ public final class TerminalClient {
     case let .frame(frame):
       guard frame.identity.attachment == attachment else { return }
       frames[frame.identity.pane] = frame
+      fetchImages(frame)
       if let state = copying, state.pane == frame.identity.pane {
         setCopying(following(state, frame))
       }
@@ -606,13 +617,56 @@ public final class TerminalClient {
 
   private func draw() {
     guard outcome == nil else { return }
-    let screen = compose()
-    let bytes = renderer.update(to: screen)
+    var screen = compose()
+    let images = composeImages(into: &screen)
+    let bytes = images + renderer.update(to: screen)
     if tty.write(bytes) {
       renderer.commit(screen)
     } else {
       renderer.invalidate()
+      graphics.invalidate()
     }
+  }
+
+  /// Fetches pixels a frame references; the screen redraws as they arrive.
+  private func fetchImages(_ frame: PaneFrame) {
+    guard let section = frame.images else { return }
+    let missing = (section.images + section.prefetch)
+      .filter { imageStore.pixels($0) == nil }
+    guard !missing.isEmpty else { return }
+    let connection = connection
+    imageStore.fetch(
+      missing,
+      pane: frame.identity.pane,
+      execute: { try await connection.execute($0) },
+      loaded: { [weak self] _ in
+        DispatchQueue.main.async { MainActor.assumeIsolated { self?.redraw() } }
+      }
+    )
+  }
+
+  /// Placeholder cells for the visible panes' images, clipped to each
+  /// pane; the bytes transmit images the outer terminal lacks.
+  private func composeImages(into screen: inout ScreenBuffer) -> [UInt8] {
+    guard let tab = workspace.activeTabSnapshot else { return [] }
+    var out: [UInt8] = []
+    for (pane, rect) in compositor.frames(for: tab) {
+      guard let frame = frames[pane], let section = frame.images else {
+        continue
+      }
+      let placements = imageStore.placements(section)
+      guard !placements.isEmpty else { continue }
+      out += graphics.compose(
+        placements,
+        hostCell: SIMD2(Int(section.cellWidth), Int(section.cellHeight)),
+        into: &screen,
+        origin: (rect.x, rect.y),
+        size: (
+          min(rect.width, frame.grid.columns), min(rect.height, frame.grid.rows)
+        )
+      )
+    }
+    return out
   }
 
   private var status: StatusLine {
@@ -834,6 +888,9 @@ public final class TerminalClient {
     case let .paste(s, truncated):
       if truncated { show("paste truncated to \(limits.maxPasteBytes) bytes") }
       paste(s, to: pane)
+    case .reply:
+      // The outer terminal answering a query; never the program's input.
+      break
     }
   }
 
@@ -1197,7 +1254,7 @@ public final class TerminalClient {
     switch input {
     case let .key(k, m): key = (k, m)
     case let .text(s): text = s
-    case .paste: return
+    case .paste, .reply: return
     }
     switch (key?.0, key?.1, text) {
     case (.escape, _, _), (_, _, "q"):

@@ -165,7 +165,11 @@ private func gatewayAttach(
   service: String
 ) async -> Never {
   let controlOwner = GatewayTerminalControl(control, service: service)
-  let session = MuxGatewaySession(gateway: control, frontend: .terminal)
+  let session = MuxGatewaySession(
+    gateway: control,
+    frontend: .terminal,
+    capabilities: ClientCapabilities.supported.union(.images)
+  )
   do {
     let settings = try Settings.load()
     let selected = try await session.select(selector)

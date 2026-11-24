@@ -118,6 +118,8 @@ public enum SnapshotFrame {
     /// `SMXB/1` with an `rstHeader` envelope.
     case smxb = 2
     case smxbZlib = 3
+    /// A kitty graphics `KGIB/1` image (`ImageBlob`, spec.graphics.md §16.3).
+    case imageBlob = 4
 
     var isCompressed: Bool { self == .smxbZlib }
   }

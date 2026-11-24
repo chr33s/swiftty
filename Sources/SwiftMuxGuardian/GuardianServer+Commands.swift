@@ -70,11 +70,16 @@ extension GuardianServer {
         send(.inputReleased(pane: id, bytes: count), to: workspace)
       }
       pane.runtime.flush()
-    case let .resize(id, columns, rows):
+    case let .resize(id, columns, rows, pixelWidth, pixelHeight):
       try validateSize(columns, rows)
       let pane = try livePane(id, workspace)
       let cut = pane.nextOutput - 1
-      let error = pane.runtime.resize(columns: columns, rows: rows)
+      let error = pane.runtime.resize(
+        columns: columns,
+        rows: rows,
+        pixelWidth: pixelWidth ?? 0,
+        pixelHeight: pixelHeight ?? 0
+      )
       guard error == 0 else {
         throw MuxError(.invalidRequest, "PTY resize failed (errno \(error))")
       }

@@ -34,6 +34,10 @@ public final class RoamingTerminalClient {
   let tty: RawTTY
   private var decoder = InputDecoder(maxPasteBytes: RSTLimits.maxPasteBytes)
   private var renderer = DiffRenderer()
+  /// Kitty graphics in the outer terminal (spec.graphics.md §16.5).
+  public let graphics: TTYGraphics
+  /// The outer terminal's kitty support is being probed.
+  private var detectingGraphics = false
   private var size: (columns: Int, rows: Int)
   private var frame: PresentationFrame?
   private var status = RoamingStatus()
@@ -57,11 +61,19 @@ public final class RoamingTerminalClient {
   public var willEnterRawMode: (() -> Void)?
 
   /// `client` must have been built with `sink` as its presentation sink.
-  public init(client: RoamingClient, sink: TTYPresentationSink, tty: RawTTY) {
+  /// `graphics` nil probes the outer terminal for kitty graphics.
+  public init(
+    client: RoamingClient,
+    sink: TTYPresentationSink,
+    tty: RawTTY,
+    graphics requested: TTYGraphics.Mode? = nil
+  ) {
     self.client = client
     self.sink = sink
     self.tty = tty
     size = tty.size
+    graphics = TTYGraphics(requested: requested)
+    detectingGraphics = requested == nil
   }
 
   /// The grid to request from the host: the whole outer terminal.
@@ -85,6 +97,12 @@ public final class RoamingTerminalClient {
       }
     }
     await client.proposeGrid(columns: size.columns, rows: size.rows)
+    if let cell = tty.cellPixelSize {
+      await client.setCellPixelSize(width: cell.width, height: cell.height)
+    }
+    if graphics.mode == .off, !detectingGraphics {
+      await client.setImageVariant(.off)
+    }
     do { try await client.start(target) } catch {
       sink.close()
       await client.setStatusHandler(nil)
@@ -108,6 +126,7 @@ public final class RoamingTerminalClient {
       rawMode = true
       try installSources()
     } catch { return await finish(.lost("\(error)"), close: .detach) }
+    if detectingGraphics { probeGraphics() }
     redraw()
     return await settled()
   }
@@ -215,7 +234,34 @@ public final class RoamingTerminalClient {
     )
   }
 
+  /// Asks the outer terminal whether it draws kitty images; no answer
+  /// within 500 ms means half-blocks.
+  private func probeGraphics() {
+    _ = tty.write(graphics.probe)
+    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) {
+      [weak self] in
+      MainActor.assumeIsolated {
+        guard let self, self.detectingGraphics else { return }
+        self.detectingGraphics = false
+        if self.graphics.mode == .off { self.graphics.mode = .halfBlocks }
+        if self.graphics.tmux, self.graphics.mode != .kitty {
+          self.show(
+            "images as half-blocks; for kitty images: set -g allow-passthrough on"
+          )
+        }
+        self.redraw()
+      }
+    }
+  }
+
   private func submit(_ event: DecodedInput) {
+    if case let .reply(reply) = event {
+      if detectingGraphics, graphics.detect(reply) {
+        detectingGraphics = false
+        redraw()
+      }
+      return
+    }
     guard let input = SurfaceInput(event) else {
       if case .paste(_, truncated: true) = event {
         show("paste too large; it was not sent")
@@ -243,11 +289,20 @@ public final class RoamingTerminalClient {
       screen.write(" swroam: " + banner, x: 0, y: 0, style: style)
       screen.rowKeys[0] = nil
     }
-    let bytes = renderer.update(to: screen)
+    var images: [UInt8] = []
+    if let frame, !frame.images.isEmpty {
+      images = graphics.compose(
+        frame.images,
+        hostCell: frame.imageCellSize,
+        into: &screen
+      )
+    }
+    let bytes = images + renderer.update(to: screen)
     if tty.write(bytes) {
       renderer.commit(screen)
     } else {
       renderer.invalidate()
+      graphics.invalidate()
     }
   }
 
@@ -348,6 +403,7 @@ public final class RoamingTerminalClient {
     case SIGWINCH:
       size = tty.size
       renderer.invalidate()
+      graphics.invalidate()
       let (columns, rows) = size
       let client = client
       Task { await client.proposeGrid(columns: columns, rows: rows) }
@@ -361,6 +417,7 @@ public final class RoamingTerminalClient {
     case SIGCONT:
       try? tty.enter()
       renderer.invalidate()
+      graphics.invalidate()
       redraw()
     default: finishInBackground(.detached(status.sessionID))
     }

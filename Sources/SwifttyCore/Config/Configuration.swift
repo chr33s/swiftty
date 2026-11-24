@@ -257,6 +257,13 @@ public struct Configuration: Sendable, Equatable {
   public var scrollbackLimitLines = 100_000
   /// Compress idle history where supported (`scrollback-compression`).
   public var scrollbackCompression = true
+  /// Kitty graphics bytes per screen (`image-storage-limit`); zero
+  /// disables the protocol.
+  public var imageStorageLimit = TerminalState.defaultImageStorageLimit
+  /// Roaming images on cellular and other expensive paths
+  /// (`images-on-cellular`: full, reduced or off; spec.graphics.md §16.4).
+  /// Low Data Mode always gets reduced images.
+  public var imagesOnCellular = "reduced"
   /// Ghostty command syntax: shell expansion by default, or `direct:` arguments.
   public var command: String?
   public var preferredShell: ShellKind?
@@ -425,6 +432,17 @@ public struct Configuration: Sendable, Equatable {
     case "scrollback-limit", "scrollback-limit-bytes", "scrollback-limit-lines",
       "scrollback-compression":
       return setScrollback(key, value)
+    case "images-on-cellular":
+      guard ["", "full", "reduced", "off"].contains(value) else {
+        return "invalid value \(value)"
+      }
+      imagesOnCellular = value.isEmpty ? "reduced" : value
+    case "image-storage-limit":
+      guard
+        let v = value.isEmpty ? Configuration().imageStorageLimit : Int(value),
+        v >= 0, v <= Int(UInt32.max)
+      else { return "invalid value \(value)" }
+      imageStorageLimit = v
     case "shell-profile":
       guard let kind = ShellKind(rawValue: value) else {
         return "Unknown shell profile"
@@ -721,6 +739,7 @@ public struct Configuration: Sendable, Equatable {
     s.scrollbackLimitBytes = scrollbackLimit
     s.scrollbackLimitRows = scrollbackLimitLines
     s.scrollbackCompression = scrollbackCompression
+    s.imageStorageLimitBytes = imageStorageLimit
     s.palette = palette(for: scheme)
     s.rectangleChecksumsEnabled = rectangleChecksumReport
     return s

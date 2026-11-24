@@ -123,6 +123,7 @@ private struct MuxCommandPayload {
     case .setViewport: try add(MemoryLayout<ViewportRequest>.stride)
     case let .automationKey(_, shortcut): try text(shortcut)
     case .subscribeAutomation, .automationFocus: break
+    case .imageChunk: break
     case let .search(_, query): try text(query)
     case let .copySelection(request):
       try add(

@@ -83,6 +83,16 @@ public final class MetalRenderer {
     var underlineThickness: Float
     var cursorColor: UInt32
     var blinkHidden: UInt32 = 0
+    /// Below-background images are drawn: skip default-background cells.
+    var skipDefaultBackground: UInt32 = 0
+  }
+
+  /// One kitty graphics quad; must match `ImageInstance` in Shaders.metal.
+  struct ImageInstance {
+    var origin: SIMD2<Float>
+    var size: SIMD2<Float>
+    var texOrigin: SIMD2<Float>
+    var texSize: SIMD2<Float>
   }
 
   /// Decoration quads per cell: underline, strike, cursor, three more
@@ -104,6 +114,8 @@ public final class MetalRenderer {
     static let dashed: UInt32 = 1 << 11
     static let blink: UInt32 = 1 << 12
     static let cursorRight: UInt32 = 1 << 13
+    /// The cell shows the default background (images may show through).
+    static let defaultBackground: UInt32 = 1 << 14
   }
 
   public let device: MTLDevice
@@ -113,6 +125,10 @@ public final class MetalRenderer {
   private let backgroundPipeline: MTLRenderPipelineState
   private let glyphPipeline: MTLRenderPipelineState
   private let decorationPipeline: MTLRenderPipelineState
+  private let imagePipeline: MTLRenderPipelineState
+  private let imageSampler: MTLSamplerState?
+  /// Kitty graphics textures (spec.graphics.md §13.2).
+  let imageTextures: ImageTextureCache
   private var atlas: GlyphAtlas
   private var shaper = Shaper()
 
@@ -236,6 +252,14 @@ public final class MetalRenderer {
       "decoration_vertex",
       "decoration_fragment"
     )
+    imagePipeline = try pipeline("image_vertex", "image_fragment")
+    let sampler = MTLSamplerDescriptor()
+    sampler.minFilter = .linear
+    sampler.magFilter = .linear
+    sampler.sAddressMode = .clampToEdge
+    sampler.tAddressMode = .clampToEdge
+    imageSampler = device.makeSamplerState(descriptor: sampler)
+    imageTextures = ImageTextureCache(device: device)
     atlas = try GlyphAtlas(
       device: device,
       size: atlasSize,
@@ -476,7 +500,12 @@ public final class MetalRenderer {
       blinkHidden: options.textBlinkVisible ? 0 : 1,
     )
     let count = snapshot.columns * snapshot.rowCount
+    let images = prepareImages(snapshot, size: size, options: options)
+    if images.contains(where: { $0.layer == .belowBackground }) {
+      uniforms.skipDefaultBackground = 1
+    }
     if let instances, count > 0 {
+      encodeImages(images, layer: .belowBackground, encoder, &uniforms, options)
       encoder.setVertexBuffer(instances, offset: 0, index: 0)
       encoder.setVertexBytes(
         &uniforms,
@@ -490,6 +519,9 @@ public final class MetalRenderer {
         vertexCount: 4,
         instanceCount: count
       )
+      if encodeImages(images, layer: .belowText, encoder, &uniforms, options) {
+        encoder.setVertexBuffer(instances, offset: 0, index: 0)
+      }
       encoder.setRenderPipelineState(glyphPipeline)
       encoder.setFragmentTexture(atlas.texture, index: 0)
       encoder.drawPrimitives(
@@ -498,6 +530,9 @@ public final class MetalRenderer {
         vertexCount: 4,
         instanceCount: count
       )
+      if encodeImages(images, layer: .aboveText, encoder, &uniforms, options) {
+        encoder.setVertexBuffer(instances, offset: 0, index: 0)
+      }
       encoder.setRenderPipelineState(decorationPipeline)
       encoder.drawPrimitives(
         type: .triangleStrip,
@@ -790,6 +825,11 @@ public final class MetalRenderer {
         }
         bgAlpha = 0xFF
       }
+      let showsDefaultBackground =
+        attrs.background == .default && !attrs.flags.contains(.inverse)
+        && bgAlpha != 0xFF
+        || attrs.background == .default && backgroundAlpha == 0xFF
+          && !attrs.flags.contains(.inverse) && bg == palette.background
       if options.minimumContrast > 1 {
         fg = Self.ensureContrast(fg, on: bg, ratio: options.minimumContrast)
       }
@@ -824,13 +864,27 @@ public final class MetalRenderer {
         )
       }
 
-      let entry = glyphEntry(
-        for: cell,
-        shaped: shaped.isEmpty ? nil : shaped[x],
-        preedit: preedit[x],
-        snapshot: snapshot,
-      )
+      // Unicode placeholders (U+10EEEE) draw as spaces; the image layer
+      // draws the picture (spec.graphics.md §10.2). Checked first so
+      // their clusters never reach font fallback or the atlas.
+      let isPlaceholder =
+        cell.isGrapheme
+        ? snapshot.graphemeScalars(cell).count > 0
+          && snapshot.graphemeScalars(cell)[0] == KittyGraphics.placeholder
+        : cell.glyph == KittyGraphics.placeholder
+      let entry =
+        isPlaceholder && preedit[x] == nil
+        ? .empty
+        : glyphEntry(
+          for: cell,
+          shaped: shaped.isEmpty ? nil : shaped[x],
+          preedit: preedit[x],
+          snapshot: snapshot,
+        )
       if entry.isColor { flags |= Flag.colorGlyph }
+      if showsDefaultBackground, bg == palette.background {
+        flags |= Flag.defaultBackground
+      }
       out[x] = CellInstance(
         gridX: UInt32(x),
         gridY: UInt32(y),
@@ -1146,4 +1200,128 @@ public enum RendererError: Error, Equatable {
   case setup(String)
   case resourceUnavailable(String)
   case invalidDimensions
+}
+
+// MARK: Kitty graphics
+
+extension MetalRenderer {
+  struct ImageDraw {
+    var layer: KittyGraphics.Layer
+    var texture: MTLTexture
+    var instance: ImageInstance
+  }
+
+  /// Uploads textures and converts placements to quads, in draw order.
+  func prepareImages(
+    _ snapshot: RenderSnapshot,
+    size: CGSize,
+    options: RenderOptions
+  ) -> [ImageDraw] {
+    imageTextures.beginFrame()
+    guard !snapshot.images.isEmpty else { return [] }
+    let cell = SIMD2(Float(font.cellWidth), Float(font.cellHeight))
+    let host = snapshot.imageCellSize
+    let scale =
+      host.x > 0 && host.y > 0
+      ? cell / SIMD2(Float(host.x), Float(host.y)) : SIMD2<Float>(1, 1)
+    var draws: [ImageDraw] = []
+    draws.reserveCapacity(snapshot.images.count)
+    for p in snapshot.images {
+      guard p.sourceWidth > 0, p.sourceHeight > 0,
+        let texture = imageTextures.texture(for: p.pixels)
+      else { continue }
+      let w = Float(p.pixels.width)
+      let h = Float(p.pixels.height)
+      let origin =
+        SIMD2(Float(p.column), Float(p.row)) * cell + SIMD2(
+          Float(p.offsetX),
+          Float(p.offsetY)
+        ) * scale
+      draws.append(
+        ImageDraw(
+          layer: p.layer,
+          texture: texture,
+          instance: ImageInstance(
+            origin: origin,
+            size: SIMD2(Float(p.width), Float(p.height)) * scale,
+            texOrigin: SIMD2(Float(p.sourceX) / w, Float(p.sourceY) / h),
+            texSize: SIMD2(Float(p.sourceWidth) / w, Float(p.sourceHeight) / h)
+          )
+        )
+      )
+    }
+    return draws
+  }
+
+  /// Draws one layer clipped to the text area; true when anything was
+  /// drawn, so the caller rebinds its instance buffer.
+  @discardableResult
+  func encodeImages(
+    _ draws: [ImageDraw],
+    layer: KittyGraphics.Layer,
+    _ encoder: MTLRenderCommandEncoder,
+    _ uniforms: inout Uniforms,
+    _ options: RenderOptions
+  ) -> Bool {
+    let selected = draws.filter { $0.layer == layer }
+    guard !selected.isEmpty else { return false }
+    encoder.setRenderPipelineState(imagePipeline)
+    encoder.setVertexBytes(
+      &uniforms,
+      length: MemoryLayout<Uniforms>.stride,
+      index: 1
+    )
+    if let imageSampler {
+      encoder.setFragmentSamplerState(imageSampler, index: 0)
+    }
+    let viewport = uniforms.viewportSize
+    let left = max(0, min(Int(uniforms.origin.x), Int(viewport.x)))
+    let top = max(0, min(Int(options.paddingY), Int(viewport.y)))
+    let right = max(
+      left,
+      min(
+        Int(viewport.x),
+        left + Int(Float(gridSize.columns) * uniforms.cellSize.x)
+      )
+    )
+    let bottom = max(top, Int(viewport.y))
+    encoder.setScissorRect(
+      MTLScissorRect(
+        x: left,
+        y: top,
+        width: max(right - left, 0),
+        height: max(bottom - top, 0)
+      )
+    )
+    for draw in selected {
+      var instance = draw.instance
+      encoder.setVertexBytes(
+        &instance,
+        length: MemoryLayout<ImageInstance>.stride,
+        index: 0
+      )
+      encoder.setFragmentTexture(draw.texture, index: 0)
+      encoder.drawPrimitives(
+        type: .triangleStrip,
+        vertexStart: 0,
+        vertexCount: 4
+      )
+    }
+    encoder.setScissorRect(
+      MTLScissorRect(
+        x: 0,
+        y: 0,
+        width: Int(viewport.x),
+        height: Int(viewport.y)
+      )
+    )
+    encoder.setFragmentTexture(atlas.texture, index: 0)
+    return true
+  }
+
+  /// Releases image textures the latest frame did not use.
+  public func trimImageTextures() { imageTextures.trim() }
+
+  /// Kitty image textures held on the GPU (diagnostics and device tests).
+  public var residentImageTextures: Int { imageTextures.count }
 }

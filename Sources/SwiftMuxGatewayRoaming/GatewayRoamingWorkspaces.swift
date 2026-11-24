@@ -211,7 +211,9 @@ package final class GatewayRoamingWorkspaces: RoamingWorkspaces {
         for: workspace,
         role: .controller,
         frontend: .native,
-        transport: .remote
+        transport: .remote,
+        // Roaming clients may draw kitty graphics (spec.graphics.md §16).
+        capabilities: ClientCapabilities.supported.union(.images)
       )
     }
     sessions.withLock { all in

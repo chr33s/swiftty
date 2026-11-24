@@ -47,10 +47,16 @@ project = {
         },
         'FrameTests': {
             'type': 'bundle.unit-test', 'platform': 'iOS',
-            'sources': [str(Path(repository) / 'Tests/SwifttyMobileTests/FrameTimeTests.swift')],
+            'sources': [
+                str(Path(repository) / 'Tests/SwifttyMobileTests/FrameTimeTests.swift'),
+                # Kitty graphics device gates (spec.graphics.md KG28).
+                str(Path(repository) / 'Tests/SwifttyMobileTests/KittyDeviceTests.swift'),
+                str(Path(repository) / 'Tests/SwifttyMobileTests/KittyDeviceViewTests.swift'),
+            ],
             'dependencies': [
                 {'target': 'SwifttyFrameReview'},
                 {'package': 'Swiftty', 'product': 'SwifttyCore'},
+                {'package': 'Swiftty', 'product': 'SwifttyMobile'},
             ],
             'settings': {'base': {
                 'PRODUCT_BUNDLE_IDENTIFIER': 'dev.chr33s.swiftty.review.renderer.tests',

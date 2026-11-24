@@ -80,6 +80,25 @@ struct SSHReplyBackpressureTests {
     await backend.close()
   }
 
+  /// The cell size reaches the remote PTY in `window-change`, so remote
+  /// programs that size images by pixels (`kitten icat`) work over SSH.
+  @Test
+  func cellSizeChangesSendWindowChangeWithPixels() async {
+    let session = TerminalSession(columns: 20, rows: 4)
+    let channel = FakeByteChannel()
+    let backend = SSHStreamBackend(channel: channel, session: session)
+    backend.start()
+    session.setCellPixelSize(width: 9, height: 18)
+    #expect(
+      await eventually {
+        channel.pixelSizes.last.map { $0 == (180, 72) } ?? false
+      }
+    )
+    #expect(
+      channel.resizes.last.map { ($0.columns, $0.rows) == (20, 4) } ?? false
+    )
+  }
+
   @Test
   func adjacentResizesCoalesceWhileWritesPreserveOrdering() async {
     let session = TerminalSession(columns: 20, rows: 4)

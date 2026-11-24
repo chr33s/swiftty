@@ -60,6 +60,30 @@ final class HostAttachment: @unchecked Sendable {
   var liveReturns = 0
   /// What the client listed in `Attach`; set before the session sees it.
   let clientFeatures = Mutex(RSTFeatures())
+  /// Image digests the client holds and the variant it wants (`Attach`).
+  let clientImages = Mutex(
+    (inventory: Set<String>(), variant: ImageVariant.full)
+  )
+  /// The client's cell size in device pixels (`Attach`), sent with geometry.
+  let cellPixels = Mutex<(width: Int, height: Int)?>(nil)
+  /// Kitty graphics state (spec.graphics.md §16.3), on the session queue:
+  /// keys delivered or aliased to this attachment with their digests, the
+  /// images the latest frame referenced, and the work queued and running.
+  var imagesDelivered: [UInt64: String] = [:]
+  var digestsDelivered: Set<String> = []
+  var frameImages: [UInt64: FrameImage] = [:]
+  var imageQueue: [FrameImage] = []
+  /// Digests whose blob is being sent, for aliasing duplicates.
+  var digestsSending: Set<String> = []
+  /// One-off variants for `ImageLoad` keys.
+  var imageVariantOverrides: [UInt64: ImageVariant] = [:]
+  var imagesInFlight: Set<UInt64> = []
+  var nextImageStream: UInt64 = 1 << 62
+  /// Image starts allowed now: a burst of 8, refilled at 2 per second, so
+  /// an animation reaches a roaming client as at most 2 frames per second.
+  var imageTokens: Double = 8
+  var imageTokensAt = ContinuousClock.now
+  var imageRetryScheduled = false
   /// Additions both sides listed (spec.roaming.md §5.3).
   var features: RSTFeatures = []
   /// Baselines of submitted frames by screen revision, until acknowledged.
@@ -142,6 +166,12 @@ final class HostAttachment: @unchecked Sendable {
           return
         }
         clientFeatures.withLock { $0 = request.features }
+        clientImages.withLock {
+          $0 = (Set(request.imageInventory), request.imageVariant)
+        }
+        if let w = request.cellWidth, let h = request.cellHeight, w > 0, h > 0 {
+          cellPixels.withLock { $0 = (w, h) }
+        }
         switch await registry.attach(request, attachment: self) {
         case let .success(session):
           let attached = phase.withLock { p -> Bool in

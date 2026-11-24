@@ -2,6 +2,7 @@ import AppKit
 import ProgramIcons
 import MuxNavigation
 import Synchronization
+import SwiftMuxBridge
 import SwiftMuxClient
 import SwiftMuxProtocol
 import SwifttyCore
@@ -35,6 +36,8 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   /// (a late layout event after a switch) are not shown.
   var attachedWorkspace: WorkspaceID? { sequencer.attachedWorkspace }
   private(set) var views: [PaneID: MuxPaneView] = [:]
+  /// Kitty graphics pixels for this connection (spec.graphics.md §14.4).
+  let imageStore = MuxImageStore()
   private(set) var containers: [PaneID: MuxPaneContainer] = [:]
   let tabStrip = MuxTabStrip()
   /// Holds the tab strip when tabs show on the left (`window.tabs`).
@@ -454,13 +457,25 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
   private func startEvents() {
     let connection = connection
     let limits = limits
+    let imageStore = imageStore
     tasks.append(
       Task.detached { [weak self] in
         do {
           while let event = try await connection.nextEvent() {
             switch event {
             case let .frame(frame):
-              let presentation = MuxPaneView.importFrame(frame, limits: limits)
+              let presentation = MuxPaneView.importFrame(
+                frame,
+                limits: limits,
+                images: imageStore
+              )
+              if !presentation.missingImages.isEmpty {
+                await self?
+                  .fetchImages(
+                    presentation.missingImages,
+                    pane: frame.identity.pane
+                  )
+              }
               await self?.present(presentation)
             default: await self?.handle(event)
             }
@@ -473,6 +488,21 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
             await self?.transportEnded(String(describing: error))
           }
         }
+      }
+    )
+  }
+
+  /// Fetches kitty graphics pixels a frame referenced; the pane redraws
+  /// as each arrives.
+  private func fetchImages(_ images: [FrameImage], pane: PaneID) {
+    let connection = connection
+    let limits = limits
+    imageStore.fetch(
+      images,
+      pane: pane,
+      execute: { try await connection.execute($0) },
+      loaded: { [weak self] _ in
+        Task { @MainActor in self?.views[pane]?.imagesLoaded(limits: limits) }
       }
     )
   }
@@ -640,6 +670,7 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
       container.header.onAction = { [weak self] action in
         self?.headerAction(action, pane: id)
       }
+      view.imageStore = imageStore
       views[id] = view
       containers[id] = container
       layoutView.addSubview(container)
@@ -1084,10 +1115,13 @@ final class MuxWorkspaceController: NSWindowController, NSWindowDelegate {
           return nil  // retain the last valid size; never resize to zero
         }
         let size = view.gridSize
+        let cell = view.cellPixelSize
         return .init(
           pane: id,
           columns: min(size.columns, limits.maxColumns),
-          rows: min(size.rows, limits.maxRows)
+          rows: min(size.rows, limits.maxRows),
+          cellWidth: cell.width,
+          cellHeight: cell.height
         )
       }
       .sorted { $0.pane.description < $1.pane.description }

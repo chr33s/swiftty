@@ -13,6 +13,8 @@ public struct MuxLimits: Codable, Sendable, Equatable {
   public var replyReserveBytes = 64 << 10
   public var readTurnBytes = 64 << 10
   public var maxFrameBytes = 16 << 20
+  /// Kitty graphics bytes each pane screen may hold (spec.graphics.md §8.2).
+  public var imageBytesPerScreen = 256_000_000
   public var maxColumns = 512
   public var maxRows = 256
   public var pendingFrameBudget = 64 << 20

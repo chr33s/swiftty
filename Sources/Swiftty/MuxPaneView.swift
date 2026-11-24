@@ -9,6 +9,8 @@ import SwifttyMac
 struct MuxPresentation: Sendable {
   let frame: PaneFrame
   let snapshot: RenderSnapshot
+  /// Kitty graphics pixels the snapshot could not draw yet.
+  var missingImages: [FrameImage] = []
 }
 
 /// Selection on one frozen frame, in viewport cells. New output never
@@ -346,16 +348,39 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
   /// delivers only frames that passed `FrameValidator` under `limits`.
   nonisolated static func importFrame(
     _ frame: PaneFrame,
-    limits: MuxLimits
+    limits: MuxLimits,
+    images: MuxImageStore? = nil
   ) -> MuxPresentation {
     MuxPresentation(
       frame: frame,
       snapshot: FrameImporter.snapshot(
         fromValidated: frame,
         sequence: 1,
-        limits: limits
-      )
+        limits: limits,
+        images: images
+      ),
+      missingImages: images.map { FrameImporter.missingImages(frame, in: $0) }
+        ?? []
     )
+  }
+
+  /// Kitty graphics pixels shared by the connection's panes.
+  var imageStore: MuxImageStore?
+
+  /// Device pixels per cell, sent with geometry for image sizing.
+  var cellPixelSize: (width: Int, height: Int) {
+    (Int(renderer.cellSize.width), Int(renderer.cellSize.height))
+  }
+
+  /// Pixels a frame referenced arrived: redraw the frames that use them.
+  func imagesLoaded(limits: MuxLimits) {
+    if let p = pending {
+      pending = Self.importFrame(p.frame, limits: limits, images: imageStore)
+    }
+    if let p = presented {
+      presented = Self.importFrame(p.frame, limits: limits, images: imageStore)
+    }
+    needsDisplay = true
   }
 
   /// Stores the newest frame for this binding; drawing admits it later.
@@ -430,7 +455,8 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
         drawn = try? FrameImporter.snapshot(
           from: target.frame,
           selection: placed.selection?.span(in: target.frame),
-          sequence: localSequence
+          sequence: localSequence,
+          images: imageStore
         )
       } else {
         clearSelection()
@@ -444,7 +470,8 @@ final class MuxPaneView: MTKView, MTKViewDelegate {
       drawn = try? FrameImporter.snapshot(
         from: frozen.frame,
         selection: span,
-        sequence: localSequence
+        sequence: localSequence,
+        images: imageStore
       )
     } else {
       // Imported snapshots carry their own storage and full damage.

@@ -11,7 +11,7 @@ extension MuxWorkspaceController {
   /// clipboard requests, which they answer with the pasteboard, and pane
   /// programs, which pick tab and header icons.
   static let clientCapabilities = ClientCapabilities.supported.union([
-    .clipboardRequests, .paneProgram,
+    .clipboardRequests, .paneProgram, .images,
   ])
 
   func handleClipboardRead(_ request: MuxClipboardRead) {

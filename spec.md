@@ -21,9 +21,10 @@ below. Linux, Windows, GTK, OpenGL, WebAssembly, plugin APIs and a
 stable core C ABI are excluded from the terminal core and frontends (`Package.swift`
 reduces itself on Linux to the `swsh` shell and confined-execution targets in
 [spec.shell.md](spec.shell.md)); Shell supplies its own libghostty embedder API.
-Sixel is excluded. Kitty graphics is future work; until separately specified,
-ignore APC strings safely. Future graphics support should use bounded image
-storage and cover transmission, placement, deletion, z-order and placeholders.
+Sixel is excluded. The kitty graphics protocol is specified in
+[spec.graphics.md](spec.graphics.md): bounded per-screen image storage,
+transmission, placement, deletion, z-order, Unicode placeholders and animation,
+carried to SwiftMux panes, RST/1 roaming and the terminal clients.
 
 Implementation and verification status belong in [README.md](README.md).
 
@@ -217,7 +218,9 @@ hidden, fully transparent or empty views and occluded macOS windows. Retain pend
 output through fades and opacity pulses; draw while visible and resume animation
 on restoration. UIKit also stops momentum while invisible and suspends rendering
 and momentum in the background.
-Blinking and animated post-processing are the only independent animation sources.
+Blinking, animated post-processing and kitty graphics animation
+([spec.graphics.md §11](spec.graphics.md#11-animation)) are the only independent
+animation sources.
 
 Use CoreText for primary/bold/italic/bold-italic faces, fallback fonts, emoji and
 OpenType shaping. Support family per style, point size, features, variations,
@@ -251,8 +254,10 @@ clients and frontend window management remain embedder responsibilities.
 | Input                | Kitty keyboard query/push/pop/set and flags 1/2/4/8/16; X10/normal/any-motion, legacy/UTF-8/SGR mouse; bracketed paste and focus reports                                                                 |
 | OSC                  | 0/2 title, 7 cwd, 8 links, 52 clipboard writes, 133 prompts, 21 colors, 22 pointer, 4/10/11/12 set/query and 104/110/111/112 reset, 9 and `777;notify` notifications, `9;4` progress, opt-in 7501 status |
 | DCS                  | Streamed tmux control mode (`1000 p`), XTGETTCAP (`+ q`), DECRQSS (`$ q`)                                                                                                                                |
+| APC                  | Kitty graphics (`ESC _ G`, [spec.graphics.md](spec.graphics.md))                                                                                                                                       |
 
-Unknown sequences and other DCS/APC/PM/SOS strings must be ignored safely.
+Unknown sequences, other APC strings and DCS/PM/SOS strings must be ignored
+safely.
 OSC 52 accepts padded/unpadded Base64 and an empty clipboard clear; invalid
 characters, whitespace or malformed explicit padding reject the entire write.
 Clipboard reads are refused. Paste replaces editing, signal and escape controls

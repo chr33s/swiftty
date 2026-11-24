@@ -90,7 +90,9 @@ extension MuxConnection {
     _ selector: WorkspaceSelector,
     columns: Int = 80,
     rows: Int = 24,
-    generation: UInt64 = 1
+    generation: UInt64 = 1,
+    cellWidth: Int? = nil,
+    cellHeight: Int? = nil
   ) async throws -> WorkspaceSnapshot {
     guard
       case let .attached(_, ws) = try await execute(
@@ -103,7 +105,15 @@ extension MuxConnection {
         GeometryBatch(
           layoutRevision: ws.layoutRevision,
           generation: generation,
-          entries: panes.map { .init(pane: $0, columns: columns, rows: rows) }
+          entries: panes.map {
+            .init(
+              pane: $0,
+              columns: columns,
+              rows: rows,
+              cellWidth: cellWidth,
+              cellHeight: cellHeight
+            )
+          }
         )
       )
     )

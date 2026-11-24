@@ -132,6 +132,12 @@ public final class RoamingScreenBackend: TerminalSurfaceBackend {
     display.semanticInputHandler = { [inputPump] input in
       if let input = SurfaceInput(input) { inputPump.enqueue(input) }
     }
+    // A tap on a box drawn while images are off loads them once.
+    display.imageTapHandler = { [weak client, images = client.images] in
+      guard images.drawsBoxes, let client else { return false }
+      Task { await client.loadVisibleImages() }
+      return true
+    }
   }
 
   /// Synchronous fencing before an application waits for queued lifecycle work.

@@ -318,6 +318,9 @@ public struct PaneFrame: Codable, Sendable, Equatable {
   /// row's content: equal identities mean equal content. Nil from a
   /// service that does not track versions.
   public var rowVersions: [UInt64]?
+  /// Kitty graphics (`ServiceFeatures.kittyGraphics`); nil when none or
+  /// the client did not ask for images.
+  public var images: FrameImages?
 
   public init(
     identity: FrameIdentity,
@@ -332,8 +335,10 @@ public struct PaneFrame: Codable, Sendable, Equatable {
     search: FrameSearch?,
     title: String,
     dropTarget: FrameDropTarget? = nil,
-    rowVersions: [UInt64]? = nil
+    rowVersions: [UInt64]? = nil,
+    images: FrameImages? = nil
   ) {
+    self.images = images
     self.identity = identity
     self.grid = grid
     self.graphemes = graphemes

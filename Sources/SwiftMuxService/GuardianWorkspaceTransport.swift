@@ -497,7 +497,7 @@ final class GuardianWorkspaceTransport: @unchecked Sendable {
     case let .input(pane, _, _), let .reply(pane, _),
       let .beginPaste(pane, _, _, _), let .appendPaste(pane, _, _, _),
       let .endPaste(pane, _, _), let .cancelPaste(pane, _, _, _),
-      let .cancelInput(pane), let .resize(pane, _, _), let .end(pane),
+      let .cancelInput(pane), let .resize(pane, _, _, _, _), let .end(pane),
       let .forget(pane):
       pane
     }

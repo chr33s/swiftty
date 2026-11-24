@@ -72,14 +72,30 @@ public final class SSHShellChannel: Sendable {
 
   /// Sends an SSH `window-change` request.
   public func resize(columns: Int, rows: Int) async throws {
+    try await resize(
+      columns: columns,
+      rows: rows,
+      pixelWidth: 0,
+      pixelHeight: 0
+    )
+  }
+
+  /// Sends an SSH `window-change` request with the terminal's size in
+  /// pixels (0 when unknown).
+  public func resize(
+    columns: Int,
+    rows: Int,
+    pixelWidth: Int,
+    pixelHeight: Int
+  ) async throws {
     guard (1 ... Self.maxColumns).contains(columns),
       (1 ... Self.maxRows).contains(rows)
     else { throw SSHClientError.invalidGridSize }
     let event = SSHChannelRequestEvent.WindowChangeRequest(
       terminalCharacterWidth: columns,
       terminalRowHeight: rows,
-      terminalPixelWidth: 0,
-      terminalPixelHeight: 0
+      terminalPixelWidth: min(max(pixelWidth, 0), 1 << 16),
+      terminalPixelHeight: min(max(pixelHeight, 0), 1 << 16)
     )
     do { try await channel.triggerUserOutboundEvent(event).get() } catch {
       throw SSHClientError.connectionClosed

@@ -24,6 +24,15 @@ struct Uniforms {
     float underlineThickness;
     uint cursorColor;
     uint blinkHidden; // text with FlagBlink is in its off phase
+    uint skipDefaultBackground; // below-background images show through
+};
+
+// Must match `ImageInstance` in MetalRenderer.swift.
+struct ImageInstance {
+    float2 origin;
+    float2 size;
+    float2 texOrigin;
+    float2 texSize;
 };
 
 constant uint FlagColorGlyph = 1u << 0;
@@ -40,6 +49,7 @@ constant uint FlagCurly = 1u << 9;
 constant uint FlagDotted = 1u << 10;
 constant uint FlagDashed = 1u << 11;
 constant uint FlagBlink = 1u << 12;
+constant uint FlagDefaultBackground = 1u << 14;
 constant uint DecorationSlots = 7;
 
 // Decoration patterns, in `VertexOut.colorGlyph` for the decoration pass.
@@ -78,7 +88,8 @@ vertex VertexOut background_vertex(uint vid [[vertex_id]], uint iid [[instance_i
     CellInstance c = cells[iid];
     float2 origin = u.origin + float2(c.gridX, c.gridY) * u.cellSize;
     VertexOut out;
-    out.position = toClip(origin + corner(vid) * u.cellSize, u);
+    bool skip = u.skipDefaultBackground != 0 && (c.flags & FlagDefaultBackground);
+    out.position = skip ? float4(0) : toClip(origin + corner(vid) * u.cellSize, u);
     out.texCoord = float2(0);
     out.color = unpack(c.bg);
     out.colorGlyph = 0;
@@ -207,4 +218,25 @@ fragment float4 glyph_fragment(VertexOut in [[stage_in]], texture2d<float> atlas
     if (in.colorGlyph) return texel * in.color.a; // premultiplied color bitmap
     float a = texel.a * in.color.a;
     return float4(in.color.rgb * a, a);
+}
+
+// Kitty graphics: one quad per placement, straight-alpha texture.
+vertex VertexOut image_vertex(uint vid [[vertex_id]],
+                              constant ImageInstance &img [[buffer(0)]],
+                              constant Uniforms &u [[buffer(1)]]) {
+    float2 k = corner(vid);
+    VertexOut out;
+    out.position = toClip(u.origin + img.origin + k * img.size, u);
+    out.texCoord = img.texOrigin + k * img.texSize;
+    out.color = float4(1);
+    out.colorGlyph = 0;
+    out.pattern = float3(0);
+    return out;
+}
+
+fragment float4 image_fragment(VertexOut in [[stage_in]],
+                               texture2d<float> tex [[texture(0)]],
+                               sampler s [[sampler(0)]]) {
+    float4 c = tex.sample(s, in.texCoord);
+    return float4(c.rgb * c.a, c.a);
 }

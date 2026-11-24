@@ -115,6 +115,9 @@ public final class TerminalView: MTKView, MTKViewDelegate {
     delegate = self
     applyRenderOptions(scale: 2)
     loadShader()
+    display.advanceImageAnimations = { [session] in
+      session.advanceImageAnimations()
+    }
 
     session.onUpdate = { [weak self] in
       DispatchQueue.main.async {

@@ -186,6 +186,9 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
 
   private var blink = BlinkState()
   private var blinkTimer: Timer?
+  /// Kitty graphics animation (spec.graphics.md §13.4).
+  private var imageAnimationTimer: Timer?
+  private var hasImages = false
   /// The cursor blinks (DECSCUSR / mode 12, or `cursor-style-blink`).
   private var cursorBlinks = false
 
@@ -205,6 +208,10 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
 
   /// Screen text for VoiceOver; kept only while VoiceOver runs.
   var accessibilityScreen: AccessibilityText?
+  /// Visible kitty graphics images, while VoiceOver runs.
+  var imageRegions: [ImageRegion] = []
+  /// Visible images, for taps on boxes drawn while images are off.
+  var tapImageRegions: [ImageRegion] = []
   lazy var accessibilityTerminal = TerminalAccessibilityElement(terminal: self)
   private var lastAccessibilityPost: CFTimeInterval = 0
   private var accessibilityPostPending = false
@@ -551,6 +558,17 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
       name: UIWindow.didResignKeyNotification,
       object: nil
     )
+    center.removeObserver(
+      self,
+      name: UIApplication.didReceiveMemoryWarningNotification,
+      object: nil
+    )
+    center.addObserver(
+      self,
+      selector: #selector(memoryWarning),
+      name: UIApplication.didReceiveMemoryWarningNotification,
+      object: nil
+    )
     if let window {
       center.addObserver(
         self,
@@ -606,9 +624,21 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
   }
 
   @objc
+  func memoryWarning() { renderer.trimImageTextures() }
+
+  /// Kitty image textures held on the GPU (diagnostics and device tests).
+  public var residentImageTextures: Int { renderer.residentImageTextures }
+
+  /// Whether the kitty animation clock is running (it holds under Reduce
+  /// Motion, while hidden and in the background).
+  public var isAnimatingImages: Bool { imageAnimationTimer != nil }
+
+  @objc
   func sceneDidEnterBackground() {
     isRenderingPaused = true
     isSceneActive = false
+    // Image textures not on screen go first (spec.graphics.md §13.2).
+    renderer.trimImageTextures()
     updatePrivacyCover()
     updateFocus()
     stopMomentum()
@@ -726,12 +756,10 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
   #if !os(visionOS) && !os(tvOS)
   /// The shown accessory's frame in `superview`, or nil when none is on
   /// screen.
-  private func accessoryFrame(in superview: UIView, screen: UIScreen)
-    -> CGRect?
+  private func accessoryFrame(in superview: UIView, screen: UIScreen) -> CGRect?
   {
     guard isFirstResponder, let accessory = inputAccessoryView,
-      accessory.window != nil, !accessory.isHidden,
-      accessory.bounds.height > 0
+      accessory.window != nil, !accessory.isHidden, accessory.bounds.height > 0
     else { return nil }
     return superview.convert(
       accessory.convert(accessory.bounds, to: screen.coordinateSpace),
@@ -758,7 +786,8 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
     return CGRect(
       x: min(keyboard.minX, accessory.minX),
       y: top,
-      width: max(keyboard.maxX, accessory.maxX) - min(keyboard.minX, accessory.minX),
+      width: max(keyboard.maxX, accessory.maxX)
+        - min(keyboard.minX, accessory.minX),
       height: max(0, keyboard.maxY - top)
     )
   }
@@ -997,12 +1026,19 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
       if !drewFrame { redraw.request() }
     }
     cursorBlinks = configuration.cursorStyleBlink ?? snapshot.cursor.isBlinking
+    hasImages = !snapshot.images.isEmpty
+    tapImageRegions = hasImages ? snapshot.imageRegions : []
     if surfaceVisible { updateBlinkTimer() } else { updateFrameDriving() }
     if UIAccessibility.isVoiceOverRunning {
       let text = AccessibilityText(snapshot)
       if text != accessibilityScreen {
         accessibilityScreen = text
         postAccessibilityChange()
+      }
+      let regions = snapshot.imageRegions
+      if regions != imageRegions {
+        imageRegions = regions
+        updateAccessibilityElements()
       }
     }
   }
@@ -1157,6 +1193,44 @@ public final class TerminalUIView: MTKView, MTKViewDelegate {
       }
     } else if !needed, blinkTimer != nil {
       stopBlinking()
+    }
+    updateImageAnimation()
+  }
+
+  /// Runs kitty animations only while visible and in the foreground;
+  /// Reduce Motion holds them on their current frame.
+  private func updateImageAnimation() {
+    let needed =
+      hasImages && isSurfaceVisible && !isRenderingPaused
+      && !renderer.options.reducesMotion
+    guard needed else {
+      imageAnimationTimer?.invalidate()
+      imageAnimationTimer = nil
+      return
+    }
+    guard imageAnimationTimer == nil,
+      let delay = session.advanceImageAnimations()
+    else { return }
+    scheduleImageAnimation(after: delay)
+  }
+
+  private func scheduleImageAnimation(after delay: TimeInterval) {
+    imageAnimationTimer = Timer.scheduledTimer(
+      withTimeInterval: max(delay, 1.0 / 240),
+      repeats: false
+    ) { [weak self] timer in
+      let identity = ObjectIdentifier(timer)
+      MainActor.assumeIsolated {
+        guard let self,
+          self.imageAnimationTimer.map(ObjectIdentifier.init) == identity
+        else { return }
+        self.imageAnimationTimer = nil
+        guard self.isSurfaceVisible, !self.isRenderingPaused,
+          let next = self.session.advanceImageAnimations()
+        else { return }
+        self.redraw.request()
+        self.scheduleImageAnimation(after: next)
+      }
     }
   }
 

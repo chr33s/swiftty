@@ -129,7 +129,10 @@ func connect(_ kind: FrontendKind) async -> MuxConnection {
   do {
     return try await MuxConnection.connect(
       frontend: kind,
-      terminalProfile: kind == .terminal ? SMX.terminalProfile : nil
+      terminalProfile: kind == .terminal ? SMX.terminalProfile : nil,
+      // The outer terminal is Swiftty: kitty images (spec.graphics.md §14.5).
+      capabilities: kind == .terminal
+        ? ClientCapabilities.supported.union(.images) : .supported
     )
   } catch let error as MuxError where error.code == .connectionLost {
     fail(

@@ -71,6 +71,8 @@ public struct FrameDelta: Codable, Sendable, Equatable {
   public var search: FrameSearch?
   public var title: String
   public var dropTarget: FrameDropTarget?
+  /// Complete in every delta: placements are frame metadata.
+  public var images: FrameImages?
   /// CRC-32C over the result's ordered row identities.
   public var identityChecksum: UInt32
 
@@ -93,8 +95,10 @@ public struct FrameDelta: Codable, Sendable, Equatable {
     search: FrameSearch?,
     title: String,
     dropTarget: FrameDropTarget?,
+    images: FrameImages? = nil,
     identityChecksum: UInt32
   ) {
+    self.images = images
     self.identity = identity
     self.baseRevision = baseRevision
     self.columns = columns
@@ -173,6 +177,7 @@ public enum FrameDeltaBuilder {
       search: frame.search,
       title: frame.title,
       dropTarget: frame.dropTarget,
+      images: frame.images,
       identityChecksum: RowChecksum.identities(identities)
     )
   }
@@ -430,7 +435,8 @@ public enum FrameDeltaApplier {
       search: delta.search,
       title: delta.title,
       dropTarget: delta.dropTarget,
-      rowVersions: versions
+      rowVersions: versions,
+      images: delta.images
     )
     guard RowChecksum.identities(identities) == delta.identityChecksum else {
       throw MuxError(.staleRevision, "delta identity checksum")

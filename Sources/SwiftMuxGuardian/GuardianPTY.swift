@@ -377,13 +377,18 @@ package final class GuardianPTY: @unchecked Sendable {
   }
   package func discardUnwrittenInput() -> Int { writer.discardUnwrittenInput() }
   @discardableResult
-  package func resize(columns: Int, rows: Int) -> Int32 {
+  package func resize(
+    columns: Int,
+    rows: Int,
+    pixelWidth: Int = 0,
+    pixelHeight: Int = 0
+  ) -> Int32 {
     guard master >= 0 else { return EBADF }
     var size = winsize(
       ws_row: UInt16(clamping: rows),
       ws_col: UInt16(clamping: columns),
-      ws_xpixel: 0,
-      ws_ypixel: 0
+      ws_xpixel: UInt16(clamping: pixelWidth),
+      ws_ypixel: UInt16(clamping: pixelHeight)
     )
     return ioctl(master, TIOCSWINSZ, &size) == 0 ? 0 : errno
   }

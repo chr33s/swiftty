@@ -571,6 +571,68 @@ defines the runtime, the `swiftty` API (filters, panes, shortcuts, UI, JSONC
 data), lifecycle events including OSC 7501 changes, and an
 [example](spec.javascript.md#54-consumer-example).
 
+## Kitty graphics
+
+Swiftty implements the kitty graphics protocol with Ghostty `167acf0c` as the
+oracle ([spec.graphics.md](spec.graphics.md)). Sixel is not supported.
+
+| Path | Status |
+|---|---|
+| Engine | APC `G` commands, every action and delete target, chunking, RGB/RGBA/PNG, zlib, file/temp-file/shared-memory media for local programs, eviction, relative and virtual placements, Unicode placeholders, animation, region scrolls, reflow, checkpoints (section 15) |
+| Direct sessions (Mac, iOS/iPadOS) | Metal image layers (below backgrounds, below text, above text), texture cache with memory-warning trimming, animation clocked by the view while visible; Reduce Motion holds animations; VoiceOver elements "Image, *c* by *r* cells" |
+| SwiftMux panes (every app window) | Pane pixel geometry and `TIOCGWINSZ` pixels, the frame `images` section (SMXB tag 19) with animation frame sets for prefetch, pixels fetched with `imageChunk`, animations ticked on the pane queue |
+| RST/1 roaming | `kittyGraphics` feature, `KGIB/1` image records (PNG; reduced variant PNG or HEIC), digest inventory and aliases across reattachment, `ImageRequest`, prefetched animation frames, 2 images/s after a burst of 8; with images off, boxes that load on tap (`ImageLoad`) |
+| `swroam`, `swmux` | Outer-terminal detection, Unicode-placeholder re-emission (tmux passthrough when `$TMUX` is set), half-block fallback; `swroam --graphics auto\|kitty\|halfblocks\|off` |
+
+Settings: `terminal.image_storage_limit` (bytes per screen; default 320 MB on
+macOS, 128 MB on iOS and iPadOS; 0 disables images; SwiftMux panes cap it at
+256 MB and read it when the service or a workspace worker starts) and
+`terminal.images_on_cellular` (Ghostty-style key `images-on-cellular`: `full`,
+`reduced` (default) or `off`) for roaming on expensive paths; Low Data Mode
+always uses reduced images.
+
+Inside tmux, programs that use Unicode placeholders (`kitten icat
+--unicode-placeholder`, yazi, timg, chafa) draw through passthrough:
+
+```tmux
+set -g allow-passthrough all
+set -as terminal-features ',xterm-256color:RGB:usstyle'
+```
+
+tmux 3.4–3.8 drop the placeholders' diacritics when drawing new output, so an
+image may show only its first row, or not appear, until tmux redraws the pane:
+run `tmux refresh-client`, zoom, or switch windows. Directly placed images
+(`a=T` without `U=1`) land at the outer cursor under tmux and are not supported
+there. Swiftty supports the protocol in its own
+engine only; tmux's own width tables decide how it lays out placeholder cells.
+
+Tests: about 209 of Ghostty's kitty graphics tests ported with Ghostty's
+values (`GhosttyOracle/KittyGraphicsOracleTests.swift`); the real `kitten
+icat` (stream, file, memory and placeholder modes), timg, chafa, yazi and
+image.nvim on a real PTY (`KittyRealProgramTests`, each skipped when not
+installed); tmux 3.4, 3.5a, 3.6a, 3.7c and 3.8 with the configuration above;
+and device runs on an iPad Pro and iPhone 16
+(`Scripts/test-ipad-frame-time.sh <udid> <team>`).
+
+Measured 2026-11-24, Release, against the gates in
+[spec.graphics.md §26.4](spec.graphics.md#264-gate-measurements-2026-11-24-apple-silicon-release):
+
+| Benchmark | Mac (Apple Silicon) | iPad Pro 12.9″ (M1) | iPhone 16 |
+|---|---|---|---|
+| kitty's Images payload, against Ghostty `167acf0c` (gate 95%) | 103.7–105.2% | | |
+| 3840×2160 RGBA transmit, against Ghostty (gate: at most 1.1× its time) | 100.7% | 34.7 ms | 22.4 ms |
+| 2000×2000 PNG decode, p95 | 23.1 ms (gate 25) | 34.6 ms (gate 60) | 26.9 ms |
+| 33 MB texture upload frame | 4.9 ms (8.33 ms at 120 Hz) | 7.2 ms (8.33 ms at 120 Hz) | 8.6 ms (16.7 ms at 60 Hz) |
+| Placeholder screen while typing, against ASCII (gate 1.10) | 1.03–1.06 | 1.03–1.05 | 1.04 |
+| 381 MB file medium (bound 250 ms) | 20.9 ms | | |
+
+Paired runs against the parent commit show every text workload at 99.2–101.2%
+of its throughput. `Scripts/compare-ghostty.py` now also generates the
+`transmit-4k` input. Roaming across networks: an iPhone 16 switched between
+Wi-Fi and cellular through 20 reattachments with an image on screen, and no
+image it held was sent again (`Scripts/kg28-image-resends.sh`: 18 aliases,
+0 resends).
+
 ## Configuration
 
 Swiftty reads JSONC configuration;
@@ -671,8 +733,8 @@ The 1-minute load average stayed between 1.7 and 3.4.
 The inputs are ten Swiftty generators, four `ghostty-gen` generators and five
 of kitty's `kitten __benchmark__` payloads, built from kitty's source at
 `fb99338` and repeated as the kitten sends them, on the alternate screen.
-kitty's Images payload is omitted: Swiftty ignores APC strings, so it would
-skip all of Ghostty's image work.
+These measurements predate kitty graphics support, so kitty's Images payload
+was omitted; `Scripts/compare-ghostty.py --generate` now includes it.
 
 Ghostty's `terminal-stream` raises its 10,000-byte scrollback limit to two
 215-row pages, up to 350 history rows at 120×80; Swiftty applies 10,000 bytes

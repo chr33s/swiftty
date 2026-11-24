@@ -110,14 +110,20 @@ let package = Package(
     // links only this.
     .target(
       name: "SwifttyEngine",
-      dependencies: ["Checksum", "TerminalProcess"],
+      dependencies: [
+        "Checksum", "TerminalProcess", "ZlibCodec", "CKittyBase64",
+      ],
       swiftSettings: core
     ), .target(name: "TerminalProcess"),
+    // NEON base64 blocks for kitty graphics payloads.
+    .target(name: "CKittyBase64"),
     // CRC-32C instructions for verifying compressed scrollback.
     .target(name: "CScrollbackChecksum"),
     // CRC-32C with those instructions or a portable fallback: scrollback
     // units and frame-delta row identities.
     .target(name: "Checksum", dependencies: ["CScrollbackChecksum"]),
+    // Bounded RFC 1950 zlib: RST/1 snapshots and kitty graphics `o=z`.
+    .target(name: "ZlibCodec"),
     .target(
       name: "SwifttyCore",
       dependencies: ["SwifttyEngine", "SwifttyConfig"],
@@ -256,6 +262,7 @@ let package = Package(
       name: "SwiftMuxTerminal",
       dependencies: [
         "TTYKit", "SwiftMuxClient", "SwiftMuxProtocol", "SwifttyEngine",
+        "SwiftMuxExport",
       ]
     ),
     .executableTarget(
@@ -303,7 +310,7 @@ let package = Package(
     // RST/1 messages, framing, snapshots, validation, bounded scheduler.
     .target(
       name: "ScreenProtocol",
-      dependencies: ["SessionCore", "SwiftMuxProtocol"]
+      dependencies: ["SessionCore", "SwiftMuxProtocol", "ZlibCodec"]
     ),
     // SSH authentication, host trust, exec, shell and the SFTP v3 client.
     .target(
@@ -444,7 +451,7 @@ let package = Package(
     // is tested without rebuilding them.
     .testTarget(
       name: "SwifttyEngineTests",
-      dependencies: ["SwifttyEngine", "TestSupport"],
+      dependencies: ["SwifttyEngine", "TestSupport", "ZlibCodec"],
       swiftSettings: core
     ),
     .testTarget(
@@ -499,8 +506,7 @@ let package = Package(
         "CoreTestSupport", "Swiftty", "SwifttyMac", "SwifttyCore",
         "TestSupport", "SwiftMuxService", "SwiftMuxClient", "SwiftMuxProtocol",
         "SwiftMuxXPC", "SwiftMuxExport", "MuxNavigation", "MuxNavigationSMX",
-        "HostConnection", "SwiftMuxGateway", "SwiftMuxGuardian",
-        "ProgramIcons",
+        "HostConnection", "SwiftMuxGateway", "SwiftMuxGuardian", "ProgramIcons",
       ]
     ),
     .testTarget(
@@ -539,7 +545,7 @@ let package = Package(
 // Both keep their default class_ro_t signing.
 for target in package.targets
 where target.type != .system && target.name != "CScrollbackChecksum"
-  && target.name != "CAllocCounter"
+  && target.name != "CKittyBase64" && target.name != "CAllocCounter"
 {
   target.swiftSettings =
     (target.swiftSettings ?? []) + [

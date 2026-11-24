@@ -47,6 +47,24 @@ public struct DamageRegion: Sendable, Equatable {
     return bits[row >> 6] & (1 << UInt64(row & 63)) != 0
   }
 
+  /// Calls `body` with each damaged row below `limit`, in order.
+  @inline(__always)
+  public func forEachRow(below limit: Int, _ body: (Int) -> Void) {
+    if isFull {
+      for row in 0 ..< limit { body(row) }
+      return
+    }
+    for word in 0 ..< 8 {
+      var w = bits[word]
+      while w != 0 {
+        let row = word << 6 + w.trailingZeroBitCount
+        guard row < limit else { return }
+        body(row)
+        w &= w - 1
+      }
+    }
+  }
+
   public var isEmpty: Bool {
     if isFull { return false }
     for i in 0 ..< 8 where bits[i] != 0 { return false }

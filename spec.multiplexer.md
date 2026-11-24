@@ -41,7 +41,7 @@ Provide named workspaces, ordered terminal tabs, split panes, focus, zoom, resiz
 
 Each workspace has one controlling attachment and at most four authenticated same-user local observers. The cap is fixed. A connection that does not request a role attaches as that controller. A second controller is refused until an explicit takeover. Observers may subscribe, scroll and search; they cannot write. Simultaneous writers are not supported. Other workspaces and inactive tabs continue running. A lost controller connection releases only its writer lease through the input-cancellation barrier; observers and PTYs stay. A lost observer drops only that viewer. This does not authorize a remote or roaming observer.
 
-Defer tmux command/config/plugin compatibility, linked tabs/session groups, broad scripting, third-party frontend APIs, advanced keyboard protocols, application mouse reporting, terminal graphics, network transports, multi-user sharing and crash/reboot restoration. Native pointer selection and scrolling are included later; mouse reporting to programs is a separate extension. The earlier SSH/SFTP and RST designs remain separate specifications.
+Defer tmux command/config/plugin compatibility, linked tabs/session groups, broad scripting, third-party frontend APIs, advanced keyboard protocols, application mouse reporting, network transports, multi-user sharing and crash/reboot restoration. Native pointer selection and scrolling are included later; mouse reporting to programs is a separate extension. The earlier SSH/SFTP and RST designs remain separate specifications.
 
 Pin the compiler, SDK, Swiftty revision and terminal profile together. Start validation on Apple silicon; publish only combinations actually built and tested. All numerical limits below are proposed starting budgets, not measured capabilities.
 
@@ -144,7 +144,7 @@ Capture cells and metadata in one operation on the pane's terminal queue. Retain
 
 Validate byte size before decoding large structures, then validate dimensions, checked arithmetic, total cells, scalar validity, text/table budgets, references, cursor coordinates and lead/continuation-cell consistency. Invalid messages never partially update a presentation. If valid terminal state exceeds an export budget, preserve the session and report the resource limit; do not silently omit cells.
 
-Frames contain no Swift memory layout, pointers, borrowed `Span`, pooled storage IDs, Metal resources or encoded screen images. The server determines terminal column widths; the native renderer uses those widths and performs local glyph shaping/rasterization. It must not recompute terminal layout from `String.count`.
+Frames contain no Swift memory layout, pointers, borrowed `Span`, pooled storage IDs, Metal resources or encoded screen images. Kitty graphics placements travel as the `images` section, which references pixels by key; pixels are fetched separately ([spec.graphics.md §14](spec.graphics.md#14-swiftmux)). The server determines terminal column widths; the native renderer uses those widths and performs local glyph shaping/rasterization. It must not recompute terminal layout from `String.count`.
 
 ### Bounded frame delivery
 
@@ -443,6 +443,7 @@ Resolved hyperlinks, shell prompt navigation and application mouse reporting are
 - `shellIntegration`: `link` (OSC 8 or, on request, a detected URL at a history address), `commandOutput` (scrolls the output into view and returns its rows and full text) and `MuxInput.moveCursor` (click-to-move arrows, written only while the shell edits a command line there; at most `MuxInput.maxCursorMoves`).
 - `keypadKeys`: `MuxKey.keypad`, the numeric keypad keys, encoded by the service with the pane's keypad modes. Without it, frontends send keys that type through the input method and the main-keyboard key for the rest.
 - `kittyClipboard`: the clipboard events and result commands above, `MuxInput.clipboardPaste` and the `kittyPasteEvents` frame mode.
+- `kittyGraphics`: `PaneFrame.images` for clients whose hello lists `ClientCapabilities.images`, and `MuxCommand.imageChunk` ([spec.graphics.md §14](spec.graphics.md#14-swiftmux)).
 - `dropTargets`: `PaneFrame.dropTarget` (the types a program registered with kitty drag-and-drop, OSC 72, and its answer for the current drag) and `MuxInput.drag` (move, drop with the dropped data, and leave). Native panes take drops only while their program is registered; dropped items that would not fit one control record or one reply are left out.
 
 Per-attachment viewports are specified in §4.

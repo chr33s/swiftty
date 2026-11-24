@@ -94,6 +94,10 @@ public struct ClientCapabilities: OptionSet, Codable, Sendable, Equatable {
   /// The client takes `MuxEvent.program`: the program each pane runs, for
   /// its icon (not in `supported`; only frontends that show it ask).
   public static let paneProgram = ClientCapabilities(rawValue: 1 << 7)
+  /// The client draws kitty graphics: frames carry `images` and the
+  /// client fetches pixels with `imageChunk` (not in `supported`; only
+  /// frontends that render images ask, spec.graphics.md §14.1).
+  public static let images = ClientCapabilities(rawValue: 1 << 8)
 
   public static let supported: ClientCapabilities = [
     .attachReadiness, .observers, .viewerViewport, .binaryFrames, .frameDeltas,
@@ -217,11 +221,15 @@ public struct ServiceFeatures: OptionSet, Codable, Sendable, Equatable {
   /// `endWorkspaceIfUnused` and `roamingSessionChanged`, for a roaming
   /// host outside the service (a durable gateway).
   public static let roamingControl = ServiceFeatures(rawValue: 1 << 14)
+  /// Kitty graphics in panes: `PaneFrame.images` and `imageChunk`
+  /// (spec.graphics.md §14).
+  public static let kittyGraphics = ServiceFeatures(rawValue: 1 << 15)
 
   public static let supported: ServiceFeatures = [
     .mouseReporting, .historyJumps, .terminalControl, .shellIntegration,
     .keypadKeys, .kittyClipboard, .dropTargets, .javaScript, .binaryFrames,
     .frameDeltas, .liveSelection, .inboxAcknowledgementTokens, .roamingControl,
+    .kittyGraphics,
   ]
 }
 
@@ -622,10 +630,22 @@ public struct GeometryBatch: Codable, Sendable, Equatable {
     public var pane: PaneID
     public var columns: Int
     public var rows: Int
-    public init(pane: PaneID, columns: Int, rows: Int) {
+    /// The frontend's cell size in device pixels, for pixel-size reports
+    /// and kitty graphics sizing; nil from older clients.
+    public var cellWidth: Int?
+    public var cellHeight: Int?
+    public init(
+      pane: PaneID,
+      columns: Int,
+      rows: Int,
+      cellWidth: Int? = nil,
+      cellHeight: Int? = nil
+    ) {
       self.pane = pane
       self.columns = columns
       self.rows = rows
+      self.cellWidth = cellWidth
+      self.cellHeight = cellHeight
     }
   }
 
@@ -790,6 +810,11 @@ public enum MuxCommand: Codable, Sendable, Equatable {
   /// grid (spec.multiplexer.md §4, "Live selection across pages").
   case copySelection(CopySelectionRequest)
 
+  /// With `kittyGraphics`: pixels of an image a frame references, from
+  /// byte `offset`. Replies `imageChunk`, or `notFound` once the image
+  /// has been replaced or deleted.
+  case imageChunk(pane: PaneID, key: UInt64, offset: Int)
+
   // Kitty clipboard (lease required; `kittyClipboard`).
   case clipboardReadResult(pane: PaneID, token: UInt64, MuxClipboardReadResult)
   case clipboardWriteResult(
@@ -833,7 +858,7 @@ public enum MuxCommand: Codable, Sendable, Equatable {
     case .status, .listWorkspaces, .detach, .observeWorkspaces,
       .observeWorkspaceGraph, .subscribeAutomation, .subscribeInbox, .inbox,
       .locateAttention, .setSubscriptions, .setViewport, .scroll, .search,
-      .searchStep, .endSearch, .copySelection:
+      .searchStep, .endSearch, .copySelection, .imageChunk:
       true
     default: false
     }
@@ -941,6 +966,7 @@ public enum MuxReply: Codable, Sendable, Equatable {
   case link(MuxLink?)
   case commandOutput(CommandOutput?)
   case copied(String)
+  case imageChunk(MuxImageChunk)
 }
 
 /// A link found by `MuxCommand.link`.

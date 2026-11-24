@@ -11,8 +11,9 @@ Ghostty raises its 10,000-byte scrollback to two 215-row pages;
 "swiftty-matched" gets the same history.
 
 `--generate` also writes kitty's `kitten __benchmark__` payloads, built from its
-source at a pinned commit (downloaded, not vendored). Images are omitted:
-Swiftty ignores APC strings, so it would skip all of Ghostty's image work.
+source at a pinned commit (downloaded, not vendored), including Images: a
+1024×1024 RGBA kitty graphics transmission in 4096-byte chunks, then its
+delete (spec.graphics.md §21.3).
 """
 import argparse
 import datetime
@@ -42,7 +43,12 @@ SWIFTTY_INPUTS = [
 KITTY_COMMIT = "fb9933810113624d122eda2ce1676e5cd09f63c1"
 KITTY_SOURCE_SHA256 = "ab178c9911ab03c39fcc22e85cd37c88d5ae3c5555d56ba9eb90ed494b6672a0"
 KITTY_URL = f"https://raw.githubusercontent.com/kovidgoyal/kitty/{KITTY_COMMIT}/tools/cmd/benchmark/main.go"
-KITTY_INPUTS = ["kitty-ascii", "kitty-unicode", "kitty-unique-unicode", "kitty-csi", "kitty-long-escape-codes"]
+KITTY_INPUTS = [
+    "kitty-ascii", "kitty-unicode", "kitty-unique-unicode", "kitty-csi", "kitty-images",
+    "kitty-long-escape-codes",
+]
+# Not kitty's: the 4K gate of spec.graphics.md §21.3.
+GRAPHICS_INPUTS = ["transmit-4k"]
 GHOSTTY_INPUTS = {
     "ghostty-ascii": ["+ascii"],
     "ghostty-osc": ["+osc"],  # unseeded
@@ -99,6 +105,22 @@ def kitty_constants(corpus):
     return consts
 
 
+def kitty_images(dim=1024):
+    """kitty's `images()`: one uncompressed RGBA transmission of zeros, sent as
+    kitty's GraphicsCommand writes it (4096 base64 bytes per chunk), then a
+    delete by id."""
+    import base64
+    payload = base64.b64encode(bytes(4 * dim * dim)).decode()
+    chunks = [payload[i:i + 4096] for i in range(0, len(payload), 4096)]
+    out = []
+    for n, chunk in enumerate(chunks):
+        more = 1 if n + 1 < len(chunks) else 0
+        keys = f"a=t,f=32,i=12345,q=2,s={dim},v={dim},m={more}" if n == 0 else f"m={more}"
+        out.append(f"\x1b_G{keys};{chunk}\x1b\\")
+    out.append("\x1b_Ga=d,d=I,i=12345,q=2\x1b\\")
+    return "".join(out)
+
+
 def kitty_payloads(k, rng):
     """kitty's benchmark data, with Go's unseeded RNG replaced by `rng`."""
     def random_string(n, alphabet):
@@ -137,6 +159,7 @@ def kitty_payloads(k, rng):
         "kitty-unicode": ("Unicode chars", (k["chinese_lorem_ipsum"] + k["misc_unicode"] + controls) * 1024),
         "kitty-unique-unicode": ("Unique multi-codepoint Unicode cells", "".join(unique)),
         "kitty-csi": ("CSI codes with few chars", "".join(csi)),
+        "kitty-images": ("Images", kitty_images()),
         "kitty-long-escape-codes": ("Long escape codes",
                                     ("\x1b]6;" + random_string(8024, k["ascii_printable"]) + "\x07") * 1024),
     }
@@ -160,6 +183,29 @@ def generate_kitty(corpus, megabytes, seed):
                 f.write(between)
             f.write((clear + "Waiting for response indicating parsing finished\r\n" + resume
                      + "\x1b[6n" + "\x1b[5n" * 3 + "\x1b[?1049l" + k["reset"]).encode())
+
+
+def generate_transmit_4k(corpus, megabytes):
+    """3840×2160 RGBA gradients sent directly in 4096-byte base64 chunks,
+    each deleted once complete, repeated to about `megabytes`."""
+    import base64
+    w, h = 3840, 2160
+    row = bytearray()
+    image = bytearray(w * h * 4)
+    for y in range(h):
+        row = bytes(b for x in range(w) for b in ((x & 0xFF), (y & 0xFF), ((x ^ y) & 0xFF), 255))
+        image[y * w * 4:(y + 1) * w * 4] = row
+    encoded = base64.b64encode(bytes(image))
+    chunks = []
+    for i in range(0, len(encoded), 4096):
+        more = 1 if i + 4096 < len(encoded) else 0
+        keys = f"a=t,f=32,s={w},v={h},i=7,q=2,m={more}" if i == 0 else f"m={more}"
+        chunks.append(b"\x1b_G" + keys.encode() + b";" + encoded[i:i + 4096] + b"\x1b\\")
+    one = b"".join(chunks) + b"\x1b_Ga=d,d=I,i=7,q=2\x1b\\"
+    reps = max(1, -(-megabytes * MIB // len(one)))
+    with open(corpus / "transmit-4k.bin", "wb") as f:
+        for _ in range(reps):
+            f.write(one)
 
 
 def williams(n):
@@ -231,11 +277,12 @@ def main():
     for exe in (ghostty, ghostty_gen, swiftty):
         if not exe.exists():
             sys.exit(f"missing {exe}")
-    kitty = [] if args.no_kitty else KITTY_INPUTS
+    kitty = [] if args.no_kitty else KITTY_INPUTS + GRAPHICS_INPUTS
     if args.generate:
         generate(args.corpus, swiftty, ghostty_gen, args.mb)
         if kitty:
             generate_kitty(args.corpus, args.mb, args.seed)
+            generate_transmit_4k(args.corpus, args.mb)
 
     names = [n for n in SWIFTTY_INPUTS + list(GHOSTTY_INPUTS) + kitty
              if not args.only or n in args.only.split(",")]

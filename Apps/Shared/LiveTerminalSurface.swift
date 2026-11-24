@@ -162,6 +162,9 @@ final class RoamingTerminalController: TerminalSurfaceController {
   private(set) var selection: HostConnectionSelection
   @ObservationIgnored
   private var backend: RoamingScreenBackend?
+  /// Kitty graphics pixels kept across this surface's clients, so a new
+  /// client after a reconnect still offers them (spec.graphics.md KG28).
+  private let imageCache = RoamingImageCache()
   private var client: RoamingClient? { backend?.client }
   @ObservationIgnored
   private var grid = GridSize(columns: 80, rows: 24)
@@ -231,6 +234,15 @@ final class RoamingTerminalController: TerminalSurfaceController {
         MainActor.assumeIsolated {
           guard let client = self?.client else { return done(nil) }
           Task { done(try? await client.copySelection(selection)) }
+        }
+      }
+    }
+    // Layout settles the cell size after connecting; the host needs each
+    // change for the pane's PTY pixel size (`kitten icat`).
+    display.cellPixelSizeHandler = { [weak self] width, height in
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+          _ = self?.serial { await $0.setCellPixelSize(width: width, height: height) }
         }
       }
     }
@@ -310,11 +322,16 @@ final class RoamingTerminalController: TerminalSurfaceController {
       bootstrapper: SSHBootstrapper(endpoint: endpoint),
       connector: QUICGrantConnector(fallbackHost: endpoint.configuration.host),
       sink: frameTap,
-      configuration: RoamingClientConfiguration(initialGrid: grid)
+      configuration: RoamingClientConfiguration(initialGrid: grid, images: imageCache)
     )
     self.backend = backend
     backend.bindInput(to: display)
     let client = backend.client
+    // Pixel geometry and the path's image variant (spec.graphics.md §16).
+    let cell = display.reportedCellPixelSize
+    let variant = imageVariant
+    await client.setCellPixelSize(width: cell.width, height: cell.height)
+    await client.setImageVariant(variant)
     lifecycleQueue.use(client)
     layoutQueue.use(client)
     let token = ObjectIdentifier(client)
@@ -554,9 +571,14 @@ final class RoamingTerminalController: TerminalSurfaceController {
 
   private func observeSystem() {
     let monitor = NWPathMonitor()
-    monitor.pathUpdateHandler = { [weak self] _ in
+    monitor.pathUpdateHandler = { [weak self] path in
+      let constrained = path.isConstrained
+      let expensive = path.isExpensive
       DispatchQueue.main.async {
-        MainActor.assumeIsolated { self?.pathChanged() }
+        MainActor.assumeIsolated {
+          self?.pathCost = (expensive, constrained)
+          self?.pathChanged()
+        }
       }
     }
     monitor.start(queue: DispatchQueue(label: "dev.swiftty.roaming.path"))
@@ -570,8 +592,23 @@ final class RoamingTerminalController: TerminalSurfaceController {
     #endif
   }
 
+  /// Whether the current path is expensive (cellular, hotspot) or
+  /// constrained (Low Data Mode).
+  private var pathCost = (expensive: false, constrained: false)
+
+  /// Low Data Mode gets reduced images; expensive paths follow the
+  /// `images-on-cellular` setting; everything else gets full images.
+  private var imageVariant: ImageVariant {
+    if pathCost.constrained { return .reduced }
+    guard pathCost.expensive else { return .full }
+    return ImageVariant(rawValue: Configuration.load().imagesOnCellular)
+      ?? .reduced
+  }
+
   /// A path change is a hint to probe, never proof of failure.
   private func pathChanged() {
+    let variant = imageVariant
+    serial { await $0.setImageVariant(variant) }
     guard pathSeen else {
       pathSeen = true
       return

@@ -45,6 +45,12 @@ extension Configuration {
     windowPaddingX = jsonc.window.padding
     windowPaddingY = jsonc.window.padding
     scrollbackLimitLines = jsonc.terminal.scrollbackLimit
+    if let limit = jsonc.terminal.imageStorageLimit {
+      imageStorageLimit = limit
+    }
+    if let variant = jsonc.terminal.imagesOnCellular {
+      imagesOnCellular = variant
+    }
     preferredShell = jsonc.terminal.preferredShell
     shellProfiles = jsonc.terminal.shellProfiles
     if let shell = jsonc.terminal.shell {

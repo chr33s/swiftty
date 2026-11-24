@@ -67,6 +67,8 @@ extension TerminalState {
     cursor.x = frame.cursorX
     cursor.y = frame.cursorY
     cursor.pendingWrap = false
+    presentationImages = frame.images
+    presentationImageCellSize = frame.imageCellSize
     cursorStyle = frame.cursorStyle
     modes.update(.cursorVisible, frame.cursorVisible)
     modes.update(.cursorBlink, frame.cursorBlinking)

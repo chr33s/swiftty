@@ -111,7 +111,9 @@ final class LocalRoamingPanes: RoamingPanes {
       try await MuxConnection.connect(
         endpoint: endpoint,
         frontend: .native,
-        forwardedTransport: .remote
+        capabilities: ClientCapabilities.supported.union(.images),
+        forwardedTransport: .remote,
+        beforeHandshakeTimeoutForTesting: nil
       )
     }
   }

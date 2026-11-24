@@ -70,6 +70,8 @@ final class PaneRuntime: @unchecked Sendable {
     let columns: Int
     let rows: Int
     let generation: UInt64
+    var cellWidth: Int?
+    var cellHeight: Int?
   }
 
   private struct ResizeState: Sendable {
@@ -240,6 +242,11 @@ final class PaneRuntime: @unchecked Sendable {
     state.terminfoName = innerTerm
     state.keyboardProtocolEnabled = false
     state.clipboardWritesAdvertised = false
+    // Kitty graphics: programs run on this Mac and may name their own
+    // files; every client can present the result (spec.graphics.md §12).
+    state.kittyGraphicsEnabled = true
+    state.kittyGraphicsMedia = .all
+    state.imageStorageLimit = limits.imageBytesPerScreen
     // The kitty clipboard reaches the controlling app, which may prompt;
     // the service answers if no app can.
     let requests = clipboardRequests
@@ -402,6 +409,9 @@ final class PaneRuntime: @unchecked Sendable {
       restored.onShellCommandStarted = state.onShellCommandStarted
       restored.kittyClipboardReader = state.kittyClipboardReader
       restored.kittyClipboardWriter = state.kittyClipboardWriter
+      restored.kittyGraphicsEnabled = state.kittyGraphicsEnabled
+      restored.kittyGraphicsMedia = state.kittyGraphicsMedia
+      restored.imageStorageLimit = state.imageStorageLimit
       restored.setScrollbackCompression(state.scrollbackCompression.requested)
       // A pane that adopted its process keeps the engine the cut left.
       state = restored
@@ -528,7 +538,28 @@ final class PaneRuntime: @unchecked Sendable {
     _ = state.takeDamage()
     noteScrollbackActivity()
     checkForeground(afterOutput: true)
+    scheduleImageAnimation()
     noteChange()
+  }
+
+  /// The kitty animation clock (spec.graphics.md §11): one pending tick on
+  /// the pane queue while running animations are placed; each frame change
+  /// exports a new frame, whose new pixel key clients fetch.
+  private func scheduleImageAnimation() {
+    guard !imageAnimationScheduled, state.hasKittyImages else { return }
+    let now = DispatchTime.now().uptimeNanoseconds / 1_000_000
+    guard let delay = state.kittyAnimationTick(now: now) else { return }
+    imageAnimationScheduled = true
+    queue.asyncAfter(deadline: .now() + .milliseconds(Int(min(delay, 60_000))))
+    { [weak self] in
+      guard let self else { return }
+      self.imageAnimationScheduled = false
+      let before = self.state.kittyGraphicsRevision
+      let now = DispatchTime.now().uptimeNanoseconds / 1_000_000
+      _ = self.state.kittyAnimationTick(now: now)
+      if self.state.kittyGraphicsRevision != before { self.noteChange() }
+      self.scheduleImageAnimation()
+    }
   }
 
   /// At most one kernel read per interval. Output also schedules one
@@ -684,6 +715,8 @@ final class PaneRuntime: @unchecked Sendable {
       message: r.message,
     )
   }
+
+  private var imageAnimationScheduled = false
 
   private func noteChange() {
     revision &+= 1
@@ -1089,13 +1122,20 @@ final class PaneRuntime: @unchecked Sendable {
   /// Commit engine geometry only after the ordered process resize succeeds. Returns the
   /// geometry generation frames carry once this request is applied.
   @discardableResult
-  func resize(columns: Int, rows: Int) -> UInt64 {
+  func resize(
+    columns: Int,
+    rows: Int,
+    cellWidth: Int? = nil,
+    cellHeight: Int? = nil
+  ) -> UInt64 {
     let (generation, schedule) = resizes.withLock { requests in
       requests.requested &+= 1
       requests.pending = ResizeRequest(
         columns: columns,
         rows: rows,
         generation: requests.requested,
+        cellWidth: cellWidth ?? requests.pending?.cellWidth,
+        cellHeight: cellHeight ?? requests.pending?.cellHeight,
       )
       guard !requests.scheduled else { return (requests.requested, false) }
       requests.scheduled = true
@@ -1135,7 +1175,15 @@ final class PaneRuntime: @unchecked Sendable {
     _ request: ResizeRequest,
     completion: @escaping @Sendable () -> Void
   ) {
-    guard request.columns != state.columns || request.rows != state.rows else {
+    let cell = (
+      request.cellWidth ?? state.cellPixelSize.width,
+      request.cellHeight ?? state.cellPixelSize.height
+    )
+    let cellChanged = cell != state.cellPixelSize
+    guard
+      request.columns != state.columns || request.rows != state.rows
+        || cellChanged
+    else {
       geometryFailure = nil
       geometryGeneration = request.generation
       noteChange()
@@ -1147,6 +1195,7 @@ final class PaneRuntime: @unchecked Sendable {
       case .success:
         geometryFailure = nil
         geometryGeneration = request.generation
+        state.cellPixelSize = cell
         state.resize(columns: request.columns, rows: request.rows)
         publish()
       case let .failure(error):
@@ -1162,6 +1211,8 @@ final class PaneRuntime: @unchecked Sendable {
       process.resize(
         columns: request.columns,
         rows: request.rows,
+        pixelWidth: request.columns * cell.0,
+        pixelHeight: request.rows * cell.1,
         completion: commit
       )
     }
@@ -1564,6 +1615,25 @@ final class PaneRuntime: @unchecked Sendable {
   struct FrameEncoding: Sendable {
     var binary = false
     var deltas = false
+    /// Frames carry kitty graphics placements (`ClientCapabilities.images`).
+    var images = false
+  }
+
+  /// Pixels a frame referenced, for `MuxCommand.imageChunk`.
+  func imageChunk(
+    key: UInt64,
+    offset: Int,
+    completion: @escaping @Sendable (Result<MuxImageChunk, MuxError>) -> Void
+  ) {
+    queue.async { [self] in
+      guard let pixels = state.kittyPixels(serial: key) else {
+        return completion(.failure(MuxError(.notFound, "image")))
+      }
+      guard let chunk = FrameExporter.imageChunk(pixels, offset: offset) else {
+        return completion(.failure(MuxError(.invalidRequest, "image offset")))
+      }
+      completion(.success(chunk))
+    }
   }
 
   /// Result of applying a viewer's anchor without touching the engine
@@ -1640,6 +1710,9 @@ final class PaneRuntime: @unchecked Sendable {
             limits: limits,
           )
           frame.search?.selected = selected
+          if encoding.images {
+            frame.images = FrameExporter.images(from: screen)
+          }
           // Detach forgets a tracker; this bound only evicts the attachment
           // least recently captured, never every live one.
           rowTrackerOrder.removeAll { $0 == attachment }

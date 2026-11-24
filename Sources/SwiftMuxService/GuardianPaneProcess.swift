@@ -314,6 +314,22 @@ final class GuardianPaneProcess: PaneProcess, @unchecked Sendable {
     rows: Int,
     completion: @escaping @Sendable (Result<Void, MuxError>) -> Void
   ) {
+    resize(
+      columns: columns,
+      rows: rows,
+      pixelWidth: 0,
+      pixelHeight: 0,
+      completion: completion
+    )
+  }
+
+  func resize(
+    columns: Int,
+    rows: Int,
+    pixelWidth: Int,
+    pixelHeight: Int,
+    completion: @escaping @Sendable (Result<Void, MuxError>) -> Void
+  ) {
     guard let handle, !lost else {
       completion(.failure(MuxError(.connectionLost, "pane unavailable")));
       return
@@ -323,8 +339,15 @@ final class GuardianPaneProcess: PaneProcess, @unchecked Sendable {
       return
     }
     resizeCompletion = completion
-    request(.resize(pane: handle, columns: columns, rows: rows)) {
-      [self] result in
+    request(
+      .resize(
+        pane: handle,
+        columns: columns,
+        rows: rows,
+        pixelWidth: pixelWidth > 0 ? pixelWidth : nil,
+        pixelHeight: pixelHeight > 0 ? pixelHeight : nil
+      )
+    ) { [self] result in
       switch result {
       case let .success(.resized(through)):
         output.afterApplying(through: through) { [self] in

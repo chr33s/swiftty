@@ -99,6 +99,24 @@ public protocol TerminalByteChannel: AnyObject, Sendable {
   func write(_ bytes: [UInt8]) async throws
   /// Sends an SSH window-change request.
   func resize(columns: Int, rows: Int) async throws
+  /// Sends an SSH window-change request carrying the pixel size too, for
+  /// programs that size images by it (`kitten icat`, spec.graphics.md §16).
+  func resize(
+    columns: Int,
+    rows: Int,
+    pixelWidth: Int,
+    pixelHeight: Int
+  ) async throws
   /// Closes the channel. Idempotent.
   func close() async
+}
+
+extension TerminalByteChannel {
+  /// Channels without pixel sizes send the character grid only.
+  public func resize(
+    columns: Int,
+    rows: Int,
+    pixelWidth: Int,
+    pixelHeight: Int
+  ) async throws { try await resize(columns: columns, rows: rows) }
 }

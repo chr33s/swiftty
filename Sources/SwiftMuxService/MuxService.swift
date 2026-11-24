@@ -1099,6 +1099,16 @@ public actor MuxService {
         workspace: leased,
         reply: reply
       )
+    case let .imageChunk(pane, key, offset):
+      guard let runtime = attachedRuntime(pane, in: leased) else {
+        return fail(MuxError(.notFound, "pane"))
+      }
+      runtime.imageChunk(key: key, offset: offset) { result in
+        switch result {
+        case let .success(chunk): reply(.success(.imageChunk(chunk)))
+        case let .failure(error): reply(.failure(error))
+        }
+      }
     case let .setOutputOptOut(on):
       guard clients[client]?.remote == false,
         let w = workspaces.firstIndex(where: { $0.id == leased })

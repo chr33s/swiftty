@@ -67,6 +67,10 @@ public struct PresentationFrame: Sendable, Equatable {
   /// across frames. `screen` is 1 for a row that can still change in
   /// place. Nil otherwise.
   public var rowKeys: [[UInt64]]? = nil
+  /// Kitty graphics placements the host resolved, relative to row 0, with
+  /// the host cell size their pixel geometry assumes (spec.graphics.md §16).
+  public var images: [KittyGraphics.Placement] = []
+  public var imageCellSize = SIMD2<Int>.zero
 
   public init(
     columns: Int,

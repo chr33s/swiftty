@@ -21,7 +21,7 @@ trap 'exit 1' HUP INT TERM
 # Generated Unicode and Blowfish tables retain their generator's formatting.
 # Finish discovery before a formatter can consume a partial file list.
 if rg --files -0 Sources Tests Scripts -g '*.swift' \
-  -g '!Tables.swift' -g '!BlowfishTables.swift' -g '!GraphemeBreakTables.swift' -g '!GraphemeBreakTestData.swift' \
+  -g '!Tables.swift' -g '!KittyDiacritics.swift' -g '!BlowfishTables.swift' -g '!GraphemeBreakTables.swift' -g '!GraphemeBreakTestData.swift' \
   > "$file_list"; then
   :
 else

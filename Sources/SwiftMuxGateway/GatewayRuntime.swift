@@ -263,7 +263,8 @@ package actor GatewayRuntime {
     for workspace: WorkspaceID,
     role: AttachmentRole,
     frontend: FrontendKind,
-    transport: LeaseHolder.Transport
+    transport: LeaseHolder.Transport,
+    capabilities: ClientCapabilities = .supported
   ) async throws -> MuxConnection {
     try checkOpen()
     let authority = try await directory.nativeAuthority(for: .id(workspace))
@@ -273,6 +274,7 @@ package actor GatewayRuntime {
       authority,
       peerRequirement: peerRequirement,
       frontend: frontend,
+      capabilities: capabilities,
       forwardedTransport: transport
     )
   }

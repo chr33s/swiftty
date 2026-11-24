@@ -22,7 +22,8 @@ struct Options: Sendable {
     "ascii", "utf8", "utf8-cjk", "utf8-latin", "unicode-joins", "combining",
     "compiler-log", "cat-source", "csi-heavy", "osc-heavy", "scroll", "redraw",
     "scroll-frames", "resize", "latency", "storage", "scrollback-memory",
-    "scrollback-compression", "scrollback-resume",
+    "scrollback-compression", "scrollback-resume", "kitty-transmit",
+    "kitty-png", "kitty-placeholders", "kitty-render", "kitty-file",
   ]
 
   static func parse(
@@ -789,3 +790,4 @@ runStorageBenchmarks()
 runScrollbackMemoryBenchmarks()
 runScrollbackCompressionBenchmarks()
 runScrollbackResumeBenchmarks()
+runKittyBenchmarks()

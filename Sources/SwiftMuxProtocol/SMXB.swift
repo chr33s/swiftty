@@ -58,6 +58,7 @@ public enum SMXB {
     case search = 16
     case title = 17
     case dropTarget = 18
+    case images = 19
     case deltaHeader = 20
     case rowSources = 21
     case replacedRows = 22
@@ -91,6 +92,7 @@ public enum SMXB {
       frame.title,
       frame.dropTarget
     )
+    if let images = frame.images { w.images(images) }
     return w.finish()
   }
 
@@ -114,6 +116,7 @@ public enum SMXB {
       delta.title,
       delta.dropTarget
     )
+    if let images = delta.images { w.images(images) }
     w.section(.deltaHeader) {
       $0.u64(delta.baseRevision)
       $0.u32(delta.identityChecksum)
@@ -375,6 +378,40 @@ extension SMXB {
       }
     }
 
+    mutating func images(_ images: FrameImages) {
+      section(.images) { b in
+        b.u16(images.cellWidth)
+        b.u16(images.cellHeight)
+        b.u32(UInt32(images.images.count))
+        for i in images.images {
+          b.u64(i.key)
+          b.u32(i.width)
+          b.u32(i.height)
+          b.u8(i.bytesPerPixel)
+        }
+        b.u32(UInt32(images.placements.count))
+        for p in images.placements {
+          b.u16(p.image)
+          b.u8(p.layer)
+          b.u32(UInt32(bitPattern: p.z))
+          b.u8(p.placeholder ? 1 : 0)
+          b.u32(UInt32(bitPattern: p.row))
+          b.u32(UInt32(bitPattern: p.column))
+          for v in [
+            p.columns, p.rows, p.offsetX, p.offsetY, p.width, p.height,
+            p.sourceX, p.sourceY, p.sourceWidth, p.sourceHeight,
+          ] { b.u32(v) }
+        }
+        b.u32(UInt32(images.prefetch.count))
+        for i in images.prefetch {
+          b.u64(i.key)
+          b.u32(i.width)
+          b.u32(i.height)
+          b.u8(i.bytesPerPixel)
+        }
+      }
+    }
+
     mutating func finish() -> Data {
       let length = UInt32(out.bytes.count - SMXB.headerBytes).littleEndian
       withUnsafeBytes(of: length) { raw in
@@ -491,12 +528,13 @@ extension SMXB {
           .identity, .rstHeader, .grid, .rowVersions, .wrapped, .glyphs,
           .cellStyles, .kinds, .graphemes, .styleTable, .underlineColors,
           .palette, .cursor, .modes, .history, .search, .title, .dropTarget,
+          .images,
         ]
         : [
           .identity, .rstHeader, .grid, .rowVersions, .wrapped, .glyphs,
           .cellStyles, .kinds, .graphemes, .styleTable, .underlineColors,
           .palette, .cursor, .modes, .history, .search, .title, .dropTarget,
-          .deltaHeader, .rowSources, .replacedRows,
+          .images, .deltaHeader, .rowSources, .replacedRows,
         ]
       guard Set(sections.keys).isSubset(of: allowed) else {
         throw MuxError(.invalidRequest, "SMXB section not allowed")
@@ -649,7 +687,8 @@ extension SMXB {
           search: meta.search,
           title: meta.title,
           dropTarget: meta.drop,
-          rowVersions: versions
+          rowVersions: versions,
+          images: meta.images
         )
         try FrameValidator.validate(frame, limits: limits)
         return Record(envelope: envelope, payload: .frame(frame))
@@ -674,6 +713,7 @@ extension SMXB {
           search: meta.search,
           title: meta.title,
           dropTarget: meta.drop,
+          images: meta.images,
           identityChecksum: d.crc
         )
         try FrameDeltaApplier.validateShape(value, limits: limits)
@@ -690,6 +730,7 @@ extension SMXB {
       var search: FrameSearch?
       var title: String
       var drop: FrameDropTarget?
+      var images: FrameImages?
     }
 
     func metadata(rows: Int, columns: Int) throws(MuxError) -> Metadata {
@@ -803,6 +844,87 @@ extension SMXB {
         try d.end()
         drop = FrameDropTarget(types: types, accepted: accepted)
       }
+      var images: FrameImages?
+      if sections[.images] != nil {
+        var r = try required(.images)
+        let cellWidth = try r.u16()
+        let cellHeight = try r.u16()
+        let imageCount = try r.count(unit: 17)
+        guard imageCount <= FrameImages.maxImages else {
+          throw MuxError(.invalidRequest, "frame images count")
+        }
+        var table: [FrameImage] = []
+        for _ in 0 ..< imageCount {
+          table.append(
+            FrameImage(
+              key: try r.u64(),
+              width: try r.u32(),
+              height: try r.u32(),
+              bytesPerPixel: try r.u8()
+            )
+          )
+        }
+        let placementCount = try r.count(unit: 56)
+        guard placementCount <= FrameImages.maxPlacements else {
+          throw MuxError(.invalidRequest, "frame placements count")
+        }
+        var placements: [FramePlacement] = []
+        placements.reserveCapacity(placementCount)
+        for _ in 0 ..< placementCount {
+          let image = try r.u16()
+          let layer = try r.u8()
+          let z = Int32(bitPattern: try r.u32())
+          let placeholder = try r.bool()
+          let row = Int32(bitPattern: try r.u32())
+          let column = Int32(bitPattern: try r.u32())
+          var v: [UInt32] = []
+          for _ in 0 ..< 10 { v.append(try r.u32()) }
+          placements.append(
+            FramePlacement(
+              image: image,
+              layer: layer,
+              z: z,
+              placeholder: placeholder,
+              row: row,
+              column: column,
+              columns: v[0],
+              rows: v[1],
+              offsetX: v[2],
+              offsetY: v[3],
+              width: v[4],
+              height: v[5],
+              sourceX: v[6],
+              sourceY: v[7],
+              sourceWidth: v[8],
+              sourceHeight: v[9]
+            )
+          )
+        }
+        let prefetchCount = try r.count(unit: 17)
+        guard prefetchCount <= FrameImages.maxImages else {
+          throw MuxError(.invalidRequest, "frame prefetch count")
+        }
+        var prefetch: [FrameImage] = []
+        for _ in 0 ..< prefetchCount {
+          prefetch.append(
+            FrameImage(
+              key: try r.u64(),
+              width: try r.u32(),
+              height: try r.u32(),
+              bytesPerPixel: try r.u8()
+            )
+          )
+        }
+        try r.end()
+        images = FrameImages(
+          cellWidth: cellWidth,
+          cellHeight: cellHeight,
+          images: table,
+          placements: placements,
+          prefetch: prefetch
+        )
+        try images!.validate(rows: rows, columns: columns)
+      }
       return Metadata(
         palette: palette,
         cursor: cursor,
@@ -810,7 +932,8 @@ extension SMXB {
         history: history,
         search: search,
         title: title,
-        drop: drop
+        drop: drop,
+        images: images
       )
     }
   }

@@ -234,6 +234,7 @@ extension GatewaySupervisor {
     peerRequirement: String?,
     frontend: FrontendKind,
     terminalProfile: String? = nil,
+    capabilities: ClientCapabilities = .supported,
     forwardedTransport: LeaseHolder.Transport? = nil,
     relaysAcknowledgements: Bool = false
   ) async throws -> MuxConnection {
@@ -245,6 +246,7 @@ extension GatewaySupervisor {
       peerRequirement: peerRequirement,
       frontend: frontend,
       terminalProfile: terminalProfile,
+      capabilities: capabilities,
       forwardedTransport: forwardedTransport,
       relaysAcknowledgements: relaysAcknowledgements
     )

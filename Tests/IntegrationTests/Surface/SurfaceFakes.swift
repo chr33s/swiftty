@@ -114,6 +114,8 @@ actor FakeHost {
   private(set) var screenAckCount = 0
   /// `Viewport` movements received, in order.
   private(set) var viewports: [Int64] = []
+  /// Keys from each `ImageRequest` the client sent.
+  private(set) var imageRequests: [[UInt64]] = []
   /// Features advertised in `Attached`.
   var features: RSTFeatures = .required
 
@@ -308,6 +310,14 @@ actor FakeHost {
     await sendSnapshot(snapshot, to: current)
   }
 
+  /// Sends raw snapshot-stream bytes (an image blob record).
+  func sendRawSnapshotForTesting(_ payload: [UInt8]) async throws {
+    let id = try #require(current)
+    let link = try #require(links[id])
+    nextStream += 1
+    try await link.connection.sendSnapshot(payload, stream: nextStream)
+  }
+
   func snapshotForTesting() -> ScreenSnapshot {
     makeSnapshot(epoch: max(1, epoch), revision: screenRevision + 1)
   }
@@ -385,6 +395,8 @@ actor FakeHost {
       await send(.terminated(epoch: e), to: id)
     case let .viewport(_, lines): viewports.append(lines)
     case .screenAck: screenAckCount += 1
+    case let .imageRequest(_, keys, _): imageRequests.append(keys)
+    case .cellSize: break
     default: await send(.error(.init(.malformed)), to: id)
     }
   }
@@ -629,6 +641,7 @@ final class FakeByteChannel: TerminalByteChannel {
     var delivered = 0
     var writes: [[UInt8]] = []
     var resizes: [GridSize] = []
+    var pixelSizes: [(Int, Int)] = []
     var closed = false
   }
 
@@ -708,6 +721,20 @@ final class FakeByteChannel: TerminalByteChannel {
   func resize(columns: Int, rows: Int) async throws {
     state.withLock { $0.resizes.append(GridSize(columns: columns, rows: rows)) }
   }
+
+  func resize(
+    columns: Int,
+    rows: Int,
+    pixelWidth: Int,
+    pixelHeight: Int
+  ) async throws {
+    state.withLock {
+      $0.resizes.append(GridSize(columns: columns, rows: rows))
+      $0.pixelSizes.append((pixelWidth, pixelHeight))
+    }
+  }
+
+  var pixelSizes: [(Int, Int)] { state.withLock { $0.pixelSizes } }
 
   // Keep credit-driven delivery available as a probe: backpressure tests
   // must detect credit incorrectly returned by a backend after close.

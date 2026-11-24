@@ -258,6 +258,10 @@ extension TerminalState {
     let keptRow = screenAbsoluteRow(cursor.y)
     invalidateSelection()
     forgetHyperlinkRows()
+    if !isAlternateScreen {
+      // History is dropped and rows renumbered: no placement survives.
+      clearKittyImages()
+    }
     if !isAlternateScreen, cursor.y > 0 {
       let keep = cursor.y
       grid.scrollUp(top: 0, bottom: rows - 1, count: keep, fill: .blank)

@@ -1,5 +1,6 @@
 import Darwin
 import Dispatch
+import Synchronization
 
 /// One terminal: the terminal model plus the transport feeding it.
 ///
@@ -114,6 +115,24 @@ public final class TerminalSession: @unchecked Sendable {
     set { callbacks.semanticInput = newValue }
   }
 
+  /// Called on `queue` when the cell size in pixels changes (layout, font
+  /// size, display scale). Remote frontends forward it so the remote PTY
+  /// reports pixel sizes (spec.graphics.md §16.2).
+  public var cellPixelSizeHandler: (@Sendable (Int, Int) -> Void)? {
+    get { cellPixelHandler.withLock { $0 } }
+    set { cellPixelHandler.withLock { $0 = newValue } }
+  }
+  private let cellPixelHandler = Mutex<(@Sendable (Int, Int) -> Void)?>(nil)
+
+  /// Presentation mode: a tap on an image. Returns true when it consumed
+  /// the tap (a roaming client loading images that are off, spec.graphics.md
+  /// §16.4). Called on the main thread.
+  public var imageTapHandler: (@Sendable () -> Bool)? {
+    get { imageTap.withLock { $0 } }
+    set { imageTap.withLock { $0 = newValue } }
+  }
+  private let imageTap = Mutex<(@Sendable () -> Bool)?>(nil)
+
   /// Receives the grid a frontend proposes (view geometry) instead of
   /// resizing or reflowing the displayed frame (presentation mode). Called
   /// on `queue`, in order with input; dimensions are at least one.
@@ -204,6 +223,8 @@ public final class TerminalSession: @unchecked Sendable {
   private let readBuffer: UnsafeMutableRawBufferPointer
   private var scheduledUpdateRevision: UInt64?
   private var drawnCursor: CursorState?
+  /// Graphics revision at the last publish (nil: no images).
+  private var publishedGraphicsRevision: UInt64?
   private var synchronizedSince: UInt64 = 0
   private var synchronizedGeneration: UInt64 = 0
   private var synchronizedTimeoutScheduled = false
@@ -268,6 +289,8 @@ public final class TerminalSession: @unchecked Sendable {
     )
     state.programStatusEnabled = configuration.programStatusEnabled
     state.rectangleChecksumsEnabled = configuration.rectangleChecksumsEnabled
+    state.imageStorageLimit = configuration.imageStorageLimitBytes
+    state.kittyGraphicsMedia = configuration.kittyGraphicsMedia
     state.setScrollbackCompression(
       !presentation && configuration.scrollbackCompression
     )
@@ -307,6 +330,8 @@ public final class TerminalSession: @unchecked Sendable {
       guard shouldStart() else { throw CancellationError() }
       precondition(process == nil, "session already started")
       state.rectangleChecksumsEnabled = configuration.rectangleChecksumsEnabled
+      // The program runs on this Mac: it may name its own files.
+      state.kittyGraphicsMedia = .all
       let process = try PTYProcess.spawn(
         configuration,
         columns: state.columns,
@@ -431,6 +456,12 @@ public final class TerminalSession: @unchecked Sendable {
     }
   }
 
+  /// The cell size the frontend last reported (0 × 0 before it does).
+  public var reportedCellPixelSize: (width: Int, height: Int) {
+    if DispatchQueue.getSpecific(key: queueKey) == true { return cellPixelSize }
+    return queue.sync { cellPixelSize }
+  }
+
   /// Cell size in pixels, reported to the PTY and via XTWINOPS.
   public func setCellPixelSize(width: Int, height: Int) {
     queue.async { [self] in
@@ -448,6 +479,7 @@ public final class TerminalSession: @unchecked Sendable {
       if previous.width != cellPixelSize.width
         || previous.height != cellPixelSize.height
       {
+        cellPixelSizeHandler?(cellPixelSize.width, cellPixelSize.height)
         publish()
       }
     }
@@ -811,6 +843,19 @@ public final class TerminalSession: @unchecked Sendable {
     }
   }
 
+  /// Advances kitty graphics animations on the active screen; seconds
+  /// until the next frame change, or nil when nothing animates. Frontends
+  /// call it only while visible (spec.graphics.md §13.4).
+  public func advanceImageAnimations() -> Double? {
+    let now = DispatchTime.now().uptimeNanoseconds / 1_000_000
+    let tick = { (state: inout TerminalState) -> Double? in
+      guard state.hasKittyImages else { return nil }
+      return state.kittyAnimationTick(now: now).map { Double($0) / 1000 }
+    }
+    if DispatchQueue.getSpecific(key: queueKey) == true { return tick(&state) }
+    return queue.sync { tick(&state) }
+  }
+
   /// Read-only access to the terminal state on its queue. May also be
   /// called directly from a session callback already running on `queue`.
   public func withState<R>(
@@ -1001,7 +1046,14 @@ public final class TerminalSession: @unchecked Sendable {
     if start < data.count {
       onControlModeData?(start == 0 ? data : Array(data[start...]))
     }
-    guard !state.damage.isEmpty || drawnCursor != currentCursor else { return }
+    // Kitty graphics change without text damage (an image displayed with
+    // `C=1`, a delete): the frame must still be redrawn.
+    let graphics = state.kittySnapshotKey?.revision
+    let graphicsChanged = graphics != publishedGraphicsRevision
+    publishedGraphicsRevision = graphics
+    guard
+      !state.damage.isEmpty || drawnCursor != currentCursor || graphicsChanged
+    else { return }
     let update = callbacks.updateHandler
     guard let handler = update.handler,
       scheduledUpdateRevision != update.revision

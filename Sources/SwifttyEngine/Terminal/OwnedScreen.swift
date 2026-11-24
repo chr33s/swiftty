@@ -33,6 +33,12 @@ package struct OwnedScreen: Sendable, Equatable {
   /// and its answer for the current drag.
   package var dropTypes: [String]?
   package var dropAccepted: KittyDragAndDrop.Operation?
+  /// Kitty graphics placements relative to row 0, and the cell pixel size
+  /// their pixel geometry assumes.
+  package var images: [KittyGraphics.Placement] = []
+  /// Every frame of the visible animations, for clients to prefetch.
+  package var imageFrames: [KittyImagePixels] = []
+  package var imageCellSize = SIMD2<Int>.zero
 
   package init(
     columns: Int,
@@ -105,6 +111,7 @@ package struct OwnedScreen: Sendable, Equatable {
     out.rows = rows
     out.cursor.x = min(max(0, cursor.x), columns - 1)
     out.cursor.y = min(max(0, cursor.y), rows - 1)
+    out.images = images.filter { $0.row < rows && $0.column < columns }
     return out
   }
 
@@ -172,6 +179,7 @@ extension TerminalState {
       viewportOffset: isAlternateScreen ? 0 : live - top,
       scrollbackCount: scrollbackCount,
     )
+    .withImages(of: self, top: top)
   }
 
   /// Copies the visible viewport and its metadata into owned values.
@@ -229,6 +237,24 @@ extension TerminalState {
       dropTypes: dragAndDrop?.registeredMimes,
       dropAccepted: dragAndDrop?.clientAccepted,
     )
+    .withImages(of: self, top: top)
+  }
+}
+
+extension OwnedScreen {
+  fileprivate func withImages(
+    of state: borrowing TerminalState,
+    top: Int
+  ) -> OwnedScreen {
+    guard state.hasKittyImages else { return self }
+    var out = self
+    out.images = state.kittyPlacements(top: top, rows: rows)
+    out.imageFrames = state.kittyAnimationFrames(of: out.images)
+    out.imageCellSize = SIMD2(
+      state.cellPixelSize.width,
+      state.cellPixelSize.height
+    )
+    return out
   }
 }
 

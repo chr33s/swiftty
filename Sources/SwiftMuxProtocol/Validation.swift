@@ -105,6 +105,7 @@ public enum FrameValidator {
     if let versions = frame.rowVersions, versions.count != g.rows {
       throw MuxError(.invalidRequest, "row versions")
     }
+    try frame.images?.validate(rows: g.rows, columns: g.columns)
     if let target = frame.dropTarget {
       guard target.types.count <= FrameDropTarget.maxTypes,
         target.types.allSatisfy({

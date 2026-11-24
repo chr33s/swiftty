@@ -60,7 +60,15 @@ package enum GuardianCommand: Codable, Equatable, Sendable {
     discardDeferredInput: Bool
   )
   case cancelInput(pane: GuardianPaneHandle)
-  case resize(pane: GuardianPaneHandle, columns: Int, rows: Int)
+  /// Pixel sizes fill `ws_xpixel`/`ws_ypixel` (kitty graphics sizing);
+  /// absent from older workers.
+  case resize(
+    pane: GuardianPaneHandle,
+    columns: Int,
+    rows: Int,
+    pixelWidth: Int? = nil,
+    pixelHeight: Int? = nil
+  )
   case end(pane: GuardianPaneHandle)
   case forget(pane: GuardianPaneHandle)
 }

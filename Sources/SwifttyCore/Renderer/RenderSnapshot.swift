@@ -59,6 +59,12 @@ public struct RenderSnapshot: @unchecked Sendable {
   /// Changes only when the builder observes presentation changes; polling an
   /// unchanged snapshot must not invalidate an otherwise displayed baseline.
   package let presentationRevision: UInt64
+  /// Kitty graphics placements in snapshot rows, sorted by layer and z
+  /// (spec.graphics.md §13.1). Empty for terminals without images.
+  public let images: [KittyGraphics.Placement]
+  /// Cell size, in pixels, the placements' pixel geometry assumes. The
+  /// renderer scales by its own cell size over this one.
+  public let imageCellSize: SIMD2<Int>
 
   init(
     storage: SnapshotStorage,
@@ -80,7 +86,11 @@ public struct RenderSnapshot: @unchecked Sendable {
     scrollbackCount: Int,
     sequence: UInt64,
     presentationRevision: UInt64? = nil,
+    images: [KittyGraphics.Placement] = [],
+    imageCellSize: SIMD2<Int> = .zero,
   ) {
+    self.images = images
+    self.imageCellSize = imageCellSize
     self.storage = storage
     self.source = source
     rowBase = storage.rowRecords

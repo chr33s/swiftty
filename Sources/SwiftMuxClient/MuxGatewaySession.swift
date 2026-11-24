@@ -17,14 +17,20 @@ public actor MuxGatewaySession {
 
   private var gateway: MuxGatewayConnection
   private let frontend: FrontendKind
+  private let capabilities: ClientCapabilities
   private var pending: Task<Selection, any Error>?
   private var closed = false
   public private(set) var selection: Selection?
 
   /// The shared gateway control connection remains caller-owned.
-  public init(gateway: MuxGatewayConnection, frontend: FrontendKind = .native) {
+  public init(
+    gateway: MuxGatewayConnection,
+    frontend: FrontendKind = .native,
+    capabilities: ClientCapabilities = .supported
+  ) {
     self.gateway = gateway
     self.frontend = frontend
+    self.capabilities = capabilities
   }
 
   /// A successful switch closes the previous transport and requires new full
@@ -96,12 +102,14 @@ public actor MuxGatewaySession {
       throw MuxError(.invalidRequest, "observer cannot take over a controller")
     }
     let frontend = frontend
+    let capabilities = capabilities
     let previousID = selection?.workspace.id
     let task = Task.detached {
       let opened = try await gateway.openWorkspace(
         selector,
         role: role,
-        frontend: frontend
+        frontend: frontend,
+        capabilities: capabilities
       )
       let connection = opened.connection
       do {

@@ -24,6 +24,8 @@ let usage = """
                        when present, else a password prompt)
     -r, --resume ID    reattach to an existing session
     --helper PATH      swifttyd path on the host (\(defaultHelperPath))
+    --graphics MODE    kitty images: auto (probe the terminal), kitty,
+                       halfblocks or off (auto)
     --known-hosts FILE trusted host keys (default
                        ~/Library/Application Support/swroam/known_hosts.json)
 
@@ -51,6 +53,8 @@ struct Options {
   var resume: SessionID?
   var helper = defaultHelperPath
   var knownHosts: String?
+  /// Nil probes the outer terminal.
+  var graphics: TTYGraphics.Mode?
 }
 
 func parse(_ arguments: [String]) -> Options {
@@ -81,6 +85,16 @@ func parse(_ arguments: [String]) -> Options {
       options.resume = id
     case "--helper": options.helper = value("--helper")
     case "--known-hosts": options.knownHosts = value("--known-hosts")
+    case "--graphics":
+      let mode = value("--graphics")
+      if mode == "auto" {
+        options.graphics = nil
+      } else {
+        guard let parsed = TTYGraphics.Mode(rawValue: mode) else {
+          fail("--graphics: auto, kitty, halfblocks or off", code: 64)
+        }
+        options.graphics = parsed
+      }
     case _ where argument.hasPrefix("-"):
       fail("unknown option \(argument)\n\n\(usage)", code: 64)
     default:
@@ -222,7 +236,12 @@ let paths = PathMonitor()
 let outcome: RoamingTerminalClient.Outcome
 do {
   // Top-level code runs on the main actor.
-  let terminal = RoamingTerminalClient(client: client, sink: sink, tty: tty)
+  let terminal = RoamingTerminalClient(
+    client: client,
+    sink: sink,
+    tty: tty,
+    graphics: options.graphics
+  )
   terminal.willEnterRawMode = {
     decider.interactive.store(false, ordering: .releasing)
   }

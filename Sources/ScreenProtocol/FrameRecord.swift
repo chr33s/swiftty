@@ -113,10 +113,14 @@ extension SnapshotFrame {
   /// bounded title. A delta is complete only once applied to its base.
   public static func decodeRecord(
     _ bytes: [UInt8],
-    limits: NegotiatedLimits = NegotiatedLimits()
+    limits: NegotiatedLimits = NegotiatedLimits(),
+    allowsImages: Bool = false
   ) throws(FramingError) -> ScreenRecord {
     guard let header = try header(bytes, limits: limits) else {
       throw .truncated
+    }
+    guard header.encoding != .imageBlob else {
+      throw .invalidFrame("image record")
     }
     let total = headerLength + header.encodedLength
     guard bytes.count >= total else { throw .truncated }
@@ -140,6 +144,9 @@ extension SnapshotFrame {
     else { throw .invalidFrame("envelope") }
     switch record.payload {
     case var .frame(frame):
+      guard allowsImages || frame.images == nil else {
+        throw .invalidFrame("images without kittyGraphics")
+      }
       try checkProfile(
         title: frame.title,
         search: frame.search,
@@ -149,6 +156,9 @@ extension SnapshotFrame {
       frame.identity = rst.frameIdentity
       return .frame(frame, rst)
     case var .delta(delta):
+      guard allowsImages || delta.images == nil else {
+        throw .invalidFrame("images without kittyGraphics")
+      }
       try checkProfile(
         title: delta.title,
         search: delta.search,

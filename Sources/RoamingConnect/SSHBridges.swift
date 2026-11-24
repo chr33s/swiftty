@@ -264,5 +264,20 @@ public final class SSHShellByteChannel: TerminalByteChannel, @unchecked Sendable
     try await channel?.resize(columns: columns, rows: rows)
   }
 
+  public func resize(
+    columns: Int,
+    rows: Int,
+    pixelWidth: Int,
+    pixelHeight: Int
+  ) async throws {
+    try await channel?
+      .resize(
+        columns: columns,
+        rows: rows,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight
+      )
+  }
+
   public func close() async { await channel?.close() }
 }

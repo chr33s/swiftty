@@ -19,7 +19,7 @@ import Synchronization
 public final class SSHStreamBackend: TerminalSurfaceBackend {
   enum Outbound: Sendable {
     case bytes([UInt8])
-    case resize(columns: Int, rows: Int)
+    case resize(columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int)
   }
 
   struct State: Sendable {
@@ -37,6 +37,8 @@ public final class SSHStreamBackend: TerminalSurfaceBackend {
     var onInputRefusal: (@Sendable (InputRefusal) -> Void)?
     /// Grid last sent to (or opened on) the remote PTY.
     var remoteGrid: GridSize?
+    /// Cell size in pixels last sent to the remote PTY (0 × 0 at open).
+    var remoteCell = (width: 0, height: 0)
   }
 
   public let session: TerminalSession
@@ -129,7 +131,10 @@ public final class SSHStreamBackend: TerminalSurfaceBackend {
     state.withLock { $0.remoteGrid = initial }
     session.onStateChange = { [weak self] terminal in
       self?
-        .gridChanged(GridSize(columns: terminal.columns, rows: terminal.rows))
+        .gridChanged(
+          GridSize(columns: terminal.columns, rows: terminal.rows),
+          cell: terminal.cellPixelSize
+        )
     }
     channel.start(
       TerminalChannelHandler(
@@ -159,13 +164,25 @@ public final class SSHStreamBackend: TerminalSurfaceBackend {
     }
   }
 
-  private func gridChanged(_ grid: GridSize) {
+  /// A grid or cell-size change becomes a window-change request; the
+  /// pixel size lets remote programs size images (`kitten icat`).
+  private func gridChanged(_ grid: GridSize, cell: (width: Int, height: Int)) {
     let changed = state.withLock { s -> Bool in
-      guard s.remoteGrid != grid else { return false }
+      guard s.remoteGrid != grid || s.remoteCell != cell else { return false }
       s.remoteGrid = grid
+      s.remoteCell = cell
       return true
     }
-    if changed { enqueue(.resize(columns: grid.columns, rows: grid.rows)) }
+    if changed {
+      enqueue(
+        .resize(
+          columns: grid.columns,
+          rows: grid.rows,
+          pixelWidth: grid.columns * max(cell.width, 0),
+          pixelHeight: grid.rows * max(cell.height, 0)
+        )
+      )
+    }
   }
 
   private func parsed(_ count: Int) {
@@ -248,8 +265,13 @@ public final class SSHStreamBackend: TerminalSurfaceBackend {
             return takeOutputCredit(&s)
           }
           if credit > 0 { channel.grantCredit(credit) }
-        case let .resize(columns, rows):
-          try await channel.resize(columns: columns, rows: rows)
+        case let .resize(columns, rows, pixelWidth, pixelHeight):
+          try await channel.resize(
+            columns: columns,
+            rows: rows,
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight
+          )
         }
       } catch { setLifecycle(.lost) }
     }

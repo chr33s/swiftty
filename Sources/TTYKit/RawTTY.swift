@@ -17,6 +17,17 @@ public final class RawTTY {
 
   public var isTerminal: Bool { isatty(input) == 1 && isatty(output) == 1 }
 
+  /// The outer terminal's cell size in pixels, when it reports one.
+  public var cellPixelSize: (width: Int, height: Int)? {
+    var ws = winsize()
+    guard ioctl(output, TIOCGWINSZ, &ws) == 0, ws.ws_col > 0, ws.ws_row > 0,
+      ws.ws_xpixel > 0, ws.ws_ypixel > 0
+    else { return nil }
+    return (
+      Int(ws.ws_xpixel) / Int(ws.ws_col), Int(ws.ws_ypixel) / Int(ws.ws_row)
+    )
+  }
+
   public var size: (columns: Int, rows: Int) {
     var ws = winsize()
     guard ioctl(output, TIOCGWINSZ, &ws) == 0, ws.ws_col > 0, ws.ws_row > 0

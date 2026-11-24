@@ -448,7 +448,12 @@ extension MuxService {
       let changed = record.columns != e.columns || record.rows != e.rows
       panes[e.pane]?.columns = e.columns
       panes[e.pane]?.rows = e.rows
-      let generation = record.runtime.resize(columns: e.columns, rows: e.rows)
+      let generation = record.runtime.resize(
+        columns: e.columns,
+        rows: e.rows,
+        cellWidth: e.cellWidth.map { min(max($0, 0), 4096) },
+        cellHeight: e.cellHeight.map { min(max($0, 0), 4096) }
+      )
       if changed { resized[e.pane] = generation }
     }
     // Frames at an older size, acknowledged or on the way, no longer count

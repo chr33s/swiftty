@@ -9,6 +9,9 @@ import Foundation
 //   scrollback compression units and stale-cell lists: physical layout. The
 //   logical rows they hold are encoded.
 // - `widths`: a static table.
+// - A kitty graphics chunked load in progress (abandoned at the cut) and the
+//   graphics settings (`kittyGraphicsEnabled`, media, limit), which the
+//   importing host reinstalls; images and placements are section 15.
 // - `onShellCommandFinished`, `onShellCommandStarted`, `kittyClipboardReader`,
 //   `kittyClipboardWriter`:
 //   host callbacks; the importing host installs its own.
@@ -193,6 +196,7 @@ extension TerminalState {
     try programStatus.checkpoint(into: &status)
     w.u8(TerminalCheckpoint.Section.programStatus.rawValue)
     w.data(status.bytes)
+    checkpointKittyGraphics(into: &w)
     return w.bytes
   }
 
@@ -423,6 +427,7 @@ extension TerminalState {
     programStatusChanged = try status.bool()
     try programStatus.restore(from: &status)
     try status.finish()
+    try restoreKittyGraphics(from: &r)
     try r.finish()
 
     try validateCheckpointReferences()

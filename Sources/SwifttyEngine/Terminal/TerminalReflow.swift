@@ -271,6 +271,20 @@ extension TerminalState {
     let inputMark = inputReflowMark()
     let inputMarkIndex = cursors.count
     if let inputMark { cursors.append(inputMark) }
+    // Kitty image anchors on the primary screen follow their cells.
+    let kittyStart = cursors.count
+    let screenTop = grid.historyEvicted + grid.historyCount
+    var kittyKeys: [KittyImageStorage.PlacementKey] = []
+    for (key, p) in kittyPrimary.placements {
+      guard case let .anchor(row, column) = p.location,
+        row >= grid.historyEvicted
+      else { continue }
+      var mark = Cursor()
+      mark.x = min(column, grid.columns - 1)
+      mark.y = row - screenTop
+      cursors.append(mark)
+      kittyKeys.append(key)
+    }
     let screenTopMark = cursors.count
     cursors.append(Cursor())
     defer { cursors.removeLast(cursors.count - originalCursorCount) }
@@ -316,6 +330,22 @@ extension TerminalState {
         )
       }
     }
+    let newFirst = grid.historyEvicted
+    for (i, key) in kittyKeys.enumerated() {
+      let mark = placed[kittyStart + i]
+      if mark.row < 0 {
+        kittyPrimary.placements[key]?.location = .anchor(
+          row: Int.min / 2,
+          column: 0
+        )
+      } else {
+        kittyPrimary.placements[key]?.location = .anchor(
+          row: newFirst + mark.row,
+          column: min(mark.column, newColumns - 1)
+        )
+      }
+    }
+    if !kittyKeys.isEmpty { kittyPrimary.markDirty() }
     if inputMark != nil {
       let origin = placed[inputMarkIndex]
       updateInputOffsetAfterReflow(

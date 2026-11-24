@@ -5,6 +5,9 @@ public enum DecodedInput: Equatable, Sendable {
   case key(MuxKey, MuxKeyModifiers)
   /// A complete bracketed paste. `truncated` when it exceeded the bound.
   case paste(String, truncated: Bool)
+  /// The outer terminal answering a query (kitty graphics, DA1). Never
+  /// forwarded to the remote program (spec.graphics.md §16.5).
+  case reply(TerminalReply)
 }
 
 /// Incrementally decodes bytes from the fixed Swiftty outer profile into
@@ -145,6 +148,26 @@ public struct InputDecoder {
     }
     let next = buffer[i + 1]
     switch next {
+    case UInt8(ascii: "_")
+    where rest == 2 ? !final : buffer[i + 2] == UInt8(ascii: "G"):
+      // APC `G` (an outer terminal's kitty graphics reply): consumed
+      // whole. Any other `ESC _` is Alt+_ and takes the default case.
+      guard rest > 2 else { return .incomplete }
+      var j = i + 2
+      while j + 1 < buffer.count,
+        !(buffer[j] == 0x1B && buffer[j + 1] == UInt8(ascii: "\\"))
+      {
+        j += 1
+        guard j - i <= 4096 else { return .event(nil, j - i) }
+      }
+      guard j + 1 < buffer.count else {
+        return final ? .event(nil, buffer.count - i) : .incomplete
+      }
+      let body = String(decoding: buffer[(i + 2) ..< j], as: UTF8.self)
+      return .event(
+        body.hasPrefix("G") ? .reply(.graphics(body)) : nil,
+        j + 2 - i
+      )
     case UInt8(ascii: "["):
       // CSI: parameters 0x30–0x3F, intermediates 0x20–0x2F, final 0x40–0x7E.
       var j = i + 2
@@ -168,6 +191,9 @@ public struct InputDecoder {
       let finalByte = buffer[j]
       let length = j - i + 1
       if finalByte == UInt8(ascii: "~"), params == "200" { return .pasteStart }
+      if finalByte == UInt8(ascii: "c"), params.hasPrefix("?") {
+        return .event(.reply(.deviceAttributes(params)), length)
+      }
       return .event(Self.csi(params, finalByte), length)
     case UInt8(ascii: "O"):
       guard rest >= 3 else {

@@ -248,3 +248,99 @@ public enum FrameExporter {
     }
   }
 }
+
+// MARK: Kitty graphics
+
+extension FrameExporter {
+  /// The frame `images` section for a screen's placements (spec.graphics.md
+  /// §14.3), keeping the lowest layers and z first within the limits. Nil
+  /// when the screen shows no images.
+  package static func images(from screen: OwnedScreen) -> FrameImages? {
+    guard !screen.images.isEmpty else { return nil }
+    var table: [FrameImage] = []
+    var index: [UInt64: UInt16] = [:]
+    var placements: [FramePlacement] = []
+    for p in screen.images {
+      guard placements.count < FrameImages.maxPlacements else { break }
+      let key = p.pixels.serial
+      var i = index[key]
+      if i == nil {
+        guard table.count < FrameImages.maxImages else { continue }
+        i = UInt16(table.count)
+        index[key] = i
+        table.append(
+          FrameImage(
+            key: key,
+            width: UInt32(p.pixels.width),
+            height: UInt32(p.pixels.height),
+            bytesPerPixel: UInt8(p.pixels.bytesPerPixel)
+          )
+        )
+      }
+      guard p.width > 0, p.height > 0, p.sourceWidth > 0, p.sourceHeight > 0,
+        p.columns > 0, p.rows > 0, let row = Int32(exactly: p.row),
+        let column = Int32(exactly: p.column)
+      else { continue }
+      let limit = Int(4 * FrameImages.maxDimension)
+      func clamp(_ v: Int) -> UInt32 { UInt32(min(max(v, 0), limit)) }
+      placements.append(
+        FramePlacement(
+          image: i!,
+          layer: p.layer.rawValue,
+          z: p.z,
+          placeholder: p.isPlaceholder,
+          row: row,
+          column: column,
+          columns: clamp(p.columns),
+          rows: clamp(p.rows),
+          offsetX: clamp(p.offsetX),
+          offsetY: clamp(p.offsetY),
+          width: clamp(p.width),
+          height: clamp(p.height),
+          sourceX: UInt32(p.sourceX),
+          sourceY: UInt32(p.sourceY),
+          sourceWidth: UInt32(p.sourceWidth),
+          sourceHeight: UInt32(p.sourceHeight)
+        )
+      )
+    }
+    guard !placements.isEmpty else { return nil }
+    let prefetch = screen.imageFrames.filter { index[$0.serial] == nil }
+      .prefix(FrameImages.maxImages)
+      .map {
+        FrameImage(
+          key: $0.serial,
+          width: UInt32($0.width),
+          height: UInt32($0.height),
+          bytesPerPixel: UInt8($0.bytesPerPixel)
+        )
+      }
+    return FrameImages(
+      cellWidth: UInt16(clamping: screen.imageCellSize.x),
+      cellHeight: UInt16(clamping: screen.imageCellSize.y),
+      images: table,
+      placements: placements,
+      prefetch: Array(prefetch)
+    )
+  }
+
+  /// One reply's worth of pixels from `offset`.
+  public static func imageChunk(
+    _ pixels: KittyImagePixels,
+    offset: Int
+  ) -> MuxImageChunk? {
+    let total = pixels.bytes.count
+    guard offset >= 0, offset <= total else { return nil }
+    let end = min(total, offset + MuxImageChunk.maxBytes)
+    return MuxImageChunk(
+      image: FrameImage(
+        key: pixels.serial,
+        width: UInt32(pixels.width),
+        height: UInt32(pixels.height),
+        bytesPerPixel: UInt8(pixels.bytesPerPixel)
+      ),
+      offset: offset,
+      bytes: Data(pixels.bytes[offset ..< end])
+    )
+  }
+}

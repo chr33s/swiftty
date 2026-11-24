@@ -44,7 +44,7 @@ The following feature table describes the full-client profile. §2.1 narrows it 
 | Foreground network recovery and reattachment after client suspension | Indefinite background execution or background SFTP guarantees |
 | SFTP directory browsing and regular-file upload/download/resume | Recursive transfers, synchronization, filesystem mounting |
 | Plain SSH fallback when the helper or UDP is unavailable | Automatic conversion of a roaming session into a plain SSH session |
-| Unicode text, common terminal attributes, alternate screen, keyboard/paste | Terminal graphics, remote clipboard writes, speculative echo |
+| Unicode text, common terminal attributes, alternate screen, keyboard/paste; kitty graphics with `kittyGraphics` ([spec.graphics.md §16](spec.graphics.md#16-rst1-roaming-and-swroam)) | Sixel, remote clipboard writes, speculative echo |
 
 A direct client may manage several saved sessions, but **only one roaming terminal is actively attached per client application at a time in the minimal UI**. Each server session permits one controlling client across all platforms. New platforms do not enable concurrent writers or automatic cross-device credential synchronization. [spec.ssh-identity.md](spec.ssh-identity.md) supersedes the device-only credential exclusion for iPhone, iPad, Mac Catalyst and visionOS: SSH identities stay device-only by default, and syncing one through iCloud Keychain, or syncing profiles and public metadata through CloudKit, is an explicit per-identity or per-setting opt-in. The watchOS companion does not attach to RST/1 or acquire a writer lease.
 
@@ -350,7 +350,7 @@ Use full owned snapshots, not borrowed emulator buffers. Apply a snapshot atomic
 
 Terminal-generated replies, such as cursor-position reports, return to the host PTY locally. The direct-client renderer MUST NOT generate duplicate replies or interpret the snapshot as incoming ANSI output.
 
-The supported terminal profile includes cursor movement, erase, scroll regions, SGR attributes, color, alternate screen, cursor/keypad modes, and bracketed paste. Advertise only a terminal profile that passes the compatibility corpus; do not advertise graphics or clipboard features that were disabled.
+The supported terminal profile includes cursor movement, erase, scroll regions, SGR attributes, color, alternate screen, cursor/keypad modes, and bracketed paste. Advertise only a terminal profile that passes the compatibility corpus; do not advertise graphics or clipboard features that were disabled. Kitty graphics is a negotiated feature ([spec.graphics.md §16](spec.graphics.md#16-rst1-roaming-and-swroam)).
 
 The client sends semantic text, keys, and paste requests. The server encodes them using its current keyboard and paste modes. IME composition remains local until text is committed. Mouse reporting is limited to wheel notches (`mouseWheel`, §6); clicks, drags and motion stay local.
 
@@ -757,7 +757,7 @@ These checks do not replace the remaining platform-wide release matrix in §2.4.
 
 Reject unsupported sizes explicitly. The renderer's style-table and cell counts must match grid bounds. Validate integer arithmetic before allocation. Enforce decoder nesting, compression-output, terminal-control-string, and malformed UTF-8 limits.
 
-Disable terminal graphics, remote clipboard changes, remote URL opening, and filesystem actions carried by escape sequences. A server screen is untrusted presentation content even after SSH authentication.
+Disable Sixel, remote clipboard changes, remote URL opening, and filesystem actions carried by escape sequences from remote programs. Kitty graphics runs in the host engine, where file media name the host's own files; client-side parsers allow only direct transmission ([spec.graphics.md §7.1](spec.graphics.md#71-media-by-presentation-path)). A server screen is untrusted presentation content even after SSH authentication.
 
 Rate-limit unauthenticated handshakes and attachment attempts. Do not create PTYs on the basis of UDP packets alone. Rely on QUIC's address-validation and amplification protections, and independently cap application resources. [S10]
 
@@ -780,7 +780,7 @@ All tests below are release gates for their applicable platform profile unless l
 | A6 | Continuously mutate screen faster than delivery | Protected snapshots still finish; no cancellation starvation or old-frame regression |
 | A7 | Resize repeatedly during alternate-screen use and reconnect | Correct final dimensions, cursor, buffer, and revision ordering |
 | A8 | Run shell editing, `vim`, `less`, `top`, Unicode, combining marks, and wide characters | Server snapshot and client cell model agree for the supported profile |
-| A9 | Trigger terminal queries and malicious clipboard/graphics/control sequences | Replies occur once on the host; unsupported side effects are blocked and buffers remain bounded |
+| A9 | Trigger terminal queries and malicious clipboard/graphics/control sequences, and fuzz `KGIB/1` image records | Replies occur once on the host; unsupported side effects are blocked and buffers remain bounded |
 | A10 | Background/unavailable-scene tests for mobile/spatial/TV clients; sleep and separate relaunch tests for the Catalyst Mac client | Warm or SSH-authorized cold reattachment to the same retained shell; losing Mac window focus alone does not detach; no claim of continued execution while suspended |
 | A11 | Present wrong SSH key, wrong TLS pin, expired capability, old attachment epoch, or early input | Fail closed; no shell input accepted |
 | A12 | Restart helper or reboot Mac | Client reports session loss; it never replays commands into a new shell automatically |

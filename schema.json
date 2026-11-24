@@ -102,6 +102,30 @@
           "default": 10000,
           "description": "Maximum history rows; the existing byte budget also applies."
         },
+        "image_storage_limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 4294967295,
+          "default": null,
+          "description": "Kitty graphics image bytes per screen; null uses the platform default (320 MB on macOS, 128 MB on iOS and iPadOS) and 0 disables images."
+        },
+        "images_on_cellular": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "full",
+            "reduced",
+            "off",
+            null
+          ],
+          "default": null,
+          "description": "Roaming images on cellular and other expensive paths; null uses reduced. Low Data Mode always uses reduced images."
+        },
         "preferred_shell": {
           "type": [
             "string",

@@ -98,6 +98,7 @@ public enum ConfigLoader {
       "window": ["opacity", "blur", "padding", "width", "height", "tabs"],
       "terminal": [
         "shell", "scrollback_limit", "preferred_shell", "shell_profiles",
+        "image_storage_limit", "images_on_cellular",
       ], "shell_profiles": Set(ShellKind.allCases.map(\.rawValue)),
       "shell_profile": [
         "executable", "arguments", "environment", "working_directory",
@@ -200,6 +201,18 @@ public enum ConfigLoader {
       (
         ["terminal", "scrollback_limit"], config.terminal.scrollbackLimit >= 0,
         "Scrollback limit must be nonnegative"
+      ),
+      (
+        ["terminal", "image_storage_limit"],
+        config.terminal.imageStorageLimit.map {
+          (0 ... Int(UInt32.max)).contains($0)
+        } ?? true, "Image storage limit must be between 0 and 4294967295 bytes"
+      ),
+      (
+        ["terminal", "images_on_cellular"],
+        config.terminal.imagesOnCellular.map {
+          ["full", "reduced", "off"].contains($0)
+        } ?? true, "Images on cellular must be full, reduced or off"
       ),
       (
         ["terminal", "shell"],

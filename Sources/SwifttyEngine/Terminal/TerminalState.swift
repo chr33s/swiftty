@@ -212,6 +212,30 @@ public struct TerminalState: ~Copyable {
   /// `programStatus` changed since the last `takeProgramStatusChange()`.
   public internal(set) var programStatusChanged = false
 
+  /// Kitty graphics (spec.graphics.md). When false, graphics commands
+  /// are ignored and `a=q` gets no reply, so programs see a terminal
+  /// without image support.
+  public var kittyGraphicsEnabled = true
+  /// Media beyond `direct` that programs may name; only programs on this
+  /// machine may be given file or shared-memory access.
+  public var kittyGraphicsMedia = KittyGraphics.Media.direct
+  /// Image bytes each screen may hold; 0 disables the protocol.
+  public var imageStorageLimit = TerminalState.defaultImageStorageLimit {
+    didSet { applyImageStorageLimit() }
+  }
+  var kittyPrimary = KittyImageStorage(
+    limit: TerminalState.defaultImageStorageLimit
+  )
+  var kittyAlternate = KittyImageStorage(
+    limit: TerminalState.defaultImageStorageLimit
+  )
+  /// Boxed so the large command buffer stays out of this struct's hot
+  /// layout.
+  var kittyCommand: KittyGraphics.CommandBox?
+  /// Placements an installed presentation frame carries (presentation
+  /// sessions only; this terminal parses no graphics of its own).
+  public internal(set) var presentationImages: [KittyGraphics.Placement] = []
+  public internal(set) var presentationImageCellSize = SIMD2<Int>.zero
   let widths = UnicodeWidth.table
   var lastPrinted: UInt32 = 0
   /// Whether idle maintenance may compress history (`scrollbackCompression`).
@@ -368,6 +392,7 @@ public struct TerminalState: ~Copyable {
       } else if hasHorizontalMargins {
         scrollUp(1)
       } else {
+        if hasKittyPlacements { return kittyIndexScroll() }
         invalidateSelection(
           rows: scrollTop ..< scrollBottom + 1,
           from: 0,
@@ -384,6 +409,39 @@ public struct TerminalState: ~Copyable {
       return
     }
     if cursor.y < scrollBottom { cursor.y += 1 }
+  }
+
+  var hasKittyPlacements: Bool {
+    !kittyPrimary.placements.isEmpty || !kittyAlternate.placements.isEmpty
+  }
+
+  /// IND scrolling a region in place with placements on screen
+  /// (spec.graphics.md §9.1).
+  @inline(never)
+  private mutating func kittyIndexScroll() {
+    withKittyScroll(delta: -1, inPlace: true) { t in
+      t.invalidateSelection(
+        rows: t.scrollTop ..< t.scrollBottom + 1,
+        from: 0,
+        to: t.columns
+      )
+      t.grid.scrollUp(
+        top: t.scrollTop,
+        bottom: t.scrollBottom,
+        count: 1,
+        fill: t.eraseCell
+      )
+      t.markScrolled()
+    }
+  }
+
+  /// Rows above a bottom margin scroll into history; placements in the
+  /// region move with them (spec.graphics.md §9.1).
+  @inline(never)
+  private mutating func kittyScrollIntoHistory(_ count: Int) {
+    withKittyScroll(delta: -min(count, scrollBottom + 1), inPlace: false) {
+      $0.scrollRowsIntoHistory(count)
+    }
   }
 
   /// RI: move up, scrolling the region down at its top margin.
@@ -404,7 +462,19 @@ public struct TerminalState: ~Copyable {
 
   /// Scrolls rows `0...scrollBottom` up by `count`, the top ones into
   /// the primary screen's history; rows below the region stay put.
+  @inline(__always)
   private mutating func scrollIntoHistory(_ count: Int) {
+    // A bottom margin or the alternate screen with placements: rare.
+    if _slowPath(scrollBottom != rows - 1 || isAlternateScreen),
+      hasKittyPlacements
+    {
+      return kittyScrollIntoHistory(count)
+    }
+    scrollRowsIntoHistory(count)
+  }
+
+  @inline(__always)
+  private mutating func scrollRowsIntoHistory(_ count: Int) {
     let n = min(count, scrollBottom + 1)
     guard n > 0 else { return }
     if isAlternateScreen {
@@ -441,23 +511,30 @@ public struct TerminalState: ~Copyable {
     if scrollTop == 0, !hasHorizontalMargins,
       !isAlternateScreen || scrollBottom == rows - 1
     {
+      // Moves placements itself when a margin or the alternate screen needs it.
       scrollIntoHistory(count)
       return
     }
-    let saved = (cursor.x, cursor.y, cursor.pendingWrap)
-    cursor.x = scrollLeft
-    cursor.y = scrollTop
-    deleteLines(count)
-    (cursor.x, cursor.y, cursor.pendingWrap) = saved
+    let height = scrollBottom - scrollTop + 1
+    withKittyScroll(delta: -min(max(count, 0), height), inPlace: true) { t in
+      let saved = (t.cursor.x, t.cursor.y, t.cursor.pendingWrap)
+      t.cursor.x = t.scrollLeft
+      t.cursor.y = t.scrollTop
+      t.deleteLines(count)
+      (t.cursor.x, t.cursor.y, t.cursor.pendingWrap) = saved
+    }
   }
 
   /// SD: scrolls the region down.
   mutating func scrollDown(_ count: Int) {
-    let saved = (cursor.x, cursor.y, cursor.pendingWrap)
-    cursor.x = scrollLeft
-    cursor.y = scrollTop
-    insertLines(count)
-    (cursor.x, cursor.y, cursor.pendingWrap) = saved
+    let height = scrollBottom - scrollTop + 1
+    withKittyScroll(delta: min(max(count, 0), height), inPlace: true) { t in
+      let saved = (t.cursor.x, t.cursor.y, t.cursor.pendingWrap)
+      t.cursor.x = t.scrollLeft
+      t.cursor.y = t.scrollTop
+      t.insertLines(count)
+      (t.cursor.x, t.cursor.y, t.cursor.pendingWrap) = saved
+    }
   }
 
   private mutating func markScrolled() {
@@ -720,20 +797,25 @@ public struct TerminalState: ~Copyable {
       clearRows(0 ..< cursor.y, protected: protected)
     case 2:
       addressingGeneration &+= 1
+      kittyClearScreen()
       clearRows(0 ..< rows, protected: protected)
       cursor.pendingWrap = false
     case 3:
       addressingGeneration &+= 1
       invalidateSelection()
       forgetHyperlinkRows()
+      let before = primaryScreenTop
+      kittyPrimary.eraseHistory(before: before)
       if isAlternateScreen {
         inactiveGrid.clearHistory()
       } else {
         grid.clearHistory()
       }
+      kittyPrimary.rebase(from: before, to: primaryScreenTop, rows: rows)
       viewportOffset = 0
       damage.setFull()
     case 22:  // scroll the screen's contents into history
+      kittyClearScreen()
       var used = 0
       for y in stride(from: rows - 1, through: 0, by: -1)
       where grid._unsafeCells(row: y).contains(where: { !$0.isBlank }) {
@@ -1151,6 +1233,7 @@ public struct TerminalState: ~Copyable {
         // the alternate screen. It also saves that screen's cursor.
         addressingGeneration &+= 1
         invalidateSelection()
+        kittyClearScreen()
         grid.clear(rows: 0 ..< rows, with: eraseCell)
         cursor.pendingWrap = false
         damage.setFull()
@@ -1164,6 +1247,7 @@ public struct TerminalState: ~Copyable {
         enterAlternateScreen()
       } else {
         if isAlternateScreen {
+          kittyClearScreen()
           grid.clear(rows: 0 ..< rows, with: eraseCell)
           cursor.pendingWrap = false
         }
@@ -1309,6 +1393,7 @@ public struct TerminalState: ~Copyable {
   mutating func fullReset() {
     addressingGeneration &+= 1
     discardControlString()
+    resetKittyGraphics()
     invalidateSelection()
     resetShellState()
     if programStatus.reset() { programStatusChanged = true }
