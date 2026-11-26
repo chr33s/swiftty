@@ -152,7 +152,7 @@ extension MuxNativeTests {
     c.endPane(second)
     #expect(await until { asked.count == 1 })
     try await Task.sleep(for: .milliseconds(200))
-    #expect(c.activeTab?.layout.panes.count == 2)
+    #expect(c.activeTab?.layout?.panes.count == 2)
     // Disposing a view is not termination.
     c.containers[second]?.removeFromSuperview()
     c.containers[second]?.paneView.removeFromSuperview()
@@ -161,7 +161,7 @@ extension MuxNativeTests {
     // Accepted: only the target ends.
     c.confirmDestructive = { _ in true }
     c.endPane(second)
-    #expect(await until { c.activeTab?.layout.panes == [first] })
+    #expect(await until { c.activeTab?.layout?.panes == [first] })
     #expect(await f.service.panePID(first) == firstPID)
     // A tab whose shell already exited closes without asking.
     asked = []
@@ -251,9 +251,9 @@ extension MuxNativeTests {
     #expect(abs((c.ratio(at: []) ?? 0) - 0.495) < 0.001)
     #expect(
       await until {
-        guard case let .split(_, r, _, _)? = c.activeTab?.layout else {
-          return false
-        }
+        guard let layout = c.activeTab?.layout,
+          case let .split(_, r, _, _) = layout
+        else { return false }
         return abs(r - 0.495) < 0.001
       }
     )
@@ -261,6 +261,34 @@ extension MuxNativeTests {
     let before = try #require(c.ratio(at: []))
     c.resizeActivePane(.left)
     #expect((c.ratio(at: []) ?? 1) < before)
+  }
+
+  @Test(.enabled(if: hasMetal))
+  func `header float button floats a pane and then docks it back`() async throws
+  {
+    let f = try await open()
+    defer { f.controller.close() }
+    let c = f.controller
+    c.split(.leftRight)
+    #expect(await until { c.activeTab?.tiledPanes.count == 2 })
+    let target = try #require(c.activePane)
+    let button = try #require(
+      c.containers[target]?.header.actionButtons[.float]
+    )
+    #expect(!button.isHidden)
+    #expect(button.toolTip == "Float pane")
+    button.performClick(nil)
+    #expect(await until { c.activeTab?.layer(containing: target) != nil })
+    #expect(
+      c.containers[target]?.header.actionButtons[.float]?.toolTip == "Dock pane"
+    )
+    button.performClick(nil)
+    #expect(await until { c.activeTab?.layer(containing: target) == nil })
+    #expect(c.activeTab?.tiledPanes.contains(target) == true)
+    #expect(
+      c.containers[target]?.header.actionButtons[.float]?.toolTip
+        == "Float pane"
+    )
   }
 }
 

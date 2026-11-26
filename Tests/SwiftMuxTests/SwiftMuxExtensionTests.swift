@@ -764,7 +764,8 @@ struct SwiftMuxExtensionTests {
     guard
       case let .layout(split) = try await c.execute(
         .split(pane: a, axis: .leftRight, launch: shellLaunch())
-      ), let b = split.activeTabSnapshot?.layout.panes.first(where: { $0 != a })
+      ),
+      let b = split.activeTabSnapshot?.layout?.panes.first(where: { $0 != a })
     else { throw MuxError(.invalidRequest, "split") }
     await c.setSuppressesFrameAcknowledgement(true)
     try await c.execute(.setSubscriptions([a, b]))
@@ -789,7 +790,7 @@ struct SwiftMuxExtensionTests {
       case let .layout(split) = try await c.execute(
         .split(pane: a, axis: .leftRight, launch: shellLaunch())
       ), let tab = split.activeTabSnapshot,
-      let b = tab.layout.panes.first(where: { $0 != a })
+      let b = tab.layout?.panes.first(where: { $0 != a })
     else { throw MuxError(.invalidRequest, "split") }
     guard case let .layout(zoomed) = try await c.execute(.toggleZoom(tab.id)),
       let shown = zoomed.activeTabSnapshot?.zoomedPane
@@ -875,7 +876,8 @@ struct SwiftMuxExtensionTests {
     guard
       case let .layout(split) = try await c.execute(
         .split(pane: a, axis: .leftRight, launch: shellLaunch())
-      ), let b = split.activeTabSnapshot?.layout.panes.first(where: { $0 != a })
+      ),
+      let b = split.activeTabSnapshot?.layout?.panes.first(where: { $0 != a })
     else { throw MuxError(.invalidRequest, "split") }
     let sizes = [a, b]
       .map { GeometryBatch.Entry(pane: $0, columns: 40, rows: 8) }
@@ -1048,7 +1050,8 @@ struct SwiftMuxExtensionTests {
     guard
       case let .layout(split) = try await c.execute(
         .split(pane: a, axis: .leftRight, launch: shellLaunch())
-      ), let b = split.activeTabSnapshot?.layout.panes.first(where: { $0 != a })
+      ),
+      let b = split.activeTabSnapshot?.layout?.panes.first(where: { $0 != a })
     else { throw MuxError(.invalidRequest, "split") }
     let o = try await observe(h, ws, panes: [a, b])
     let client = try #require(await h.service.observerClient(ws))
@@ -1083,7 +1086,7 @@ struct SwiftMuxExtensionTests {
       case let .layout(split) = try await c.execute(
         .split(pane: pane, axis: .leftRight, launch: shellLaunch())
       ),
-      let other = split.activeTabSnapshot?.layout.panes
+      let other = split.activeTabSnapshot?.layout?.panes
         .first(where: { $0 != pane })
     else { throw MuxError(.invalidRequest, "split") }
     // Not acknowledging keeps the observer's Ready pending.
@@ -1242,7 +1245,8 @@ struct SwiftMuxExtensionTests {
     guard
       case let .layout(split) = try await c.execute(
         .split(pane: a, axis: .leftRight, launch: shellLaunch())
-      ), let b = split.activeTabSnapshot?.layout.panes.first(where: { $0 != a })
+      ),
+      let b = split.activeTabSnapshot?.layout?.panes.first(where: { $0 != a })
     else { throw MuxError(.invalidRequest, "split") }
     let o = try await h.connect()
     _ = try await o.execute(.attach(AttachRequest(.id(ws), role: .observer)))

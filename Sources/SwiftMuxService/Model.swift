@@ -69,12 +69,20 @@ public struct MuxServiceConfiguration: Sendable {
   public init(launcherPath: String) { self.launcherPath = launcherPath }
 }
 
-struct Tab {
+struct Tab: LayeredTab {
   var id = TabID()
   var name: String
-  var layout: LayoutNode
+  /// Nil when every tiled pane has been floated.
+  var layout: LayoutNode?
+  var layers: [FloatingLayer] = []
   var activePane: PaneID
   var zoomedPane: PaneID?
+  /// Where focus returns when the focused layer closes or minimizes.
+  var previousPane: PaneID?
+
+  func layerIndex(containing pane: PaneID) -> Int? {
+    layers.firstIndex { $0.layout.contains(pane) }
+  }
 
   var snapshot: TabSnapshot {
     TabSnapshot(
@@ -82,8 +90,76 @@ struct Tab {
       name: name,
       layout: layout,
       activePane: activePane,
-      zoomedPane: zoomedPane
+      zoomedPane: zoomedPane,
+      layers: layers
     )
+  }
+
+  /// Records the pane being left, then focuses `pane` and the layer that
+  /// holds it.
+  mutating func focus(_ pane: PaneID) {
+    if pane != activePane {
+      previousPane = activePane
+      activePane = pane
+    }
+    if let index = layerIndex(containing: pane) {
+      layers[index].focusedPane = pane
+    }
+  }
+
+  /// Takes `pane` out of whichever tree holds it. An emptied layer is
+  /// dropped; an emptied tiled tree becomes nil.
+  mutating func remove(_ pane: PaneID) {
+    if let index = layerIndex(containing: pane) {
+      if let next = layers[index].layout.removing(pane) {
+        layers[index].layout = next
+        if layers[index].focusedPane == pane {
+          layers[index].focusedPane = next.panes[0]
+        }
+      } else {
+        layers.remove(at: index)
+      }
+    } else if let layout, layout.contains(pane) {
+      self.layout = layout.removing(pane)
+    }
+    if zoomedPane == pane { zoomedPane = nil }
+  }
+
+  /// Splits `pane` in whichever tree holds it. False when none does.
+  mutating func split(_ pane: PaneID, axis: SplitAxis, newPane: PaneID) -> Bool
+  {
+    if let index = layerIndex(containing: pane) {
+      layers[index].layout = layers[index].layout
+        .splitting(pane, axis: axis, newPane: newPane)
+    } else if let layout, layout.contains(pane) {
+      self.layout = layout.splitting(pane, axis: axis, newPane: newPane)
+    } else {
+      return false
+    }
+    return true
+  }
+
+  /// A tab keeps a visible pane: when only minimized layers remain, the
+  /// front-most one shows again.
+  mutating func revealIfHidden() {
+    guard visiblePanes.isEmpty, let index = layers.lastIndex(where: \.minimized)
+    else { return }
+    layers[index].minimized = false
+  }
+
+  /// Focus after the current pane leaves the visible set.
+  mutating func restoreFocus() {
+    if let previous = previousPane, contains(previous),
+      visiblePanes.contains(previous)
+    {
+      activePane = previous
+    } else if let pane = visiblePanes.first ?? panes.first {
+      activePane = pane
+    }
+    previousPane = nil
+    if let index = layerIndex(containing: activePane) {
+      layers[index].focusedPane = activePane
+    }
   }
 }
 
@@ -104,10 +180,15 @@ struct Workspace {
   var outputOptOut = false
 
   func tabIndex(containing pane: PaneID) -> Int? {
-    tabs.firstIndex { $0.layout.contains(pane) }
+    tabs.firstIndex { $0.contains(pane) }
   }
 
-  var allPanes: [PaneID] { tabs.flatMap(\.layout.panes) }
+  var allPanes: [PaneID] { tabs.flatMap(\.panes) }
+
+  /// An older client would drop these panes or fail to decode the tab.
+  var hasFloatingLayers: Bool {
+    tabs.contains { !$0.layers.isEmpty || $0.layout == nil }
+  }
 }
 
 struct PaneRecord {

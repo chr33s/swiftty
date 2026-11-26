@@ -662,7 +662,7 @@ public actor MuxService {
     guard clientLeases[client.id] == nil, clientViewers[client.id] == nil else {
       return fail(MuxError(.alreadyAttached, "this connection is attached"))
     }
-    let ws = try workspace(request.selector)
+    let ws = try workspace(request.selector, for: hello)
     if request.role == .observer {
       guard hello.capabilities.contains(.observers) else {
         return fail(
@@ -703,7 +703,7 @@ public actor MuxService {
     guard !quiescing else {
       return fail(MuxError(.quiescing, "service is preparing to update"))
     }
-    let ws = try workspace(selector)
+    let ws = try workspace(selector, for: hello)
     fenceProvisionalLease(reason: "another frontend took control")
     // Names the lease the user agreed to displace; a newer holder
     // (or none) means the prompt is stale.
@@ -1010,7 +1010,7 @@ public actor MuxService {
         return fail(MuxError(.notFound, "tab"))
       }
       let wsID = workspaces[w].id
-      for pane in workspaces[w].tabs[t].layout.panes { endPane(pane) }
+      for pane in workspaces[w].tabs[t].panes { endPane(pane) }
       reply(
         .success(
           workspaces.contains { $0.id == wsID } ? .layout(snapshot(wsID)!) : .ok,
@@ -1022,7 +1022,7 @@ public actor MuxService {
       guard let (w, t) = locate(pane: pane, in: leased) else {
         return fail(MuxError(.notFound, "pane"))
       }
-      workspaces[w].tabs[t].activePane = pane
+      workspaces[w].tabs[t].focus(pane)
       workspaces[w].activeTab = workspaces[w].tabs[t].id
       if let z = workspaces[w].tabs[t].zoomedPane, z != pane {
         workspaces[w].tabs[t].zoomedPane = nil
@@ -1035,7 +1035,7 @@ public actor MuxService {
       }
       let current = workspaces[w].tabs[t]
       workspaces[w].tabs[t].zoomedPane =
-        current.zoomedPane == nil && current.layout.panes.count > 1
+        current.zoomedPane == nil && current.visiblePanes.count > 1
         ? current.activePane : nil
       commitLayout(workspaces[w].id)
       reply(.success(.layout(snapshot(workspaces[w]))))
@@ -1044,12 +1044,26 @@ public actor MuxService {
         return fail(MuxError(.notFound, "tab"))
       }
       guard ratio.isFinite, ratio > 0.02, ratio < 0.98,
-        let layout = workspaces[w].tabs[t].layout.settingRatio(ratio, at: path,
-        )
+        let layout = workspaces[w].tabs[t].layout?.settingRatio(ratio, at: path)
       else { return fail(MuxError(.invalidRequest, "split ratio")) }
       workspaces[w].tabs[t].layout = layout
       commitLayout(workspaces[w].id)
       reply(.success(.layout(snapshot(workspaces[w]))))
+    case let .floatPane(pane, bounds):
+      floatPane(pane, bounds: bounds, in: leased, reply: reply)
+    case let .newLayer(tab, bounds, launch):
+      newLayer(tab, bounds: bounds, launch: launch, in: leased, reply: reply)
+    case let .placeLayer(layer, bounds):
+      placeLayer(layer, bounds: bounds, in: leased, reply: reply)
+    case let .orderLayer(layer, before):
+      orderLayer(layer, before: before, in: leased, reply: reply)
+    case let .minimizeLayer(layer, minimized):
+      minimizeLayer(layer, minimized: minimized, in: leased, reply: reply)
+    case let .closeLayer(layer): closeLayer(layer, in: leased, reply: reply)
+    case let .dockPane(pane, beside, axis):
+      dockPane(pane, beside: beside, axis: axis, in: leased, reply: reply)
+    case let .setLayerRatio(layer, path, ratio):
+      setLayerRatio(layer, path: path, ratio: ratio, in: leased, reply: reply)
     case let .endPane(pane):
       guard panes[pane]?.workspace == leased,
         locate(pane: pane) != nil || panes[pane]?.detachedFromLayout == false
@@ -1391,6 +1405,19 @@ public actor MuxService {
       )
     }
     return matches.first
+  }
+
+  /// The selected workspace, refused to a client that cannot decode its
+  /// floating layers.
+  private func workspace(
+    _ selector: WorkspaceSelector,
+    for hello: Hello
+  ) throws(MuxError) -> Workspace {
+    let ws = try workspace(selector)
+    if ws.hasFloatingLayers, !hello.capabilities.contains(.floatingLayers) {
+      throw MuxError(.incompatibleVersion, "this workspace has floating layers")
+    }
+    return ws
   }
 
   func workspace(_ selector: WorkspaceSelector) throws(MuxError) -> Workspace {

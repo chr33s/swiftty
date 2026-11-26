@@ -58,16 +58,30 @@ package struct SavedLayoutContent: Codable, Sendable, Equatable {
     }
     var tabs: [WorkspaceTemplateTab] = []
     for tab in graph.tabs {
-      let layout = node(tab.layout)
-      guard let active = slots[tab.activePane] ?? layout.slots.first else {
-        continue
+      let layout = tab.layout.map { node($0) }
+      let layers: [WorkspaceTemplateLayer] = tab.layers.compactMap { layer in
+        let tree = node(layer.layout)
+        guard let focused = slots[layer.focusedPane] ?? tree.slots.first else {
+          return nil
+        }
+        return WorkspaceTemplateLayer(
+          bounds: layer.bounds,
+          minimized: layer.minimized,
+          layout: tree,
+          focusedSlot: focused
+        )
       }
+      guard
+        let active = slots[tab.activePane] ?? layout?.slots.first
+          ?? layers.first?.focusedSlot
+      else { continue }
       tabs.append(
         WorkspaceTemplateTab(
           name: tab.name,
           layout: layout,
           activeSlot: active,
-          zoomedSlot: tab.zoomedPane.flatMap { slots[$0] }
+          zoomedSlot: tab.zoomedPane.flatMap { slots[$0] },
+          layers: layers
         )
       )
     }
@@ -203,7 +217,10 @@ extension SavedLayoutContent {
         visit(second)
       }
     }
-    for tab in state.graph?.tabs ?? [] { visit(tab.layout) }
+    for tab in state.graph?.tabs ?? [] {
+      if let layout = tab.layout { visit(layout) }
+      for layer in tab.layers { visit(layer.layout) }
+    }
     return slots
   }
 }

@@ -176,6 +176,8 @@ multiple chunks.
 | `write(text)` | Submit text or ANSI sequences through the managed pane write path. |
 | `split("horizontal")` | Create a top/bottom split and return its pane handle. |
 | `split("vertical")` | Create a left/right split and return its pane handle. |
+| `float(bounds?)` | Lift the pane into a new front layer. Omitted bounds use the standard rectangle (`x: 0.2`, `y: 0.15`, `w: 0.6`, `h: 0.55`). |
+| `dock(beside?, direction?)` | Put the pane back in the tiled tree. An omitted neighbor docks beside the first tiled pane, or becomes the whole tree when the tile is empty. `"horizontal"` splits top/bottom; any other direction splits left/right. |
 | `close()` | Request closure of the represented pane. |
 
 `currentPane` is bound to the source pane during stream, event, and shortcut

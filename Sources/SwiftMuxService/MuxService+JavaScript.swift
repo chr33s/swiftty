@@ -97,7 +97,7 @@ extension MuxService {
       return
     }
     switch action.kind {
-    case .write, .split, .close, .tabIcon, .paneIcon:
+    case .write, .split, .close, .float, .dock, .tabIcon, .paneIcon:
       guard let raw = action.pane, let pane = PaneID(raw) else { return }
       if automation.starting.contains(pane) {
         if automation.pending[pane, default: []].count < 64 {
@@ -130,6 +130,20 @@ extension MuxService {
         presentation.id = pane.description
         publishAutomation(presentation)
       case .close: endPane(pane)
+      case .float:
+        // No bounds from the script means the standard rectangle.
+        let bounds: LayerRect? =
+          if let text = action.text, !text.isEmpty {
+            try? JSONDecoder().decode(LayerRect.self, from: Data(text.utf8))
+          } else { .standard }
+        guard let bounds, bounds.isValid else { return }
+        floatPane(pane, bounds: bounds, in: record.workspace) { _ in }
+      case .dock:
+        let beside = action.id.flatMap { $0.isEmpty ? nil : PaneID($0) }
+        let axis: SplitAxis =
+          action.direction == "horizontal" ? .topBottom : .leftRight
+        dockPane(pane, beside: beside, axis: axis, in: record.workspace) { _ in
+        }
       case .split:
         guard let raw = action.id, let child = PaneID(raw), panes[child] == nil,
           !automation.starting.contains(child)
@@ -227,8 +241,7 @@ extension MuxService {
           revision: ws.layoutRevision,
           tabs: ws.tabs.map { ($0.id, $0.name) },
           activeTab: ws.activeTab,
-          panes: ws.tabs.flatMap { tab in tab.layout.panes.map { ($0, tab.id) }
-          },
+          panes: ws.tabs.flatMap { tab in tab.panes.map { ($0, tab.id) } },
           attached: attached
         )
       )

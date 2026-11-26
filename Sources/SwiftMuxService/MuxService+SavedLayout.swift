@@ -273,19 +273,36 @@ extension MuxService {
     var tabs: [Tab] = []
     var activeTab: TabID?
     for (index, tab) in template.tabs.enumerated() {
-      guard let layout = Self.layout(tab.layout, started: started) else {
-        continue
+      let layout = tab.layout.flatMap { Self.layout($0, started: started) }
+      var layers: [FloatingLayer] = []
+      for layer in tab.layers {
+        guard let tree = Self.layout(layer.layout, started: started) else {
+          continue
+        }
+        let focused =
+          started[layer.focusedSlot].flatMap { tree.contains($0) ? $0 : nil }
+          ?? tree.panes[0]
+        layers.append(
+          FloatingLayer(
+            layout: tree,
+            bounds: layer.bounds,
+            minimized: layer.minimized,
+            focusedPane: focused
+          )
+        )
       }
-      let panesInTab = layout.panes
+      let panesInTab = (layout?.panes ?? []) + layers.flatMap(\.layout.panes)
+      guard let first = panesInTab.first else { continue }
       let active = started[tab.activeSlot]
         .flatMap { panesInTab.contains($0) ? $0 : nil }
       var value = Tab(
         name: validName(tab.name) ? tab.name : "\(tabs.count + 1)",
         layout: layout,
-        activePane: active ?? panesInTab[0]
+        layers: layers,
+        activePane: active ?? first
       )
       if let zoomed = tab.zoomedSlot.flatMap({ started[$0] }),
-        panesInTab.contains(zoomed), panesInTab.count > 1
+        panesInTab.contains(zoomed), value.visiblePanes.count > 1
       {
         value.zoomedPane = zoomed
       }

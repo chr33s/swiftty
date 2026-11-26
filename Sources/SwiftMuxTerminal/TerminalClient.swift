@@ -478,7 +478,7 @@ public final class TerminalClient {
   func syncLayout() {
     guard !switching, let tab = activeTab else { return }
     let rects = compositor.frames(for: tab)
-    let order = tab.layout.panes.filter { rects[$0] != nil }
+    let order = tab.visiblePanes.filter { rects[$0] != nil }
     var entries: [GeometryBatch.Entry] = []
     for pane in order {
       guard let r = rects[pane], r.width >= 1, r.height >= 1 else { continue }
@@ -719,7 +719,8 @@ public final class TerminalClient {
     "c new tab        n/p next/prev tab   0-9 select tab",
     "% split ←→       \" split ↑↓         o next pane",
     "arrows focus     M-arrows resize     z zoom pane",
-    "x end pane       & end tab           d detach",
+    "f float pane     F dock pane         m hide/show float",
+    "S-arrows move a float", "x end pane       & end tab           d detach",
     "[ copy mode      ] paste buffer      / search",
     ", rename tab     $ rename workspace  w switch workspace",
     "? help           prefix twice sends the prefix",
@@ -943,20 +944,15 @@ public final class TerminalClient {
         case .left: .left
         default: .right
         }
-      if mods.contains(.alt) || mods.contains(.control) {
+      if mods.contains(.shift), let layer = tab.layer(containing: pane) {
+        nudge(layer, direction: direction)
+      } else if mods.contains(.alt) || mods.contains(.control) {
         resize(pane: pane, tab: tab, direction: direction)
-      } else if let target = LayoutGeometry.neighbor(
+      } else if let target = LayoutGeometry.focusNeighbor(
         of: pane,
         direction: direction,
-        frames: compositor.frames(
-          for: TabSnapshot(
-            id: tab.id,
-            name: tab.name,
-            layout: tab.layout,
-            activePane: pane
-          )
-        ),
-        order: tab.layout.panes
+        tab: tab,
+        frames: compositor.frames(for: tab)
       ) {
         command(.focusPane(target))
       }
@@ -975,8 +971,23 @@ public final class TerminalClient {
         }
       case "%": command(.split(pane: pane, axis: .leftRight, launch: nil))
       case "\"": command(.split(pane: pane, axis: .topBottom, launch: nil))
+      case "f": command(.floatPane(pane: pane, bounds: .standard))
+      case "F":
+        if tab.layer(containing: pane) != nil {
+          command(.dockPane(pane: pane, beside: nil, axis: .leftRight))
+        }
+      case "m":
+        // From a float, hide it; otherwise show the front-most hidden one.
+        if let layer = tab.layer(containing: pane) {
+          if tab.canMinimize(layer) {
+            command(.minimizeLayer(layer: layer.id, minimized: true))
+          }
+        } else if let layer = tab.layers.last(where: \.minimized) {
+          command(.minimizeLayer(layer: layer.id, minimized: false))
+          command(.focusPane(layer.focusedPane))
+        }
       case "o":
-        let order = tab.layout.panes
+        let order = tab.visiblePanes
         if let i = order.firstIndex(of: pane), order.count > 1 {
           command(.focusPane(order[(i + 1) % order.count]))
         }
@@ -1030,12 +1041,32 @@ public final class TerminalClient {
   private func resize(pane: PaneID, tab: TabSnapshot, direction: Direction) {
     let axis: SplitAxis =
       direction == .left || direction == .right ? .leftRight : .topBottom
-    guard let split = tab.layout.enclosingSplit(of: pane, axis: axis) else {
-      return
-    }
+    guard
+      let split = tab.tree(containing: pane)?
+        .enclosingSplit(of: pane, axis: axis)
+    else { return }
     let delta = direction == .right || direction == .down ? 0.05 : -0.05
     let ratio = min(0.95, max(0.05, split.ratio + delta))
-    command(.setSplitRatio(tab: tab.id, path: split.path, ratio: ratio))
+    if let layer = tab.layer(containing: pane) {
+      command(.setLayerRatio(layer: layer.id, path: split.path, ratio: ratio))
+    } else {
+      command(.setSplitRatio(tab: tab.id, path: split.path, ratio: ratio))
+    }
+  }
+
+  /// Slides a floating layer by a twentieth of the tab, keeping its size.
+  private func nudge(_ layer: FloatingLayer, direction: Direction) {
+    let step = 0.05
+    let (dx, dy): (Double, Double) =
+      switch direction {
+      case .left: (-step, 0)
+      case .right: (step, 0)
+      case .up: (0, -step)
+      case .down: (0, step)
+      }
+    let bounds = layer.bounds.dragged(dx: dx, dy: dy)
+    guard bounds.isValid, bounds != layer.bounds else { return }
+    command(.placeLayer(layer: layer.id, bounds: bounds))
   }
 
   /// Names joined for a prompt label within `limit` display cells, the rest

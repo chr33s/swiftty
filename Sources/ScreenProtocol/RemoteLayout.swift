@@ -68,7 +68,7 @@ public struct RemoteLayout: Codable, Hashable, Sendable {
     var tabs: [Tab] = []
     var remaining = Self.maxPanes
     for tab in ws.tabs.prefix(Self.maxTabs) where remaining > 0 {
-      let panes = tab.layout.panes.prefix(remaining)
+      let panes = tab.panes.prefix(remaining)
       remaining -= panes.count
       tabs.append(
         Tab(

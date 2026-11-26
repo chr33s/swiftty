@@ -310,10 +310,14 @@ extension MuxService {
         guard let (w, t) = service.locate(pane: pane) else {
           return reply(.failure(MuxError(.notFound, "pane ended")))
         }
-        service.workspaces[w].tabs[t].layout = service.workspaces[w].tabs[t]
-          .layout.splitting(pane, axis: axis, newPane: newPane)
-        service.workspaces[w].tabs[t].activePane = newPane
-        service.workspaces[w].tabs[t].zoomedPane = nil
+        var tab = service.workspaces[w].tabs[t]
+        guard tab.split(pane, axis: axis, newPane: newPane) else {
+          service.endPane(newPane)
+          return reply(.failure(MuxError(.notFound, "pane ended")))
+        }
+        tab.focus(newPane)
+        tab.zoomedPane = nil
+        service.workspaces[w].tabs[t] = tab
         service.commitLayout(ws.id)
         reply(.success(.layout(service.snapshot(service.workspaces[w]))))
       }
@@ -369,32 +373,35 @@ extension MuxService {
     {
       for id in pasteIDs { leases[wsID]?.pastes.removeValue(forKey: id) }
     }
-    guard let layout = workspaces[w].tabs[t].layout.removing(pane) else {
-      // Last pane of the tab.
-      let tabID = workspaces[w].tabs[t].id
-      automation.presentation.removeValue(forKey: "icon:" + tabID.description)
-      workspaces[w].tabs.remove(at: t)
-      if workspaces[w].tabs.isEmpty {
-        workspaces.remove(at: w)
-        recordSavedLayoutEnd(wsID)
-        releaseLease(wsID, notify: true, reason: "workspace ended")
-        releaseViewers(in: wsID, reason: "workspace ended")
-        publishWorkspaces()
-        return
-      }
-      if workspaces[w].activeTab == tabID {
-        workspaces[w].activeTab =
-          workspaces[w].tabs[min(t, workspaces[w].tabs.count - 1)].id
-      }
-      commitLayout(wsID)
+    var tab = workspaces[w].tabs[t]
+    tab.remove(pane)
+    if tab.panes.isEmpty {
+      removeTab(at: t, workspace: w)
       return
     }
-    workspaces[w].tabs[t].layout = layout
-    if workspaces[w].tabs[t].activePane == pane {
-      workspaces[w].tabs[t].activePane = layout.panes.first!
+    tab.revealIfHidden()
+    if tab.activePane == pane { tab.restoreFocus() }
+    workspaces[w].tabs[t] = tab
+    commitLayout(wsID)
+  }
+
+  /// Drops a tab that no longer has a pane. The last tab ends the workspace.
+  func removeTab(at t: Int, workspace w: Int) {
+    let wsID = workspaces[w].id
+    let tabID = workspaces[w].tabs[t].id
+    automation.presentation.removeValue(forKey: "icon:" + tabID.description)
+    workspaces[w].tabs.remove(at: t)
+    if workspaces[w].tabs.isEmpty {
+      workspaces.remove(at: w)
+      recordSavedLayoutEnd(wsID)
+      releaseLease(wsID, notify: true, reason: "workspace ended")
+      releaseViewers(in: wsID, reason: "workspace ended")
+      publishWorkspaces()
+      return
     }
-    if workspaces[w].tabs[t].zoomedPane == pane {
-      workspaces[w].tabs[t].zoomedPane = nil
+    if workspaces[w].activeTab == tabID {
+      workspaces[w].activeTab =
+        workspaces[w].tabs[min(t, workspaces[w].tabs.count - 1)].id
     }
     commitLayout(wsID)
   }

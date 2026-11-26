@@ -14,12 +14,15 @@ import SwifttyEngine
 struct WorkspaceMigrationCheckpoint: Codable {
   static let format = 1
 
-  struct TabCheckpoint: Codable {
+  struct TabCheckpoint: Codable, LayeredTab {
     var id: TabID
     var name: String
-    var layout: LayoutNode
+    var layout: LayoutNode?
+    @OmittedWhenEmpty
+    var layers: [FloatingLayer] = []
     var activePane: PaneID
     var zoomedPane: PaneID?
+    var previousPane: PaneID?
   }
 
   /// The controller lease at the cut. Provisional on import: it grants
@@ -248,8 +251,10 @@ extension MuxService {
           id: $0.id,
           name: $0.name,
           layout: $0.layout,
+          layers: $0.layers,
           activePane: $0.activePane,
-          zoomedPane: $0.zoomedPane
+          zoomedPane: $0.zoomedPane,
+          previousPane: $0.previousPane
         )
       },
       activeTab: ws.activeTab,
@@ -307,6 +312,22 @@ extension MuxService {
     }
   }
 
+  /// A checkpoint tab names each pane once, and each layer's focus and
+  /// bounds are inside that layer and the tab.
+  private static func checkpointTabValid(
+    _ tab: WorkspaceMigrationCheckpoint.TabCheckpoint
+  ) -> Bool {
+    let panes = tab.panes
+    guard Set(panes).count == panes.count, !panes.isEmpty,
+      panes.contains(tab.activePane),
+      tab.zoomedPane.map(panes.contains) ?? true, tab.layout?.isValid() ?? true
+    else { return false }
+    return tab.layers.allSatisfy {
+      $0.bounds.isValid && $0.layout.isValid()
+        && $0.layout.contains($0.focusedPane)
+    }
+  }
+
   private func decodeMigrationCheckpoint(
     _ data: Data,
     adopt: (PaneID, MigrationPaneHandle, DispatchQueue, MuxLimits) throws ->
@@ -321,9 +342,10 @@ extension MuxService {
       !workerWorkspaceClaimed, workspaces.isEmpty, panes.isEmpty,
       checkpoint.panes.count <= limits.maxPanes, !checkpoint.tabs.isEmpty
     else { throw MuxError(.invalidRequest, "candidate cannot import") }
-    let layoutPanes = Set(checkpoint.tabs.flatMap(\.layout.panes))
+    let layoutPanes = Set(checkpoint.tabs.flatMap(\.panes))
     guard layoutPanes == Set(checkpoint.panes.map(\.id)),
-      checkpoint.tabs.contains(where: { $0.id == checkpoint.activeTab })
+      checkpoint.tabs.contains(where: { $0.id == checkpoint.activeTab }),
+      checkpoint.tabs.allSatisfy(Self.checkpointTabValid)
     else { throw MuxError(.invalidRequest, "checkpoint layout mismatch") }
     for pane in checkpoint.panes {
       let queue = DispatchQueue(
@@ -399,8 +421,10 @@ extension MuxService {
           id: $0.id,
           name: $0.name,
           layout: $0.layout,
+          layers: $0.layers,
           activePane: $0.activePane,
-          zoomedPane: $0.zoomedPane
+          zoomedPane: $0.zoomedPane,
+          previousPane: $0.previousPane
         )
       },
       activeTab: checkpoint.activeTab,

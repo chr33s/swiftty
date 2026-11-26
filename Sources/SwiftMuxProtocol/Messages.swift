@@ -98,10 +98,14 @@ public struct ClientCapabilities: OptionSet, Codable, Sendable, Equatable {
   /// client fetches pixels with `imageChunk` (not in `supported`; only
   /// frontends that render images ask, spec.graphics.md §14.1).
   public static let images = ClientCapabilities(rawValue: 1 << 8)
+  /// The client decodes floating layers and a tab whose tiled tree is
+  /// empty. Without it, attaching to a workspace that has a layer is
+  /// refused.
+  public static let floatingLayers = ClientCapabilities(rawValue: 1 << 9)
 
   public static let supported: ClientCapabilities = [
     .attachReadiness, .observers, .viewerViewport, .binaryFrames, .frameDeltas,
-    .inboxAcknowledgementTokens,
+    .inboxAcknowledgementTokens, .floatingLayers,
   ]
 }
 
@@ -224,12 +228,15 @@ public struct ServiceFeatures: OptionSet, Codable, Sendable, Equatable {
   /// Kitty graphics in panes: `PaneFrame.images` and `imageChunk`
   /// (spec.graphics.md §14).
   public static let kittyGraphics = ServiceFeatures(rawValue: 1 << 15)
+  /// Floating layers: `floatPane`, `newLayer`, `placeLayer`, `orderLayer`,
+  /// `minimizeLayer`, `closeLayer`, `dockPane` and `setLayerRatio`.
+  public static let floatingLayers = ServiceFeatures(rawValue: 1 << 16)
 
   public static let supported: ServiceFeatures = [
     .mouseReporting, .historyJumps, .terminalControl, .shellIntegration,
     .keypadKeys, .kittyClipboard, .dropTargets, .javaScript, .binaryFrames,
     .frameDeltas, .liveSelection, .inboxAcknowledgementTokens, .roamingControl,
-    .kittyGraphics,
+    .kittyGraphics, .floatingLayers,
   ]
 }
 
@@ -342,24 +349,73 @@ public struct PaneSummary: Codable, Sendable, Equatable {
   }
 }
 
+/// An array decoded as empty when its key is missing and left out of the
+/// encoding when empty, so a peer that predates the field still decodes.
+@propertyWrapper
+public struct OmittedWhenEmpty<Element: Codable & Sendable & Equatable>:
+  Codable, Sendable, Equatable
+{
+  public var wrappedValue: [Element]
+
+  public init(wrappedValue: [Element]) { self.wrappedValue = wrappedValue }
+
+  public init(from decoder: any Decoder) throws {
+    wrappedValue = try decoder.singleValueContainer().decode([Element].self)
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var container = encoder.singleValueContainer()
+    try container.encode(wrappedValue)
+  }
+}
+
+extension KeyedDecodingContainer {
+  public func decode<Element>(
+    _: OmittedWhenEmpty<Element>.Type,
+    forKey key: Key
+  ) throws -> OmittedWhenEmpty<Element> {
+    OmittedWhenEmpty(
+      wrappedValue: try decodeIfPresent([Element].self, forKey: key) ?? []
+    )
+  }
+}
+
+extension KeyedEncodingContainer {
+  public mutating func encode<Element>(
+    _ value: OmittedWhenEmpty<Element>,
+    forKey key: Key
+  ) throws {
+    guard !value.wrappedValue.isEmpty else { return }
+    try encode(value.wrappedValue, forKey: key)
+  }
+}
+
 public struct TabSnapshot: Codable, Sendable, Equatable {
   public var id: TabID
   public var name: String
-  public var layout: LayoutNode
+  /// The tiled tree. Nil once every tiled pane has been floated; the tab
+  /// stays open while a layer remains.
+  public var layout: LayoutNode?
+  /// Back to front. Empty for a tab that has never floated a pane, and
+  /// omitted on the wire then so an older snapshot still decodes.
+  @OmittedWhenEmpty
+  public var layers: [FloatingLayer] = []
   public var activePane: PaneID
-  /// Displayed alone while set; the split tree is retained.
+  /// Displayed alone while set; the split tree and layers are retained.
   public var zoomedPane: PaneID?
 
   public init(
     id: TabID,
     name: String,
-    layout: LayoutNode,
+    layout: LayoutNode?,
     activePane: PaneID,
-    zoomedPane: PaneID? = nil
+    zoomedPane: PaneID? = nil,
+    layers: [FloatingLayer] = []
   ) {
     self.id = id
     self.name = name
     self.layout = layout
+    self.layers = layers
     self.activePane = activePane
     self.zoomedPane = zoomedPane
   }
@@ -383,7 +439,7 @@ public struct WorkspaceSnapshot: Codable, Sendable, Equatable {
   public func pane(_ id: PaneID) -> PaneSummary? { panes.first { $0.id == id } }
 
   public func tab(containing pane: PaneID) -> TabSnapshot? {
-    tabs.first { $0.layout.contains(pane) }
+    tabs.first { $0.contains(pane) }
   }
 
   public init(
@@ -776,6 +832,26 @@ public enum MuxCommand: Codable, Sendable, Equatable {
   case focusPane(PaneID)
   case toggleZoom(TabID)
   case setSplitRatio(tab: TabID, path: [Bool], ratio: Double)
+  /// Lifts a tiled pane into a new front layer. Clears zoom.
+  case floatPane(pane: PaneID, bounds: LayerRect)
+  /// A new pane in a new front layer of `tab`.
+  case newLayer(tab: TabID, bounds: LayerRect, launch: LaunchSpec?)
+  /// Moves or resizes a floating layer. The rectangle must fit in the tab.
+  case placeLayer(layer: LayerID, bounds: LayerRect)
+  /// `before == nil` brings `layer` to the front. Otherwise it sits just
+  /// below `before`.
+  case orderLayer(layer: LayerID, before: LayerID?)
+  /// A minimized layer keeps running and is not drawn. Refused when it
+  /// would hide the tab's last visible pane.
+  case minimizeLayer(layer: LayerID, minimized: Bool)
+  /// Ends every pane in the layer. The tab closes when nothing remains.
+  case closeLayer(LayerID)
+  /// Puts a floated pane back into the tiled tree. `beside` is the tiled
+  /// pane it splits. Nil docks beside the first tiled pane, or becomes
+  /// the whole tree when the tile is empty.
+  case dockPane(pane: PaneID, beside: PaneID?, axis: SplitAxis)
+  /// The split ratio inside a floating layer.
+  case setLayerRatio(layer: LayerID, path: [Bool], ratio: Double)
   /// Workspace › Don't Save Output (`savedLayoutMetadata`).
   case setOutputOptOut(Bool)
   case endPane(PaneID)
@@ -835,7 +911,7 @@ public enum MuxCommand: Codable, Sendable, Equatable {
       .observeWorkspaces, .observeWorkspaceGraph, .savedLayoutState,
       .exportSavedOutput, .subscribeAutomation, .subscribeInbox, .inbox,
       .locateAttention, .markSeen, .snooze, .markReviewed, .clipboardReadResult,
-      .clipboardWriteResult, .copySelection:
+      .clipboardWriteResult, .copySelection, .closeLayer:
       true
     default: false
     }

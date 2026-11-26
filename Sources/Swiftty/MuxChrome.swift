@@ -980,6 +980,8 @@ struct MuxPaneHeaderState: Equatable {
   var hasActivity: Bool
   var isZoomed: Bool
   var hasExited: Bool
+  var isFloating: Bool = false
+  var canFloat: Bool = true
   /// The pane's program icon (`MuxWorkspaceController.icon(of:)`).
   var icon: MuxIcon = .terminal
 }
@@ -1020,6 +1022,14 @@ final class MuxPaneContainer: NSView {
       }
     }
   }
+  /// A floating layer keeps a stronger edge. The card clips to its bounds,
+  /// so the edge is a border rather than a shadow.
+  var floating = false {
+    didSet {
+      guard floating != oldValue else { return }
+      needsDisplay = true
+    }
+  }
 
   init(paneView: MuxPaneView) {
     self.paneView = paneView
@@ -1040,8 +1050,11 @@ final class MuxPaneContainer: NSView {
     guard let layer else { return }
     layer.cornerRadius = showsHeader ? Self.cornerRadius : 0
     layer.masksToBounds = showsHeader
-    layer.borderWidth = showsHeader ? 1 : 0
-    layer.borderColor = NSColor.white.withAlphaComponent(0.06).cgColor
+    layer.borderWidth = floating ? 2 : (showsHeader ? 1 : 0)
+    layer.borderColor =
+      floating
+      ? NSColor.labelColor.withAlphaComponent(0.45).cgColor
+      : NSColor.white.withAlphaComponent(0.06).cgColor
     layer.backgroundColor =
       showsHeader
       ? (cardBackground ?? NSColor.labelColor.withAlphaComponent(0.04)).cgColor
@@ -1120,8 +1133,10 @@ final class MuxPaneContainer: NSView {
 
 @MainActor
 final class MuxPaneHeader: NSView {
-  enum Action { case splitRight, splitDown, zoom, close }
+  enum Action: CaseIterable { case splitRight, splitDown, float, zoom, close }
   var onAction: ((Action) -> Void)?
+  /// A press on the header background (not a button) starts a layer drag.
+  var onBeginDrag: ((NSEvent) -> Void)?
   /// The program's icon, chosen locally from its title (`MuxIcons`).
   private let icon = NSImageView()
   private let label = NSTextField(labelWithString: "")
@@ -1160,6 +1175,15 @@ final class MuxPaneHeader: NSView {
       icon.imageScaling =
         brand == nil ? .scaleProportionallyDown : .scaleProportionallyUpOrDown
       dot.isHidden = !state.hasActivity
+      let floatTitle = state.isFloating ? "Dock pane" : "Float pane"
+      actionButtons[.float]?.isHidden = !state.canFloat
+      actionButtons[.float]?.image = MuxIcons.image(
+        state.isFloating
+          ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle",
+        floatTitle
+      )
+      actionButtons[.float]?.toolTip = floatTitle
+      actionButtons[.float]?.setAccessibilityLabel(floatTitle)
       actionButtons[.zoom]?.image = MuxIcons.image(
         state.isZoomed
           ? "arrow.down.right.and.arrow.up.left"
@@ -1187,6 +1211,7 @@ final class MuxPaneHeader: NSView {
     for (action, symbol, title) in [
       (Action.splitRight, "square.split.2x1", "Split right"),
       (.splitDown, "square.split.1x2", "Split down"),
+      (.float, "rectangle.on.rectangle", "Float pane"),
       (.zoom, "arrow.up.left.and.arrow.down.right", "Zoom pane"),
       (.close, "xmark", "End pane"),
     ] {
@@ -1200,7 +1225,7 @@ final class MuxPaneHeader: NSView {
       b.setAccessibilityLabel(title)
       b.target = self
       b.action = #selector(clicked(_:))
-      b.tag = [.splitRight, .splitDown, .zoom, .close].firstIndex(of: action)!
+      b.tag = Action.allCases.firstIndex(of: action)!
       actionButtons[action] = b
       buttons.addArrangedSubview(b)
     }
@@ -1276,12 +1301,26 @@ final class MuxPaneHeader: NSView {
   /// nothing.
   private func refreshActions() { buttons.alphaValue = isHovered ? 1 : 0 }
 
+  override var mouseDownCanMoveWindow: Bool { false }
+
+  /// Buttons and the accessory keep their clicks. The rest of the header
+  /// is the drag surface for a floating layer.
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard let hit = super.hitTest(point) else { return nil }
+    if onBeginDrag == nil || hit === self || hit is NSButton { return hit }
+    if let accessory, hit === accessory || hit.isDescendant(of: accessory) {
+      return hit
+    }
+    return self
+  }
+
+  override func mouseDown(with event: NSEvent) { onBeginDrag?(event) }
+
   /// Whether the actions draw (tests).
   var showsActions: Bool { buttons.alphaValue > 0 }
 
   @objc
   private func clicked(_ sender: NSButton) {
-    let actions: [Action] = [.splitRight, .splitDown, .zoom, .close]
-    onAction?(actions[sender.tag])
+    onAction?(Action.allCases[sender.tag])
   }
 }

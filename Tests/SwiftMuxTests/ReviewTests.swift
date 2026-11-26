@@ -349,7 +349,7 @@ struct ReviewTests {
           .split(pane: panes[0], axis: .leftRight, launch: busyLaunch())
         )
       else { throw MuxError(.invalidRequest) }
-      panes = try #require(snap.activeTabSnapshot?.layout.panes)
+      panes = try #require(snap.activeTabSnapshot?.layout?.panes)
     }
     #expect(panes.count == 4)
     try await c.execute(.setSubscriptions(panes))

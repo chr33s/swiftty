@@ -471,7 +471,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #selector(workspace.splitDown(_:)),
         key: "d",
         modifiers: [.command, .shift]
-      ), .separator(),
+      ),
+      item(
+        "Float Pane",
+        #selector(workspace.floatActivePane(_:)),
+        key: "f",
+        modifiers: [.command, .control]
+      ), item("Dock Pane", #selector(workspace.dockActivePane(_:))),
+      item(
+        "Minimize Floating Layer",
+        #selector(workspace.minimizeActiveLayer(_:))
+      ),
+      item("Close Floating Layer…", #selector(workspace.closeActiveLayer(_:))),
+      .separator(),
       item("Rename Tab…", #selector(workspace.renameActiveTab(_:))),
       item(
         "Rename Workspace…",

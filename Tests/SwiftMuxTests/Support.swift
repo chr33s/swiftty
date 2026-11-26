@@ -99,7 +99,7 @@ extension MuxConnection {
         .attach(AttachRequest(selector))
       )
     else { throw MuxError(.invalidRequest, "attach reply") }
-    let panes = ws.activeTabSnapshot!.layout.panes
+    let panes = ws.activeTabSnapshot!.panes
     try await execute(
       .setGeometry(
         GeometryBatch(

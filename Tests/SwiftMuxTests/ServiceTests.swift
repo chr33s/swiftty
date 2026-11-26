@@ -134,7 +134,7 @@ struct ServiceTests {
       )
     else { throw MuxError(.invalidRequest, "unexpected reply") }
     let tab = after.tabs[0]
-    #expect(tab.layout.panes.count == 2)
+    #expect(tab.panes.count == 2)
     #expect(tab.activePane != first)
     guard case let .layout(zoomed) = try await c.execute(.toggleZoom(tab.id))
     else { throw MuxError(.invalidRequest, "unexpected reply") }

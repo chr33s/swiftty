@@ -231,8 +231,7 @@ extension MuxService {
     guard let tab = ws.tabs.first(where: { $0.id == ws.activeTab }) else {
       return []
     }
-    if let zoom = tab.zoomedPane { return [zoom] }
-    return Set(tab.layout.panes)
+    return Set(tab.visiblePanes)
   }
 
   /// A viewer's window for `pane` moved somewhere usable. Its stale-anchor

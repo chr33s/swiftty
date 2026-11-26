@@ -3,8 +3,8 @@ import Foundation
 /// Values crossing the VM boundary never retain JavaScriptCore objects.
 public struct JavaScriptAction: Codable, Sendable, Equatable {
   public enum Kind: String, Codable, Sendable {
-    case write, close, split, badge, tabIcon, paneIcon, notification, status,
-      keybinding, error
+    case write, close, split, float, dock, badge, tabIcon, paneIcon,
+      notification, status, keybinding, error
   }
   public var kind: Kind
   public var pane: String?

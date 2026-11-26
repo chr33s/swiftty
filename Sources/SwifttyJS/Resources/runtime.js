@@ -44,6 +44,26 @@
         const child = identifier();
         emit({kind: 'split', pane: id, id: child, direction});
         return pane(child);
+      },
+      float(bounds) {
+        if (bounds == null) {
+          emit({kind: 'float', pane: id});
+          return;
+        }
+        if ([bounds.x, bounds.y, bounds.w, bounds.h].some(value => typeof value !== 'number' || !Number.isFinite(value))) {
+          throw new TypeError('Float bounds are x, y, w, h fractions of the tab');
+        }
+        emit({kind: 'float', pane: id, text: JSON.stringify({x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h})});
+      },
+      dock(beside, direction) {
+        if (direction !== undefined && !['horizontal', 'vertical'].includes(direction)) {
+          throw new TypeError('Dock direction must be horizontal or vertical');
+        }
+        emit({
+          kind: 'dock', pane: id,
+          id: beside == null ? '' : String(beside),
+          direction: direction || 'vertical'
+        });
       }
     });
   }

@@ -70,6 +70,18 @@ export interface PaneController {
   /** Split this pane horizontally or vertically */
   split(direction: "horizontal" | "vertical"): PaneController;
 
+  /**
+   * Lift this pane into a floating layer. Bounds are fractions of the tab,
+   * origin at the top left. Omitted bounds use a centered layer.
+   */
+  float(bounds?: {x: number; y: number; w: number; h: number}): void;
+
+  /**
+   * Put this pane back into the tiled tree beside `beside`. With no pane
+   * beside it, an empty tiled tree becomes this pane.
+   */
+  dock(beside?: string, direction?: "horizontal" | "vertical"): void;
+
   close(): void;
 }
 

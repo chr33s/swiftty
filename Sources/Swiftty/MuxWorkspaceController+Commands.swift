@@ -119,12 +119,25 @@ extension MuxWorkspaceController {
     case #selector(selectNextTab(_:)), #selector(selectPreviousTab(_:)):
       return ws.tabs.count > 1
     case #selector(focusPaneInDirection(_:)):
-      return tab.zoomedPane == nil && tab.layout.panes.count > 1
-    case #selector(resizePaneInDirection(_:)): return tab.layout.panes.count > 1
+      return tab.zoomedPane == nil && tab.visiblePanes.count > 1
+    case #selector(resizePaneInDirection(_:)):
+      return (tab.tree(containing: tab.activePane)?.panes.count ?? 0) > 1
+    case #selector(floatActivePane(_:)):
+      return features.contains(.floatingLayers)
+        && tab.layer(containing: tab.activePane) == nil
+    case #selector(dockActivePane(_:)), #selector(closeActiveLayer(_:)):
+      return features.contains(.floatingLayers)
+        && tab.layer(containing: tab.activePane) != nil
+    case #selector(minimizeActiveLayer(_:)):
+      guard features.contains(.floatingLayers),
+        let layer = tab.layer(containing: tab.activePane)
+      else { return false }
+      return tab.canMinimize(layer)
     case #selector(splitRight(_:)), #selector(splitDown(_:)),
       #selector(toggleZoomPane(_:)), #selector(endActivePane(_:)):
       return ws.pane(tab.activePane) != nil
     default: return true
     }
   }
+
 }

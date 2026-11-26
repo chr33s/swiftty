@@ -40,23 +40,17 @@ public struct Compositor {
     LayoutRect(x: 0, y: 0, width: columns, height: max(0, rows - 1))
   }
 
-  /// Visible pane rectangles of a tab, honouring zoom.
+  /// Visible pane rectangles of a tab, honouring zoom and floating layers.
   public func frames(for tab: TabSnapshot) -> [PaneID: LayoutRect] {
-    if let zoomed = tab.zoomedPane { return [zoomed: paneArea] }
-    return LayoutGeometry.frames(
-      tab.layout,
-      in: paneArea,
-      divider: Self.divider
-    )
+    placement(for: tab).panes
   }
 
   public func dividers(for tab: TabSnapshot) -> [LayoutDivider] {
-    guard tab.zoomedPane == nil else { return [] }
-    return LayoutGeometry.dividers(
-      tab.layout,
-      in: paneArea,
-      divider: Self.divider
-    )
+    placement(for: tab).dividers
+  }
+
+  func placement(for tab: TabSnapshot) -> TabPlacement {
+    tab.placement(in: paneArea, divider: Self.divider, floatInset: 1)
   }
 
   public func compose(
@@ -72,8 +66,10 @@ public struct Compositor {
       drawStatus(status, into: &screen)
       return screen
     }
-    let rects = self.frames(for: tab)
-    for (pane, rect) in rects {
+    let placed = placement(for: tab)
+    let rects = placed.panes
+    func paint(_ pane: PaneID) {
+      guard let rect = rects[pane] else { return }
       if let frame = frames[pane] {
         draw(frame, in: rect, overlay: overlays[pane], into: &screen)
       } else {
@@ -89,7 +85,34 @@ public struct Compositor {
         )
       }
     }
-    drawDividers(tab: tab, active: rects[tab.activePane], into: &screen)
+    for pane in placed.tiled { paint(pane) }
+    let tiledDividers = placed.dividers.filter { $0.layer == nil }
+    drawDividers(tiledDividers, active: rects[tab.activePane], into: &screen)
+    let frameStyle = OuterStyle(
+      foreground: .palette(15),
+      background: .palette(8)
+    )
+    for frame in placed.layers {
+      let outer = frame.outer
+      screen.fill(outer, style: frameStyle)
+      let title = workspace.pane(frame.layer.focusedPane)?.title ?? ""
+      let label = title.isEmpty ? "float" : title
+      if outer.width > 2, outer.height > 0 {
+        screen.write(
+          TerminalText.head(label, width: outer.width - 2),
+          x: outer.x + 1,
+          y: outer.y,
+          style: frameStyle,
+          limit: outer.width - 2
+        )
+      }
+      for pane in frame.layer.layout.panes { paint(pane) }
+      drawDividers(
+        placed.dividers.filter { $0.layer == frame.id },
+        active: rects[tab.activePane],
+        into: &screen
+      )
+    }
     drawStatus(status, into: &screen)
     if showCursor, let rect = rects[tab.activePane],
       let frame = frames[tab.activePane],
@@ -219,8 +242,12 @@ public struct Compositor {
     Self.append(tab.zoomedPane?.rawValue ?? Self.none, to: &base)
     base.append(columns)
     base.append(rows)
-    let rects = self.frames(for: tab)
-      .sorted { ($0.value.x, $0.value.y) < ($1.value.x, $1.value.y) }
+    let placed = placement(for: tab)
+    let rects = placed.panes.sorted {
+      ($0.value.x, $0.value.y, $0.key.description) < (
+        $1.value.x, $1.value.y, $1.key.description
+      )
+    }
     for y in 0 ..< paneArea.height {
       var key = base
       var keyed = true
@@ -283,6 +310,17 @@ public struct Compositor {
         }
         key.append(UInt64.max)
       }
+      for layer in placed.layers
+      where y >= layer.outer.y && y < layer.outer.maxY {
+        Self.append(layer.id.rawValue, to: &key)
+        key.append(layer.outer.x)
+        key.append(layer.outer.y)
+        key.append(layer.outer.width)
+        key.append(layer.outer.height)
+        // Row keys only live in this process, so the seeded hash is stable.
+        let title = workspace.pane(layer.layer.focusedPane)?.title ?? ""
+        key.append(UInt64(truncatingIfNeeded: title.hashValue))
+      }
       screen.rowKeys[y] = keyed ? key : nil
     }
   }
@@ -315,11 +353,10 @@ public struct Compositor {
   }
 
   private func drawDividers(
-    tab: TabSnapshot,
+    _ dividers: [LayoutDivider],
     active: LayoutRect?,
     into screen: inout ScreenBuffer
   ) {
-    let dividers = self.dividers(for: tab)
     guard !dividers.isEmpty else { return }
     var mask = [Bool](repeating: false, count: columns * rows)
     for d in dividers {

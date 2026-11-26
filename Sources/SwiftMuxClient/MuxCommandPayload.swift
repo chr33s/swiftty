@@ -82,7 +82,7 @@ private struct MuxCommandPayload {
       for tab in template.tabs {
         try text(tab.name)
         try add(
-          count: tab.layout.slots.count * 2,
+          count: tab.slots.count * 2,
           stride: MemoryLayout<WorkspaceTemplateNode>.stride,
         )
       }
@@ -111,8 +111,12 @@ private struct MuxCommandPayload {
       try launch(spec)
     case let .split(_, _, spec): try launch(spec)
     case let .renameTab(_, name): try text(name)
-    case let .setSplitRatio(_, path, _):
+    case let .setSplitRatio(_, path, _), let .setLayerRatio(_, path, _):
       try add(count: path.count, stride: MemoryLayout<Bool>.stride)
+    case let .newLayer(_, _, spec): try launch(spec)
+    case .floatPane, .placeLayer, .orderLayer, .minimizeLayer, .closeLayer,
+      .dockPane:
+      break
     case let .setGeometry(batch):
       try add(
         count: batch.entries.count,

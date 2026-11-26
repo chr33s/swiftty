@@ -234,4 +234,52 @@ extension LayoutGeometry {
       lower <= upper ? min(upper, max(lower, ratio)) : ma / max(1, ma + mb)
     return min(0.95, max(0.05, bounded))
   }
+
+  /// Every pane of `tree` inside `proposed` stays at least `minimum`, or
+  /// no smaller than it already was inside `previous` when the area
+  /// cannot hold that minimum.
+  public static func respectsPaneMinimum(
+    _ proposed: LayerRect,
+    tree: LayoutNode,
+    from previous: LayerRect,
+    in area: LayoutRect,
+    minimum: (columns: Int, rows: Int),
+    divider: Int,
+    floatInset: Int
+  ) -> Bool {
+    let next = extents(
+      proposed,
+      tree: tree,
+      in: area,
+      divider: divider,
+      floatInset: floatInset
+    )
+    let prior = extents(
+      previous,
+      tree: tree,
+      in: area,
+      divider: divider,
+      floatInset: floatInset
+    )
+    let empty = LayoutRect(x: 0, y: 0, width: 0, height: 0)
+    for pane in tree.panes {
+      let now = next[pane] ?? empty
+      let before = prior[pane] ?? empty
+      let width = min(minimum.columns, before.width)
+      let height = min(minimum.rows, before.height)
+      if now.width < width || now.height < height { return false }
+    }
+    return true
+  }
+
+  private static func extents(
+    _ bounds: LayerRect,
+    tree: LayoutNode,
+    in area: LayoutRect,
+    divider: Int,
+    floatInset: Int
+  ) -> [PaneID: LayoutRect] {
+    let outer = layerFrame(bounds, in: area)
+    return frames(tree, in: inset(outer, by: floatInset), divider: divider)
+  }
 }

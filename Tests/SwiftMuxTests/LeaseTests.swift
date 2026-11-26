@@ -195,7 +195,8 @@ struct LeaseTests {
     guard
       case let .layout(split) = try await c.execute(
         .split(pane: a, axis: .leftRight, launch: shellLaunch())
-      ), let b = split.activeTabSnapshot?.layout.panes.first(where: { $0 != a })
+      ),
+      let b = split.activeTabSnapshot?.layout?.panes.first(where: { $0 != a })
     else { throw MuxError(.invalidRequest, "split") }
     let attachment = await c.attachment!
     func record(

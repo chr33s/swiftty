@@ -121,22 +121,52 @@ public indirect enum WorkspaceTemplateNode: Codable, Sendable, Equatable {
   }
 }
 
+/// A floating layer in a reopened workspace, by pane slot.
+public struct WorkspaceTemplateLayer: Codable, Sendable, Equatable {
+  public var bounds: LayerRect
+  public var minimized: Bool
+  public var layout: WorkspaceTemplateNode
+  public var focusedSlot: Int
+
+  public init(
+    bounds: LayerRect,
+    minimized: Bool,
+    layout: WorkspaceTemplateNode,
+    focusedSlot: Int
+  ) {
+    self.bounds = bounds
+    self.minimized = minimized
+    self.layout = layout
+    self.focusedSlot = focusedSlot
+  }
+}
+
 public struct WorkspaceTemplateTab: Codable, Sendable, Equatable {
   public var name: String
-  public var layout: WorkspaceTemplateNode
+  /// Nil when the reopened tab is only floating layers.
+  public var layout: WorkspaceTemplateNode?
   public var activeSlot: Int
   public var zoomedSlot: Int?
+  @OmittedWhenEmpty
+  public var layers: [WorkspaceTemplateLayer] = []
 
   public init(
     name: String,
-    layout: WorkspaceTemplateNode,
+    layout: WorkspaceTemplateNode?,
     activeSlot: Int,
-    zoomedSlot: Int? = nil
+    zoomedSlot: Int? = nil,
+    layers: [WorkspaceTemplateLayer] = []
   ) {
     self.name = name
     self.layout = layout
     self.activeSlot = activeSlot
     self.zoomedSlot = zoomedSlot
+    self.layers = layers
+  }
+
+  /// Tiled slots, then each layer's, back to front.
+  public var slots: [Int] {
+    (layout?.slots ?? []) + layers.flatMap(\.layout.slots)
   }
 }
 
@@ -180,15 +210,25 @@ public struct WorkspaceTemplate: Codable, Sendable, Equatable {
   /// Every slot is used exactly once, ratios are in (0, 1) and indices
   /// are in range. Checked before any pane starts.
   public func validate(maxPanes: Int) throws(MuxError) {
-    let slots = tabs.flatMap(\.layout.slots)
+    let slots = tabs.flatMap(\.slots)
     guard !tabs.isEmpty, !panes.isEmpty, panes.count <= maxPanes,
       slots.count == panes.count, Set(slots) == Set(0 ..< panes.count),
       tabs.indices.contains(activeTab),
       tabs.allSatisfy({ tab in
-        tab.layout.slots.contains(tab.activeSlot)
-          && tab.zoomedSlot.map { tab.layout.slots.contains($0) } ?? true
-      }), tabs.allSatisfy({ Self.ratiosValid($0.layout) })
+        !tab.slots.isEmpty && tab.slots.contains(tab.activeSlot)
+          && tab.zoomedSlot.map { tab.slots.contains($0) } ?? true
+          && Self.ratiosValid(tab.layout)
+          && tab.layers.allSatisfy {
+            $0.bounds.isValid && $0.layout.slots.contains($0.focusedSlot)
+              && Self.ratiosValid($0.layout)
+          }
+      })
     else { throw MuxError(.invalidRequest, "invalid workspace template") }
+  }
+
+  private static func ratiosValid(_ node: WorkspaceTemplateNode?) -> Bool {
+    guard let node else { return true }
+    return ratiosValid(node)
   }
 
   private static func ratiosValid(_ node: WorkspaceTemplateNode) -> Bool {

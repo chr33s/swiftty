@@ -30,6 +30,7 @@ public enum ServerInstanceTag: Sendable {}
 public enum WorkspaceTag: Sendable {}
 public enum TabTag: Sendable {}
 public enum PaneTag: Sendable {}
+public enum LayerTag: Sendable {}
 public enum AttachmentTag: Sendable {}
 
 /// A new service process receives a new instance; old handles are invalid.
@@ -37,4 +38,5 @@ public typealias ServerInstanceID = MuxID<ServerInstanceTag>
 public typealias WorkspaceID = MuxID<WorkspaceTag>
 public typealias TabID = MuxID<TabTag>
 public typealias PaneID = MuxID<PaneTag>
+public typealias LayerID = MuxID<LayerTag>
 public typealias AttachmentID = MuxID<AttachmentTag>

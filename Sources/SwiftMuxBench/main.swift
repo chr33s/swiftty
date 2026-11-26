@@ -610,7 +610,7 @@ func visibleLimit(
     )
   else { throw MuxError(.invalidRequest, "unexpected benchmark reply") }
   ws = snap
-  var panes = ws.tabs[0].layout.panes
+  var panes = ws.tabs[0].panes
   var axis = SplitAxis.leftRight
   while panes.count < MuxLimits.standard.maxPanes {
     var next: [PaneID] = []
@@ -628,8 +628,11 @@ func visibleLimit(
     axis = axis == .leftRight ? .topBottom : .leftRight
   }
   let tab = ws.tabs[0]
+  guard let tree = tab.layout else {
+    throw MuxError(.invalidRequest, "benchmark tab has no tiled layout")
+  }
   let frames = LayoutGeometry.frames(
-    tab.layout,
+    tree,
     in: LayoutRect(x: 0, y: 0, width: 512, height: 255),
     divider: 1
   )
@@ -638,7 +641,7 @@ func visibleLimit(
       GeometryBatch(
         layoutRevision: ws.layoutRevision,
         generation: 1,
-        entries: tab.layout.panes.map {
+        entries: tab.panes.map {
           .init(
             pane: $0,
             columns: max(1, frames[$0]!.width),
@@ -648,7 +651,7 @@ func visibleLimit(
       )
     )
   )
-  try await c.execute(.setSubscriptions(tab.layout.panes))
+  try await c.execute(.setSubscriptions(tab.panes))
   let cpu0 = cpuSeconds()
   let t0 = now()
   var count = 0
@@ -665,7 +668,7 @@ func visibleLimit(
   let elapsed = now() - t0
   let result = (
     (cpuSeconds() - cpu0) / elapsed * 100, footprint(), Double(count) / elapsed,
-    tab.layout.panes.count
+    tab.panes.count
   )
   try await c.execute(.detach)
   try await c.execute(.endAllWorkspaces)

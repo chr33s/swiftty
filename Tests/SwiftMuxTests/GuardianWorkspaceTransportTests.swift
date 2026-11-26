@@ -251,7 +251,7 @@ struct GuardianWorkspaceTransportTests {
       )
     else { throw MuxError(.invalidRequest, "missing split layout") }
     #expect(split.id == fixture.id)
-    #expect(split.tabs[0].layout.panes.count == 2)
+    #expect(split.tabs[0].layout?.panes.count == 2)
     #expect(fixture.server.inventory().first?.panes.count == 2)
     #expect(
       fixture.server.inventory().first?.panes.contains { $0.pid == firstPID }
@@ -277,7 +277,7 @@ struct GuardianWorkspaceTransportTests {
     else {
       throw MuxError(.invalidRequest, "retired pane slot was not returned")
     }
-    #expect(replacement.tabs[0].layout.panes.count == 2)
+    #expect(replacement.tabs[0].layout?.panes.count == 2)
     #expect(fixture.server.inventory().first?.panes.count == 2)
     _ = try await client.execute(.endWorkspace(.id(workspace.id)))
     await #expect(throws: MuxError.self) {
