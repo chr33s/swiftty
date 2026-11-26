@@ -162,6 +162,7 @@ extension MuxService {
               // Output read before the record existed posted a change that
               // found no pane; take it now, which also re-arms `onChange`.
               service.paneChanged(id, reportActivity: false)
+              runtime.republishResume()
               // Creation generation: the target may have ended meanwhile.
               if !defersPlacement, service.locate(pane: id) == nil {
                 service.panes[id]?.detachedFromLayout = true

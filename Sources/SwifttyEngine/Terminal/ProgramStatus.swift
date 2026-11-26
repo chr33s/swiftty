@@ -304,7 +304,9 @@ extension ProgramStatusCommand {
 
   /// Standard-alphabet base64: optional `=` padding only at the end, no
   /// whitespace. Leftover bits of the last character are ignored.
-  static func base64Decode(_ input: Substring.UTF8View) -> [UInt8]? {
+  static func base64Decode<C: BidirectionalCollection<UInt8>>(_ input: C)
+    -> [UInt8]?
+  {
     var body = input[...]
     var padding = 0
     while body.last == 0x3D, padding < 2 {

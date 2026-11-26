@@ -199,7 +199,9 @@ struct SavedLayoutGatewayTests {
     let entry = try #require(list.workspaces.first { $0.id == workspace })
     #expect(entry.state == .saved && entry.name == "kept")
     #expect(entry.paneCount == 2 && entry.tabCount == 1)
-    #expect(entry.commands == [.init(slot: 0, command: ["/bin/sh"])])
+    #expect(
+      entry.commands == [.init(slot: 0, command: ["/bin/sh"], origin: .launch)]
+    )
     #expect(await reread.record(workspace)?.firstOfferedAt != nil)
     // The shell exits did not shrink the saved layout.
     #expect(await reread.record(workspace)?.content == content)

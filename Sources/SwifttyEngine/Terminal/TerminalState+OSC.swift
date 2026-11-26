@@ -73,6 +73,11 @@ extension TerminalState {
     case 5522: kittyClipboard(rest, terminator: st)
     case 72: kittyDragAndDrop(rest, terminator: st)
     case 7501: programStatusCommand(rest, terminator: st)
+    case 7577:
+      programResumeCommand(
+        rest,
+        sequenceBytes: 2 + data.count + st.utf8.count
+      )
     case 10, 11, 12:
       let spec = String(decoding: rest, as: UTF8.self)
       if spec == "?" {

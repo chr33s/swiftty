@@ -26,6 +26,8 @@ enum PaneEvent: Sendable {
   /// answer (`completeClipboardRead` / `completeClipboardWrite`).
   case clipboardRead(MuxClipboardRead)
   case clipboardWrite(MuxClipboardWrite)
+  /// The resume command chosen for a saved layout. Nil clears it.
+  case resume(SavedProgramResume?)
 }
 
 /// The shell's running command's program, set from the emulator's hooks.
@@ -169,6 +171,12 @@ final class PaneRuntime: @unchecked Sendable {
   /// The foreground program last reported (`onEvent(.program)`).
   private var program = ""
   private var programCheckPending = false
+  /// OSC 7577 selection. The pane queue owns it.
+  private var resumeMemory = ProgramResumeMemory()
+  private var publishedResume: SavedProgramResume?
+  private var didPublishResume = false
+  private var resumeCheckPending = false
+  private var resumeGraceScheduled = false
   /// How long after output the foreground program is read: coalesces a
   /// burst, and lets a command the shell just started exec first.
   static let programCheckDelay: DispatchTimeInterval = .milliseconds(250)
@@ -334,6 +342,7 @@ final class PaneRuntime: @unchecked Sendable {
       self.cancelGeometryWork { _ in true }
       self.parser = Parser()
       self.state.programExited()
+      self.publishResume()
       self.publishStatus()
       self.noteChange()
       self.onEvent?(.finished(status: status, forced: forced))
@@ -397,9 +406,12 @@ final class PaneRuntime: @unchecked Sendable {
   }
 
   /// Before publication: replaces the fresh engine with the checkpointed
-  /// one, keeping this runtime's host hooks. Emits nothing.
-  func restoreMigration(_ c: MigrationCheckpoint) throws {
-    try queue.sync { () throws in
+  /// one, keeping this runtime's host hooks. Emits nothing. The returned
+  /// command is the one the checkpoint's records select for the adopted
+  /// process; the caller stores it before `onEvent` is set.
+  func restoreMigration(_ c: MigrationCheckpoint) throws -> SavedProgramResume?
+  {
+    try queue.sync { () throws -> SavedProgramResume? in
       var restored = try TerminalState.restored(checkpoint: c.terminal)
       var reader = CheckpointReader(c.parser)
       var restoredParser = Parser()
@@ -416,11 +428,15 @@ final class PaneRuntime: @unchecked Sendable {
       // A pane that adopted its process keeps the engine the cut left.
       state = restored
       parser = restoredParser
+      let command = refreshResume(now: ContinuousClock.now)
+      publishedResume = command
+      didPublishResume = true
       revision = c.revision
       geometryGeneration = c.geometryGeneration
       changeCount = c.changeCount
       currentViewport.store(c.viewport, ordering: .relaxed)
       terminalEpoch = c.epoch
+      return command
     }
   }
 
@@ -429,6 +445,12 @@ final class PaneRuntime: @unchecked Sendable {
     launcher: PaneLauncher,
     completion: @escaping @Sendable (Result<Void, MuxError>) -> Void
   ) {
+    var spec = spec
+    if state.programResumeToken == nil {
+      state.programResumeToken = ProgramResumeToken.generate()
+    }
+    spec.resumeToken = state.programResumeToken
+    spec.environment.removeValue(forKey: ProgramResumeToken.name)
     process.start(
       spec,
       launcher: launcher,
@@ -491,6 +513,11 @@ final class PaneRuntime: @unchecked Sendable {
   /// Flushes replies and events, then notifies the service once.
   private func publish() {
     scheduleProgramCheck()
+    if state.takeProgramResumeChange() {
+      publishResume()
+    } else if !state.programResumeReports.isEmpty {
+      scheduleResumeCheck()
+    }
     state.refreshSearchIfNeeded()
     _ = enqueueReplies()
     publishStatus()
@@ -540,6 +567,73 @@ final class PaneRuntime: @unchecked Sendable {
     checkForeground(afterOutput: true)
     scheduleImageAnimation()
     noteChange()
+  }
+
+  /// Publishes the chosen resume command when it changes, and arms the
+  /// two-second exit grace while the pane root is still alive.
+  private func publishResume() {
+    let now = ContinuousClock.now
+    let command = refreshResume(now: now)
+    if !didPublishResume || publishedResume != command {
+      didPublishResume = true
+      publishedResume = command
+      onEvent?(.resume(command))
+    }
+    scheduleResumeGrace(now: now)
+  }
+
+  /// The record may have been chosen before the service inserted the pane.
+  /// Publish again so that choice is not dropped.
+  func republishResume() {
+    queue.async { [weak self] in
+      guard let self else { return }
+      self.didPublishResume = false
+      self.publishResume()
+    }
+  }
+
+  private func refreshResume(
+    now: ContinuousClock.Instant
+  ) -> SavedProgramResume? {
+    ProgramResumeSelection.select(
+      reports: state.programResumeReports,
+      memory: &resumeMemory,
+      lookup: ProgramResumeProcess.lookup,
+      root: pid,
+      uid: getuid(),
+      now: now
+    )
+  }
+
+  private func scheduleResumeCheck() {
+    guard !resumeCheckPending else { return }
+    resumeCheckPending = true
+    queue.asyncAfter(deadline: .now() + Self.programCheckDelay) { [weak self] in
+      guard let self else { return }
+      self.resumeCheckPending = false
+      self.publishResume()
+    }
+  }
+
+  private func scheduleResumeGrace(now: ContinuousClock.Instant) {
+    guard let exited = resumeMemory.retention?.exitedAt, !resumeGraceScheduled
+    else { return }
+    let remaining = ProgramResumeSelection.grace - exited.duration(to: now)
+    let milliseconds = max(1, Self.milliseconds(remaining))
+    resumeGraceScheduled = true
+    queue.asyncAfter(deadline: .now() + .milliseconds(milliseconds)) {
+      [weak self] in
+      guard let self else { return }
+      self.resumeGraceScheduled = false
+      self.publishResume()
+    }
+  }
+
+  private static func milliseconds(_ duration: Duration) -> Int {
+    let parts = duration.components
+    let ms = parts.seconds * 1000 + parts.attoseconds / 1_000_000_000_000_000
+    if ms > Int64(Int.max) { return Int.max }
+    return Int(ms)
   }
 
   /// The kitty animation clock (spec.graphics.md §11): one pending tick on

@@ -202,6 +202,8 @@ struct PaneRecord {
   var workingDirectory: String?
   /// How the pane started, for saved layouts.
   var launch: SavedPaneLaunch = .loginShell
+  /// The OSC 7577 command chosen for this pane, when one was accepted.
+  var resume: SavedProgramResume? = nil
   /// The last directory on this Mac; splits and saved layouts use only this.
   var localDirectory: String?
   var directoryFallback = false

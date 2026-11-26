@@ -477,7 +477,8 @@ let package = Package(
       dependencies: [
         "SwiftMuxProtocol", "SwiftMuxXPC", "SwiftMuxBridge", "SwiftMuxService",
         "SwiftMuxClient", "SwiftMuxTerminal", "TTYKit", "SwifttyCore",
-        "MuxAttention", "TestSupport", "SwiftMuxGuardian", "SwiftMuxGateway",
+        "SwifttyEngine", "MuxAttention", "TestSupport", "SwiftMuxGuardian",
+        "SwiftMuxGateway",
       ]
     ),
     .testTarget(

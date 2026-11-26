@@ -377,7 +377,7 @@ extension MuxService {
         processOwner: process,
         processQueue: queue
       )
-      try runtime.restoreMigration(
+      let resume = try runtime.restoreMigration(
         PaneRuntime.MigrationCheckpoint(
           terminal: Array(pane.terminal),
           parser: Array(pane.parser),
@@ -408,6 +408,7 @@ extension MuxService {
         title: pane.title,
         workingDirectory: pane.workingDirectory,
         launch: pane.launch,
+        resume: resume,
         localDirectory: pane.localDirectory,
         directoryFallback: pane.directoryFallback,
         exitStatus: pane.exitStatus

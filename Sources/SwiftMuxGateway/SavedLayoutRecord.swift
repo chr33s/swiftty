@@ -5,10 +5,21 @@ import SwiftMuxProtocol
 package struct SavedPaneContent: Codable, Sendable, Equatable {
   package var launch: SavedPaneLaunch
   package var localDirectory: String?
+  /// Dropped when it is not runnable, so a bad command cannot brick the record.
+  package var resume: SavedProgramResume?
+  /// The worker's decision. Nil on a record written before this field.
+  package var reopen: SavedReopenCommand?
 
-  package init(launch: SavedPaneLaunch, localDirectory: String?) {
+  package init(
+    launch: SavedPaneLaunch,
+    localDirectory: String?,
+    resume: SavedProgramResume? = nil,
+    reopen: SavedReopenCommand? = nil
+  ) {
     self.launch = launch
     self.localDirectory = localDirectory
+    self.resume = resume
+    self.reopen = reopen
   }
 }
 
@@ -40,10 +51,18 @@ package struct SavedLayoutContent: Codable, Sendable, Equatable {
         let slot = panes.count
         slots[id] = slot
         let pane = metadata[id]
+        let launch = pane?.launch ?? .loginShell
+        let resume = pane?.resume.flatMap { $0.isRunnable ? $0 : nil }
         panes.append(
           SavedPaneContent(
-            launch: pane?.launch ?? .loginShell,
-            localDirectory: pane?.localDirectory
+            launch: launch,
+            localDirectory: pane?.localDirectory,
+            resume: resume,
+            reopen: Self.storedReopen(
+              pane?.reopen,
+              launch: launch,
+              resume: resume
+            )
           )
         )
         return .pane(slot: slot)
@@ -100,14 +119,19 @@ package struct SavedLayoutContent: Codable, Sendable, Equatable {
     name: String
   ) -> WorkspaceTemplate {
     let chosen = Set(request.runCommandSlots)
+    var required: [Int] = []
     let launches = panes.enumerated()
       .map { slot, pane in
         var launch = request.launch
         if let directory = pane.localDirectory {
           launch.workingDirectory = directory
         }
-        if case let .command(argv) = pane.launch, chosen.contains(slot) {
-          launch.command = argv
+        if chosen.contains(slot), let reopen = Self.reopenDecision(pane) {
+          launch.command = reopen.argv
+          if reopen.directoryRequired, let directory = reopen.workingDirectory {
+            launch.workingDirectory = directory
+            required.append(slot)
+          }
         }
         return launch
       }
@@ -120,16 +144,40 @@ package struct SavedLayoutContent: Codable, Sendable, Equatable {
       panes: launches,
       tabs: tabs,
       activeTab: min(max(0, activeTab), tabs.count - 1),
-      outputOptOut: outputOptOut
+      outputOptOut: outputOptOut,
+      directoryRequiredSlots: required
     )
   }
 
   package var commandSlots: [SavedWorkspaceListing.CommandSlot] {
     panes.enumerated()
       .compactMap { slot, pane in
-        guard case let .command(argv) = pane.launch else { return nil }
-        return SavedWorkspaceListing.CommandSlot(slot: slot, command: argv)
+        guard let reopen = Self.reopenDecision(pane) else { return nil }
+        return SavedWorkspaceListing.CommandSlot(
+          slot: slot,
+          command: reopen.argv,
+          origin: reopen.origin
+        )
       }
+  }
+
+  /// The worker's command when it sent one. An older record is decided
+  /// with the same rule the worker uses now.
+  package static func reopenDecision(
+    _ pane: SavedPaneContent
+  ) -> SavedReopenCommand? {
+    storedReopen(pane.reopen, launch: pane.launch, resume: pane.resume)
+  }
+
+  /// Copies a runnable published command. A missing one is resolved so a
+  /// worker that predates the field still stores a decision.
+  package static func storedReopen(
+    _ published: SavedReopenCommand?,
+    launch: SavedPaneLaunch,
+    resume: SavedProgramResume?
+  ) -> SavedReopenCommand? {
+    if let published { return published.isRunnable ? published : nil }
+    return SavedReopenCommand.resolve(launch: launch, resume: resume)
   }
 }
 
@@ -181,7 +229,11 @@ package struct SavedLayoutRecord: Codable, Sendable, Equatable {
       !content.tabs.isEmpty, !content.panes.isEmpty,
       content.panes.count <= maxPanes, content.name.utf8.count <= 256,
       content.tabs.allSatisfy({ $0.name.utf8.count <= 256 }),
-      content.panes.allSatisfy({ ($0.localDirectory?.utf8.count ?? 0) <= 4096 })
+      content.panes.allSatisfy({
+        ($0.localDirectory?.utf8.count ?? 0) <= 4096
+          && ($0.resume?.workingDirectory?.utf8.count ?? 0) <= 4096
+          && ($0.reopen?.workingDirectory?.utf8.count ?? 0) <= 4096
+      })
     else { throw MuxError(.invalidRequest, "invalid saved layout record") }
     let template = WorkspaceTemplate(
       name: nil,

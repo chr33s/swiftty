@@ -42,11 +42,17 @@ extension MuxService {
       ws?.allPanes
       .compactMap { pane -> SavedPaneMetadata? in
         guard let record = panes[pane] else { return nil }
+        let resume = record.resume.flatMap { $0.isRunnable ? $0 : nil }
         return SavedPaneMetadata(
           pane: pane,
           launch: record.launch,
           localDirectory: record.localDirectory,
-          directoryFallback: record.directoryFallback
+          directoryFallback: record.directoryFallback,
+          resume: resume,
+          reopen: SavedReopenCommand.resolve(
+            launch: record.launch,
+            resume: resume
+          )
         )
       } ?? []
     let state = SavedLayoutState(
@@ -58,6 +64,26 @@ extension MuxService {
     )
     savedLayoutCauses = []
     return state
+  }
+
+  /// A resume directory that is gone starts a login shell. The path stays
+  /// so the launcher reports `W chdir` and the pane is labelled.
+  static func withoutMissingResumeDirectory(_ launch: LaunchSpec) -> LaunchSpec
+  {
+    guard let directory = launch.workingDirectory,
+      !directoryAvailable(directory)
+    else { return launch }
+    var launch = launch
+    launch.command = nil
+    return launch
+  }
+
+  static func directoryAvailable(_ path: String) -> Bool {
+    var isDirectory: ObjCBool = false
+    return FileManager.default.fileExists(
+      atPath: path,
+      isDirectory: &isDirectory
+    ) && isDirectory.boolValue
   }
 
   func exportSavedOutput(
@@ -197,36 +223,69 @@ extension MuxService {
     templateCreations[creation] = TemplateCreation(
       remaining: template.panes.count
     )
-    for (slot, launch) in template.panes.enumerated() {
-      spawnPane(
-        workspace: wsID,
-        columns: template.columns,
-        rows: template.rows,
-        launch: launch,
-        defersPlacement: true
-      ) { service, result in
-        guard var progress = service.templateCreations[creation] else { return }
-        switch result {
-        case let .success(pane): progress.started[slot] = pane
-        case let .failure(error):
-          progress.failed.append(slot)
-          if progress.error == nil { progress.error = error }
+    for (slot, paneLaunch) in template.panes.enumerated() {
+      if template.directoryRequiredSlots.contains(slot) {
+        // Check off the actor so a stale mount or TCC prompt cannot stall it.
+        Task.detached(priority: .userInitiated) {
+          let launch = Self.withoutMissingResumeDirectory(paneLaunch)
+          await self.spawnTemplateSlot(
+            creation: creation,
+            template: template,
+            workspace: wsID,
+            slot: slot,
+            launch: launch,
+            reply: reply
+          )
         }
-        progress.remaining -= 1
-        guard progress.remaining == 0 else {
-          service.templateCreations[creation] = progress
-          return
-        }
-        service.templateCreations.removeValue(forKey: creation)
-        service.finishTemplate(
-          template,
+      } else {
+        spawnTemplateSlot(
+          creation: creation,
+          template: template,
           workspace: wsID,
-          started: progress.started,
-          failed: progress.failed,
-          error: progress.error,
+          slot: slot,
+          launch: paneLaunch,
           reply: reply
         )
       }
+    }
+  }
+
+  private func spawnTemplateSlot(
+    creation: UUID,
+    template: WorkspaceTemplate,
+    workspace wsID: WorkspaceID,
+    slot: Int,
+    launch: LaunchSpec,
+    reply: @escaping Reply
+  ) {
+    spawnPane(
+      workspace: wsID,
+      columns: template.columns,
+      rows: template.rows,
+      launch: launch,
+      defersPlacement: true
+    ) { service, result in
+      guard var progress = service.templateCreations[creation] else { return }
+      switch result {
+      case let .success(pane): progress.started[slot] = pane
+      case let .failure(error):
+        progress.failed.append(slot)
+        if progress.error == nil { progress.error = error }
+      }
+      progress.remaining -= 1
+      guard progress.remaining == 0 else {
+        service.templateCreations[creation] = progress
+        return
+      }
+      service.templateCreations.removeValue(forKey: creation)
+      service.finishTemplate(
+        template,
+        workspace: wsID,
+        started: progress.started,
+        failed: progress.failed,
+        error: progress.error,
+        reply: reply
+      )
     }
   }
 

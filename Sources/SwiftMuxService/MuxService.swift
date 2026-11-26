@@ -1609,6 +1609,11 @@ public actor MuxService {
       } else {
         panes[id]?.runtime.completeClipboardWrite(request.token, .unsupported)
       }
+    case let .resume(resume):
+      guard panes[id]?.resume != resume else { return }
+      panes[id]?.resume = resume
+      savedLayoutCauses.insert(.metadata)
+      publishWorkspaces()
     }
   }
 

@@ -38,6 +38,117 @@ public enum SavedPaneLaunch: Codable, Sendable, Equatable {
   }
 }
 
+/// The OSC 7577 command a pane may start after its process is gone.
+/// Chosen slots run `argv`. Unchosen slots and automatic reopen do not.
+public struct SavedProgramResume: Codable, Sendable, Equatable {
+  public var argv: [String]
+  /// Set only when the program sent `cwd`. A missing directory at launch
+  /// starts a login shell instead of this command.
+  public var workingDirectory: String?
+
+  public init(argv: [String], workingDirectory: String? = nil) {
+    self.argv = argv
+    self.workingDirectory = workingDirectory
+  }
+
+  /// False for a relative program, a leading dash, controls, or an argv
+  /// past `SavedPaneLaunch.commandLimit`. Those are dropped rather than
+  /// started.
+  public var isRunnable: Bool {
+    guard (1 ... 64).contains(argv.count) else { return false }
+    let bytes = argv.reduce(0) { $0 + $1.utf8.count + 1 }
+    guard bytes <= SavedPaneLaunch.commandLimit else { return false }
+    guard argv.allSatisfy(Self.clean), Self.program(argv[0]) else {
+      return false
+    }
+    if let workingDirectory {
+      guard Self.clean(workingDirectory), workingDirectory.hasPrefix("/"),
+        workingDirectory.utf8.count <= SavedPaneLaunch.commandLimit
+      else { return false }
+    }
+    return true
+  }
+
+  private static func program(_ name: String) -> Bool {
+    if name == "." || name == ".." { return false }
+    if name.hasPrefix("/") { return true }
+    return !name.isEmpty && !name.hasPrefix("-") && !name.contains("/")
+  }
+
+  private static func clean(_ text: String) -> Bool {
+    text.unicodeScalars.allSatisfy { scalar in
+      scalar.value >= 0x20 && !(0x7F ... 0x9F).contains(scalar.value)
+    }
+  }
+}
+
+/// Whether a reopen command came from the program or from the pane's launch.
+public enum SavedReopenOrigin: String, Codable, Sendable, Equatable {
+  /// The program's OSC 7577 command.
+  case resume
+  /// The command the pane was opened with.
+  case launch
+}
+
+/// The one command a chosen slot would run. The worker decides it. The
+/// gateway copies it and does not choose between a resume command and a
+/// launch command again.
+public struct SavedReopenCommand: Codable, Sendable, Equatable {
+  public var argv: [String]
+  /// Set only when the program sent `cwd`. That path must exist at launch.
+  public var workingDirectory: String?
+  /// True when `workingDirectory` came from the program.
+  public var directoryRequired: Bool
+  public var origin: SavedReopenOrigin
+
+  public init(
+    argv: [String],
+    workingDirectory: String? = nil,
+    directoryRequired: Bool = false,
+    origin: SavedReopenOrigin
+  ) {
+    self.argv = argv
+    self.workingDirectory = workingDirectory
+    self.directoryRequired = directoryRequired
+    self.origin = origin
+  }
+
+  /// A runnable resume command, otherwise a runnable launch argv.
+  /// Nil starts a login shell.
+  public static func resolve(
+    launch: SavedPaneLaunch,
+    resume: SavedProgramResume?
+  ) -> SavedReopenCommand? {
+    if let resume, resume.isRunnable {
+      return SavedReopenCommand(
+        argv: resume.argv,
+        workingDirectory: resume.workingDirectory,
+        directoryRequired: resume.workingDirectory != nil,
+        origin: .resume
+      )
+    }
+    guard case let .command(argv) = launch else { return nil }
+    let command = SavedReopenCommand(
+      argv: argv,
+      workingDirectory: nil,
+      directoryRequired: false,
+      origin: .launch
+    )
+    return command.isRunnable ? command : nil
+  }
+
+  /// False when the argv would not be started, or the directory flag
+  /// disagrees with `workingDirectory`.
+  public var isRunnable: Bool {
+    let program = SavedProgramResume(
+      argv: argv,
+      workingDirectory: workingDirectory
+    )
+    guard program.isRunnable else { return false }
+    return directoryRequired == (workingDirectory != nil)
+  }
+}
+
 public struct SavedPaneMetadata: Codable, Sendable, Equatable {
   public var pane: PaneID
   public var launch: SavedPaneLaunch
@@ -45,17 +156,26 @@ public struct SavedPaneMetadata: Codable, Sendable, Equatable {
   public var localDirectory: String?
   /// The launcher could not enter the requested directory and used home.
   public var directoryFallback: Bool
+  /// The resume command the worker chose, when one was accepted.
+  /// Kept so an older reader can still prefer it.
+  public var resume: SavedProgramResume?
+  /// The command a chosen slot runs. Nil starts a login shell.
+  public var reopen: SavedReopenCommand?
 
   public init(
     pane: PaneID,
     launch: SavedPaneLaunch,
     localDirectory: String?,
-    directoryFallback: Bool = false
+    directoryFallback: Bool = false,
+    resume: SavedProgramResume? = nil,
+    reopen: SavedReopenCommand? = nil
   ) {
     self.pane = pane
     self.launch = launch
     self.localDirectory = localDirectory
     self.directoryFallback = directoryFallback
+    self.resume = resume
+    self.reopen = reopen
   }
 }
 
@@ -184,6 +304,10 @@ public struct WorkspaceTemplate: Codable, Sendable, Equatable {
   public var tabs: [WorkspaceTemplateTab]
   public var activeTab: Int
   public var outputOptOut: Bool
+  /// Slots whose resume `cwd` must exist. A missing directory starts a
+  /// login shell and is labelled with the directory fallback.
+  @OmittedWhenEmpty
+  public var directoryRequiredSlots: [Int] = []
 
   public init(
     name: String?,
@@ -194,7 +318,8 @@ public struct WorkspaceTemplate: Codable, Sendable, Equatable {
     panes: [LaunchSpec],
     tabs: [WorkspaceTemplateTab],
     activeTab: Int,
-    outputOptOut: Bool
+    outputOptOut: Bool,
+    directoryRequiredSlots: [Int] = []
   ) {
     self.name = name
     self.columns = columns
@@ -205,14 +330,18 @@ public struct WorkspaceTemplate: Codable, Sendable, Equatable {
     self.tabs = tabs
     self.activeTab = activeTab
     self.outputOptOut = outputOptOut
+    self.directoryRequiredSlots = directoryRequiredSlots
   }
 
   /// Every slot is used exactly once, ratios are in (0, 1) and indices
   /// are in range. Checked before any pane starts.
   public func validate(maxPanes: Int) throws(MuxError) {
     let slots = tabs.flatMap(\.slots)
+    let required = directoryRequiredSlots
     guard !tabs.isEmpty, !panes.isEmpty, panes.count <= maxPanes,
       slots.count == panes.count, Set(slots) == Set(0 ..< panes.count),
+      Set(required).count == required.count,
+      required.allSatisfy(panes.indices.contains),
       tabs.indices.contains(activeTab),
       tabs.allSatisfy({ tab in
         !tab.slots.isEmpty && tab.slots.contains(tab.activeSlot)
@@ -359,9 +488,23 @@ public struct SavedWorkspaceListing: Codable, Sendable, Equatable {
   public struct CommandSlot: Codable, Sendable, Equatable {
     public var slot: Int
     public var command: [String]
-    public init(slot: Int, command: [String]) {
+    /// Nil on a listing from a gateway that did not name the source.
+    public var origin: SavedReopenOrigin?
+    public init(slot: Int, command: [String], origin: SavedReopenOrigin? = nil)
+    {
       self.slot = slot
       self.command = command
+      self.origin = origin
+    }
+
+    /// The command plus whether it is the program's or the pane's.
+    public var listingLabel: String {
+      let text = command.joined(separator: " ")
+      switch origin {
+      case .resume: return "\(text) — the program's resume command"
+      case .launch: return "\(text) — the command this pane was opened with"
+      case nil: return text
+      }
     }
   }
 

@@ -215,6 +215,17 @@ public struct TerminalState: ~Copyable {
   /// `programStatus` changed since the last `takeProgramStatusChange()`.
   public internal(set) var programStatusChanged = false
 
+  /// OSC 7577 token for this pane. Set by the worker for the first
+  /// process; never read from the service's own environment. Checkpoint
+  /// section 16. Not written into a saved layout.
+  package var programResumeToken: String?
+  /// Accepted resume records (`ProgramResume.swift`). Resets do not clear it.
+  var programResume = ProgramResumeStore()
+  /// `programResume` records changed since the last `takeProgramResumeChange()`.
+  package var programResumeChanged = false
+  /// Test clock in Unix seconds. Nil uses the wall clock. Not checkpointed.
+  package var programResumeTime: Int64?
+
   /// Kitty graphics (spec.graphics.md). When false, graphics commands
   /// are ignored and `a=q` gets no reply, so programs see a terminal
   /// without image support.

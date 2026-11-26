@@ -82,6 +82,9 @@ package struct CheckpointReader: Sendable {
   package var isAtEnd: Bool { offset == end }
   package var remaining: Int { end - offset }
 
+  /// The next byte, without consuming it. Nil at the end.
+  package func peekU8() -> UInt8? { offset < end ? bytes[offset] : nil }
+
   private mutating func take(_ n: Int) throws(CheckpointError) -> Range<Int> {
     guard n >= 0, n <= end - offset else {
       throw CheckpointError("truncated input")

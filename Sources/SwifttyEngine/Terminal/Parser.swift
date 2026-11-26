@@ -1058,6 +1058,11 @@ public struct Parser: ~Copyable {
     {
       oscOverflow = true
     }
+    if oscCount >= ProgramResumeParse.maxBodyBytes, !oscOverflow,
+      isProgramResumeOSC
+    {
+      oscOverflow = true
+    }
     if oscOverflow { return }
     if oscCount == oscCapacity {
       guard oscCapacity < Self.maxOSCBytes else {
@@ -1109,6 +1114,9 @@ public struct Parser: ~Copyable {
     if isProgramStatusOSC {
       limit = min(limit, ProgramStatusCommand.maxBodyBytes)
     }
+    if isProgramResumeOSC {
+      limit = min(limit, ProgramResumeParse.maxBodyBytes)
+    }
     let accepted = min(count, max(0, limit - oscCount))
     if oscCount + accepted > oscCapacity {
       var capacity = oscCapacity
@@ -1142,6 +1150,13 @@ public struct Parser: ~Copyable {
   private var isProgramStatusOSC: Bool {
     oscCount >= 5 && osc[0] == 0x37 && osc[1] == 0x35 && osc[2] == 0x30
       && osc[3] == 0x31 && osc[4] == 0x3B  // 7501;
+  }
+
+  private var isProgramResumeOSC: Bool {
+    let start = oscCommandStart
+    return start + 4 < oscCount && osc[start] == 0x37 && osc[start + 1] == 0x35
+      && osc[start + 2] == 0x37 && osc[start + 3] == 0x37
+      && osc[start + 4] == 0x3B  // 7577;
   }
 
   private mutating func dispatchOSC(_ t: inout TerminalState, bell: Bool) {

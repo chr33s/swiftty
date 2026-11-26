@@ -213,7 +213,7 @@ extension TerminalState {
   func restoreKittyGraphics(
     from r: inout CheckpointReader
   ) throws(CheckpointError) {
-    guard !r.isAtEnd else { return }
+    guard r.peekU8() == TerminalCheckpoint.kittyGraphicsSection else { return }
     var s = try r.section(TerminalCheckpoint.kittyGraphicsSection)
     try kittyPrimary.restore(from: &s)
     try kittyAlternate.restore(from: &s)

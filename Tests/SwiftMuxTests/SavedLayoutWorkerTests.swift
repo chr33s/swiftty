@@ -59,6 +59,9 @@ struct SavedLayoutWorkerTests {
     #expect(created.graph?.id == workspace && created.end == nil)
     #expect(created.panes.count == 1)
     #expect(created.panes.first?.launch == .command(["/bin/sh"]))
+    #expect(created.panes.first?.reopen?.argv == ["/bin/sh"])
+    #expect(created.panes.first?.reopen?.origin == .launch)
+    #expect(created.panes.first?.reopen?.directoryRequired == false)
     #expect(created.panes.first?.localDirectory == "/tmp")
     #expect(created.panes.first?.directoryFallback == false)
     // Reading clears the causes.

@@ -117,6 +117,11 @@ package struct PaneLauncher: Sendable {
       let existing = env["TERMINFO_DIRS"].map { ":" + $0 } ?? ":"
       env["TERMINFO_DIRS"] = dir + existing
     }
+    // A token from the snapshot, the service, or ssh is never the pane's.
+    env.removeValue(forKey: ProgramResumeToken.name)
+    if let token = spec.resumeToken, ProgramResumeToken.isValid(token) {
+      env[ProgramResumeToken.name] = token
+    }
     return env
   }
 

@@ -64,12 +64,11 @@ func gatewayRestore(
     )
   }
   if !runSavedCommands, !entry.commands.isEmpty {
-    FileHandle.standardError.write(
-      Data(
-        "swmux: \(entry.commands.count) saved command(s) not run; pass --run-saved-commands to run them\n"
-          .utf8
-      )
-    )
+    let lines = entry.commands.map { command in
+      "swmux: \(command.listingLabel) not run; "
+        + "pass --run-saved-commands to run saved commands\n"
+    }
+    FileHandle.standardError.write(Data(lines.joined().utf8))
   }
   return id
 }

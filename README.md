@@ -196,7 +196,12 @@ read `programStatusSnapshot`, subscribe through `onProgramStatusChange`, route
 `onTerminalReply` to the originating transport, and call `programExited()`
 when the program or connection ends. The
 [program-status contract](spec.md#osc-7501-program-status) specifies
-validation, lifecycle and reply provenance.
+validation, lifecycle and reply provenance. OSC 7577 program resume is the
+saved-layout fallback for a program that names its own restart command
+([spec.md](spec.md#osc-7577-program-resume)). The worker records one reopen
+command, and the chooser names it as the program's resume command or as the
+command the pane was opened with. A live pane is reattached instead, and a
+saved command runs only when that slot is chosen.
 
 ## SwiftMux
 

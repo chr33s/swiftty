@@ -175,9 +175,9 @@ final class WorkspaceCoordinator {
       let alert = NSAlert()
       alert.messageText = "Run saved commands?"
       alert.informativeText =
-        entry.commands.map { $0.command.joined(separator: " ") }
-        .map { DisplayText.sanitize($0) }.joined(separator: "\n")
-        + "\n\nOther panes start new shells. Earlier processes are not resumed."
+        entry.commands.map { DisplayText.sanitize($0.listingLabel) }
+        .joined(separator: "\n")
+        + "\n\nOther panes start new shells. A listed command starts a new process; the earlier process has ended."
       alert.addButton(withTitle: "Open Shells Only")
       alert.addButton(withTitle: "Run Saved Commands")
       alert.addButton(withTitle: "Cancel")
@@ -345,7 +345,7 @@ final class WorkspaceCoordinator {
       "Unavailable workspaces retain their processes. Creating a new workspace does not replace or end them."
       + (saved.isEmpty
         ? ""
-        : " Saved layouts open as new workspaces with new shells; earlier processes are not resumed.")
+        : " Saved layouts open as new workspaces. A listed command starts a new process; the earlier process has ended.")
     let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 420, height: 26))
     for record in records {
       let state: String

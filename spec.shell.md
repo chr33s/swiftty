@@ -518,7 +518,9 @@ Construct/start once per session, outside repeated SwiftUI view updates. One app
 
 ### Reuse existing passive metadata
 
-Swiftty already processes OSC 7 directory data and OSC 133 prompt/command boundaries. Its event extraction exposes working-directory and command-finished values; opt-in OSC 7501 offers program status. Use those for passive presentation before designing another IPC transport. Emit terminal metadata only through an optional terminal presentation component, never into redirected command data. [OSC dispatch][swiftty-osc] · [Semantic prompts][swiftty-shell] · [Terminal events][swiftty-state]
+Swiftty already processes OSC 7 directory data and OSC 133 prompt/command boundaries. Its event extraction exposes working-directory and command-finished values; opt-in OSC 7501 offers program status. Use those for passive presentation before designing another IPC transport. OSC 7577 is the one sequence that carries a command, and only as the saved-layout fallback in [spec.md](spec.md#osc-7577-program-resume). Emit terminal metadata only through an optional terminal presentation component, never into redirected command data. [OSC dispatch][swiftty-osc] · [Semantic prompts][swiftty-shell] · [Terminal events][swiftty-state]
+
+`swsh` does not report a resume command until it can put a session id in the argv. A confined execution context must not receive `OSC7577_TOKEN`. The execution service strips it when it builds that environment. A normal shell keeps passing the token to programs it starts.
 
 These values are display metadata: some are coalesced, and any terminal program can emit escape sequences. They are not a complete job log or an authoritative command/result API. Exact app-triggered or agent-triggered execution requires request IDs, submission rules, bounded transport, and a deliberate control protocol; §11 specifies that confined execution context (`SwifttyExec`) and the headless runner (`swsh --agent`).
 

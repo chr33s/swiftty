@@ -213,6 +213,10 @@ struct SavedLayoutStoreTests {
     #expect(content.tabs.map(\.name) == ["edit", "logs"])
     #expect(content.activeTab == 1)
     #expect(content.panes[1].launch == .command(["top"]))
+    #expect(content.panes[1].reopen?.origin == .launch)
+    #expect(content.panes[1].reopen?.argv == ["top"])
+    #expect(content.panes[0].reopen == nil)
+    #expect(content.panes[2].reopen == nil)
     #expect(
       content.panes.map(\.localDirectory) == ["/tmp/0", "/tmp/1", "/tmp/2"]
     )
@@ -412,7 +416,13 @@ struct SavedLayoutStoreTests {
     let list = await service.list(rebooted, markOffered: true)
     #expect(list.workspaces.first?.state == .saved)
     #expect(
-      list.workspaces.first?.commands == [.init(slot: 1, command: ["top"])]
+      list.workspaces.first?.commands == [
+        .init(slot: 1, command: ["top"], origin: .launch)
+      ]
+    )
+    #expect(
+      list.workspaces.first?.commands.first?.listingLabel
+        == "top — the command this pane was opened with"
     )
     #expect(await service.record(id)?.firstOfferedAt != nil)
     let base = LaunchSpec(

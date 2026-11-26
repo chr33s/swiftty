@@ -644,15 +644,21 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
   public var workingDirectory: String?
   /// Environment snapshot, taken by the creating frontend.
   public var environment: [String: String]
+  /// Fresh `OSC7577_TOKEN` for this pane. Nil is omitted on the wire so
+  /// an older guardian still decodes the spawn. The launcher strips any
+  /// token already in `environment`.
+  public var resumeToken: String?
 
   public init(
     command: [String]? = nil,
     workingDirectory: String? = nil,
-    environment: [String: String] = [:]
+    environment: [String: String] = [:],
+    resumeToken: String? = nil
   ) {
     self.command = command
     self.workingDirectory = workingDirectory
     self.environment = environment
+    self.resumeToken = resumeToken
   }
 }
 

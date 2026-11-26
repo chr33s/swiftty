@@ -17,6 +17,9 @@ import Foundation
 //   host callbacks; the importing host installs its own.
 // - `searchNeedsRefresh` is encoded; derived matches are encoded too so the
 //   selected index keeps its meaning.
+// - `programResumeTime`: test clock. The token and accepted records are
+//   section 16 when any exist; an empty resume state is omitted so a
+//   checkpoint without one stays byte-identical.
 //
 // Refused rather than encoded, because they are unsettled external effects
 // that the frozen cut must settle first (§6): pending replies (`output`),
@@ -197,6 +200,7 @@ extension TerminalState {
     w.u8(TerminalCheckpoint.Section.programStatus.rawValue)
     w.data(status.bytes)
     checkpointKittyGraphics(into: &w)
+    checkpointProgramResume(into: &w)
     return w.bytes
   }
 
@@ -428,6 +432,7 @@ extension TerminalState {
     try programStatus.restore(from: &status)
     try status.finish()
     try restoreKittyGraphics(from: &r)
+    try restoreProgramResume(from: &r)
     try r.finish()
 
     try validateCheckpointReferences()

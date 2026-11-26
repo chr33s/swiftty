@@ -252,7 +252,7 @@ clients and frontend window management remain embedder responsibilities.
 | Reports/stacks       | DSR 5/6, DA1/DA2, XTVERSION, XTWINOPS 14/16/18/22/23, XTPUSHSGR/XTPOPSGR (`# {`, `# }`, `# p`, `# q`), color scheme (`? 996 n`)                                                                          |
 | Modes                | DEC 1, 3 (with 40), 5, 6, 7, 9, 12, 25, 45, 47, 69, 1000, 1002, 1003, 1004, 1005, 1006, 1007, 1045, 1047, 1048, 1049, 2004, 2026, 2027, 2031, 2048; ANSI 4, 20                                           |
 | Input                | Kitty keyboard query/push/pop/set and flags 1/2/4/8/16; X10/normal/any-motion, legacy/UTF-8/SGR mouse; bracketed paste and focus reports                                                                 |
-| OSC                  | 0/2 title, 7 cwd, 8 links, 52 clipboard writes, 133 prompts, 21 colors, 22 pointer, 4/10/11/12 set/query and 104/110/111/112 reset, 9 and `777;notify` notifications, `9;4` progress, opt-in 7501 status |
+| OSC                  | 0/2 title, 7 cwd, 8 links, 52 clipboard writes, 133 prompts, 21 colors, 22 pointer, 4/10/11/12 set/query and 104/110/111/112 reset, 9 and `777;notify` notifications, `9;4` progress, opt-in 7501 status, 7577 resume |
 | DCS                  | Streamed tmux control mode (`1000 p`), XTGETTCAP (`+ q`), DECRQSS (`$ q`)                                                                                                                                |
 | APC                  | Kitty graphics (`ESC _ G`, [spec.graphics.md](spec.graphics.md))                                                                                                                                       |
 
@@ -506,6 +506,99 @@ prefix collisions, ordering, capacity/eviction and revisions. Exercise prompt/
 reset/exit/reconstruction in stream order, surface-independent publication and
 BEL/ST reply provenance. Existing OSC 9;4, OSC 133, reset and response tests
 must continue passing. The embedder must consume status without parsing OSC itself.
+
+## OSC 7577 program resume
+
+A pane that is still running is reattached. This sequence is only the
+command a program asks SwiftMux to start after that process is already
+gone: reboot, logout, or guardian death, through a saved layout
+([spec.durability.md §12.2](spec.durability.md#122-saved-layout-and-history-after-reboot)).
+It is not a way to exec a command in a live pane, and it does not restore
+terminal modes, shell state, or the earlier process. OSC 7501 stays status.
+
+The report format is the Program Resume Protocol, draft 0.5
+(`https://www.superlogical.com/rex/docs/build/program-resume`): `OSC 7577`
+key=value pairs ending in `mac`, BEL or ST. Swiftty's choices, where that
+draft leaves the terminal discretion, are the rest of this section.
+
+### Token
+
+Each pane launch creates a new token and sets `OSC7577_TOKEN` in the first
+process's environment. The token is 43 characters from `SecRandomCopyBytes`,
+base64url without padding, matching `[A-Za-z0-9_-]`. A token already in the
+launch environment or the service environment is removed and is not reused.
+Two panes never share one. Worker replacement keeps the same token: it is
+checkpoint section 16 with the accepted records, and it is omitted from the
+checkpoint when the pane has none. The token is not written into the saved
+layout.
+
+No token means every report is ignored. There is no query and no reply.
+Support is not a promise that a command will run.
+
+### Reports
+
+Verify the MAC and the time before any other field. The MAC is the
+lowercase hex SHA-256 of the bytes before the final `:mac=`, one `:`, and
+the token. A report that fails the MAC, has no parsable time, is outside a
+60-second window of the terminal clock, or is earlier than the last report
+accepted for that pid, is ignored. An ignored report changes nothing,
+including reports the parser did not receive whole.
+
+A sequence Swiftty accepts is at most 8192 bytes including `ESC ]`, `7577`,
+and the terminator, with at most 64 `argv` elements. A longer sequence is
+ignored and the earlier record stays. Those limits are above the draft's
+minimums (2048 bytes and 64 elements). An `argv` whose UTF-8, counted the
+way saved launch commands are counted, exceeds 4 KiB is rejected.
+
+After the MAC and the time pass, parse strictly. A malformed pair, a
+repeated key, a value that does not fit its key, a missing required key, a
+bad base64 element, or decoded text that is not UTF-8 or contains a control
+character rejects the report. `?` is ignored. Unknown keys are ignored
+unless `need` names one Swiftty does not implement (`pid`, `time`, `argv`,
+`cwd`, `clear`, `need`, `mac`), in which case the report is rejected.
+Exactly one of `argv` and `clear` is present. The first `argv` element is a
+bare name that does not start with `-`, or an absolute path. `cwd`, when
+present, is an absolute path. Rejection removes that pid's record so an
+older command cannot stand in for one Swiftty refused. A pid Swiftty cannot
+store (it does not fit `pid_t`) removes nothing.
+
+Records are keyed by pid. At most 64 live records are kept per pane. RIS,
+DECSTR, and every other terminal sequence leave them in place. `clear`
+removes that pid only. The program must not send `clear` because the
+terminal is going away; Swiftty still honors a `clear` it actually receives.
+
+### Which record a pane keeps
+
+The worker reads the process tree. A record is usable when its pid is
+alive, runs as the same user as the service, has the start time captured
+when the record was accepted, and is the pane's root process or a
+descendant of it. The record closest to the root wins: a shell's report
+beats a program it started. Records that are not ancestors of one another,
+such as two stopped jobs, produce no resume command.
+
+Two clocks stay separate. A pid that exits without `clear` keeps its
+command for 2 seconds while the pane's root process is still alive,
+including when a descendant is still alive. After 2 seconds that command
+is dropped, so quitting a program does not bring it back. When the pane's
+root has itself exited, the last command stays, with no 2-second limit.
+The saved layout's exit hold
+([spec.durability.md §12.2.5](spec.durability.md#1225-writing)) decides
+whether logout may shrink the layout. It does not choose this command.
+
+The worker publishes one reopen command: the chosen argv and, when the
+program sent `cwd`, that directory, marked required. The saved layout
+stores that command. It also keeps the launch argv and the resume argv so
+an older reader can still reopen. It does not store the pid, the token, or
+an environment. The gateway copies the reopen command for a slot the user
+chose and does not choose between the two stored commands again. A record
+written before reopen commands existed is decided with the same rule: the
+resume command when it is runnable, otherwise the launch argv. Leaving the
+slot unchosen starts a login shell, as does automatic reopen. When the
+program named a directory and that directory is not an existing directory
+at launch, the slot starts a login shell and the pane is labelled with the
+saved-directory fallback. The command is not started in home. The chooser
+names a listed command as the program's resume command or as the command
+the pane was opened with.
 
 ## SwiftMux native workspace
 
