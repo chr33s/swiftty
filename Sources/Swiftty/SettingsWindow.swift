@@ -63,6 +63,7 @@ final class SettingsModel {
   /// As loaded from the file, without display accommodations.
   private(set) var configuration: Configuration
   private(set) var themes: [String]
+  private(set) var fontFamilies: [String]
   /// Why the last change was not saved.
   private(set) var error: String?
   @ObservationIgnored
@@ -78,6 +79,7 @@ final class SettingsModel {
     self.configuration = configuration
     self.reload = reload
     themes = Themes.available(in: configuration.themeDirectories)
+    fontFamilies = Self.availableMonospaceFontFamilies()
   }
 
   var fontFamily: String { configuration.fontFamily }
@@ -112,6 +114,24 @@ final class SettingsModel {
   func refresh(_ configuration: Configuration) {
     self.configuration = configuration
     themes = Themes.available(in: configuration.themeDirectories)
+    fontFamilies = Self.availableMonospaceFontFamilies()
+  }
+
+  /// Installed fixed-pitch font families suitable for terminal rendering.
+  static func availableMonospaceFontFamilies() -> [String] {
+    let manager = NSFontManager.shared
+    return manager.availableFontFamilies
+      .filter { family in
+        guard !family.hasPrefix("."),
+          let members = manager.availableMembers(ofFontFamily: family)
+        else { return false }
+        return members.contains { member in
+          guard member.count > 3, let traits = (member[3] as? NSNumber)?.uintValue
+          else { return false }
+          return NSFontTraitMask(rawValue: traits).contains(.fixedPitchFontMask)
+        }
+      }
+      .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
   }
 
   /// Writes `key` (nil restores its default) and reloads.
@@ -147,9 +167,24 @@ final class SettingsWindowController: NSWindowController {
     window.contentViewController = NSHostingController(
       rootView: SettingsView(model: model, editFile: editFile)
     )
+    let minimumSize = NSSize(width: 480, height: 560)
+    window.contentMinSize = minimumSize
     window.setFrameAutosaveName("Settings")
     super.init(window: window)
-    if !window.setFrameUsingName("Settings") { window.center() }
+    if !window.setFrameUsingName("Settings") {
+      window.setContentSize(minimumSize)
+      window.center()
+    } else {
+      let current = window.contentRect(forFrameRect: window.frame).size
+      if current.width < minimumSize.width || current.height < minimumSize.height {
+        window.setContentSize(
+          NSSize(
+            width: max(current.width, minimumSize.width),
+            height: max(current.height, minimumSize.height)
+          )
+        )
+      }
+    }
   }
 
   @available(*, unavailable)
@@ -165,8 +200,6 @@ struct SettingsView: View {
   @Bindable
   var model: SettingsModel
   let editFile: @MainActor () -> Void
-  @State
-  private var family = ""
   @State
   private var opacity = 1.0
   @State
@@ -199,9 +232,18 @@ struct SettingsView: View {
         .font(.caption).foregroundStyle(.secondary)
       }
       Section("Font") {
-        TextField("Family", text: $family)
-          .onSubmit { model.set("font-family", nonEmpty(family)) }
-          .accessibilityHint("Press Return to apply")
+        Picker(
+          "Family",
+          selection: Binding(
+            get: { model.fontFamily },
+            set: { model.set("font-family", $0) }
+          )
+        ) {
+          if !model.fontFamilies.contains(model.fontFamily) {
+            Text(model.fontFamily).tag(model.fontFamily)
+          }
+          ForEach(model.fontFamilies, id: \.self) { Text($0).tag($0) }
+        }
         Stepper(
           value: Binding(
             get: { model.fontSize },
@@ -300,7 +342,9 @@ struct SettingsView: View {
         )
       }
     }
-    .formStyle(.grouped).onAppear(perform: sync)
+    .formStyle(.grouped)
+    .frame(minWidth: 480, idealWidth: 480, minHeight: 560, idealHeight: 560)
+    .onAppear(perform: sync)
     .onChange(of: model.configuration) { sync() }
   }
 
@@ -310,9 +354,8 @@ struct SettingsView: View {
     model.set("background-opacity", value)
   }
 
-  /// Text field and slider drafts follow the file between edits.
+  /// Slider draft follows the file between edits.
   private func sync() {
-    family = model.fontFamily
     opacity = model.backgroundOpacity
   }
 

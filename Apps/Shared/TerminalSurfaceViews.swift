@@ -125,6 +125,7 @@ struct RoamingSurfaceView: View {
     TerminalCanvas(
       session: controller.display,
       capabilities: controller.model.capabilities,
+      configuration: app.terminalSettings.configuration(),
       paneSwitching: controller.canSwitchPanes
         ? PaneSwitching(
           neighborScreen: { controller.neighborScreen(next: $0) },
@@ -523,7 +524,8 @@ struct SSHSurfaceView: View {
       }
       TerminalCanvas(
         session: controller.session,
-        capabilities: controller.model.capabilities
+        capabilities: controller.model.capabilities,
+        configuration: app.terminalSettings.configuration()
       )
       .uiTestingScreenProbe(controller.model).terminalBacking()
       .overlay { overlay }
@@ -681,6 +683,7 @@ struct ProblemCard: View {
 struct TerminalCanvas: View {
   let session: TerminalSession
   let capabilities: SurfaceCapabilities
+  var configuration: Configuration = Configuration()
   /// Paging between panes with a sideways drag; nil keeps every drag for
   /// scrolling (UIKit only).
   var paneSwitching: PaneSwitching? = nil
@@ -696,6 +699,7 @@ struct TerminalCanvas: View {
     TerminalDisplayView(
       session: session,
       capabilities: capabilities,
+      configuration: configuration,
       onBackgroundColor: { background = UIColorBox(color: $0) },
       paneSwitching: paneSwitching
     )
@@ -713,7 +717,11 @@ struct TerminalCanvas: View {
       value: background.map { Color(uiColor: $0.color) }
     )
     #else
-    TerminalDisplayView(session: session, capabilities: capabilities)
+    TerminalDisplayView(
+      session: session,
+      capabilities: capabilities,
+      configuration: configuration
+    )
     #endif
   }
 }
@@ -741,6 +749,7 @@ struct TerminalBackgroundKey: PreferenceKey {
 struct TerminalDisplayView: UIViewRepresentable {
   let session: TerminalSession
   let capabilities: SurfaceCapabilities
+  var configuration: Configuration = Configuration()
   /// The terminal's background color, for filling the margins outside
   /// the view.
   var onBackgroundColor: ((UIColor) -> Void)?
@@ -748,12 +757,15 @@ struct TerminalDisplayView: UIViewRepresentable {
 
   func makeUIView(context: Context) -> UIView {
     do {
-      let view = try TerminalUIView(session: session)
+      let view = try TerminalUIView(
+        session: session,
+        configuration: configuration
+      )
       view.capabilities = capabilities
       // App-switcher snapshots omit terminal content (spec §12).
       view.hidesContentWhenInactive = true
       DispatchQueue.main.async { _ = view.becomeFirstResponder() }
-      let clip = TerminalClipView(terminal: view)
+      let clip = TerminalClipView(terminal: view, configuration: configuration)
       attach(clip)
       return clip
     } catch {
@@ -772,6 +784,9 @@ struct TerminalDisplayView: UIViewRepresentable {
     guard let clip = view as? TerminalClipView else { return }
     let view = clip.terminal
     attach(clip)
+    if clip.appliedConfiguration != configuration {
+      clip.applyConfiguration(configuration)
+    }
     guard view.capabilities != capabilities else { return }
     view.capabilities = capabilities
   }
@@ -796,6 +811,7 @@ struct TerminalDisplayView: UIViewRepresentable {
 final class TerminalClipView: UIView {
   let terminal: TerminalUIView
   var paneSwitching: PaneSwitching?
+  private(set) var appliedConfiguration: Configuration
   /// The terminal's background, opaque: shown where no page is drawn.
   var pageColor: UIColor?
   /// Horizontal displacement of the pages; zero at rest.
@@ -814,11 +830,18 @@ final class TerminalClipView: UIView {
   /// Longest wait for the new pane's screen once the page has turned.
   static let arrivalTimeout: TimeInterval = 0.8
 
-  init(terminal: TerminalUIView) {
+  init(terminal: TerminalUIView, configuration: Configuration) {
     self.terminal = terminal
+    self.appliedConfiguration = configuration
     super.init(frame: .zero)
     clipsToBounds = true
     addSubview(terminal)
+  }
+
+  func applyConfiguration(_ configuration: Configuration) {
+    appliedConfiguration = configuration
+    terminal.apply(configuration)
+    neighbor?.apply(configuration)
   }
 
   @available(*, unavailable)
@@ -912,9 +935,14 @@ final class TerminalClipView: UIView {
     let session = TerminalSession(
       presentationColumns: 80,
       rows: 24,
-      configuration: Configuration().sessionConfiguration()
+      configuration: appliedConfiguration.sessionConfiguration()
     )
-    guard let view = try? TerminalUIView(session: session) else { return nil }
+    guard
+      let view = try? TerminalUIView(
+        session: session,
+        configuration: appliedConfiguration
+      )
+    else { return nil }
     view.isUserInteractionEnabled = false
     view.accessibilityElementsHidden = true
     view.hidesContentWhenInactive = true
@@ -1001,12 +1029,24 @@ final class TerminalClipView: UIView {
 struct TerminalDisplayView: NSViewRepresentable {
   let session: TerminalSession
   let capabilities: SurfaceCapabilities
+  var configuration: Configuration = Configuration()
   var prepare: ((TerminalView) -> Void)?
+
+  final class Coordinator {
+    var appliedConfiguration: Configuration
+    init(configuration: Configuration) {
+      self.appliedConfiguration = configuration
+    }
+  }
+
+  func makeCoordinator() -> Coordinator {
+    Coordinator(configuration: configuration)
+  }
 
   func makeNSView(context: Context) -> NSView {
     do {
       let view = try TerminalView(
-        configuration: Configuration(),
+        configuration: configuration,
         session: session
       )
       view.capabilities = capabilities
@@ -1024,8 +1064,12 @@ struct TerminalDisplayView: NSViewRepresentable {
   }
 
   func updateNSView(_ view: NSView, context: Context) {
-    guard let view = view as? TerminalView, view.capabilities != capabilities
-    else { return }
+    guard let view = view as? TerminalView else { return }
+    if context.coordinator.appliedConfiguration != configuration {
+      context.coordinator.appliedConfiguration = configuration
+      view.apply(configuration)
+    }
+    guard view.capabilities != capabilities else { return }
     view.capabilities = capabilities
   }
 }

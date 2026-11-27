@@ -386,6 +386,14 @@ public final class RoamingAppModel {
       resilience.save(to: settingsDefaults)
     }
   }
+  /// Terminal font, theme, opacity, cursor, and selection settings.
+  /// Applies live to open terminal surfaces.
+  public var terminalSettings: TerminalDisplaySettings {
+    didSet {
+      guard terminalSettings != oldValue else { return }
+      terminalSettings.save(to: settingsDefaults)
+    }
+  }
   @ObservationIgnored
   private let settingsDefaults: UserDefaults
 
@@ -527,6 +535,7 @@ public final class RoamingAppModel {
     let settingsDefaults = settingsDefaults ?? UITesting.defaults ?? .standard
     self.settingsDefaults = settingsDefaults
     self.resilience = ConnectionResilienceSettings.load(from: settingsDefaults)
+    self.terminalSettings = TerminalDisplaySettings.load(from: settingsDefaults)
     self.savedPasswords =
       savedPasswords ?? IdentityKeychainConfiguration.savedPasswordStore()
     self.store = store

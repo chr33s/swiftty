@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 @testable import Swiftty
 import SwifttyCore
@@ -71,5 +72,57 @@ struct SettingsModelTests {
       #expect(model.error != nil)
       #expect(try String(contentsOf: url, encoding: .utf8) == source)
     }
+  }
+
+  @Test
+  func settingsWindowMaintainsMinimumContentSize() throws {
+    let url = try temporaryConfig("{}")
+    defer {
+      try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+    }
+    let key = "NSWindow Frame Settings"
+    let previous = UserDefaults.standard.object(forKey: key)
+    defer {
+      if let previous {
+        UserDefaults.standard.set(previous, forKey: key)
+      } else {
+        UserDefaults.standard.removeObject(forKey: key)
+      }
+    }
+
+    // Fresh open (no autosaved frame)
+    UserDefaults.standard.removeObject(forKey: key)
+    let model = SettingsModel(url: url, configuration: .load(from: url)) {
+      .load(from: url)
+    }
+    let controller = SettingsWindowController(model: model, editFile: {})
+    let window = try #require(controller.window)
+    window.layoutIfNeeded()
+    let freshSize = window.contentRect(forFrameRect: window.frame).size
+    #expect(freshSize.width >= 480)
+    #expect(freshSize.height >= 560)
+    #expect(window.contentMinSize == NSSize(width: 480, height: 560))
+
+    // Reopen when a collapsed frame was previously autosaved
+    UserDefaults.standard.set("100 100 78 28 0 0 1440 900 ", forKey: key)
+    let restoredController = SettingsWindowController(model: model, editFile: {})
+    let restoredWindow = try #require(restoredController.window)
+    restoredWindow.layoutIfNeeded()
+    let restoredSize = restoredWindow.contentRect(forFrameRect: restoredWindow.frame).size
+    #expect(restoredSize.width >= 480)
+    #expect(restoredSize.height >= 560)
+  }
+
+  @Test
+  func availableMonospaceFontFamiliesListsFixedPitchFonts() {
+    let families = SettingsModel.availableMonospaceFontFamilies()
+    #expect(families.contains("Menlo"))
+    #expect(!families.contains("Helvetica"))
+    #expect(
+      families
+        == families.sorted {
+          $0.localizedStandardCompare($1) == .orderedAscending
+        }
+    )
   }
 }

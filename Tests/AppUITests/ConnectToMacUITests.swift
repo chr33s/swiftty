@@ -235,11 +235,14 @@ final class ConnectToMacUITests: XCTestCase {
     press(element("password.submit"))
   }
 
-  /// Connect to Mac lives in Settings.
+  /// Connect to Mac lives in Settings › Connect to Mac.
   private func openConnectMenu(_ item: String) {
     let settings = element("settings")
     XCTAssertTrue(settings.waitForExistence(timeout: 20), "no Settings")
     press(settings)
+    let connect = element("settings.connect")
+    XCTAssertTrue(connect.waitForExistence(timeout: 5), "no Connect to Mac")
+    press(connect)
     let entry = element(item)
     XCTAssertTrue(entry.waitForExistence(timeout: 5), "no \(item)")
     press(entry)
@@ -268,9 +271,14 @@ final class ConnectToMacUITests: XCTestCase {
 
   // MARK: Helpers
 
-  /// Connect to Mac is presented from Settings. Closing its sheet leaves
-  /// Settings visible, so host-list assertions must navigate back first.
+  /// Connect to Mac is presented from Settings › Connect to Mac. Closing its
+  /// sheet leaves that submenu visible, so host-list assertions must navigate
+  /// back to Settings and then Hosts.
   private func returnToHosts() {
+    let backToSettings = app.navigationBars["Connect to Mac"].buttons["Settings"]
+    if backToSettings.waitForExistence(timeout: 5) {
+      press(backToSettings)
+    }
     let back = app.navigationBars["Settings"].buttons["Hosts"]
     XCTAssertTrue(back.waitForExistence(timeout: 10))
     press(back)

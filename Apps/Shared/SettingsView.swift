@@ -6,13 +6,6 @@ import SwiftUI
 struct SettingsView: View {
   @Bindable
   var model: RoamingAppModel
-  /// Connect to Mac: discovery, codes, confirmation and the chooser.
-  @State
-  private var connecting: ConnectSheet?
-  @State
-  private var adding = false
-  @State
-  private var editing: HostMutationContext?
 
   private var pairs: Bool {
     model.profile.nearbyDiscovery || model.profile.codeScanning
@@ -21,7 +14,7 @@ struct SettingsView: View {
 
   var body: some View {
     Form {
-      Section(.localized("Keys & Sync")) {
+      Section {
         NavigationLink {
           SSHKeysView(model: model)
         } label: {
@@ -40,6 +33,12 @@ struct SettingsView: View {
       .listRowBackground(Color.clear)
       Section {
         NavigationLink {
+          TerminalSettingsView(model: model)
+        } label: {
+          Label(.localized("Terminal"), systemImage: "terminal")
+        }
+        .accessibilityIdentifier("settings.terminal")
+        NavigationLink {
           ConnectionSettingsView(model: model)
         } label: {
           Label(
@@ -50,9 +49,19 @@ struct SettingsView: View {
         .accessibilityIdentifier("settings.connection")
       }
       .listRowBackground(Color.clear)
-      if pairs { pairing }
+      if pairs {
+        Section {
+          NavigationLink {
+            ConnectToMacSettingsView(model: model)
+          } label: {
+            Label(.localized("Connect to Mac"), systemImage: "laptopcomputer")
+          }
+          .accessibilityIdentifier("settings.connect")
+        }
+        .listRowBackground(Color.clear)
+      }
       if model.profile.companionBridge {
-        Section(.localized("Apple Watch")) {
+        Section {
           NavigationLink {
             CompanionSettingsView(model: model)
           } label: {
@@ -64,6 +73,61 @@ struct SettingsView: View {
       }
     }
     .glassListBackground().navigationTitle(.localized("Settings"))
+  }
+}
+
+/// Settings → Connect to Mac: discovery, pairing codes, and manual entry.
+private struct ConnectToMacSettingsView: View {
+  @Bindable
+  var model: RoamingAppModel
+  @State
+  private var connecting: ConnectSheet?
+  @State
+  private var adding = false
+  @State
+  private var editing: HostMutationContext?
+
+  var body: some View {
+    Form {
+      Section {
+        if model.profile.nearbyDiscovery {
+          Button(
+            .localized("Nearby Macs"),
+            systemImage: "dot.radiowaves.left.and.right"
+          ) { connecting = .nearby }
+          .accessibilityIdentifier("connect.nearby")
+        }
+        if model.profile.codeScanning {
+          Button(
+            .localized("Scan Mac Code"),
+            systemImage: "qrcode.viewfinder"
+          ) { connecting = .scan }
+          .accessibilityIdentifier("connect.scan")
+        }
+        if model.profile.codeImport {
+          Button(
+            .localized("Paste Mac Code"),
+            systemImage: "doc.on.clipboard"
+          ) { connecting = .paste }
+          .accessibilityIdentifier("connect.paste")
+        }
+        Button(.localized("Enter Address Manually"), systemImage: "keyboard") {
+          adding = true
+        }
+        .accessibilityIdentifier("connect.manual")
+      } footer: {
+        Text(
+          """
+          Find a Mac on this network, or use the code its Connect a Device \
+          window shows. Paired Macs appear in Hosts.
+          """,
+          bundle: #bundle
+        )
+      }
+      .listRowBackground(Color.clear)
+    }
+    .glassListBackground()
+    .navigationTitle(.localized("Connect to Mac"))
     .hostEditorPresentation(adding: $adding, editing: $editing, model: model)
     .background {
       // A separate presentation anchor from the editor sheets.
@@ -72,44 +136,5 @@ struct SettingsView: View {
           .macSheetFrame(width: 480, height: 460)
       }
     }
-  }
-
-  private var pairing: some View {
-    Section {
-      if model.profile.nearbyDiscovery {
-        Button(
-          .localized("Nearby Macs"),
-          systemImage: "dot.radiowaves.left.and.right"
-        ) { connecting = .nearby }
-        .accessibilityIdentifier("connect.nearby")
-      }
-      if model.profile.codeScanning {
-        Button(.localized("Scan Mac Code"), systemImage: "qrcode.viewfinder") {
-          connecting = .scan
-        }
-        .accessibilityIdentifier("connect.scan")
-      }
-      if model.profile.codeImport {
-        Button(.localized("Paste Mac Code"), systemImage: "doc.on.clipboard") {
-          connecting = .paste
-        }
-        .accessibilityIdentifier("connect.paste")
-      }
-      Button(.localized("Enter Address Manually"), systemImage: "keyboard") {
-        adding = true
-      }
-      .accessibilityIdentifier("connect.manual")
-    } header: {
-      Text("Connect to Mac", bundle: #bundle)
-    } footer: {
-      Text(
-        """
-        Find a Mac on this network, or use the code its Connect a Device \
-        window shows. Paired Macs appear in Hosts.
-        """,
-        bundle: #bundle
-      )
-    }
-    .listRowBackground(Color.clear)
   }
 }
